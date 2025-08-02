@@ -84,6 +84,11 @@ mod xor {
 
         let gs: Vec<(GlobalValue<'a>, u32, GlobalValue<'a>)> = module.get_globals()
             .filter(|global| !matches!(global.get_linkage(), Linkage::External))
+            .filter(|global| {
+                global.get_section().map_or(true, |section| {
+                    section.to_str().map_or(true, |s| s != "llvm.metadata")
+                })
+            })
             .filter_map(|global| match global.get_initializer()? {
                 // C-like strings
                 BasicValueEnum::ArrayValue(arr) => Some((global, None, arr)),
@@ -164,7 +169,7 @@ mod xor {
                         }
                     }
                     _ => {
-                        panic!("(strenc) unexpected user type: {:?}", u.get_user());
+                        error!("(strenc) unexpected user type: {:?}", u.get_user());
                     }
                 }
             }
