@@ -1,3 +1,4 @@
+use ascon_hash::{AsconHash256, Digest, Update};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::{inkwell, FunctionAnalysisManager, LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValueEnum, FunctionValue, GlobalValue};
@@ -66,13 +67,10 @@ impl StringEncryption {
 }
 
 mod xor {
-    use std::fmt::format;
-    use env_logger::builder;
     use inkwell::module::Module;
     use inkwell::values::FunctionValue;
     use llvm_plugin::inkwell::{AddressSpace, Either};
     use llvm_plugin::{inkwell, FunctionAnalysisManager, ModuleAnalysisManager};
-    use llvm_plugin::inkwell::basic_block::BasicBlock;
     use llvm_plugin::inkwell::module::Linkage;
     use llvm_plugin::inkwell::values::{AnyValueEnum, BasicValue, BasicValueEnum, BasicValueUse, GlobalValue, InstructionValue};
     use log::{error, info, warn};
@@ -168,6 +166,13 @@ mod xor {
                             error!("(strenc) unexpected IntValue user: {:?}", value);
                         }
                     }
+                    AnyValueEnum::PointerValue(gv) => {
+                        if let Some(inst) = gv.as_instruction_value() {
+                            insert_decrypt(inst)?;
+                        } else {
+                            error!("(strenc) unexpected GlobalValue user: {:?}", gv);
+                        }
+                    }
                     _ => {
                         error!("(strenc) unexpected user type: {:?}", u.get_user());
                     }
@@ -252,4 +257,18 @@ pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]>
     } else {
         unsafe { Some(std::slice::from_raw_parts(ptr.cast(), len)) }
     }
+}
+
+fn generate_global_value_hash(
+    global: &GlobalValue
+) -> String {
+    let mut hasher = AsconHash256::new();
+    if let Ok(name) = global.get_name().to_str(){
+        Update::update(&mut hasher, name.as_bytes());
+    } else {
+        let rand_str = rand::random::<u32>().to_string();
+        Update::update(&mut hasher, rand_str.as_bytes());
+    }
+    let hash = hasher.finalize();
+    hex::encode(hash)
 }

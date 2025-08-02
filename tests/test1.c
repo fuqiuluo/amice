@@ -1,5 +1,6 @@
-#include "stdio.h"
-
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 //static void* ppp;
 //static char* aa;
 //static char* bb = "bbb";
@@ -29,32 +30,31 @@
 //}
 
 // 自定义变量标记
-int __attribute__((annotate("hot_data"))) critical_var;
-int __attribute__((annotate("cold_data"))) rarely_used_var;
-int __attribute__((annotate("vectorizable"))) array_data[1000];
-
-// 自定义函数标记
+//int __attribute__((annotate("hot_data"))) critical_var;
+//int __attribute__((annotate("cold_data"))) rarely_used_var;
+//int __attribute__((annotate("vectorizable"))) array_data[1000];
+//
+//// 自定义函数标记
 //void __attribute__((annotate("gpu_kernel"))) compute_function() {
 //int __attribute__((annotate("hot_data"))) critical_var2;
 //int __attribute__((annotate("cold_data"))) rarely_used_var2;
 //int __attribute__((annotate("vectorizable"))) array_data2[1000];
 //}
 //void __attribute__((annotate("critical_path"))) performance_sensitive() { }
-
-void change(char** b) {
-    char *bb = *b;
-    bb[0] = 'c'; // 修改传入的字符串
-}
-
-void pp(char* n)  {
-    printf("1pu: %s\n", n);
-}
+//
+//void change(char** b) {
+//    char *bb = *b;
+//    bb[0] = 'c'; // 修改传入的字符串
+//}
+//
+//void pp(char* n)  {
+//    printf("1pu: %s\n", n);
+//}
 
 int main() {
-    char* name = "World";
-    char* name2 = "World";
-    change(&name);
-    pp(name);
-    pp(name2);
+    char *str = strdup("Hello world1");
+    *str = 'X';
+    printf("%s\n", str);
+    free(str);
     return 0;
 }
