@@ -2,5 +2,38 @@
 name = "amice"
 version = "0.1.0"
 edition = "2024"
+authors = ["fuqiuluo"]
+
+[lib]
+name = "amice"
+crate-type = ["cdylib"]
+
+[features]
+default = ["llvm20-1"]
+llvm11-0 = ["llvm-plugin/llvm11-0"]
+llvm12-0 = ["llvm-plugin/llvm12-0"]
+llvm13-0 = ["llvm-plugin/llvm13-0"]
+llvm14-0 = ["llvm-plugin/llvm14-0"]
+llvm15-0 = ["llvm-plugin/llvm15-0"]
+llvm16-0 = ["llvm-plugin/llvm16-0"]
+llvm17-0 = ["llvm-plugin/llvm17-0"]
+llvm18-1 = ["llvm-plugin/llvm18-1"]
+llvm19-1 = ["llvm-plugin/llvm19-1"]
+llvm20-1 = ["llvm-plugin/llvm20-1"]
 
 [dependencies]
+llvm-plugin = { version = "0.6", features = ["default"] }
+log = "0.4.27"
+env_logger = "0.11.8"
+anyhow = "1.0.98"
+rand = { version = "0.9.2", features = ["default"] }
+
+[build-dependencies]
+cc = "1"
+lazy_static = "1"
+regex = "1"
+semver = "1"
+
+[patch.crates-io]
+inkwell = { git = "https://github.com/stevefan1999-personal/inkwell", branch = "master" }
+llvm-plugin = { git = "https://github.com/jamesmth/llvm-plugin-rs", branch = "feat/llvm-20" }
