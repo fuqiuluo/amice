@@ -170,7 +170,7 @@ mod xor {
                         if let Some(inst) = gv.as_instruction_value() {
                             insert_decrypt(inst)?;
                         } else {
-                            error!("(strenc) unexpected GlobalValue user: {:?}", gv);
+                            error!("(strenc) unexpected PointerValue user: {:?}", gv);
                         }
                     }
                     _ => {
