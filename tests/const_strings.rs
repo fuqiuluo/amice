@@ -2,25 +2,16 @@
 mod tests {
     use std::process::Command;
 
-    #[test]
-    fn test_const_strings() {
+    fn build_amice() {
         let output = Command::new("cargo")
             .arg("build")
             .arg("--release")
             .output()
             .expect("Failed to execute cargo build command");
         assert!(output.status.success(), "Cargo build failed");
+    }
 
-        let output = Command::new("clang")
-            .arg("-v")
-            .arg("-fpass-plugin=target/release/libamice.so")
-            .arg("tests/const_strings.c")
-            .arg("-o")
-            .arg("target/const_strings")
-            .output()
-            .expect("Failed to execute clang command");
-        assert!(output.status.success(), "Clang command failed");
-
+    fn check_output() {
         let output = Command::new("./target/const_strings")
             .output()
             .expect("Failed to execute const_strings binary");
@@ -46,5 +37,41 @@ mod tests {
         assert_eq!(stdout[12], "Hello world3");
         assert!(stdout[13].starts_with("This is a literal. 0x"));
         assert!(stdout[14].starts_with("This is a literal. 0x"));
+    }
+
+    #[test]
+    fn test_const_strings_lazy_xor() {
+        build_amice();
+
+        let output = Command::new("clang")
+            .env("AMICE_STRING_ALGORITHM", "xor")
+            .env("AMICE_STRING_DECRYPT_TIMING", "lazy")
+            .arg("-fpass-plugin=target/release/libamice.so")
+            .arg("tests/const_strings.c")
+            .arg("-o")
+            .arg("target/const_strings")
+            .output()
+            .expect("Failed to execute clang command");
+        assert!(output.status.success(), "Clang command failed");
+
+        check_output();
+    }
+
+    #[test]
+    fn test_const_strings_global_xor() {
+        build_amice();
+
+        let output = Command::new("clang")
+            .env("AMICE_STRING_ALGORITHM", "xor")
+            .env("AMICE_STRING_DECRYPT_TIMING", "global")
+            .arg("-fpass-plugin=target/release/libamice.so")
+            .arg("tests/const_strings.c")
+            .arg("-o")
+            .arg("target/const_strings")
+            .output()
+            .expect("Failed to execute clang command");
+        assert!(output.status.success(), "Clang command failed");
+
+        check_output();
     }
 }

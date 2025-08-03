@@ -5,3 +5,6 @@
 
 # My shell scripts
 shells/
+
+/amice-llvm/target/
+/amice-llvm/.llvm-config-path

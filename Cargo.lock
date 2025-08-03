@@ -15,6 +15,7 @@ dependencies = [
 name = "amice"
 version = "0.1.0"
 dependencies = [
+ "amice-llvm",
  "anyhow",
  "ascon-hash",
  "cc",
@@ -24,6 +25,16 @@ dependencies = [
  "llvm-plugin",
  "log",
  "rand",
+ "regex",
+ "semver 1.0.26",
+]
+
+[[package]]
+name = "amice-llvm"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "lazy_static",
  "regex",
  "semver 1.0.26",
 ]

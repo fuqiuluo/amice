@@ -31,15 +31,16 @@ enum StringEncryptionType {
 }
 
 impl StringEncryptionType {
-    pub fn do_handle(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> anyhow::Result<()> {
+    pub fn do_handle(&self, pass: &StringEncryption,  module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> anyhow::Result<()> {
         match self {
-            StringEncryptionType::XOR => xor::do_handle(module, manager),
+            StringEncryptionType::XOR => xor::do_handle(pass, module, manager),
         }
     }
 }
 
 pub struct StringEncryption {
     enable: bool,
+    decrypt_timing: String,
     encryption_type: StringEncryptionType,
 }
 
@@ -49,7 +50,7 @@ impl LlvmModulePass for StringEncryption {
             return PreservedAnalyses::All;
         }
 
-        if let Err(e) = self.encryption_type.do_handle(module, &manager) {
+        if let Err(e) = self.encryption_type.do_handle(self, module, &manager) {
             error!("(strenc) failed to handle string encryption: {}", e);
         }
 
@@ -59,28 +60,48 @@ impl LlvmModulePass for StringEncryption {
 
 impl StringEncryption {
     pub fn new(enable: bool) -> Self {
+        let algo = match std::env::var("AMICE_STRING_ALGORITHM")
+            .unwrap_or("xor".to_string()).to_lowercase().as_str() {
+            "xor" => StringEncryptionType::XOR,
+            _ => {
+                error!("(strenc) unknown string encryption algorithm, using XOR");
+                StringEncryptionType::XOR
+            }
+        };
+        let decrypt_timing = std::env::var("AMICE_STRING_DECRYPT_TIMING")
+            .unwrap_or("lazy".to_string());
         StringEncryption {
             enable,
-            encryption_type: StringEncryptionType::XOR
+            decrypt_timing,
+            encryption_type: algo
         }
     }
 }
 
 mod xor {
+    use std::collections::{HashMap, HashSet};
+    use std::hash::Hash;
+    use ascon_hash::Digest;
     use inkwell::module::Module;
     use inkwell::values::FunctionValue;
     use llvm_plugin::inkwell::{AddressSpace, Either};
     use llvm_plugin::{inkwell, FunctionAnalysisManager, ModuleAnalysisManager};
+    use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
+    use llvm_plugin::inkwell::basic_block::BasicBlock;
+    use llvm_plugin::inkwell::context::ContextRef;
     use llvm_plugin::inkwell::module::Linkage;
-    use llvm_plugin::inkwell::values::{AnyValueEnum, BasicValue, BasicValueEnum, BasicValueUse, GlobalValue, InstructionValue};
+    use llvm_plugin::inkwell::values::{AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, BasicValueUse, GlobalValue, InstructionValue};
     use log::{error, info, warn};
     use crate::aotu::string_encryption::array_as_const_string;
+    use crate::aotu::StringEncryption;
 
-    pub(crate) fn do_handle<'a>(module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> anyhow::Result<()> {
+    pub(crate) fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> anyhow::Result<()> {
         let ctx = module.get_context();
         let i32_ty = ctx.i32_type();
 
-        let gs: Vec<(GlobalValue<'a>, u32, GlobalValue<'a>)> = module.get_globals()
+        let has_flag = pass.decrypt_timing == "lazy";
+
+        let gs: Vec<(GlobalValue<'a>, u32, Option<GlobalValue<'a>>)> = module.get_globals()
             .filter(|global| !matches!(global.get_linkage(), Linkage::External))
             .filter(|global| {
                 global.get_section().map_or(true, |section| {
@@ -112,9 +133,14 @@ mod xor {
                 Some((unique_name, global, stru, encoded_str))
             })
             .map(|(unique_name, global, stru, encoded_str)| {
-                let flag = module.add_global(i32_ty, None, &format!("dec_flag_{}", unique_name));
-                flag.set_initializer(&i32_ty.const_int(0, false));
-                flag.set_linkage(Linkage::Internal);
+                let flag = if has_flag {
+                    let flag = module.add_global(i32_ty, None, &format!("dec_flag_{}", unique_name));
+                    flag.set_initializer(&i32_ty.const_int(0, false));
+                    flag.set_linkage(Linkage::Internal);
+                    Some(flag)
+                } else {
+                    None
+                };
 
                 if let Some(stru) = stru {
                     // Rust-like strings
@@ -133,9 +159,53 @@ mod xor {
             })
             .collect();
 
-        let decrypt_fn = add_decrypt_function(module, &format!("decrypt_strings_{}", rand::random::<u32>()))?;
+        let decrypt_fn = add_decrypt_function(module, &format!("decrypt_strings_{}", rand::random::<u32>()), has_flag)?;
 
-        for (global, len, flag) in &gs {
+        match pass.decrypt_timing.as_str() {
+            "lazy" => do_lazy(&gs, decrypt_fn, ctx)?,
+            "global" => do_global(module, &gs, decrypt_fn, ctx)?,
+            _ => {
+                return Err(anyhow::anyhow!("(strenc) unknown decrypt timing: {}", pass.decrypt_timing));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn do_global<'a>(module: &mut Module<'a>, gs: &[(GlobalValue<'a>, u32, Option<GlobalValue<'a>>)], decrypt_fn: FunctionValue<'a>, ctx: ContextRef<'a>) -> anyhow::Result<()> {
+        let i32_ty = ctx.i32_type();
+        let i32_ptr = ptr_type!(ctx, i32_type);
+
+        let decrypt_stub_ty = ctx.void_type()
+            .fn_type(&[], false);
+        let decrypt_stub = module.add_function("decrypt_strings_stub", decrypt_stub_ty, None);
+        decrypt_stub.set_linkage(Linkage::Internal);
+
+        let entry = ctx.append_basic_block(decrypt_stub, "entry");
+        let builder = ctx.create_builder();
+
+        builder.position_at_end(entry);
+        for (global, len, flag) in gs {
+            let ptr = global.as_pointer_value();
+            let len_val = i32_ty.const_int(*len as u64, false);
+            let flag_ptr = i32_ptr.const_null();
+            builder.build_call(decrypt_fn, &[ptr.into(), len_val.into(), flag_ptr.into()], "")?;
+        }
+
+        builder.build_return(None)?;
+
+        let priority = 0; // Default priority
+        unsafe {
+            let module_ref = module.as_mut_ptr() as *mut std::ffi::c_void;
+            let function_ref = decrypt_stub.as_value_ref() as *mut std::ffi::c_void;
+            amice_llvm::append_to_global_ctors(module_ref, function_ref, priority);
+        }
+
+        Ok(())
+    }
+
+    fn do_lazy(gs: &[(GlobalValue<'_>, u32, Option<GlobalValue<'_>>)], decrypt_fn: FunctionValue<'_>, ctx: ContextRef) -> anyhow::Result<()> {
+        for (global, len, flag) in gs {
             let mut uses = Vec::new();
             let mut use_opt = global.get_first_use();
             while let Some(u) = use_opt {
@@ -144,31 +214,39 @@ mod xor {
             }
 
             for u in uses {
-                let insert_decrypt = |inst: InstructionValue<'_>| -> anyhow::Result<()> {
-                    let parent_bb = inst.get_parent().expect("inst must be in a block");
-                    let parent_fn = parent_bb.get_parent().expect("block must have parent fn");
-                    let builder = ctx.create_builder();
-
-                    builder.position_before(&inst);
-                    let ptr = global.as_pointer_value();
-                    let len_val = i32_ty.const_int(*len as u64, false);
-                    let flag_ptr = flag.as_pointer_value();
-                    builder.build_call(decrypt_fn, &[ptr.into(), len_val.into(), flag_ptr.into()], "", )?;
-
-                    Ok(())
-                };
                 match u.get_user() {
-                    AnyValueEnum::InstructionValue(inst) => insert_decrypt(inst)?,
+                    AnyValueEnum::InstructionValue(inst) => insert_decrypt_call(
+                        ctx,
+                        inst,
+                        global,
+                        decrypt_fn,
+                        *len,
+                        flag.clone(),
+                    )?,
                     AnyValueEnum::IntValue(value) => {
                         if let Some(inst) = value.as_instruction_value() {
-                            insert_decrypt(inst)?;
+                            insert_decrypt_call(
+                                ctx,
+                                inst,
+                                global,
+                                decrypt_fn,
+                                *len,
+                                flag.clone(),
+                            )?
                         } else {
                             error!("(strenc) unexpected IntValue user: {:?}", value);
                         }
                     }
                     AnyValueEnum::PointerValue(gv) => {
                         if let Some(inst) = gv.as_instruction_value() {
-                            insert_decrypt(inst)?;
+                            insert_decrypt_call(
+                                ctx,
+                                inst,
+                                global,
+                                decrypt_fn,
+                                *len,
+                                flag.clone(),
+                            )?
                         } else {
                             error!("(strenc) unexpected PointerValue user: {:?}", gv);
                         }
@@ -183,7 +261,57 @@ mod xor {
         Ok(())
     }
 
-    fn add_decrypt_function<'a>(module: &mut Module<'a>, name: &str) -> anyhow::Result<FunctionValue<'a>> {
+    fn insert_decrypt_call<'a>(
+        ctx: ContextRef<'a>,
+        inst: InstructionValue<'a>,
+        global: &GlobalValue<'a>,
+        decrypt_fn: FunctionValue<'a>,
+        len: u32,
+        flag: Option<GlobalValue<'a>>,
+    ) -> anyhow::Result<()> {
+        let i32_ty = ctx.i32_type();
+        let parent_bb = inst.get_parent().expect("inst must be in a block");
+        let parent_fn = parent_bb.get_parent().expect("block must have parent fn");
+
+        // let parent_bb_name = parent_bb.get_name()
+        //     .to_str()
+        //     .unwrap_or("__main__");
+        // let parent_fn_name = parent_fn.get_name()
+        //     .to_str()
+        //     .unwrap_or("");
+        // let global_name = global.get_name()
+        //     .to_str()
+        //     .unwrap_or("");
+        // info!("(strenc) inserting decrypt call for global: {}, in function: {}, block: {}",
+        //     global_name, parent_fn_name, parent_bb_name
+        // );
+        //
+        // if !parent_fn_name.is_empty() && !global_name.is_empty() {
+        //     if decrypted_in_block.get(&format!("{}v{}", parent_fn_name, parent_bb_name))
+        //         .map_or(false, |set| set.contains(global_name)) {
+        //         return Ok(());
+        //     }
+        // }
+
+        let builder = ctx.create_builder();
+        builder.position_before(&inst);
+        let ptr = global.as_pointer_value();
+        let len_val = i32_ty.const_int(len as u64, false);
+        let flag_ptr = flag.unwrap().as_pointer_value();
+        builder.build_call(decrypt_fn, &[ptr.into(), len_val.into(), flag_ptr.into()], "", )?;
+
+        // if let Some(set) = decrypted_in_block.get_mut(&format!("{}v{}", parent_fn_name, parent_bb_name)) {
+        //     set.insert(global_name.to_string());
+        // } else {
+        //     let mut set = HashSet::new();
+        //     set.insert(global_name.to_string());
+        //     decrypted_in_block.insert(format!("{}v{}", parent_fn_name, parent_bb_name), set);
+        // }
+
+        Ok(())
+    }
+
+    fn add_decrypt_function<'a>(module: &mut Module<'a>, name: &str, has_flag: bool) -> anyhow::Result<FunctionValue<'a>> {
         let ctx = module.get_context();
         let i8_ty  = ctx.i8_type();
         let i32_ty = ctx.i32_type();
@@ -193,7 +321,11 @@ mod xor {
         // void decrypt_strings(i8* str, i32 len, i32* flag)
         let fn_ty = ctx.void_type()
             .fn_type(&[i8_ptr.into(), i32_ty.into(), i32_ptr.into()], false);
+
         let decrypt_fn = module.add_function(name, fn_ty, None);
+        decrypt_fn.set_linkage(Linkage::Internal);
+        let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
+        decrypt_fn.add_attribute(AttributeLoc::Function, inlinehint_attr);
 
         let prepare = ctx.append_basic_block(decrypt_fn, "prepare");
         let entry = ctx.append_basic_block(decrypt_fn, "entry");
@@ -206,13 +338,18 @@ mod xor {
         let flag_ptr = decrypt_fn.get_nth_param(2)
             .map(|param| param.into_pointer_value())
             .ok_or_else(|| anyhow::anyhow!("Failed to get flag parameter"))?;
-
-        let flag = builder.build_load(i32_ty, flag_ptr, "flag")?.into_int_value();
-        let is_decrypted = builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "is_decrypted")?;
-        builder.build_conditional_branch(is_decrypted, entry, exit)?;
+        if has_flag {
+            let flag = builder.build_load(i32_ty, flag_ptr, "flag")?.into_int_value();
+            let is_decrypted = builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "is_decrypted")?;
+            builder.build_conditional_branch(is_decrypted, entry, exit)?;
+        } else {
+            builder.build_unconditional_branch(entry)?;
+        }
 
         builder.position_at_end(entry);
-        builder.build_store(flag_ptr, i32_ty.const_int(1, false))?;
+        if has_flag {
+            builder.build_store(flag_ptr, i32_ty.const_int(1, false))?;
+        }
 
         let idx = builder.build_alloca(i32_ty, "idx")?;
         builder.build_store(idx, ctx.i32_type().const_zero())?;
