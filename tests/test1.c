@@ -62,15 +62,17 @@
 //    char *bb = *b;
 //    bb[0] = 'c'; // 修改传入的字符串
 //}
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <immintrin.h>  // AVX2指令集头文件
 
-int main()
-{
-    //char* __attribute__((annotate("oneshot"))) literal1 = "This is a literal.";
-    char *literal2 = "This is a literal fuqiuluo.";
-    //printf("%s %p\n", literal1, literal1);
-    printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal2, literal2);
+int main() {
+    char *s16 = "This is a liter.";
+    char *s32 = "This is a literal string that i.";
+    char* s64 = "This is a literal string that is longer than 32 characters, and.";
+    char* s100 = "This is a literal string that is longer than 32 characters, and.quhqiudnqidnqskjxnasxniuchbiufcheqno";
+    printf("%s\n%s\n%s\n", s16, s32, s64);
+    printf("%s\n", s100);
     return 0;
 }
