@@ -34,16 +34,16 @@ fn main() {
     build.warnings(false);
     build.compile("amice-llvm-ffi");
 
+    let libdir = llvm_sys::llvm_config("--libdir");
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        let libdir = llvm_sys::llvm_config("--libdir");
         println!("cargo:rustc-link-search=native={}", libdir.trim());
         println!("cargo:rustc-link-lib=dylib=LLVM");
+        //println!("cargo:rustc-link-lib=static=LLVM");
     }
 
     #[cfg(target_os = "windows")]
     {
-        let libdir = llvm_sys::llvm_config("--libdir");
         println!("cargo:rustc-link-search=native={}", libdir.trim());
         println!("cargo:rustc-link-lib=dylib=LLVM-C");
 
@@ -98,6 +98,12 @@ mod llvm_sys {
         let prefix = env::var_os(&*ENV_LLVM_PREFIX)
             .map(|p| PathBuf::from(p).join("bin"))
             .unwrap_or_default();
+
+        let prefix_output = PathBuf::from(".llvm-prefix-path");
+        if !prefix_output.exists() {
+            std::fs::write(prefix_output, prefix.to_str().unwrap()).unwrap();
+        }
+
         for binary_name in llvm_config_binary_names() {
             let binary_name = prefix.join(binary_name);
             match llvm_version(&binary_name) {

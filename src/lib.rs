@@ -5,6 +5,8 @@ use llvm_plugin::{
     FunctionAnalysisManager, LlvmFunctionPass, PipelineParsing, PreservedAnalyses,
 };
 use std::io::Write;
+use std::process::exit;
+use env_logger::builder;
 use log::info;
 use crate::aotu::StringEncryption;
 
@@ -18,16 +20,13 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         })
         .init();
 
-    log::info!("amice plugin initializing, version: {}, author: {}",
-        env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_AUTHORS"));
+    info!("amice plugin initializing, version: {}, author: {}, llvm-sys: {}.{}",
+        env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_AUTHORS"), amice_llvm::get_llvm_version_major(), amice_llvm::get_llvm_version_minor());
 
     builder.add_pipeline_start_ep_callback(|manager, level| {
+        info!("amice plugin pipeline start callback, level: {:?}", level);
         manager.add_pass(StringEncryption::new(true))
     });
-    // 
-    // for x in std::env::args() {
-    //     info!("Argument: {}", x);
-    // }
 
-    log::info!("amice plugin registered");
+    info!("amice plugin registered");
 }

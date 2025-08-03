@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 
 [features]
 default = ["llvm20-1"]
+
 llvm11-0 = ["llvm-plugin/llvm11-0", "amice-llvm/llvm11-0"]
 llvm12-0 = ["llvm-plugin/llvm12-0", "amice-llvm/llvm12-0"]
 llvm13-0 = ["llvm-plugin/llvm13-0", "amice-llvm/llvm13-0"]
@@ -39,4 +40,5 @@ semver = "1"
 
 [patch.crates-io]
 inkwell = { git = "https://github.com/stevefan1999-personal/inkwell", branch = "master" }
-llvm-plugin = { git = "https://github.com/jamesmth/llvm-plugin-rs", branch = "feat/llvm-20" }
+llvm-plugin = { git = "https://github.com/fuqiuluo/llvm-plugin-rs", branch = "feat/llvm-20-fix-ndk" }
+

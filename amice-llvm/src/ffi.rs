@@ -14,4 +14,8 @@ extern "C" {
         feature = "llvm20-1",
     ))]
     pub(crate) fn amiceAppendToGlobalCtors(module: *mut c_void, function: *mut c_void, priority: i32);
+    
+    pub(crate) fn amiceGetLLVMVersionMajor() -> i32;
+    
+    pub(crate) fn amiceGetLLVMVersionMinor() -> i32;
 }

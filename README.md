@@ -63,6 +63,40 @@ clang \
 - `PATH=$PATH;C:\llvm\bin`
 - `LLVM_SYS_140_PREFIX=C:\llvm`
 
+## Android NDK
+
+安卓的 LLVM 工具链可以动态加载插件，虽然安卓的clang没有提供`opt`工具，但您可以使用`clang`来编译您的代码，包括但不限于基于LLVM插件，或者将混淆器内敛进您的clang中。
+
+### Plugin
+
+首先我们需要下载ndk对应的未精简的clang，详细教程这里面有：[Ylarod：NDK加载 LLVM Pass 方案](https://xtuly.cn/article/ndk-load-llvm-pass-plugin)!
+
+```shell
+# r522817 对应 NDK 25c
+export CXX="/linux-x86-refs_heads_main-clang-r522817/bin/clang++"
+export CXXFLAGS="-stdlib=libc++ -I/linux-x86-refs_heads_main-clang-r522817/include/c++/v1"
+export LDFLAGS="-stdlib=libc++ -L/linux-x86-refs_heads_main-clang-r522817/lib"
+
+# 例如这里我的ndk是llvm-18.0的
+# 但是llvm-plugin-rs只有18.1的版本，只能设置LLVM_SYS_181_PREFIX来指向未精简的clang
+# (注意：llvm的API在这两个版本没有大的变化，这样改不会影响什么)
+export LLVM_SYS_181_PREFIX=/您的NDK对应的未精简的clang
+
+cargo build --release
+
+# export LD_LIBRARY_PATH=/您的NDK对应的未精简的clang/lib
+# 由于一些奇怪的问题，可能需要设置 LD_LIBRARY_PATH 来指向未精简的clang的lib目录
+# 因为他依赖了`libLLVM.so`，这在android ndk里面是没有的！
+/home/fuqiuluo/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64/bin/clang \
+  -fpass-plugin=../target/release/libamice.so \
+  -Xclang -load -Xclang ../target/release/libamice.so \
+   luo.c -o luo
+```
+
+### Inline 
+
+> TODO
+
 # Thanks
 
 - [jamesmth/llvm-plugin-rs](https://github.com/jamesmth/llvm-plugin-rs/tree/feat/llvm-20#)

@@ -23,4 +23,12 @@ extern "C" {
 void amiceAppendToGlobalCtors(llvm::Module &M, llvm::Function *F, int P) {
      llvm::appendToGlobalCtors(M, F, P);
 }
+
+int amiceGetLLVMVersionMajor() {
+  return LLVM_VERSION_MAJOR;
+}
+
+int amiceGetLLVMVersionMinor() {
+  return LLVM_VERSION_MINOR;
+}
 }

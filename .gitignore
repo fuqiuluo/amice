@@ -8,3 +8,4 @@ shells/
 
 /amice-llvm/target/
 /amice-llvm/.llvm-config-path
+/amice-llvm/.llvm-prefix-path
