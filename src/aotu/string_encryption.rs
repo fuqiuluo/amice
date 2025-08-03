@@ -28,7 +28,7 @@ macro_rules! ptr_type {
 
 enum StringEncryptionType {
     XOR,
-
+    
 }
 
 impl StringEncryptionType {
