@@ -56,38 +56,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-__attribute__((always_inline))
-int other_func()
-{
-    char *literal1 = "This is a literal.";
-    char *literal2 = "This is a literal.";
-    printf("%s %p\n", literal1, literal1);
-    printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal1, literal1);
-    printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal1, literal1);
-    printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal1, literal1);
-    printf("%s %p\n", literal2, literal2);
-    return 0;
-}
+//char* __attribute__((annotate("oneshot"))) global = "This is a literal.";
+//
+//void __attribute__((annotate("obf"))) change(char** b) {
+//    char *bb = *b;
+//    bb[0] = 'c'; // 修改传入的字符串
+//}
 
 int main()
 {
-    other_func();
-    char *literal1 = "This is a literal.";
-    char *literal2 = "This is a literal.";
-    printf("%s %p\n", literal1, literal1);
-    printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal1, literal1);
+    //char* __attribute__((annotate("oneshot"))) literal1 = "This is a literal.";
+    char *literal2 = "This is a literal fuqiuluo.";
+    //printf("%s %p\n", literal1, literal1);
     printf("%s %p\n", literal2, literal2);
     printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal1, literal1);
     printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal2, literal2);
-    printf("%s %p\n", literal1, literal1);
     printf("%s %p\n", literal2, literal2);
     return 0;
 }
