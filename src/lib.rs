@@ -8,7 +8,7 @@ use std::io::Write;
 use std::process::exit;
 use env_logger::builder;
 use log::info;
-use crate::aotu::StringEncryption;
+use crate::aotu::string_encryption::StringEncryption;
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1")]
 fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
@@ -25,7 +25,11 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
 
     builder.add_pipeline_start_ep_callback(|manager, level| {
         info!("amice plugin pipeline start callback, level: {:?}", level);
-        manager.add_pass(StringEncryption::new(true))
+
+        let string_encryption = std::env::var("AMICE_STRING_ENCRYPTION")
+            .unwrap_or_else(|_| "true".to_string()) == "true";
+
+        manager.add_pass(StringEncryption::new(string_encryption))
     });
 
     info!("amice plugin registered");

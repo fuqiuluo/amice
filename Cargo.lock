@@ -301,6 +301,7 @@ checksum = "1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776"
 [[package]]
 name = "llvm-plugin"
 version = "0.6.0"
+source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?branch=feat%2Fllvm-20-fix-ndk#ffc8c43e294c1b7bd2875837025b301df5b76f47"
 dependencies = [
  "cc",
  "inkwell",
@@ -313,6 +314,7 @@ dependencies = [
 [[package]]
 name = "llvm-plugin-macros"
 version = "0.2.0"
+source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?branch=feat%2Fllvm-20-fix-ndk#ffc8c43e294c1b7bd2875837025b301df5b76f47"
 dependencies = [
  "proc-macro2",
  "quote",
