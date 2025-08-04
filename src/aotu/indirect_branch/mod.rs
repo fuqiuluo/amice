@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use bitflags::bitflags;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use llvm_plugin::inkwell::AddressSpace;
+use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::llvm_sys::core::{LLVMGetBasicBlocks, LLVMGetEntryBasicBlock};
 use llvm_plugin::inkwell::types::AsTypeRef;
@@ -197,6 +197,37 @@ impl LlvmModulePass for IndirectBranch {
                         let target = unsafe {
                             cur_dummy_block.get_address().unwrap().as_basic_value_enum()
                         };
+
+                        if rand::random_range(0..=100) < 45 {
+                            let dummy_val1 = i32_ty.const_int(rand::random::<u32>() as u64, false);
+                            let dummy_val2 = i32_ty.const_int(rand::random::<u32>() as u64, false);
+                            if let Ok(alloca) = builder.build_alloca(i32_ty, "junk_volatile") {
+                                let _junk_add = builder.build_int_add(dummy_val1, dummy_val2, "junk");
+                                if rand::random::<bool>() {
+                                    let _junk_cmp = builder.build_int_compare(
+                                        IntPredicate::EQ,
+                                        dummy_val1,
+                                        dummy_val2,
+                                        "junk_cmp"
+                                    );
+                                }
+                                if rand::random_range(0..=100) < 30 {
+                                    if let Ok(junk_cmp) = builder.build_int_compare(
+                                        IntPredicate::NE,
+                                        dummy_val1,
+                                        dummy_val2,
+                                        "junk_cmp"
+                                    ) {
+                                        let _ = builder.build_int_z_extend(junk_cmp, i32_ty, "junk_cmp_zext").map(|dummy_val| {
+                                            builder.build_store(alloca, dummy_val)
+                                        }).map(|result| result.map(|store_inst| {
+                                            store_inst.set_volatile(true)
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+
                         builder.build_indirect_branch(target, &[cur_dummy_block])
                             .map_err(|e| error!("(indirect-branch) build indirect branch failed: {}", e))
                             .expect("build indirect branch failed");
