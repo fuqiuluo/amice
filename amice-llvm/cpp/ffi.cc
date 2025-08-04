@@ -1,3 +1,5 @@
+// copy from https://github.com/jamesmth/llvm-plugin-rs/blob/feat%2Fllvm-20/llvm-plugin/cpp/ffi.cc
+
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -18,17 +20,24 @@ using LlvmOptLevel = llvm::OptimizationLevel;
 using LlvmOptLevel = llvm::PassBuilder::OptimizationLevel;
 #endif
 
-// copy from https://github.com/jamesmth/llvm-plugin-rs/blob/feat%2Fllvm-20/llvm-plugin/cpp/ffi.cc
 extern "C" {
-void amiceAppendToGlobalCtors(llvm::Module &M, llvm::Function *F, int P) {
-     llvm::appendToGlobalCtors(M, F, P);
-}
-
 int amiceGetLLVMVersionMajor() {
   return LLVM_VERSION_MAJOR;
 }
 
 int amiceGetLLVMVersionMinor() {
   return LLVM_VERSION_MINOR;
+}
+
+void amiceAppendToGlobalCtors(llvm::Module &M, llvm::Function *F, int P) {
+     llvm::appendToGlobalCtors(M, F, P);
+}
+
+void amiceAppendToUsed(llvm::Module &M, llvm::GlobalValue * V) {
+    llvm::appendToUsed(M, {V});
+}
+
+void amiceAppendToCompilerUsed(llvm::Module &M, llvm::GlobalValue * V) {
+    llvm::appendToCompilerUsed(M, {V});
 }
 }

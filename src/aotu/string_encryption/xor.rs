@@ -1,30 +1,36 @@
-use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
-use ascon_hash::Digest;
+use crate::aotu::string_encryption::{
+    DecryptTiming, EncryptedGlobalValue, StringEncryption, array_as_const_string,
+};
+use crate::ptr_type;
 use inkwell::module::Module;
 use inkwell::values::FunctionValue;
-use llvm_plugin::inkwell::{AddressSpace, Either};
-use llvm_plugin::{inkwell, FunctionAnalysisManager, ModuleAnalysisManager};
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
-use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::context::ContextRef;
 use llvm_plugin::inkwell::module::Linkage;
-use llvm_plugin::inkwell::values::{AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, BasicValueUse, GlobalValue, InstructionValue};
-use log::{debug, error, info, warn};
-use crate::aotu::string_encryption::{array_as_const_string, DecryptTiming, EncryptedGlobalValue, StringEncryption};
-use crate::ptr_type;
+use llvm_plugin::inkwell::values::{
+    AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, GlobalValue,
+    InstructionValue,
+};
+use llvm_plugin::inkwell::AddressSpace;
+use llvm_plugin::{ModuleAnalysisManager, inkwell};
+use log::{error, warn};
 
-pub(crate) fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> anyhow::Result<()> {
+pub(crate) fn do_handle<'a>(
+    pass: &StringEncryption,
+    module: &mut Module<'a>,
+    manager: &ModuleAnalysisManager,
+) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
 
     let has_flag = matches!(pass.decrypt_timing, DecryptTiming::Lazy);
 
-    let gs: Vec<EncryptedGlobalValue<'a>> = module.get_globals()
+    let gs: Vec<EncryptedGlobalValue<'a>> = module
+        .get_globals()
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            global.get_section().map_or(true, |section| {
-                section.to_str().map_or(true, |s| s != "llvm.metadata")
+            global.get_section().is_none_or(|section| {
+                section.to_str() != Ok("llvm.metadata")
             })
         })
         .filter_map(|global| match global.get_initializer()? {
@@ -47,13 +53,15 @@ pub(crate) fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, ma
             // we ignore non-UTF8 strings, since they are probably not human-readable
             let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
             let encoded_str = s.bytes().map(|c| c ^ 0xAA).collect::<Vec<_>>();
-            let unique_name = global.get_name().to_str()
+            let unique_name = global
+                .get_name()
+                .to_str()
                 .map_or_else(|_| rand::random::<u32>().to_string(), |s| s.to_string());
             Some((unique_name, global, stru, encoded_str))
         })
         .map(|(unique_name, global, stru, encoded_str)| {
             let flag = if has_flag {
-                let flag = module.add_global(i32_ty, None, &format!("dec_flag_{}", unique_name));
+                let flag = module.add_global(i32_ty, None, &format!("dec_flag_{unique_name}"));
                 flag.set_initializer(&i32_ty.const_int(0, false));
                 flag.set_linkage(Linkage::Internal);
                 Some(flag)
@@ -93,7 +101,9 @@ pub(crate) fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, ma
         .collect();
 
     let decrypt_fn = if pass.stack_alloc {
-        warn!("(strenc) using stack allocation for decryption, this may cause issues with large strings or in multi-threaded contexts.");
+        warn!(
+            "(strenc) using stack allocation for decryption, this may cause issues with large strings or in multi-threaded contexts."
+        );
         add_decrypt_function_stack(
             module,
             &format!("decrypt_strings_stack_{}", rand::random::<u32>()),
@@ -104,14 +114,17 @@ pub(crate) fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, ma
             module,
             &format!("decrypt_strings_{}", rand::random::<u32>()),
             has_flag,
-            pass.inline_decrypt
+            pass.inline_decrypt,
         )?
     };
 
     match pass.decrypt_timing {
         DecryptTiming::Lazy => do_lazy(&gs, decrypt_fn, ctx, pass.stack_alloc)?,
         DecryptTiming::Global => {
-            assert!(!pass.stack_alloc, "(strenc) global decrypt timing is not supported with stack allocation");
+            assert!(
+                !pass.stack_alloc,
+                "(strenc) global decrypt timing is not supported with stack allocation"
+            );
             do_global(module, &gs, decrypt_fn, ctx)?
         }
     }
@@ -141,40 +154,21 @@ fn do_lazy(
 
         for u in uses {
             match u.get_user() {
-                AnyValueEnum::InstructionValue(inst) => insert_fn(
-                    ctx,
-                    inst,
-                    &ev.global,
-                    decrypt_fn,
-                    ev.len,
-                    ev.flag,
-                )?,
+                AnyValueEnum::InstructionValue(inst) => {
+                    insert_fn(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag)?
+                }
                 AnyValueEnum::IntValue(value) => {
                     if let Some(inst) = value.as_instruction_value() {
-                        insert_fn(
-                            ctx,
-                            inst,
-                            &ev.global,
-                            decrypt_fn,
-                            ev.len,
-                            ev.flag,
-                        )?
+                        insert_fn(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag)?
                     } else {
-                        error!("(strenc) unexpected IntValue user: {:?}", value);
+                        error!("(strenc) unexpected IntValue user: {value:?}");
                     }
                 }
                 AnyValueEnum::PointerValue(gv) => {
                     if let Some(inst) = gv.as_instruction_value() {
-                        insert_fn(
-                            ctx,
-                            inst,
-                            &ev.global,
-                            decrypt_fn,
-                            ev.len,
-                            ev.flag,
-                        )?
+                        insert_fn(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag)?
                     } else {
-                        error!("(strenc) unexpected PointerValue user: {:?}", gv);
+                        error!("(strenc) unexpected PointerValue user: {gv:?}");
                     }
                 }
                 _ => {
@@ -205,11 +199,8 @@ fn insert_decrypt_stack_call<'a>(
     let builder = ctx.create_builder();
     builder.position_before(&inst);
 
-    let container = builder.build_array_alloca(
-        i8_ty,
-        i32_ty.const_int(len as u64 + 1, false),
-        ""
-    )?;
+    let container =
+        builder.build_array_alloca(i8_ty, i32_ty.const_int(len as u64 + 1, false), "")?;
     let src_ptr = global.as_pointer_value();
     let len_val = i32_ty.const_int(len as u64, false);
 
@@ -217,11 +208,16 @@ fn insert_decrypt_stack_call<'a>(
     //debug!("(strenc) decrypt_fn: {:?}", decrypt_fn);
     //debug!("(strenc) inst: {:?}", inst);
 
-    let decrypted_ptr = builder.build_call(
-        decrypt_fn,
-        &[src_ptr.into(), len_val.into(), container.into()],
-        ""
-    )?.try_as_basic_value().left().unwrap().into_pointer_value();
+    let decrypted_ptr = builder
+        .build_call(
+            decrypt_fn,
+            &[src_ptr.into(), len_val.into(), container.into()],
+            "",
+        )?
+        .try_as_basic_value()
+        .left()
+        .unwrap()
+        .into_pointer_value();
 
     let mut replaced = false;
     for i in 0..inst.get_num_operands() {
@@ -237,7 +233,9 @@ fn insert_decrypt_stack_call<'a>(
     }
 
     if !replaced {
-        error!("(strenc) failed to replace global operand in instruction: {:?}", inst);
+        error!(
+            "(strenc) failed to replace global operand in instruction: {inst:?}"
+        );
     }
 
     Ok(())
@@ -260,7 +258,11 @@ fn insert_decrypt_call<'a>(
     let ptr = global.as_pointer_value();
     let len_val = i32_ty.const_int(len as u64, false);
     let flag_ptr = flag.unwrap().as_pointer_value();
-    builder.build_call(decrypt_fn, &[ptr.into(), len_val.into(), flag_ptr.into()], "", )?;
+    builder.build_call(
+        decrypt_fn,
+        &[ptr.into(), len_val.into(), flag_ptr.into()],
+        "",
+    )?;
 
     Ok(())
 }
@@ -269,23 +271,25 @@ fn add_decrypt_function<'a>(
     module: &mut Module<'a>,
     name: &str,
     has_flag: bool,
-    inline_fn: bool
+    inline_fn: bool,
 ) -> anyhow::Result<FunctionValue<'a>> {
     let ctx = module.get_context();
-    let i8_ty  = ctx.i8_type();
+    let i8_ty = ctx.i8_type();
     let i32_ty = ctx.i32_type();
     let i8_ptr = ptr_type!(ctx, i8_type);
     let i32_ptr = ptr_type!(ctx, i32_type);
 
     // void decrypt_strings(i8* str, i32 len, i32* flag)
-    let fn_ty = ctx.void_type()
+    let fn_ty = ctx
+        .void_type()
         .fn_type(&[i8_ptr.into(), i32_ty.into(), i32_ptr.into()], false);
 
     let decrypt_fn = module.add_function(name, fn_ty, None);
     decrypt_fn.set_linkage(Linkage::Internal);
     if inline_fn {
         warn!("(strenc) using inline decryption function, this may increase binary size.");
-        let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
+        let inlinehint_attr =
+            ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
         decrypt_fn.add_attribute(AttributeLoc::Function, inlinehint_attr);
     }
 
@@ -297,12 +301,20 @@ fn add_decrypt_function<'a>(
 
     let builder = ctx.create_builder();
     builder.position_at_end(prepare);
-    let flag_ptr = decrypt_fn.get_nth_param(2)
+    let flag_ptr = decrypt_fn
+        .get_nth_param(2)
         .map(|param| param.into_pointer_value())
         .ok_or_else(|| anyhow::anyhow!("Failed to get flag parameter"))?;
     if has_flag {
-        let flag = builder.build_load(i32_ty, flag_ptr, "flag")?.into_int_value();
-        let is_decrypted = builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "is_decrypted")?;
+        let flag = builder
+            .build_load(i32_ty, flag_ptr, "flag")?
+            .into_int_value();
+        let is_decrypted = builder.build_int_compare(
+            inkwell::IntPredicate::EQ,
+            flag,
+            i32_ty.const_zero(),
+            "is_decrypted",
+        )?;
         builder.build_conditional_branch(is_decrypted, entry, exit)?;
     } else {
         builder.build_unconditional_branch(entry)?;
@@ -319,19 +331,19 @@ fn add_decrypt_function<'a>(
 
     builder.position_at_end(body);
     let index = builder.build_load(i32_ty, idx, "cur_idx")?.into_int_value();
-    let len = decrypt_fn.get_nth_param(1)
+    let len = decrypt_fn
+        .get_nth_param(1)
         .map(|param| param.into_int_value())
         .ok_or_else(|| anyhow::anyhow!("Failed to get length parameter"))?;
     let cond = builder.build_int_compare(inkwell::IntPredicate::ULT, index, len, "cond")?;
     builder.build_conditional_branch(cond, next, exit)?;
 
     builder.position_at_end(next);
-    let ptr = decrypt_fn.get_nth_param(0)
+    let ptr = decrypt_fn
+        .get_nth_param(0)
         .map(|param| param.into_pointer_value())
         .ok_or_else(|| anyhow::anyhow!("Failed to get pointer parameter"))?;
-    let gep = unsafe {
-        builder.build_gep(i8_ty, ptr, &[index], "gep")
-    }?;
+    let gep = unsafe { builder.build_gep(i8_ty, ptr, &[index], "gep") }?;
     let ch = builder.build_load(i8_ty, gep, "cur")?.into_int_value();
     let xor_ch = i8_ty.const_int(0xAA, false);
     let xored = builder.build_xor(ch, xor_ch, "new")?;
@@ -349,21 +361,21 @@ fn add_decrypt_function<'a>(
 fn add_decrypt_function_stack<'a>(
     module: &mut Module<'a>,
     name: &str,
-    inline_fn: bool
+    inline_fn: bool,
 ) -> anyhow::Result<FunctionValue<'a>> {
     let ctx = module.get_context();
-    let i8_ty  = ctx.i8_type();
+    let i8_ty = ctx.i8_type();
     let i32_ty = ctx.i32_type();
     let i8_ptr = ptr_type!(ctx, i8_type);
     let i32_ptr = ptr_type!(ctx, i32_type);
 
     // i8* decrypt_strings(i8* src, i32 len, i8* dst)
-    let fn_ty = i8_ptr
-        .fn_type(&[i8_ptr.into(), i32_ty.into(), i8_ptr.into()], false);
+    let fn_ty = i8_ptr.fn_type(&[i8_ptr.into(), i32_ty.into(), i8_ptr.into()], false);
 
     let decrypt_fn = module.add_function(name, fn_ty, None);
     if inline_fn {
-        let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
+        let inlinehint_attr =
+            ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
         decrypt_fn.add_attribute(AttributeLoc::Function, inlinehint_attr);
     }
 
@@ -374,15 +386,18 @@ fn add_decrypt_function_stack<'a>(
 
     let builder = ctx.create_builder();
 
-    let src_ptr = decrypt_fn.get_nth_param(0)
+    let src_ptr = decrypt_fn
+        .get_nth_param(0)
         .map(|param| param.into_pointer_value())
         .ok_or_else(|| anyhow::anyhow!("Failed to get pointer parameter"))?;
 
-    let len = decrypt_fn.get_nth_param(1)
+    let len = decrypt_fn
+        .get_nth_param(1)
         .map(|param| param.into_int_value())
         .ok_or_else(|| anyhow::anyhow!("Failed to get length parameter"))?;
 
-    let dst_ptr = decrypt_fn.get_nth_param(2)
+    let dst_ptr = decrypt_fn
+        .get_nth_param(2)
         .map(|param| param.into_pointer_value())
         .ok_or_else(|| anyhow::anyhow!("Failed to get source pointer parameter"))?;
 
@@ -398,17 +413,13 @@ fn add_decrypt_function_stack<'a>(
 
     builder.position_at_end(next);
     // 从源地址读取
-    let src_gep = unsafe {
-        builder.build_gep(i8_ty, src_ptr, &[index], "src_gep")
-    }?;
+    let src_gep = unsafe { builder.build_gep(i8_ty, src_ptr, &[index], "src_gep") }?;
     let ch = builder.build_load(i8_ty, src_gep, "cur")?.into_int_value();
     // 解密
     let xor_ch = i8_ty.const_int(0xAA, false);
     let xored = builder.build_xor(ch, xor_ch, "new")?;
     // 写入目标地址（栈上）
-    let dst_gep = unsafe {
-        builder.build_gep(i8_ty, dst_ptr, &[index], "dst_gep")
-    }?;
+    let dst_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "dst_gep") }?;
     builder.build_store(dst_gep, xored)?;
 
     let next_index = builder.build_int_add(index, ctx.i32_type().const_int(1, false), "")?;
@@ -417,9 +428,7 @@ fn add_decrypt_function_stack<'a>(
 
     builder.position_at_end(exit);
     // 将目标地址的最后一个字节设置为 \0
-    let null_gep = unsafe {
-        builder.build_gep(i8_ty, dst_ptr, &[len], "null_gep")
-    }?;
+    let null_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[len], "null_gep") }?;
     builder.build_store(null_gep, i8_ty.const_zero())?;
 
     builder.build_return(Some(&dst_ptr))?;
@@ -427,12 +436,16 @@ fn add_decrypt_function_stack<'a>(
     Ok(decrypt_fn)
 }
 
-fn do_global<'a>(module: &mut Module<'a>, gs: &[EncryptedGlobalValue], decrypt_fn: FunctionValue<'a>, ctx: ContextRef<'a>) -> anyhow::Result<()> {
+fn do_global<'a>(
+    module: &mut Module<'a>,
+    gs: &[EncryptedGlobalValue],
+    decrypt_fn: FunctionValue<'a>,
+    ctx: ContextRef<'a>,
+) -> anyhow::Result<()> {
     let i32_ty = ctx.i32_type();
     let i32_ptr = ptr_type!(ctx, i32_type);
 
-    let decrypt_stub_ty = ctx.void_type()
-        .fn_type(&[], false);
+    let decrypt_stub_ty = ctx.void_type().fn_type(&[], false);
     let decrypt_stub = module.add_function("decrypt_strings_stub", decrypt_stub_ty, None);
     decrypt_stub.set_linkage(Linkage::Internal);
 
@@ -444,7 +457,11 @@ fn do_global<'a>(module: &mut Module<'a>, gs: &[EncryptedGlobalValue], decrypt_f
         let ptr = ev.global.as_pointer_value();
         let len_val = i32_ty.const_int(ev.len as u64, false);
         let flag_ptr = i32_ptr.const_null();
-        builder.build_call(decrypt_fn, &[ptr.into(), len_val.into(), flag_ptr.into()], "")?;
+        builder.build_call(
+            decrypt_fn,
+            &[ptr.into(), len_val.into(), flag_ptr.into()],
+            "",
+        )?;
     }
 
     builder.build_return(None)?;
@@ -453,7 +470,7 @@ fn do_global<'a>(module: &mut Module<'a>, gs: &[EncryptedGlobalValue], decrypt_f
     unsafe {
         let module_ref = module.as_mut_ptr() as *mut std::ffi::c_void;
         let function_ref = decrypt_stub.as_value_ref() as *mut std::ffi::c_void;
-        amice_llvm::append_to_global_ctors(module_ref, function_ref, priority);
+        amice_llvm::module_utils::append_to_global_ctors(module_ref, function_ref, priority);
     }
 
     Ok(())

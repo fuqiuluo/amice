@@ -1,16 +1,25 @@
+use crate::aotu::string_encryption::{
+    DecryptTiming, EncryptedGlobalValue, StringEncryption, array_as_const_string,
+};
+use crate::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;
-use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{AnyValueEnum, ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionValue};
-use llvm_plugin::{inkwell, ModuleAnalysisManager};
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::context::ContextRef;
+use llvm_plugin::inkwell::module::{Linkage, Module};
+use llvm_plugin::inkwell::values::{
+    AnyValueEnum, ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue,
+    InstructionValue,
+};
+use llvm_plugin::{ModuleAnalysisManager, inkwell};
 use log::{error, warn};
 use rand::Rng;
-use crate::aotu::string_encryption::{array_as_const_string, DecryptTiming, EncryptedGlobalValue, StringEncryption};
-use crate::ptr_type;
 
-pub(crate) fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> anyhow::Result<()> {
+pub(crate) fn do_handle<'a>(
+    pass: &StringEncryption,
+    module: &mut Module<'a>,
+    manager: &ModuleAnalysisManager,
+) -> anyhow::Result<()> {
     let triple = module.get_triple();
     let triple = triple.as_str().to_str().unwrap_or("unknown");
     if triple.starts_with("riscv") {
@@ -29,7 +38,7 @@ pub(crate) fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, ma
         &format!("simd_xor_cipher_{}", rand::random::<u32>()),
         has_flag,
         pass.inline_decrypt,
-        pass.stack_alloc
+        pass.stack_alloc,
     )?;
     let mut key = [0u8; 32];
     rand::rng().fill(&mut key);
@@ -38,15 +47,14 @@ pub(crate) fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, ma
     let array_values = key
         .map(|c| i8_ty.const_int(c as u64, false))
         .map(|v| unsafe { ArrayValue::new(v.as_value_ref()) });
-    key_global.set_initializer(&vector256.const_array(
-        &array_values
-    ));
+    key_global.set_initializer(&vector256.const_array(&array_values));
 
-    let gs: Vec<EncryptedGlobalValue<'a>> = module.get_globals()
+    let gs: Vec<EncryptedGlobalValue<'a>> = module
+        .get_globals()
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            global.get_section().map_or(true, |section| {
-                section.to_str().map_or(true, |s| s != "llvm.metadata")
+            global.get_section().is_none_or(|section| {
+                section.to_str() != Ok("llvm.metadata")
             })
         })
         .filter_map(|global| match global.get_initializer()? {
@@ -59,22 +67,23 @@ pub(crate) fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, ma
             }
             _ => None,
         })
-        .filter(|(_, _, arr)| {
-            arr.is_const_string()
-        })
+        .filter(|(_, _, arr)| arr.is_const_string())
         .filter_map(|(global, stru, arr)| {
             let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
             let mut encoded_str = vec![0u8; s.len()];
             for (i, c) in s.bytes().enumerate() {
                 encoded_str[i] = c ^ key[i % key.len()];
             }
-            let unique_name = global.get_name().to_str()
+            let unique_name = global
+                .get_name()
+                .to_str()
                 .map_or_else(|_| rand::random::<u32>().to_string(), |s| s.to_string());
             Some((unique_name, global, stru, encoded_str))
         })
         .map(|(unique_name, global, stru, encoded_str)| {
             let flag = if has_flag {
-                let flag = module.add_global(i32_ty, None, &format!("dec_flag_simd_{}", unique_name));
+                let flag =
+                    module.add_global(i32_ty, None, &format!("dec_flag_simd_{unique_name}"));
                 flag.set_initializer(&i32_ty.const_int(0, false));
                 flag.set_linkage(Linkage::Internal);
                 Some(flag)
@@ -142,42 +151,24 @@ fn do_lazy(
         for u in uses {
             match u.get_user() {
                 AnyValueEnum::InstructionValue(inst) => insert_decrypt_call(
-                    ctx,
-                    inst,
-                    &ev.global,
-                    decrypt_fn,
-                    global_key,
-                    ev.len,
-                    ev.flag,
+                    ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag,
                 )?,
                 AnyValueEnum::IntValue(value) => {
                     if let Some(inst) = value.as_instruction_value() {
                         insert_decrypt_call(
-                            ctx,
-                            inst,
-                            &ev.global,
-                            decrypt_fn,
-                            global_key,
-                            ev.len,
-                            ev.flag,
+                            ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag,
                         )?
                     } else {
-                        error!("(strenc) unexpected IntValue user: {:?}", value);
+                        error!("(strenc) unexpected IntValue user: {value:?}");
                     }
                 }
                 AnyValueEnum::PointerValue(gv) => {
                     if let Some(inst) = gv.as_instruction_value() {
                         insert_decrypt_call(
-                            ctx,
-                            inst,
-                            &ev.global,
-                            decrypt_fn,
-                            global_key,
-                            ev.len,
-                            ev.flag,
+                            ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag,
                         )?
                     } else {
-                        error!("(strenc) unexpected PointerValue user: {:?}", gv);
+                        error!("(strenc) unexpected PointerValue user: {gv:?}");
                     }
                 }
                 _ => {
@@ -210,7 +201,17 @@ fn insert_decrypt_call<'a>(
     let len_val = i32_ty.const_int(len as u64, false);
     let flag_ptr = flag.unwrap().as_pointer_value();
     let key = global_key.as_pointer_value();
-    builder.build_call(decrypt_fn, &[ptr.into(), dst.into(), len_val.into(), key.into(), flag_ptr.into()], "", )?;
+    builder.build_call(
+        decrypt_fn,
+        &[
+            ptr.into(),
+            dst.into(),
+            len_val.into(),
+            key.into(),
+            flag_ptr.into(),
+        ],
+        "",
+    )?;
 
     Ok(())
 }
@@ -220,24 +221,33 @@ fn add_decrypt_function<'a>(
     name: &str,
     has_flag: bool,
     inline_fn: bool,
-    stack_alloc: bool
+    stack_alloc: bool,
 ) -> anyhow::Result<FunctionValue<'a>> {
     // 密钥总是32字节的！必须是32字节的！
     // void @simd_xor_cipher(i8* src, i8* dst, i32 len, i8* key, i32* flag)
     let ctx = module.get_context();
     let i8_ty = ctx.i8_type();
     let i32_ty = ctx.i32_type();
-    let i8_ptr = ptr_type!(ctx, i8_ty);
-    let i32_ptr = ptr_type!(ctx, i32_ty);
+    let i8_ptr = ptr_type!(ctx, i8_type);
+    let i32_ptr = ptr_type!(ctx, i32_type);
     let vector_256 = i8_ty.vec_type(32);
     let vector_ptr_type = vector_256.ptr_type(AddressSpace::default());
 
-    let fn_ty = i8_ty
-        .fn_type(&[i8_ptr.into(), i8_ptr.into(), i32_ty.into(), i8_ptr.into(), i32_ptr.into()], false);
+    let fn_ty = i8_ty.fn_type(
+        &[
+            i8_ptr.into(),
+            i8_ptr.into(),
+            i32_ty.into(),
+            i8_ptr.into(),
+            i32_ptr.into(),
+        ],
+        false,
+    );
     let decrypt_fn = module.add_function(name, fn_ty, None);
 
     if inline_fn {
-        let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
+        let inlinehint_attr =
+            ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
         decrypt_fn.add_attribute(AttributeLoc::Function, inlinehint_attr);
     }
 
@@ -252,19 +262,24 @@ fn add_decrypt_function<'a>(
 
     let builder = ctx.create_builder();
 
-    let src_ptr = decrypt_fn.get_nth_param(0)
+    let src_ptr = decrypt_fn
+        .get_nth_param(0)
         .map(|param| param.into_pointer_value())
         .ok_or_else(|| anyhow!("Failed to get source pointer parameter"))?;
-    let dst_ptr = decrypt_fn.get_nth_param(1)
+    let dst_ptr = decrypt_fn
+        .get_nth_param(1)
         .map(|param| param.into_pointer_value())
         .ok_or_else(|| anyhow!("Failed to get destination pointer parameter"))?;
-    let len = decrypt_fn.get_nth_param(2)
+    let len = decrypt_fn
+        .get_nth_param(2)
         .map(|param| param.into_int_value())
         .ok_or_else(|| anyhow!("Failed to get length parameter"))?;
-    let key_ptr = decrypt_fn.get_nth_param(3)
+    let key_ptr = decrypt_fn
+        .get_nth_param(3)
         .map(|param| param.into_pointer_value())
         .ok_or_else(|| anyhow!("Failed to get key pointer parameter"))?;
-    let flag_ptr = decrypt_fn.get_nth_param(4)
+    let flag_ptr = decrypt_fn
+        .get_nth_param(4)
         .map(|param| param.into_pointer_value())
         .ok_or_else(|| anyhow!("Failed to get flag pointer parameter"))?;
 
@@ -274,7 +289,8 @@ fn add_decrypt_function<'a>(
 
     if has_flag {
         let flag = builder.build_load(i32_ty, flag_ptr, "")?.into_int_value();
-        let is_decrypted = builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "")?;
+        let is_decrypted =
+            builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "")?;
         builder.build_conditional_branch(is_decrypted, update_flag, exit)?;
     } else {
         builder.build_unconditional_branch(key_prepare)?;
@@ -299,24 +315,23 @@ fn add_decrypt_function<'a>(
     builder.build_conditional_branch(cond, next, check_rest)?;
 
     builder.position_at_end(next);
-    let src_gep = unsafe {
-        builder.build_gep(i8_ty, src_ptr, &[index], "src_gep")
-    }?;
+    let src_gep = unsafe { builder.build_gep(i8_ty, src_ptr, &[index], "src_gep") }?;
     let src_load_inst = builder.build_load(vector_256, src_gep, "src_vec")?;
     if let Some(load_inst) = src_load_inst.as_instruction_value() {
-        load_inst.set_alignment(1)
+        load_inst
+            .set_alignment(1)
             .map_err(|e| anyhow!("Failed to set alignment for load instruction: {}", e))?;
     }
     let src_vec = src_load_inst.into_vector_value();
     let xored_vec = builder.build_xor(src_vec, key_vec, "xored_vec")?;
-    let dst_gep = unsafe {
-        builder.build_gep(i8_ty, dst_ptr, &[index], "dst_gep")
-    }?;
+    let dst_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "dst_gep") }?;
     let store_inst = builder.build_store(dst_gep, xored_vec)?;
-    store_inst.set_alignment(1)
+    store_inst
+        .set_alignment(1)
         .map_err(|e| anyhow!("Failed to set alignment for store instruction: {}", e))?;
 
-    let next_index = builder.build_int_add(index, ctx.i32_type().const_int(32, false), "next_index")?;
+    let next_index =
+        builder.build_int_add(index, ctx.i32_type().const_int(32, false), "next_index")?;
     builder.build_store(idx, next_index)?;
     builder.build_unconditional_branch(main_loop)?;
 
@@ -330,30 +345,26 @@ fn add_decrypt_function<'a>(
     // 处理剩余的字节
     // for(;i<len;i++) output[i] = input[i] ^ key[i % 32];
 
-    let src_gep = unsafe {
-        builder.build_gep(i8_ty, src_ptr, &[index], "src_rest_gep")
-    }?;
+    let src_gep = unsafe { builder.build_gep(i8_ty, src_ptr, &[index], "src_rest_gep") }?;
     let ch = builder.build_load(i8_ty, src_gep, "cur")?.into_int_value();
-    let key_index = builder.build_int_signed_rem(index, ctx.i32_type().const_int(32, false), "key_index")?;
-    let key_gep = unsafe {
-        builder.build_gep(i8_ty, key_ptr, &[key_index], "key_rest_gep")
-    }?;
-    let key_ch = builder.build_load(i8_ty, key_gep, "key_cur")?.into_int_value();
+    let key_index =
+        builder.build_int_signed_rem(index, ctx.i32_type().const_int(32, false), "key_index")?;
+    let key_gep = unsafe { builder.build_gep(i8_ty, key_ptr, &[key_index], "key_rest_gep") }?;
+    let key_ch = builder
+        .build_load(i8_ty, key_gep, "key_cur")?
+        .into_int_value();
     let xored = builder.build_xor(ch, key_ch, "xored_rest")?;
-    let dst_gep = unsafe {
-        builder.build_gep(i8_ty, dst_ptr, &[index], "dst_rest_gep")
-    }?;
+    let dst_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "dst_rest_gep") }?;
     builder.build_store(dst_gep, xored)?;
 
-    let next_index = builder.build_int_add(index, ctx.i32_type().const_int(1, false), "next_index_rest")?;
+    let next_index =
+        builder.build_int_add(index, ctx.i32_type().const_int(1, false), "next_index_rest")?;
     builder.build_store(idx, next_index)?;
     builder.build_unconditional_branch(check_rest)?;
 
     builder.position_at_end(exit);
     if stack_alloc {
-        let null_gep = unsafe {
-            builder.build_gep(i8_ty, dst_ptr, &[len], "null_gep")
-        }?;
+        let null_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[len], "null_gep") }?;
         builder.build_store(null_gep, i8_ty.const_zero())?;
     }
     builder.build_return(Some(&dst_ptr))?;

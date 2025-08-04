@@ -26,9 +26,9 @@ mod tests {
             .expect("Failed to read LLVM IR file");
 
         let count = ll.matches("call void @decrypt_strings").count();
-        // assert!(count <= 5,
-        //     "Expected at most 5 calls to @decrypt_strings, found {}",
-        //     count
-        // );
+        assert!(
+            count > 0,
+            "Expected at least one call to @decrypt_strings, found: {count}"
+        );
     }
 }

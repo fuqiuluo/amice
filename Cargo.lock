@@ -13,11 +13,12 @@ dependencies = [
 
 [[package]]
 name = "amice"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "amice-llvm",
  "anyhow",
  "ascon-hash",
+ "bitflags",
  "cc",
  "env_logger",
  "hex",

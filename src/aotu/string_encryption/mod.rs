@@ -1,15 +1,15 @@
-mod xor;
 mod simd_xor;
+mod xor;
 
 use ascon_hash::{AsconHash256, Digest, Update};
-use llvm_plugin::inkwell::module::{Module};
-use llvm_plugin::{inkwell, LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, GlobalValue};
-use log::{error};
+use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
+use log::error;
 
 enum StringEncryptionType {
     Xor,
-    SimdXor
+    SimdXor,
 }
 
 #[derive(Debug, Clone)]
@@ -19,7 +19,12 @@ enum DecryptTiming {
 }
 
 impl StringEncryptionType {
-    pub fn do_handle(&self, pass: &StringEncryption,  module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> anyhow::Result<()> {
+    pub fn do_handle(
+        &self,
+        pass: &StringEncryption,
+        module: &mut Module<'_>,
+        manager: &ModuleAnalysisManager,
+    ) -> anyhow::Result<()> {
         match self {
             StringEncryptionType::Xor => xor::do_handle(pass, module, manager),
             &StringEncryptionType::SimdXor => simd_xor::do_handle(pass, module, manager),
@@ -45,13 +50,17 @@ pub struct StringEncryption {
 }
 
 impl LlvmModulePass for StringEncryption {
-    fn run_pass<'a>(&self, module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+    fn run_pass<'a>(
+        &self,
+        module: &mut Module<'a>,
+        manager: &ModuleAnalysisManager,
+    ) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }
 
-        if let Err(e) = self.encryption_type.do_handle(self, module, &manager) {
-            error!("(strenc) failed to handle string encryption: {}", e);
+        if let Err(e) = self.encryption_type.do_handle(self, module, manager) {
+            error!("(strenc) failed to handle string encryption: {e}");
         }
 
         PreservedAnalyses::None
@@ -61,7 +70,10 @@ impl LlvmModulePass for StringEncryption {
 impl StringEncryption {
     pub fn new(enable: bool) -> Self {
         let algo = match std::env::var("AMICE_STRING_ALGORITHM")
-            .unwrap_or("xor".to_string()).to_lowercase().as_str() {
+            .unwrap_or("xor".to_string())
+            .to_lowercase()
+            .as_str()
+        {
             "xor" => StringEncryptionType::Xor,
             "xorsimd" | "xor_simd" | "simd_xor" | "simdxor" => StringEncryptionType::SimdXor,
             _ => {
@@ -70,7 +82,10 @@ impl StringEncryption {
             }
         };
         let decrypt_timing = match std::env::var("AMICE_STRING_DECRYPT_TIMING")
-            .unwrap_or("lazy".to_string()).to_lowercase().as_str() {
+            .unwrap_or("lazy".to_string())
+            .to_lowercase()
+            .as_str()
+        {
             "lazy" => DecryptTiming::Lazy,
             "global" => DecryptTiming::Global,
             _ => {
@@ -78,17 +93,17 @@ impl StringEncryption {
                 DecryptTiming::Lazy
             }
         };
-        let stack_alloc = std::env::var("AMICE_STRING_STACK_ALLOC")
-            .map_or(false, |v| v.to_lowercase() == "true");
+        let stack_alloc =
+            std::env::var("AMICE_STRING_STACK_ALLOC").is_ok_and(|v| v.to_lowercase() == "true");
         let inline_decrypt = std::env::var("AMICE_STRING_INLINE_DECRYPT_FN")
-            .map_or(false, |v| v.to_lowercase() == "true");
+            .is_ok_and(|v| v.to_lowercase() == "true");
 
         StringEncryption {
             enable,
             decrypt_timing,
             encryption_type: algo,
             stack_alloc,
-            inline_decrypt
+            inline_decrypt,
         }
     }
 }
@@ -111,11 +126,9 @@ pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]>
     }
 }
 
-pub(crate) fn generate_global_value_hash(
-    global: &GlobalValue
-) -> String {
+pub(crate) fn generate_global_value_hash(global: &GlobalValue) -> String {
     let mut hasher = AsconHash256::new();
-    if let Ok(name) = global.get_name().to_str(){
+    if let Ok(name) = global.get_name().to_str() {
         Update::update(&mut hasher, name.as_bytes());
     } else {
         let rand_str = rand::random::<u32>().to_string();

@@ -1,10 +1,7 @@
+pub mod indirect_branch;
 pub mod string_encryption;
-pub mod indirect_calls;
 
-#[cfg(any(
-    feature = "llvm15-0",
-    feature = "llvm16-0",
-))]
+#[cfg(any(feature = "llvm15-0", feature = "llvm16-0",))]
 #[macro_export]
 macro_rules! ptr_type {
     ($cx:ident, $ty:ident) => {
@@ -24,4 +21,3 @@ macro_rules! ptr_type {
         $cx.ptr_type(AddressSpace::default())
     };
 }
-
