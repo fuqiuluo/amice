@@ -108,11 +108,9 @@ void test_function_call_and_return(int sel) {
     } else {
         test_switch_br(2);
     }
-    // 返回后的继续执行也是控制流的一部分
     sink = sel + 1;
 }
 
-// 主函数：调用所有测试用例
 int main() {
     printf("Running control flow test suite...\n");
 
