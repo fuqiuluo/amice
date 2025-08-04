@@ -116,7 +116,7 @@ impl LlvmModulePass for IndirectBranch {
                         .collect::<Vec<_>>();
 
                     let initializer = basic_block_array_ty.const_array(&array_values);
-                    let local_indirect_branch_table = module.add_global(basic_block_array_ty, None, ".fql.redirect_branch");
+                    let local_indirect_branch_table = module.add_global(basic_block_array_ty, None, ".fql.indirect_branch");
                     local_indirect_branch_table.set_initializer(&initializer);
                     local_indirect_branch_table.set_linkage(Linkage::Internal);
                     local_indirect_branch_table.set_constant(false);

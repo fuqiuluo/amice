@@ -36,11 +36,11 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         let string_encryption = std::env::var("AMICE_STRING_ENCRYPTION")
             .unwrap_or_else(|_| "true".to_string())
             == "true";
-        let redirect_branch =
-            std::env::var("AMICE_REDIRECT_BRANCH").unwrap_or_else(|_| "true".to_string()) == "true";
+        let indirect_branch =
+            std::env::var("AMICE_INDIRECT_BRANCH").unwrap_or_else(|_| "true".to_string()) == "true";
 
         manager.add_pass(StringEncryption::new(string_encryption));
-        manager.add_pass(IndirectBranch::new(redirect_branch));
+        manager.add_pass(IndirectBranch::new(indirect_branch));
     });
 
     info!("amice plugin registered");
