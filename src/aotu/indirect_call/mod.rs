@@ -240,7 +240,9 @@ impl IndirectCall {
         let xor_key = std::env::var("AMICE_INDIRECT_CALL_XOR_KEY")
             .unwrap_or("".to_string())
             .parse::<u32>()
-            .unwrap_or(rand::random::<u32>());
+            .unwrap_or(if enable {
+                rand::random::<u32>()
+            } else { 0 });
 
         if xor_key != 0 {
             warn!("Indirect call XOR key is set to {xor_key}, this may cause issues if the key is not known at runtime.");
