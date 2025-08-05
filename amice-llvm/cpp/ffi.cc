@@ -11,6 +11,7 @@
 #include <llvm/IR/PassManager.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Passes/PassPlugin.h>
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/AbstractCallSite.h"
@@ -60,6 +61,8 @@ llvm::Constant * amiceConstantGetXor(llvm::Constant *C1, llvm::Constant *C2) {
     return llvm::ConstantExpr::getXor(C1, C2);
 }
 
-
+llvm::BasicBlock * 	amiceSplitBasicBlock (llvm::BasicBlock * BB, llvm::Instruction *I, char* N, int B) {
+    return BB->splitBasicBlock(I, N, B);
+}
 
 }

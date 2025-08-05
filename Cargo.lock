@@ -228,7 +228,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 [[package]]
 name = "inkwell"
 version = "0.6.0"
-source = "git+https://github.com/stevefan1999-personal/inkwell?branch=master#9c607a8262da9fc04698a9c94459dc096c99608a"
+source = "git+https://github.com/fuqiuluo/inkwell?branch=master#36f2cf8ec4bcf2811d924377d26aadb71851bb76"
 dependencies = [
  "either",
  "inkwell_internals",
@@ -250,7 +250,7 @@ dependencies = [
 [[package]]
 name = "inkwell_internals"
 version = "0.11.0"
-source = "git+https://github.com/stevefan1999-personal/inkwell?branch=master#9c607a8262da9fc04698a9c94459dc096c99608a"
+source = "git+https://github.com/fuqiuluo/inkwell?branch=master#36f2cf8ec4bcf2811d924377d26aadb71851bb76"
 dependencies = [
  "proc-macro2",
  "quote",

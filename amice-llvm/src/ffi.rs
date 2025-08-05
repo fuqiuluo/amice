@@ -38,6 +38,13 @@ extern "C" {
         value1: *mut c_void,
         value2: *mut c_void,
     ) -> *mut c_void;
+
+    pub(crate) fn amiceSplitBasicBlock(
+        block: *mut c_void,
+        inst: *mut c_void,
+        name: *const i8,
+        before: i32,
+    ) -> *mut c_void;
     
     pub(crate) fn amiceGetLLVMVersionMajor() -> i32;
     

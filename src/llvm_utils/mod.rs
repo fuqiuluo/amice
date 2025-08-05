@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::ffi::{CStr, CString};
 
+pub mod basic_block;
 pub mod function;
 
 pub(crate) fn to_c_str(mut s: &str) -> Cow<'_, CStr> {

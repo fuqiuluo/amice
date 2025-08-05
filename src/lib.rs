@@ -43,7 +43,7 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         let indirect_call =
             std::env::var("AMICE_INDIRECT_CALL").unwrap_or_else(|_| "true".to_string()) == "true";
         let split_basic_block = std::env::var("AMICE_SPLIT_BASIC_BLOCK")
-            .unwrap_or_else(|_| "true".to_string())
+            .unwrap_or_else(|_| "false".to_string())
             == "true";
 
         manager.add_pass(StringEncryption::new(string_encryption));
