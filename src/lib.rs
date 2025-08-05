@@ -5,6 +5,7 @@ use crate::aotu::indirect_branch::IndirectBranch;
 use crate::aotu::string_encryption::StringEncryption;
 use log::info;
 use std::io::Write;
+use crate::aotu::indirect_call::IndirectCall;
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1")]
 fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
@@ -38,8 +39,11 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
             == "true";
         let indirect_branch =
             std::env::var("AMICE_INDIRECT_BRANCH").unwrap_or_else(|_| "true".to_string()) == "true";
+        let indirect_call =
+            std::env::var("AMICE_INDIRECT_CALL").unwrap_or_else(|_| "true".to_string()) == "true";
 
         manager.add_pass(StringEncryption::new(string_encryption));
+        manager.add_pass(IndirectCall::new(indirect_call));
         manager.add_pass(IndirectBranch::new(indirect_branch));
     });
 

@@ -53,9 +53,9 @@ pub(crate) fn do_handle<'a>(
         .get_globals()
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            global.get_section().is_none_or(|section| {
-                section.to_str() != Ok("llvm.metadata")
-            })
+            global
+                .get_section()
+                .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
         })
         .filter_map(|global| match global.get_initializer()? {
             BasicValueEnum::ArrayValue(arr) => Some((global, None, arr)),
@@ -82,8 +82,7 @@ pub(crate) fn do_handle<'a>(
         })
         .map(|(unique_name, global, stru, encoded_str)| {
             let flag = if has_flag {
-                let flag =
-                    module.add_global(i32_ty, None, &format!("dec_flag_simd_{unique_name}"));
+                let flag = module.add_global(i32_ty, None, &format!("dec_flag_simd_{unique_name}"));
                 flag.set_initializer(&i32_ty.const_int(0, false));
                 flag.set_linkage(Linkage::Internal);
                 Some(flag)

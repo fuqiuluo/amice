@@ -4,14 +4,13 @@ use crate::aotu::string_encryption::{
 use crate::ptr_type;
 use inkwell::module::Module;
 use inkwell::values::FunctionValue;
+use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::context::ContextRef;
 use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{
-    AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, GlobalValue,
-    InstructionValue,
+    AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, GlobalValue, InstructionValue,
 };
-use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
 use log::{error, warn};
 
@@ -29,9 +28,9 @@ pub(crate) fn do_handle<'a>(
         .get_globals()
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            global.get_section().is_none_or(|section| {
-                section.to_str() != Ok("llvm.metadata")
-            })
+            global
+                .get_section()
+                .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
         })
         .filter_map(|global| match global.get_initializer()? {
             // C-like strings
@@ -233,9 +232,7 @@ fn insert_decrypt_stack_call<'a>(
     }
 
     if !replaced {
-        error!(
-            "(strenc) failed to replace global operand in instruction: {inst:?}"
-        );
+        error!("(strenc) failed to replace global operand in instruction: {inst:?}");
     }
 
     Ok(())

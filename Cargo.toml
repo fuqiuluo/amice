@@ -41,5 +41,6 @@ semver = "1"
 
 [patch.crates-io]
 inkwell = { git = "https://github.com/stevefan1999-personal/inkwell", branch = "master" }
+# TODO https://github.com/jamesmth/llvm-plugin-rs/issues/30
 llvm-plugin = { git = "https://github.com/fuqiuluo/llvm-plugin-rs", branch = "feat/llvm-20-fix-ndk" }
 

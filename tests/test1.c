@@ -1,144 +1,54 @@
+// obfuscated_call_demo.c
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
-// 防优化：防止编译器常量折叠或删除代码
-volatile int sink;
-
-void test_unconditional_br() {
-    int a = 1;
-    goto label1;
-    a = 2;  // dead code, but br will skip
-label1:
-    a = 3;
-    sink = a;
+int add(int a, int b) {
+    printf("Called: add(%d, %d)\n", a, b);
+    return a + b;
 }
 
-void test_conditional_br(int x) {
-    int result;
-    if (x > 0) {
-        result = 10;
-    } else if (x < 0) {
-        result = -10;
-    } else {
-        result = 0;
+int mul(int a, int b) {
+    printf("Called: mul(%d, %b)\n", a, b);
+    return a * b;
+}
+
+int sub(int a, int b) {
+    printf("Called: sub(%d, %d)\n", a, b);
+    return a - b;
+}
+
+typedef int (*func_ptr)(int, int);
+
+func_ptr func_table[] = { add, mul, sub };
+#define TABLE_SIZE (sizeof(func_table) / sizeof(func_ptr))
+
+int obfuscated_call(int func_id, int a, int b) {
+    int decoded_id = func_id ^ 0x55;
+    if (decoded_id >= 0 && decoded_id < TABLE_SIZE) {
+        volatile int dummy = rand() % 100;
+        (void)dummy;
+        return func_table[decoded_id](a, b);
     }
-    sink = result;
+    fprintf(stderr, "Invalid function ID!\n");
+    return -1;
 }
 
-void test_switch_br(int choice) {
-    int value = 0;
-    switch (choice) {
-        case 1:
-            value = 100;
-            break;
-        case 2:
-            value = 200;
-            break;
-        case 3:
-            value = 300;
-            break;
-        default:
-            value = -1;
-            break;
-    }
-    sink = value;
-}
-
-void test_loop_while(int n) {
-    int sum = 0;
-    while (n > 0) {
-        sum += n;
-        n--;
-    }
-    sink = sum;
-}
-
-void test_loop_for(int start, int end) {
-    int count = 0;
-    for (int i = start; i < end; i++) {
-        if (i % 2 == 0) {
-            count++;
-        }
-    }
-    sink = count;
-}
-
-void test_nested_if_else(int a, int b, int c) {
-    int result;
-    if (a > 0) {
-        if (b > 0) {
-            result = 1;
-        } else {
-            if (c > 0) {
-                result = 2;
-            } else {
-                result = 3;
-            }
-        }
-    } else {
-        result = 4;
-    }
-    sink = result;
-}
-
-void test_goto_based_control_flow(int flag) {
-    int x = 0;
-
-    if (flag == 1) goto branch1;
-    if (flag == 2) goto branch2;
-    goto default_branch;
-
-branch1:
-    x = 11;
-    goto end;
-
-branch2:
-    x = 22;
-    goto end;
-
-default_branch:
-    x = 99;
-
-end:
-    sink = x;
-}
-
-void test_function_call_and_return(int sel) {
-    if (sel) {
-        test_conditional_br(5);
-    } else {
-        test_switch_br(2);
-    }
-    sink = sel + 1;
-}
-
+// 主函数测试
 int main() {
-    printf("Running control flow test suite...\n");
+    srand(time(NULL));
 
-    test_unconditional_br();
+    printf("=== Direct Calls (Clear) ===\n");
+    printf("Result: %d\n", add(10, 5));
+    printf("Result: %d\n", mul(10, 5));
+    printf("Result: %d\n", sub(10, 5));
 
-    test_conditional_br(1);
-    test_conditional_br(-1);
-    test_conditional_br(0);
+    printf("=== Obfuscated Indirect Calls ===\n");
 
-    test_switch_br(1);
-    test_switch_br(2);
-    test_switch_br(3);
-    test_switch_br(99);
+    // 注意：func_id 被混淆编码过（原始 ID ^ 0x55）
+    printf("Result: %d\n", obfuscated_call(0 ^ 0x55, 20, 8));  // calls add
+    printf("Result: %d\n", obfuscated_call(1 ^ 0x55, 20, 8));  // calls mul
+    printf("Result: %d\n", obfuscated_call(2 ^ 0x55, 20, 8));  // calls sub
 
-    test_loop_while(5);
-    test_loop_for(1, 10);
-
-    test_nested_if_else(1, 1, 1);
-    test_nested_if_else(1, 0, 1);
-    test_nested_if_else(0, 0, 0);
-
-    test_goto_based_control_flow(1);
-    test_goto_based_control_flow(2);
-    test_goto_based_control_flow(0);
-
-    test_function_call_and_return(1);
-    test_function_call_and_return(0);
-
-    printf("All tests completed. sink = %d\n", sink);
     return 0;
 }
