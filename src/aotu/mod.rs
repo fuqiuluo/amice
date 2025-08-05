@@ -1,6 +1,7 @@
 pub mod indirect_branch;
-pub mod string_encryption;
 pub mod indirect_call;
+pub mod split_basic_block;
+pub mod string_encryption;
 
 #[cfg(any(feature = "llvm15-0", feature = "llvm16-0",))]
 #[macro_export]

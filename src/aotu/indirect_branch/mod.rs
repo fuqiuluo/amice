@@ -95,10 +95,7 @@ impl LlvmModulePass for IndirectBranch {
                     future_branches[0] = bi.get_operand(0).unwrap().right(); // true分支
                 }
 
-                let future_branches: Vec<_> = future_branches
-                    .iter()
-                    .filter_map(|&bb| bb)
-                    .collect();
+                let future_branches: Vec<_> = future_branches.iter().filter_map(|&bb| bb).collect();
 
                 let future_branches_address = future_branches
                     .iter()
@@ -166,9 +163,7 @@ impl LlvmModulePass for IndirectBranch {
                         .map(|x| i32_ty.const_int(x as u64, false))
                 };
                 let Some(index) = index else {
-                    warn!(
-                        "(indirect-branch) index is None, skipping this branch, branch: {bi:?}"
-                    );
+                    warn!("(indirect-branch) index is None, skipping this branch, branch: {bi:?}");
                     continue;
                 };
                 let Ok(gep) = (unsafe {
@@ -262,9 +257,7 @@ impl LlvmModulePass for IndirectBranch {
                         unsafe { cur_dummy_block.get_address().unwrap().as_basic_value_enum() };
                     builder
                         .build_indirect_branch(target, &[cur_dummy_block])
-                        .map_err(|e| {
-                            error!("(indirect-branch) build_indirect_branch failed: {e}")
-                        })
+                        .map_err(|e| error!("(indirect-branch) build_indirect_branch failed: {e}"))
                         .expect("build_indirect_branch failed");
                 }
 
@@ -311,7 +304,7 @@ impl IndirectBranch {
         }
 
         if enable {
-            debug!("IndirectBranch pass enabled with flags: {:?}", flags);
+            debug!("IndirectBranch pass enabled with flags: {flags:?}");
         }
 
         Self { enable, flags }
