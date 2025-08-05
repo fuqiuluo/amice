@@ -7,7 +7,7 @@ use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::llvm_sys::core::{LLVMBuildBitCast, LLVMGetCallSiteAttributes};
 use llvm_plugin::inkwell::types::{AsTypeRef};
 use llvm_plugin::inkwell::values::{FunctionValue, AsValueRef, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue, CallSiteValue, BasicValue};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use crate::llvm_utils::to_c_str;
 
 pub struct IndirectCall {
@@ -44,7 +44,7 @@ impl LlvmModulePass for IndirectCall {
                         let Some(callee) = (unsafe {
                             FunctionValue::new(callee.as_value_ref())
                         }) else {
-                            warn!("(indirect_call) indirect call instruction with no function found: {:?}", inst);
+                            debug!("(indirect_call) indirect call instruction with no function found: {:?}", inst);
                             continue;
                         };
 

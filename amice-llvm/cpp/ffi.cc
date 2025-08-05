@@ -60,12 +60,6 @@ llvm::Constant * amiceConstantGetXor(llvm::Constant *C1, llvm::Constant *C2) {
     return llvm::ConstantExpr::getXor(C1, C2);
 }
 
-//llvm::Value* amiceCallsiteGetArg(llvm::CallSite *CS, unsigned Idx) {
-//
-//    return nullptr;
-//}
-
-
 
 
 }
