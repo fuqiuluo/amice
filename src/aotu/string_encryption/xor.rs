@@ -28,9 +28,14 @@ pub(crate) fn do_handle<'a>(
         .get_globals()
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            global
-                .get_section()
-                .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
+            (!pass.only_llvm_string
+                || global
+                    .get_name()
+                    .to_str()
+                    .is_ok_and(|s| s.contains(".str")))
+                && global
+                    .get_section()
+                    .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
         })
         .filter_map(|global| match global.get_initializer()? {
             // C-like strings

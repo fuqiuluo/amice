@@ -12,7 +12,7 @@ use llvm_plugin::inkwell::values::{
     InstructionValue,
 };
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
-use log::{error, warn};
+use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 
 pub(crate) fn do_handle<'a>(
@@ -53,22 +53,42 @@ pub(crate) fn do_handle<'a>(
         .get_globals()
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            global
-                .get_section()
-                .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
+            (!pass.only_llvm_string
+                || global
+                    .get_name()
+                    .to_str()
+                    .is_ok_and(|s| s.contains(".str")))
+                && global
+                    .get_section()
+                    .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
         })
-        .filter_map(|global| match global.get_initializer()? {
-            BasicValueEnum::ArrayValue(arr) => Some((global, None, arr)),
-            BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => {
-                match stru.get_field_at_index(0)? {
-                    BasicValueEnum::ArrayValue(arr) => Some((global, Some(stru), arr)),
-                    _ => None,
+        .filter_map(|global| {
+            
+            // if log_enabled!(Level::Debug) {
+            //     debug!("(strenc) Found global with initializer: {:?}", out);
+            // }
+            match global.get_initializer()? {
+                BasicValueEnum::ArrayValue(arr) => Some((global, None, arr)),
+                BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => {
+                    match stru.get_field_at_index(0)? {
+                        BasicValueEnum::ArrayValue(arr) => Some((global, Some(stru), arr)),
+                        _ => None,
+                    }
                 }
+                _ => None,
             }
-            _ => None,
         })
-        .filter(|(_, _, arr)| arr.is_const_string())
+        .filter(|(_, _, arr)| {
+            // if log_enabled!(Level::Debug) {
+            //     debug!("(strenc) Checking array: {:?}", arr);
+            // }
+            arr.is_const_string() && arr.is_const()
+        })
         .filter_map(|(global, stru, arr)| {
+            if log_enabled!(Level::Debug) {
+                debug!("(strenc) next!");
+            }
+
             let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
             let mut encoded_str = vec![0u8; s.len()];
             for (i, c) in s.bytes().enumerate() {
@@ -78,17 +98,31 @@ pub(crate) fn do_handle<'a>(
                 .get_name()
                 .to_str()
                 .map_or_else(|_| rand::random::<u32>().to_string(), |s| s.to_string());
+
+            if log_enabled!(Level::Debug) {
+                debug!(
+                    "(strenc) Encrypting global: {global:?} with unique name: {unique_name:?}"
+                );
+            }
+
             Some((unique_name, global, stru, encoded_str))
         })
         .map(|(unique_name, global, stru, encoded_str)| {
             let flag = if has_flag {
                 let flag = module.add_global(i32_ty, None, &format!("dec_flag_simd_{unique_name}"));
-                flag.set_initializer(&i32_ty.const_int(0, false));
+                flag.set_initializer(&i32_ty.const_zero());
                 flag.set_linkage(Linkage::Internal);
                 Some(flag)
             } else {
                 None
             };
+
+            if log_enabled!(Level::Debug) {
+                debug!(
+                    "(strenc) stack_alloc: {}, flag: {:?}",
+                    pass.stack_alloc, flag
+                );
+            }
 
             if let Some(stru) = stru {
                 let new_const = ctx.const_string(&encoded_str, false);
@@ -122,7 +156,7 @@ pub(crate) fn do_handle<'a>(
     match pass.decrypt_timing {
         DecryptTiming::Lazy => do_lazy(&gs, decrypt_fn, &key_global, ctx, pass.stack_alloc)?,
         DecryptTiming::Global => {
-            //     todo!("(strenc) SIMD XOR with `global` timing is not implemented yet");
+            // todo!("(strenc) SIMD XOR with `global` timing is not implemented yet");
         }
     }
     Ok(())

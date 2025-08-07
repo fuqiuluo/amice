@@ -47,6 +47,7 @@ pub struct StringEncryption {
     encryption_type: StringEncryptionType,
     stack_alloc: bool,
     inline_decrypt: bool,
+    only_llvm_string: bool,
 }
 
 impl LlvmModulePass for StringEncryption {
@@ -98,12 +99,16 @@ impl StringEncryption {
         let inline_decrypt = std::env::var("AMICE_STRING_INLINE_DECRYPT_FN")
             .is_ok_and(|v| v.to_lowercase() == "true");
 
+        let only_llvm_string = std::env::var("AMICE_STRING_ONLY_LLVM_STRING")
+            .map_or(true, |v| v.to_lowercase() == "true");
+
         StringEncryption {
             enable,
             decrypt_timing,
             encryption_type: algo,
             stack_alloc,
             inline_decrypt,
+            only_llvm_string,
         }
     }
 }
