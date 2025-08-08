@@ -1,3 +1,4 @@
+use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry_ref;
 use crate::ptr_type;
 use bitflags::bitflags;
@@ -8,7 +9,6 @@ use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, Instructi
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
-use crate::llvm_utils::branch_inst::get_successor;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 
