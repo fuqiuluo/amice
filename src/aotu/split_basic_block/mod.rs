@@ -5,6 +5,7 @@ use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled};
 use rand::seq::SliceRandom;
+use crate::utils::config_utils::CONFIG;
 
 pub struct SplitBasicBlock {
     enable: bool,
@@ -104,10 +105,7 @@ fn count_instructions(bb: &BasicBlock<'_>) -> u32 {
 
 impl SplitBasicBlock {
     pub fn new(enable: bool) -> Self {
-        let split_num = std::env::var("AMICE_SPLIT_BASIC_BLOCK_NUM")
-            .unwrap_or_else(|_| "3".to_string())
-            .parse::<u32>()
-            .unwrap_or(3);
+        let split_num = CONFIG.split_basic_block.num;
         Self { enable, split_num }
     }
 }

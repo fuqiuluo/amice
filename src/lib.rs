@@ -1,5 +1,6 @@
 mod aotu;
 pub(crate) mod llvm_utils;
+mod utils;
 
 use crate::aotu::indirect_branch::IndirectBranch;
 use crate::aotu::indirect_call::IndirectCall;
@@ -8,6 +9,7 @@ use crate::aotu::string_encryption::StringEncryption;
 use crate::aotu::vm_flatten::VmFlatten;
 use log::info;
 use std::io::Write;
+use crate::utils::config_utils::CONFIG;
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1")]
 fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
@@ -36,24 +38,13 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
     builder.add_pipeline_start_ep_callback(|manager, level| {
         info!("amice plugin pipeline start callback, level: {level:?}");
 
-        let string_encryption = std::env::var("AMICE_STRING_ENCRYPTION")
-            .unwrap_or_else(|_| "true".to_string())
-            == "true";
-        let indirect_branch =
-            std::env::var("AMICE_INDIRECT_BRANCH").unwrap_or_else(|_| "true".to_string()) == "true";
-        let indirect_call =
-            std::env::var("AMICE_INDIRECT_CALL").unwrap_or_else(|_| "true".to_string()) == "true";
-        let split_basic_block = std::env::var("AMICE_SPLIT_BASIC_BLOCK")
-            .unwrap_or_else(|_| "false".to_string())
-            == "true";
-        let vm_flatten =
-            std::env::var("AMICE_VM_FLATTEN").unwrap_or_else(|_| "false".to_string()) == "true";
+        let cfg = &*CONFIG;
 
-        manager.add_pass(StringEncryption::new(string_encryption));
-        manager.add_pass(IndirectCall::new(indirect_call));
-        manager.add_pass(SplitBasicBlock::new(split_basic_block));
-        manager.add_pass(VmFlatten::new(vm_flatten));
-        manager.add_pass(IndirectBranch::new(indirect_branch));
+        manager.add_pass(StringEncryption::new(cfg.string_encryption.enable));
+        manager.add_pass(IndirectCall::new(cfg.indirect_call.enable));
+        manager.add_pass(SplitBasicBlock::new(cfg.split_basic_block.enable));
+        manager.add_pass(VmFlatten::new(cfg.vm_flatten.enable));
+        manager.add_pass(IndirectBranch::new(cfg.indirect_branch.enable));
     });
 
     info!("amice plugin registered");

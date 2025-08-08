@@ -1,6 +1,7 @@
 use crate::aotu::string_encryption::{
-    DecryptTiming, EncryptedGlobalValue, StringEncryption, array_as_const_string,
+    EncryptedGlobalValue, StringEncryption, array_as_const_string,
 };
+use crate::utils::config_utils::StringDecryptTiming as DecryptTiming;
 use crate::ptr_type;
 use inkwell::module::Module;
 use inkwell::values::FunctionValue;

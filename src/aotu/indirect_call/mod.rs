@@ -7,6 +7,7 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
+use crate::utils::config_utils::CONFIG;
 
 pub struct IndirectCall {
     enable: bool,
@@ -249,9 +250,9 @@ fn do_handle<'a>(
 
 impl IndirectCall {
     pub fn new(enable: bool) -> Self {
-        let xor_key = std::env::var("AMICE_INDIRECT_CALL_XOR_KEY")
-            .unwrap_or("".to_string())
-            .parse::<u32>()
+        let xor_key = CONFIG
+            .indirect_call
+            .xor_key
             .unwrap_or(if enable { rand::random::<u32>() } else { 0 });
 
         if xor_key != 0 {

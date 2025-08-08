@@ -6,16 +6,11 @@ use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, GlobalValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::error;
+use crate::utils::config_utils::{CONFIG, StringAlgorithm, StringDecryptTiming};
 
 enum StringEncryptionType {
     Xor,
     SimdXor,
-}
-
-#[derive(Debug, Clone)]
-enum DecryptTiming {
-    Lazy,
-    Global,
 }
 
 impl StringEncryptionType {
@@ -27,7 +22,7 @@ impl StringEncryptionType {
     ) -> anyhow::Result<()> {
         match self {
             StringEncryptionType::Xor => xor::do_handle(pass, module, manager),
-            &StringEncryptionType::SimdXor => simd_xor::do_handle(pass, module, manager),
+            StringEncryptionType::SimdXor => simd_xor::do_handle(pass, module, manager),
         }
     }
 
@@ -43,7 +38,7 @@ impl StringEncryptionType {
 
 pub struct StringEncryption {
     enable: bool,
-    decrypt_timing: DecryptTiming,
+    decrypt_timing: StringDecryptTiming,
     encryption_type: StringEncryptionType,
     stack_alloc: bool,
     inline_decrypt: bool,
@@ -70,37 +65,15 @@ impl LlvmModulePass for StringEncryption {
 
 impl StringEncryption {
     pub fn new(enable: bool) -> Self {
-        let algo = match std::env::var("AMICE_STRING_ALGORITHM")
-            .unwrap_or("xor".to_string())
-            .to_lowercase()
-            .as_str()
-        {
-            "xor" => StringEncryptionType::Xor,
-            "xorsimd" | "xor_simd" | "simd_xor" | "simdxor" => StringEncryptionType::SimdXor,
-            _ => {
-                error!("(strenc) unknown string encryption algorithm, using XOR");
-                StringEncryptionType::Xor
-            }
+        let cfg = &*CONFIG;
+        let algo = match cfg.string_encryption.algorithm {
+            StringAlgorithm::Xor => StringEncryptionType::Xor,
+            StringAlgorithm::SimdXor => StringEncryptionType::SimdXor,
         };
-        let decrypt_timing = match std::env::var("AMICE_STRING_DECRYPT_TIMING")
-            .unwrap_or("lazy".to_string())
-            .to_lowercase()
-            .as_str()
-        {
-            "lazy" => DecryptTiming::Lazy,
-            "global" => DecryptTiming::Global,
-            _ => {
-                error!("(strenc) unknown decrypt timing, using lazy");
-                DecryptTiming::Lazy
-            }
-        };
-        let stack_alloc =
-            std::env::var("AMICE_STRING_STACK_ALLOC").is_ok_and(|v| v.to_lowercase() == "true");
-        let inline_decrypt = std::env::var("AMICE_STRING_INLINE_DECRYPT_FN")
-            .is_ok_and(|v| v.to_lowercase() == "true");
-
-        let only_llvm_string = std::env::var("AMICE_STRING_ONLY_LLVM_STRING")
-            .map_or(true, |v| v.to_lowercase() == "true");
+        let decrypt_timing = cfg.string_encryption.decrypt_timing;
+        let stack_alloc = cfg.string_encryption.stack_alloc;
+        let inline_decrypt = cfg.string_encryption.inline_decrypt_fn;
+        let only_llvm_string = cfg.string_encryption.only_llvm_string;
 
         StringEncryption {
             enable,
