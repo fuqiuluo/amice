@@ -3,6 +3,8 @@ use std::ffi::{CStr, CString};
 
 pub mod basic_block;
 pub mod function;
+pub mod branch_inst;
+pub mod switch_inst;
 
 pub(crate) fn to_c_str(mut s: &str) -> Cow<'_, CStr> {
     if s.is_empty() {

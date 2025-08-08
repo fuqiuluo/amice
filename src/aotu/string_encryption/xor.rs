@@ -28,11 +28,7 @@ pub(crate) fn do_handle<'a>(
         .get_globals()
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            (!pass.only_llvm_string
-                || global
-                    .get_name()
-                    .to_str()
-                    .is_ok_and(|s| s.contains(".str")))
+            (!pass.only_llvm_string || global.get_name().to_str().is_ok_and(|s| s.contains(".str")))
                 && global
                     .get_section()
                     .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))

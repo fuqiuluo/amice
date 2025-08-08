@@ -3,7 +3,7 @@ use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{error, info};
+use log::{Level, debug, error, log_enabled};
 use rand::seq::SliceRandom;
 
 pub struct SplitBasicBlock {
@@ -58,11 +58,6 @@ fn do_split(
             if count_instructions(&to_split) < 2 {
                 break;
             }
-            //  for (int j = 0; j < test[i] - last; ++j){
-            //                 ++it;
-            //             }
-            //             last = test[i];
-            //             toSplit = toSplit->splitBasicBlock(it, toSplit->getName() + ".split");
             for j in 0..(split_points[i as usize] - last) {
                 if let Some(curr_inst) = it {
                     it = curr_inst.get_next_instruction();
@@ -83,8 +78,9 @@ fn do_split(
                 break; // No more instructions to split
             }
         }
-
-        info!("{:?} split points: {:?}", bb.get_name(), split_points);
+        if log_enabled!(Level::Debug) {
+            debug!("{:?} split points: {:?}", bb.get_name(), split_points);
+        }
     }
     Ok(())
 }
@@ -95,7 +91,6 @@ pub fn shuffle(vec: &mut [u32]) {
 }
 
 fn flitter_basic_block(bb: &BasicBlock<'_>, split_num: u32, x: &mut u32) -> bool {
-    
     bb.get_instructions().any(|inst| {
         *x += 1;
         inst.get_opcode() == InstructionOpcode::Phi

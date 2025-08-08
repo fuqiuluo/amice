@@ -2,13 +2,6 @@ use crate::llvm_utils::to_c_str;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::values::{AsValueRef, InstructionValue};
-use std::marker::PhantomData;
-
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
-pub struct BasicBlock2<'ctx> {
-    pub(crate) basic_block: LLVMBasicBlockRef,
-    _marker: PhantomData<&'ctx ()>,
-}
 
 pub fn split_basic_block<'a>(
     block: BasicBlock<'a>,

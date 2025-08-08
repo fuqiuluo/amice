@@ -18,7 +18,11 @@ extern "C" {
     pub(crate) fn amiceAppendToUsed(module: *mut c_void, value: *mut c_void);
 
     pub(crate) fn amiceAppendToCompilerUsed(module: *mut c_void, value: *mut c_void);
-    
+
+    pub(crate) fn amiceFixStack(function: *mut c_void, at_term: i32);
+
+    pub(crate) fn amiceVerifyFunction(function: *mut c_void) -> i32;
+
     pub(crate) fn amiceConstantGetBitCast(
         value: *mut c_void,
         ty: *mut c_void,

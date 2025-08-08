@@ -4,6 +4,8 @@
 #include <memory>
 #include <mutex>
 #include <utility>
+#include <vector>
+#include <optional>
 
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/IR/Function.h>
@@ -16,6 +18,18 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/AbstractCallSite.h"
 #include "llvm/IR/InstrTypes.h"
+#include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Pass.h"
+#include "llvm/IR/CFG.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/LinkAllPasses.h"
+#include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/IR/Verifier.h"
+#include "llvm/IR/Instructions.h"
 
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 14)
 #include <llvm/Passes/OptimizationLevel.h>
@@ -63,6 +77,62 @@ llvm::Constant * amiceConstantGetXor(llvm::Constant *C1, llvm::Constant *C2) {
 
 llvm::BasicBlock * 	amiceSplitBasicBlock (llvm::BasicBlock * BB, llvm::Instruction *I, char* N, int B) {
     return BB->splitBasicBlock(I, N, B);
+}
+
+bool valueEscapes(llvm::Instruction *Inst) {
+  llvm::BasicBlock *BB = Inst->getParent();
+  for (llvm::Value::use_iterator UI = Inst->use_begin(), E = Inst->use_end(); UI != E;
+       ++UI) {
+    llvm::Instruction *I = llvm::cast<llvm::Instruction>(*UI);
+    if (I->getParent() != BB || llvm::isa<llvm::PHINode>(I)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void amiceFixStack(llvm::Function *f, int AtTerminator) {
+    // https://bbs.kanxue.com/thread-268789-1.htm
+    std::vector<llvm::PHINode *> tmpPhi;
+    std::vector<llvm::Instruction *> tmpReg;
+    llvm::BasicBlock *bbEntry = &*f->begin();
+
+    do {
+        tmpPhi.clear();
+        tmpReg.clear();
+        for (llvm::Function::iterator i = f->begin(); i != f->end(); i++) {
+            for (llvm::BasicBlock::iterator j = i->begin(); j != i->end(); j++) {
+                if (llvm::isa<llvm::PHINode>(j)){
+                    llvm::PHINode *phi = llvm::cast<llvm::PHINode>(j);
+                    tmpPhi.push_back(phi);
+                    continue;
+                }
+                if (!(llvm::isa<llvm::AllocaInst>(j) && j->getParent() == bbEntry) &&
+                    (valueEscapes(&*j) || j->isUsedOutsideOfBlock(&*i))) {
+                    tmpReg.push_back(&*j);
+                    continue;
+                }
+            }
+        }
+        for (unsigned int i = 0; i < tmpReg.size(); i++){
+            if(AtTerminator) {
+                llvm::DemoteRegToStack(*tmpReg.at(i), false, std::optional<llvm::BasicBlock::iterator>{bbEntry->getTerminator()});
+            } else {
+                llvm::DemoteRegToStack(*tmpReg.at(i));
+            }
+        }
+        for (unsigned int i = 0; i < tmpPhi.size(); i++){
+            if(AtTerminator) {
+                llvm::DemotePHIToStack(tmpPhi.at(i), std::optional<llvm::BasicBlock::iterator>{bbEntry->getTerminator()});
+            } else {
+                llvm::DemotePHIToStack(tmpPhi.at(i));
+            }
+        }
+    } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
+}
+
+int amiceVerifyFunction(llvm::Function& F) {
+    return llvm::verifyFunction(F);
 }
 
 }

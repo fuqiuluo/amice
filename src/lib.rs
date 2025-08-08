@@ -5,6 +5,7 @@ use crate::aotu::indirect_branch::IndirectBranch;
 use crate::aotu::indirect_call::IndirectCall;
 use crate::aotu::split_basic_block::SplitBasicBlock;
 use crate::aotu::string_encryption::StringEncryption;
+use crate::aotu::vm_flatten::VmFlatten;
 use log::info;
 use std::io::Write;
 
@@ -45,10 +46,13 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         let split_basic_block = std::env::var("AMICE_SPLIT_BASIC_BLOCK")
             .unwrap_or_else(|_| "false".to_string())
             == "true";
+        let vm_flatten =
+            std::env::var("AMICE_VM_FLATTEN").unwrap_or_else(|_| "false".to_string()) == "true";
 
         manager.add_pass(StringEncryption::new(string_encryption));
         manager.add_pass(IndirectCall::new(indirect_call));
         manager.add_pass(SplitBasicBlock::new(split_basic_block));
+        manager.add_pass(VmFlatten::new(vm_flatten));
         manager.add_pass(IndirectBranch::new(indirect_branch));
     });
 

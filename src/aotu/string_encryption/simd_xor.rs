@@ -53,17 +53,12 @@ pub(crate) fn do_handle<'a>(
         .get_globals()
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            (!pass.only_llvm_string
-                || global
-                    .get_name()
-                    .to_str()
-                    .is_ok_and(|s| s.contains(".str")))
+            (!pass.only_llvm_string || global.get_name().to_str().is_ok_and(|s| s.contains(".str")))
                 && global
                     .get_section()
                     .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
         })
         .filter_map(|global| {
-            
             // if log_enabled!(Level::Debug) {
             //     debug!("(strenc) Found global with initializer: {:?}", out);
             // }
@@ -100,9 +95,7 @@ pub(crate) fn do_handle<'a>(
                 .map_or_else(|_| rand::random::<u32>().to_string(), |s| s.to_string());
 
             if log_enabled!(Level::Debug) {
-                debug!(
-                    "(strenc) Encrypting global: {global:?} with unique name: {unique_name:?}"
-                );
+                debug!("(strenc) Encrypting global: {global:?} with unique name: {unique_name:?}");
             }
 
             Some((unique_name, global, stru, encoded_str))

@@ -1,4 +1,4 @@
-use crate::llvm_utils::function::get_basic_block_entry;
+use crate::llvm_utils::function::get_basic_block_entry_ref;
 use crate::ptr_type;
 use bitflags::bitflags;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -8,6 +8,7 @@ use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, Instructi
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
+use crate::llvm_utils::branch_inst::get_successor;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 
@@ -89,10 +90,10 @@ impl LlvmModulePass for IndirectBranch {
                 // br i1 %5, label %6, label %7
                 let mut future_branches = [None::<BasicBlock>; 2];
                 if bi.is_conditional() {
-                    future_branches[0] = bi.get_operand(1).unwrap().right(); // true分支
-                    future_branches[1] = bi.get_operand(2).unwrap().right();
+                    future_branches[0] = get_successor(bi, 0).unwrap().right(); // true分支
+                    future_branches[1] = get_successor(bi, 1).unwrap().right();
                 } else {
-                    future_branches[0] = bi.get_operand(0).unwrap().right(); // true分支
+                    future_branches[0] = get_successor(bi, 0).unwrap().right(); // true分支
                 }
 
                 let future_branches: Vec<_> = future_branches.iter().filter_map(|&bb| bb).collect();
@@ -275,7 +276,7 @@ impl LlvmModulePass for IndirectBranch {
 fn collect_basic_block<'a>(module: &Module<'a>) -> Vec<BasicBlock<'a>> {
     let mut basic_blocks = Vec::new();
     for fun in module.get_functions() {
-        let entry_block = get_basic_block_entry(&fun);
+        let entry_block = get_basic_block_entry_ref(&fun);
         for bb in fun.get_basic_blocks() {
             if bb.as_mut_ptr() == entry_block {
                 continue;
