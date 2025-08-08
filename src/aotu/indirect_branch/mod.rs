@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry_ref;
 use crate::ptr_type;
@@ -8,7 +9,7 @@ use llvm_plugin::inkwell::types::AsTypeRef;
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, InstructionOpcode};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, warn};
+use log::{debug, error, log_enabled, warn, Level};
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 
@@ -23,6 +24,7 @@ bitflags! {
         const Basic =             0b00000001;
         const DummyBlock =        0b00000010;
         const ChainedDummyBlock = 0b00000110;
+        const EncryptBlockIndex = 0b00001000; // make Ylarod happy!
     }
 }
 
@@ -90,14 +92,21 @@ impl LlvmModulePass for IndirectBranch {
                 // br i1 %5, label %6, label %7
                 let mut future_branches = [None::<BasicBlock>; 2];
                 if bi.is_conditional() {
-                    future_branches[0] = get_successor(bi, 0).unwrap().right(); // true分支
-                    future_branches[1] = get_successor(bi, 1).unwrap().right();
+                    // future_branches的[1]是内存下标，get_successor(0)为真块
+                    // 当为真时，把bool扩展为i32,则这个i32的值是1，直接作为下标使用即future_branches[1]应该保存真分支
+                    future_branches[1] = get_successor(bi, 0).unwrap().right();
+                    future_branches[0] = get_successor(bi, 1).unwrap().right();
                 } else {
-                    future_branches[0] = get_successor(bi, 0).unwrap().right(); // true分支
+                    future_branches[0] = get_successor(bi, 0)
+                        //.ok_or(anyhow!("block: {}, ops = {:?}", bi, bi.get_operands().collect::<Vec<_>>()))
+                        .expect("no successor for basic block")
+                        .right(); // true分支
                 }
 
+                // 可能要去到的分支
                 let future_branches: Vec<_> = future_branches.iter().filter_map(|&bb| bb).collect();
 
+                // 可能要去到的分支的地址值
                 let future_branches_address = future_branches
                     .iter()
                     .filter_map(|next_basic_block| unsafe { next_basic_block.get_address() })
@@ -109,6 +118,7 @@ impl LlvmModulePass for IndirectBranch {
                     continue;
                 }
 
+                // 如果是条件跳转或者是没有被收集的基本块（why？），构建局部跳转表
                 let indirect_branch_table = if bi.is_conditional()
                     || !basic_block_array.contains(&future_branches_address[0])
                 {
@@ -133,6 +143,7 @@ impl LlvmModulePass for IndirectBranch {
                     }
                     Some(local_indirect_branch_table)
                 } else {
+                    // 选择全局跳转表
                     module.get_global(INDIRECT_BRANCH_TABLE_NAME)
                 };
 
@@ -151,6 +162,7 @@ impl LlvmModulePass for IndirectBranch {
                     builder.position_before(&bi);
                     None
                 };
+                // 获取一下下标，如果是条件跳转，就把i8扩展成i32就好了
                 let index = if bi.is_conditional() {
                     let cond = bi.get_operand(0).unwrap().left().unwrap();
                     builder
@@ -169,10 +181,10 @@ impl LlvmModulePass for IndirectBranch {
                 };
                 let Ok(gep) = (unsafe {
                     builder
-                        .build_gep(
-                            ptr_ty,
+                        .build_in_bounds_gep(
+                            indirect_branch_table.get_value_type().into_array_type(),
                             indirect_branch_table.as_pointer_value(),
-                            &[index],
+                            &[const_zero, index],
                             "",
                         )
                         .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}"))
@@ -180,7 +192,7 @@ impl LlvmModulePass for IndirectBranch {
                     panic!("(indirect-branch) build gep_index failed, this should never happen");
                 };
                 let Ok(loaded_address) = builder
-                    .build_load(i8_ptr_ty, gep, "IndirectBranchingTargetAddress")
+                    .build_load(ptr_ty, gep, "IndirectBranchingTargetAddress")
                     .map_err(|e| error!("(indirect-branch) build load failed: {e}"))
                 else {
                     panic!("(indirect-branch) build load failed, this should never happen");
@@ -267,12 +279,25 @@ impl LlvmModulePass for IndirectBranch {
                 }
                 bi.remove_from_basic_block();
             }
+
+            unsafe {
+                if amice_llvm::ir::function::verify_function(
+                    fun.as_value_ref() as *mut std::ffi::c_void
+                ) {
+                    warn!(
+                "(indirect-branch) function {} verify failed",
+                fun.get_name().to_str().unwrap_or("<unknown>")
+            );
+                }
+            }
         }
+
 
         PreservedAnalyses::None
     }
 }
 
+/// 收集所有方法的所有基本块
 fn collect_basic_block<'a>(module: &Module<'a>) -> Vec<BasicBlock<'a>> {
     let mut basic_blocks = Vec::new();
     for fun in module.get_functions() {

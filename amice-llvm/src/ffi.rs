@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 
 #[link(name = "amice-llvm-ffi")]
-extern "C" {
+unsafe extern "C" {
     #[cfg(any(
         feature = "llvm12-0",
         feature = "llvm13-0",
@@ -27,17 +27,17 @@ extern "C" {
         value: *mut c_void,
         ty: *mut c_void,
     ) -> *mut c_void;
-    
+
     pub(crate) fn amiceConstantGetPtrToInt(
         value: *mut c_void,
         ty: *mut c_void,
     ) -> *mut c_void;
-    
+
     pub(crate) fn amiceConstantGetIntToPtr(
         value: *mut c_void,
         ty: *mut c_void,
     ) -> *mut c_void;
-    
+
     pub(crate) fn amiceConstantGetXor(
         value1: *mut c_void,
         value2: *mut c_void,
@@ -49,8 +49,8 @@ extern "C" {
         name: *const i8,
         before: i32,
     ) -> *mut c_void;
-    
+
     pub(crate) fn amiceGetLLVMVersionMajor() -> i32;
-    
+
     pub(crate) fn amiceGetLLVMVersionMinor() -> i32;
 }
