@@ -632,7 +632,8 @@ fn generate_opcodes(
         let jmpif_index = opcodes.len() - 1;
 
         // 先生成true分支的代码
-        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(left_value) {
+        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(left_value)
+        {
             let label_values = vec![left_value, right_value];
             opcodes.push((VmBranchNodeKind::Run, label_values, left_value));
             let left_pc_index = opcodes.len() - 1;
@@ -654,7 +655,8 @@ fn generate_opcodes(
         }
 
         // 再生成false分支的代码
-        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(right_value) {
+        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(right_value)
+        {
             let label_values = vec![right_value, left_value];
             opcodes.push((VmBranchNodeKind::Run, label_values, right_value));
             let right_pc_index = opcodes.len() - 1;
@@ -697,7 +699,8 @@ fn generate_opcodes(
         } else {
             0
         };
-        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(left_value) {
+        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(left_value)
+        {
             let label_values = vec![left_value, right_value];
             opcodes.push((VmBranchNodeKind::Run, label_values, node.value));
             e.insert(opcodes.len() - 1);
@@ -733,7 +736,9 @@ fn generate_opcodes(
                 basic_block
             ))?;
 
-            if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(block_value) {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                run_block_index_map.entry(block_value)
+            {
                 let label_values = vec![block_value, block_value];
                 opcodes.push((VmBranchNodeKind::Run, label_values, block_value));
                 let pc_index = opcodes.len() - 1;
