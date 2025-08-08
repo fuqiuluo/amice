@@ -9,7 +9,7 @@ use llvm_plugin::inkwell::types::BasicType;
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, FunctionValue, InstructionOpcode, IntValue};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, log_enabled, warn, Level};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
@@ -138,7 +138,7 @@ impl<'a> VmBrNode<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Eq, Hash)]
 #[repr(u32)]
 enum VmBrNodeKind {
     Jmp = 114,
@@ -285,11 +285,12 @@ fn do_handle<'a>(
         VmBrNode::new_unconditional_br(MAGIC_NUMBER, first_basic_block, first_basic_block),
         pass.random_none_node_opcode,
     )?;
+    let opcode_array_size = calculate_pc(&opcodes, opcodes.len());
 
     debug!(
-        "(vm_flatten) fun: {} opcodes: {:?}",
+        "(vm_flatten) fun: {} opcodes: {:?}, size: {}",
         function.get_name().to_str().unwrap_or("<unknown>"),
-        opcodes
+        opcodes, opcode_array_size,
     );
 
     let ctx = module.get_context();
@@ -302,17 +303,29 @@ fn do_handle<'a>(
     let i32_jmp = i32_type.const_int(VmBrNodeKind::Jmp as u64, false);
     let i32_jmp_if = i32_type.const_int(VmBrNodeKind::JmpIf as u64, false);
     let i32_run = i32_type.const_int(VmBrNodeKind::Run as u64, false);
+    let i32_switch = i32_type.const_int(VmBrNodeKind::Switch as u64, false);
     let i32_none = i32_type.const_int(VmBrNodeKind::None as u64, false);
 
-    let opcode_array_type = i32_type.array_type(opcodes.len() as u32 * 3);
+    let opcode_array_type = i32_type.array_type(opcode_array_size);
     let mut opcode_llvm_values = Vec::new();
     for x in opcodes {
-        let op = i32_type.const_int(x.0 as u64, false);
-        let left = i32_type.const_int(x.1 as u64, false);
-        let right = i32_type.const_int(x.2 as u64, false);
-        opcode_llvm_values.push(op);
-        opcode_llvm_values.push(left);
-        opcode_llvm_values.push(right);
+        if x.0 == VmBrNodeKind::Switch {
+            let op = i32_type.const_int(x.0 as u64, false);
+            let label_size = i32_type.const_int(x.1.len() as u64, false);
+            opcode_llvm_values.push(op);
+            opcode_llvm_values.push(label_size);
+            for pc in x.1 {
+                opcode_llvm_values.push(i32_type.const_int(pc as u64, false));
+            }
+        } else {
+            let op = i32_type.const_int(x.0 as u64, false);
+            let label_values = x.1;
+            let left = i32_type.const_int(label_values[0] as u64, false);
+            let right = i32_type.const_int(label_values[1] as u64, false);
+            opcode_llvm_values.push(op);
+            opcode_llvm_values.push(left);
+            opcode_llvm_values.push(right);
+        }
     }
     let opcode_array =
         unsafe { ArrayValue::new_const_array(&opcode_array_type, &opcode_llvm_values) };
@@ -331,9 +344,11 @@ fn do_handle<'a>(
 
     let builder = ctx.create_builder();
     let vm_entry = ctx.append_basic_block(function, ".amice.vm_flatten_entry");
+    let vm_dispatcher = ctx.append_basic_block(function, ".amice.vm_flatten_dispatcher");
     let vm_run = ctx.append_basic_block(function, ".amice.vm_flatten_run");
     let vm_jmp_if = ctx.append_basic_block(function, ".amice.vm_flatten_jmp_if");
     let vm_jmp = ctx.append_basic_block(function, ".amice.vm_flatten_jmp");
+    let vm_switch = ctx.append_basic_block(function, ".amice.vm_flatten_switch");
     let vm_default = ctx.append_basic_block(function, ".amice.vm_flatten_default");
 
     builder.position_at_end(vm_default);
@@ -343,10 +358,10 @@ fn do_handle<'a>(
         return Err(anyhow!("expected entry block to have terminator"));
     };
     builder.position_before(&entry_term_inst);
-    let vm_br_flag = builder.build_alloca(i32_type, ".amice.vm_flatten_br_flag")?;
+    let vm_flag = builder.build_alloca(i32_type, ".amice.vm_flatten_br_flag")?;
     let pc = builder.build_alloca(i32_type, ".amice.vm_flatten_pc")?;
     builder.build_store(pc, i32_zero)?;
-    builder.build_store(vm_br_flag, i32_zero)?;
+    builder.build_store(vm_flag, i32_zero)?;
     let br_to_vm_entry = builder.build_unconditional_branch(vm_entry)?;
     entry_term_inst.replace_all_uses_with(&br_to_vm_entry);
     entry_term_inst.erase_from_basic_block();
@@ -379,8 +394,17 @@ fn do_handle<'a>(
         }?,
         "__right__"
     )?.into_int_value();
-    builder.build_store(pc, pc_plus_three)?;
+    let cond_is_switch = builder.build_int_compare(IntPredicate::EQ, opcode, i32_switch, "cond_is_switch")?;
+    let plus_value = builder.build_select(
+        cond_is_switch,
+        builder.build_int_add(pc_value, builder.build_int_add(left, i32_two, "")?, "")?,
+        pc_plus_three,
+        "plus_value"
+    )?;
+    builder.build_store(pc, plus_value.into_int_value())?;
+    builder.build_unconditional_branch(vm_dispatcher)?;
 
+    builder.position_at_end(vm_dispatcher);
     builder.build_switch(
         opcode,
         vm_default,
@@ -388,81 +412,145 @@ fn do_handle<'a>(
             (i32_jmp, vm_jmp),
             (i32_jmp_if, vm_jmp_if),
             (i32_run, vm_run),
+            (i32_switch, vm_switch),
             (i32_none, vm_default),
         ],
     )?;
 
-    builder.position_at_end(vm_run);
-    let mut cases = Vec::<(IntValue, BasicBlock)>::new();
-    for bb in &basic_blocks {
-        bb.move_before(vm_default).map_err(|_| anyhow!("move basic block failed"))?;
-        let block_value = basic_block_value_map[bb];
-        cases.push((i32_type.const_int(block_value as u64, false), *bb));
-    }
-    builder.build_switch(left, vm_default, &cases)?;
+    {
+        builder.position_at_end(vm_run);
+        let mut cases = Vec::<(IntValue, BasicBlock)>::new();
+        for bb in &basic_blocks {
+            bb.move_before(vm_default).map_err(|_| anyhow!("move basic block failed"))?;
+            let block_value = basic_block_value_map[bb];
+            cases.push((i32_type.const_int(block_value as u64, false), *bb));
+        }
+        builder.build_switch(left, vm_default, &cases)?;
 
-    for bb in basic_blocks {
-        let mut has_return = false;
-        let branches = bb.get_instructions()
-            .filter(|inst| {
-                let op = inst.get_opcode();
-                op == InstructionOpcode::Br || op == InstructionOpcode::Return
-            })
-            .collect::<Vec<_>>();
-        for inst in branches {
-            if inst.get_opcode() == InstructionOpcode::Return {
-                has_return = true;
-                continue;
+        for bb in basic_blocks {
+            let mut has_return = false;
+            let branches = bb.get_instructions()
+                .filter(|inst| {
+                    let op = inst.get_opcode();
+                    op == InstructionOpcode::Br || op == InstructionOpcode::Return || op == InstructionOpcode::Switch
+                })
+                .collect::<Vec<_>>();
+            for inst in branches {
+                if inst.get_opcode() == InstructionOpcode::Return {
+                    has_return = true;
+                    continue;
+                }
+
+                if inst.get_opcode() == InstructionOpcode::Br {
+                    builder.position_before(&inst);
+                    let new_br = if inst.is_conditional() && inst.get_num_operands() == 3 {
+                        let result = inst
+                            .get_operand(0)
+                            .ok_or(anyhow!("inst.get_operand(inst.get_num_operands() - 1)"))?
+                            .left()
+                            .ok_or(anyhow!("expected left operand is basic value: {:?}", inst))?
+                            .into_int_value();
+                        let flag_value = builder
+                            .build_select(result, i32_one, i32_zero, "_t_or_f_2")?
+                            .into_int_value();
+                        builder.build_store(vm_flag, flag_value)?;
+                        builder.build_unconditional_branch(vm_entry)?
+                    } else if inst.get_num_operands() == 1 {
+                        builder.build_unconditional_branch(vm_entry)?
+                    } else {
+                        continue
+                    };
+                    inst.replace_all_uses_with(&new_br);
+                    inst.erase_from_basic_block();
+                    continue;
+                }
+
+                if inst.get_opcode() == InstructionOpcode::Switch {
+                    builder.position_before(&inst);
+                    let cases = switch_inst::get_cases(inst);
+                    let default_case = switch_inst::get_default_block(inst);
+                    let condition = switch_inst::get_condition(inst);
+
+                    let mut new_cases = Vec::<(IntValue, BasicBlock)>::new();
+                    let new_default_block = ctx.append_basic_block(function, ".vm_switch_case_");
+                    builder.position_at_end(new_default_block);
+                    builder.build_store(vm_flag, i32_zero)?;
+                    builder.build_unconditional_branch(vm_entry)?;
+                    for (index, (value, block)) in cases.iter().enumerate() {
+                        let new_block = ctx.append_basic_block(function, ".vm_switch_case_");
+                        builder.position_at_end(new_block);
+                        let index = i32_type.const_int((index + 1) as u64, false);
+                        builder.build_store(vm_flag, index)?;
+                        builder.build_unconditional_branch(vm_entry)?;
+                        new_cases.push((value.into_int_value(), new_block));
+                    }
+                    builder.position_before(&inst);
+                    let new_switch = builder.build_switch(
+                        condition.into_int_value(),
+                        new_default_block,
+                        &new_cases,
+                    )?;
+
+                    inst.replace_all_uses_with(&new_switch);
+                    inst.erase_from_basic_block();
+
+                    continue;
+                }
             }
 
-            builder.position_before(&inst);
-            let new_br = if inst.is_conditional() && inst.get_num_operands() == 3 {
-                let result = inst
-                    .get_operand(0)
-                    .ok_or(anyhow!("inst.get_operand(inst.get_num_operands() - 1)"))?
-                    .left()
-                    .ok_or(anyhow!("expected left operand is basic value: {:?}", inst))?
-                    .into_int_value();
-                let flag_value = builder
-                    .build_select(result, i32_one, i32_zero, "_t_or_f_2")?
-                    .into_int_value();
-                builder.build_store(vm_br_flag, flag_value)?;
-                builder.build_unconditional_branch(vm_entry)?
-            } else if inst.get_num_operands() == 1 {
-                builder.build_unconditional_branch(vm_entry)?
-            } else {
-                continue
-            };
-            inst.replace_all_uses_with(&new_br);
-            inst.erase_from_basic_block();
-        }
-
-        if !has_return && bb.get_terminator().is_none() {
-            builder.position_at_end(bb);
-            builder.build_unconditional_branch(vm_entry)?;
+            if !has_return && bb.get_terminator().is_none() {
+                builder.position_at_end(bb);
+                builder.build_unconditional_branch(vm_entry)?;
+            }
         }
     }
 
-    builder.position_at_end(vm_jmp);
-    builder.build_store(pc, left)?;
-    builder.build_unconditional_branch(vm_entry)?;
+    {
+        builder.position_at_end(vm_switch);
+        let label_size = left; // 有多少个label，这里的大小是case数量 + 1
+        //let default_label_value = right;
+        let flag_value = builder.build_load(i32_type, vm_flag, "__vm_br_flag__")?.into_int_value();
+        //let cases_num = builder.build_int_sub(label_size, i32_one, "cases_num")?;
+        let offset = builder.build_int_sub(label_size, flag_value, "offset")?;
+        let curr_pc = builder.build_load(i32_type, pc, "__pc__")?.into_int_value();
+        let new_pc_offset = builder.build_int_sub(curr_pc, offset, "pc_with_offset")?;
+        let new_pc_gep = unsafe {
+            builder.build_in_bounds_gep(
+                opcode_array_type,
+                local_opcodes_value.as_pointer_value(),
+                &[i32_zero, new_pc_offset],
+                "",
+            )
+        }?;
+        let new_pc = builder.build_load(i32_type, new_pc_gep, "__value__")?.into_int_value();
+        builder.build_store(pc, new_pc)?;
+        builder.build_unconditional_branch(vm_entry)?;
+    }
 
-    builder.position_at_end(vm_jmp_if);
-    let flag_value = builder.build_load(i32_type, vm_br_flag, "__vm_br_flag__")?.into_int_value();
+    {
+        builder.position_at_end(vm_jmp);
+        builder.build_store(pc, left)?;
+        builder.build_unconditional_branch(vm_entry)?;
+    }
 
-    let jump_true = ctx.append_basic_block(function, ".amice.jump_true");
-    let jump_false = ctx.append_basic_block(function, ".amice.jump_false");
+    {
+        builder.position_at_end(vm_jmp_if);
+        let flag_value = builder.build_load(i32_type, vm_flag, "__vm_br_flag__")?.into_int_value();
 
-    let jmp_cmp = builder.build_int_compare(IntPredicate::EQ, flag_value, i32_one, "jmp_cmp")?;
-    builder.build_conditional_branch(jmp_cmp, jump_true, jump_false)?;
+        let jump_true = ctx.append_basic_block(function, ".amice.jump_true");
+        let jump_false = ctx.append_basic_block(function, ".amice.jump_false");
 
-    builder.position_at_end(jump_true);
-    builder.build_store(pc, left)?;
-    builder.build_unconditional_branch(vm_entry)?;
+        let jmp_cmp = builder.build_int_compare(IntPredicate::EQ, flag_value, i32_one, "jmp_cmp")?;
+        builder.build_conditional_branch(jmp_cmp, jump_true, jump_false)?;
 
-    builder.position_at_end(jump_false);
-    builder.build_store(pc, right)?;
-    builder.build_unconditional_branch(vm_entry)?;
+        builder.position_at_end(jump_true);
+        builder.build_store(pc, left)?;
+        builder.build_unconditional_branch(vm_entry)?;
+
+        builder.position_at_end(jump_false);
+        builder.build_store(pc, right)?;
+        builder.build_unconditional_branch(vm_entry)?;
+    }
 
     unsafe {
         if amice_llvm::ir::function::verify_function(
@@ -479,6 +567,10 @@ fn do_handle<'a>(
         fix_stack(function.as_value_ref() as *mut std::ffi::c_void);
     }
 
+    for node in all_nodes {
+        node.free();
+    }
+
     Ok(())
 }
 
@@ -486,17 +578,11 @@ fn generate_opcodes(
     nodes: &[VmBrNode<'_>],
     basic_block_value_map: &HashMap<BasicBlock<'_>, u32>,
     run_block_index_map: &mut HashMap<u32, usize>,
-    opcodes: &mut Vec<(VmBrNodeKind, u32, u32, u32)>,
+    opcodes: &mut Vec<(VmBrNodeKind, Vec<u32>, u32)>,
     node: VmBrNode<'_>,
     random_none_node_opcode: bool,
 ) -> anyhow::Result<()> {
     if node.len() == 2 && node.opcode == InstructionOpcode::Br {
-        // let Some(left) = node.get_left() else {
-        //     return Err(anyhow!("expected left node for br"));
-        // };
-        // let Some(right) = node.get_right() else {
-        //     return Err(anyhow!("expected right node for br"));
-        // };
         let left = node.get_left();
         let right = node.get_right();
 
@@ -507,15 +593,15 @@ fn generate_opcodes(
 
         opcodes.push((
             VmBrNodeKind::JmpIf,
-            0,
-            0,
+            vec![0, 0],
             node.value
         ));
         let jmpif_index = opcodes.len() - 1;
 
         // 先生成true分支的代码
         if !run_block_index_map.contains_key(&left_value) {
-            opcodes.push((VmBrNodeKind::Run, left_value, 0, left_value));
+            let label_values = vec![left_value, right_value];
+            opcodes.push((VmBrNodeKind::Run, label_values, left_value));
             let left_pc_index = opcodes.len() - 1;
             run_block_index_map.insert(left_value, left_pc_index);
 
@@ -534,7 +620,8 @@ fn generate_opcodes(
 
         // 再生成false分支的代码
         if !run_block_index_map.contains_key(&right_value) {
-            opcodes.push((VmBrNodeKind::Run, right_value, 0, right_value));
+            let label_values = vec![right_value, left_value];
+            opcodes.push((VmBrNodeKind::Run, label_values, right_value));
             let right_pc_index = opcodes.len() - 1;
             run_block_index_map.insert(right_value, right_pc_index);
 
@@ -552,20 +639,18 @@ fn generate_opcodes(
         }
 
         // 现在填充JmpIf的跳转地址
-        let left_pc = (*run_block_index_map.get(&left_value).unwrap() * 3) as u32;
-        let right_pc = (*run_block_index_map.get(&right_value).unwrap() * 3) as u32;
+        let left_index = *run_block_index_map.get(&left_value).unwrap();
+        let right_index = *run_block_index_map.get(&right_value).unwrap();
 
-        opcodes[jmpif_index].1 = left_pc;   // true分支跳转地址
-        opcodes[jmpif_index].2 = right_pc;  // false分支跳转地址
+        let left_pc = calculate_pc(opcodes, left_index);
+        let right_pc = calculate_pc(opcodes, right_index);
 
-        // opcodes[jmpif_index].1 = right_pc;
-        // opcodes[jmpif_index].2 = left_pc;
+        opcodes[jmpif_index].1[0] = left_pc;
+        opcodes[jmpif_index].1[1] = right_pc;
 
         return Ok(());
-    } else if node.len() == 1 && node.opcode == InstructionOpcode::Br {
-        // let Some(left) = node.left else {
-        //     return Err(anyhow!("expected left node for br"));
-        // };
+    }
+    else if node.len() == 1 && node.opcode == InstructionOpcode::Br {
         let left = node.get_left();
         let left_value = *basic_block_value_map.get(&left).ok_or(anyhow!(
             "failed to find left node value for basic block: {:?}",
@@ -577,7 +662,8 @@ fn generate_opcodes(
             0
         };
         if !run_block_index_map.contains_key(&left_value) {
-            opcodes.push((VmBrNodeKind::Run, left_value, 0, node.value));
+            let label_values = vec![left_value, right_value];
+            opcodes.push((VmBrNodeKind::Run, label_values, node.value));
             run_block_index_map.insert(left_value, opcodes.len() - 1);
 
             let next_node = *nodes.iter().find(|n| n.block == left)
@@ -591,15 +677,85 @@ fn generate_opcodes(
                 random_none_node_opcode,
             );
         } else {
-            let pc = *run_block_index_map.get(&left_value)
-                .unwrap() * 3;
-            opcodes.push((VmBrNodeKind::Jmp, pc as u32, 0, node.value));
+            let index = *run_block_index_map.get(&left_value).unwrap();
+            let pc = calculate_pc(opcodes, index);
+            let label_values = vec![pc, right_value];
+            opcodes.push((VmBrNodeKind::Jmp, label_values, node.value));
             return Ok(());
         }
-    } else if node.opcode == InstructionOpcode::Switch {
-        panic!("not implemented");
+    }
+    else if node.opcode == InstructionOpcode::Switch {
+        opcodes.push((
+            VmBrNodeKind::Switch,
+            vec![0u32; node.len()],
+            node.value
+        ));
+        let switch_index = opcodes.len() - 1;
+
+        let mut pc_values = Vec::new();
+        // 至少有一个node，第一个node是switch的default基本块
+        for basic_block in node.as_slice() {
+            let block_value = *basic_block_value_map.get(&basic_block)
+                .ok_or(anyhow!("failed to find basic_block node value for basic block: {:?}", basic_block))?;
+
+            if !run_block_index_map.contains_key(&block_value) {
+                let label_values = vec![block_value, block_value];
+                opcodes.push((VmBrNodeKind::Run, label_values, block_value));
+                let pc_index = opcodes.len() - 1;
+                run_block_index_map.insert(block_value, pc_index);
+
+                let right_node = *nodes.iter().find(|n| n.block == *basic_block)
+                    .ok_or(anyhow!("failed to find node for block: {:?}", basic_block))?;
+                generate_opcodes(
+                    nodes,
+                    basic_block_value_map,
+                    run_block_index_map,
+                    opcodes,
+                    right_node,
+                    random_none_node_opcode,
+                )?;
+            }
+
+            let pc_index = run_block_index_map[&block_value];
+            pc_values.push(calculate_pc(opcodes, pc_index));
+        }
+
+        if log_enabled!(Level::Debug) {
+            debug!("(vm_flatten) switch case nums: {:?}", pc_values.len());
+        }
+
+        for (i, pc) in pc_values.iter().enumerate() {
+            opcodes[switch_index].1[i] = *pc;
+        }
+
+        return Ok(());
     }
     return Ok(())
+}
+
+fn calculate_pc(
+    opcodes: &Vec<(VmBrNodeKind, Vec<u32>, u32)>,
+    index: usize,
+) -> u32 {
+    let mut pc = 0;
+    for i in 0..index {
+        let (kind, labels, _) = &opcodes[i];
+        assert!(labels.len() >= 2);
+        if *kind == VmBrNodeKind::Switch {
+            pc += 1; // op
+            pc += 1; // label size
+            pc += labels.len();
+        } else {
+            assert_eq!(labels.len(), 2);
+            pc += 1 + labels.len();
+        }
+    }
+
+    if log_enabled!(Level::Debug) {
+        debug!("(vm_flatten) calculate_pc: index = {}, pc = {}", index, pc);
+    }
+
+    pc as u32
 }
 
 fn generate_unique_value(nodes: &[VmBrNode<'_>]) -> u32 {
