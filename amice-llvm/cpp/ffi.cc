@@ -114,6 +114,7 @@ void amiceFixStack(llvm::Function *f, int AtTerminator) {
                 }
             }
         }
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 20)
         for (unsigned int i = 0; i < tmpReg.size(); i++){
             if(AtTerminator) {
                 llvm::DemoteRegToStack(*tmpReg.at(i), false, std::optional<llvm::BasicBlock::iterator>{bbEntry->getTerminator()});
@@ -128,6 +129,23 @@ void amiceFixStack(llvm::Function *f, int AtTerminator) {
                 llvm::DemotePHIToStack(tmpPhi.at(i));
             }
         }
+#else
+        for (unsigned int i = 0; i < tmpReg.size(); i++){
+            if(AtTerminator) {
+                llvm::DemoteRegToStack(*tmpReg.at(i), false, bbEntry->getTerminator());
+            } else {
+                llvm::DemoteRegToStack(*tmpReg.at(i));
+            }
+        }
+        for (unsigned int i = 0; i < tmpPhi.size(); i++){
+            if(AtTerminator) {
+                llvm::DemotePHIToStack(tmpPhi.at(i), bbEntry->getTerminator());
+            } else {
+                llvm::DemotePHIToStack(tmpPhi.at(i));
+            }
+        }
+#endif
+
     } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
 }
 

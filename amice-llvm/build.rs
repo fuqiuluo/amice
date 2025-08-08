@@ -18,6 +18,10 @@ fn main() {
         .include(includedir.trim())
         .file("cpp/ffi.cc");
 
+    //build.flag("-stdlib=c++");
+    //println!("cargo:rustc-link-lib=c++");
+    //println!("cargo:rustc-link-search=native=/home/fuqiuluo/下载/linux-x86-refs_heads_main-clang-r522817/lib");
+
     #[cfg(target_env = "msvc")]
     build.flag_if_supported("/std:c++17");
     #[cfg(not(target_env = "msvc"))]

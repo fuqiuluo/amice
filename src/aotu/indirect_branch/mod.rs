@@ -210,9 +210,9 @@ impl LlvmModulePass for IndirectBranch {
 
                     // 加密下标
                     if let Some(xor_key_table) = encrypt_key_table.as_ref() {
-                        if log_enabled!(Level::Debug) {
-                            debug!("(indirect-branch) encrypt block index: {}", index);
-                        }
+                        // if log_enabled!(Level::Debug) {
+                        //     debug!("(indirect-branch) encrypt block index: {}", index);
+                        // }
                         let xor_key = self.xor_key.as_ref().unwrap();
                         let key_index = index % xor_key.len();
                         index ^= xor_key[key_index] as usize;
