@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.actor != 'github-actions[bot]' }}
     env:
-      MAX_DEPTH: "3"      
+      MAX_DEPTH: "3"
       IGNORE_PATTERN: ".git|target|node_modules|.idea|.vscode|dist|build"
       SECTION_TITLE: "项目结构"
-      OUTPUT_FILE: "docs/PROJECT_STRUCTURE.md"
+      OUTPUT_FILE: "PROJECT_STRUCTURE.md"
       REPO_NAME: "${{ github.event.repository.name }}"
     steps:
       - name: Checkout
@@ -37,6 +37,33 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tree
 
+      - name: Diagnostics - context and tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::运行上下文"
+          echo "GitHub Ref:           $GITHUB_REF"
+          echo "GitHub SHA:           ${GITHUB_SHA:-N/A}"
+          echo "Actor:                $GITHUB_ACTOR"
+          echo "Repository:           $GITHUB_REPOSITORY"
+          echo "Runner OS:            $RUNNER_OS"
+          echo "Workspace:            $GITHUB_WORKSPACE"
+          echo "::endgroup::"
+
+          echo "::group::工具版本"
+          tree --version || true
+          git --version || true
+          echo "::endgroup::"
+
+          echo "::group::参数与统计"
+          echo "OUTPUT_FILE:          ${OUTPUT_FILE}"
+          echo "MAX_DEPTH:            ${MAX_DEPTH}"
+          echo "IGNORE_PATTERN:       ${IGNORE_PATTERN}"
+          echo "SECTION_TITLE:        ${SECTION_TITLE}"
+          echo "仓库受 Git 管理的文件数：$(git ls-files | wc -l | tr -d ' ')"
+          echo "工作区全部文件数（含未跟踪）：$(find . -not -path '*/\.*' -type f | wc -l | tr -d ' ')"
+          echo "::endgroup::"
+
       - name: Generate structure markdown
         shell: bash
         run: |
@@ -44,10 +71,16 @@ jobs:
 
           mkdir -p "$(dirname "$OUTPUT_FILE")"
 
+          echo "::group::生成目录树"
+          echo "忽略模式（按 | 分隔）：${IGNORE_PATTERN}"
+          echo "最大深度：${MAX_DEPTH}"
           TMP_TREE="$(mktemp)"
           tree -a -F -I "$IGNORE_PATTERN" -L "$MAX_DEPTH" \
             | sed '1s/^\.\///; s/^\.\s*//' > "$TMP_TREE" || true
+          echo "目录树行数：$(wc -l < "$TMP_TREE" | tr -d ' ')"
+          echo "::endgroup::"
 
+          echo "::group::写入 Markdown 文件"
           {
             echo "# ${SECTION_TITLE}"
             echo
@@ -62,12 +95,43 @@ jobs:
             echo
             echo "> 本文件由 GitHub Actions 自动生成，请勿手动编辑。"
           } > "$OUTPUT_FILE"
+          echo "输出路径：$(realpath "$OUTPUT_FILE")"
+          echo "文件大小（字节）：$(wc -c < "$OUTPUT_FILE" | tr -d ' ')"
+          echo "文件行数：$(wc -l < "$OUTPUT_FILE" | tr -d ' ')"
+          echo "::endgroup::"
 
           rm -f "$TMP_TREE" 2>/dev/null || true
 
+          # 标记是否有变更
           if git diff --quiet -- "$OUTPUT_FILE"; then
             echo "NO_CHANGES=true" >> $GITHUB_ENV
           fi
+
+      - name: Diff summary and preview
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::Diff 摘要（仅 OUTPUT_FILE）"
+          git --no-pager diff --stat -- "$OUTPUT_FILE" || true
+          echo "::endgroup::"
+
+          echo "::group::文件头部预览（前 60 行）"
+          if [ -f "$OUTPUT_FILE" ]; then
+            sed -n '1,60p' "$OUTPUT_FILE"
+          else
+            echo "文件不存在：$OUTPUT_FILE"
+          fi
+          echo "::endgroup::"
+
+      - name: Upload generated structure as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-structure
+          path: ${{ env.OUTPUT_FILE }}
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Commit & push changes
         if: env.NO_CHANGES != 'true'
