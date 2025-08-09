@@ -1,7 +1,7 @@
 name: Auto-format Rust
 
 on:
-  workflow_dispatch:
+  push:
   
 permissions:
   contents: write
@@ -40,4 +40,5 @@ jobs:
         with:
           commit_message: "chore(fmt): auto-format code with rustfmt [skip ci]"
           branch: ${{ github.ref_name }}
+          push_options: '--force-with-lease'
          
