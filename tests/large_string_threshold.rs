@@ -47,7 +47,7 @@ mod tests {
     }
 
     #[test]
-    fn test_large_string_warning() {
+    fn test_large_string_warning_xor() {
         build_amice();
 
         // Test with a large string that exceeds 4KB threshold
@@ -55,6 +55,54 @@ mod tests {
             .env("RUST_LOG", "warn")
             .env("AMICE_STRING_STACK_ALLOC", "true")
             .env("AMICE_STRING_ALGORITHM", "xor")
+            .env("AMICE_STRING_DECRYPT_TIMING", "lazy")
+            .arg("-fpass-plugin=target/release/libamice.so")
+            .arg("tests/large_string.c")
+            .arg("-o")
+            .arg("target/large_string_test")
+            .output()
+            .expect("Failed to execute clang command");
+
+        // Check that clang succeeded
+        if !output.status.success() {
+            eprintln!("STDOUT: {}", String::from_utf8_lossy(&output.stdout));
+            eprintln!("STDERR: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        assert!(output.status.success(), "Clang command failed");
+
+        // Check the stderr for the expected warning message
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("exceeds 4KB limit for stack allocation, using global timing instead"),
+            "Expected warning about 4KB limit not found in stderr: {}",
+            stderr
+        );
+
+        // Verify the compiled binary runs successfully
+        let run_output = Command::new("./target/large_string_test")
+            .output()
+            .expect("Failed to execute compiled binary");
+        if !run_output.status.success() {
+            eprintln!("STDOUT: {}", String::from_utf8_lossy(&run_output.stdout));
+            eprintln!("STDERR: {}", String::from_utf8_lossy(&run_output.stderr));
+        }
+        assert!(run_output.status.success(), "Compiled binary failed to run");
+
+        // Check that the large string is properly decrypted
+        let stdout = String::from_utf8_lossy(&run_output.stdout);
+        assert!(stdout.contains("Large string length: 4744"), "Large string not properly decrypted");
+        assert!(stdout.contains("Small string: This is a small string"), "Small string not properly decrypted");
+    }
+
+    #[test]
+    fn test_large_string_warning_xor_simd() {
+        build_amice();
+
+        // Test with a large string that exceeds 4KB threshold
+        let output = Command::new("clang")
+            .env("RUST_LOG", "warn")
+            .env("AMICE_STRING_STACK_ALLOC", "true")
+            .env("AMICE_STRING_ALGORITHM", "xor_simd")
             .env("AMICE_STRING_DECRYPT_TIMING", "lazy")
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/large_string.c")
