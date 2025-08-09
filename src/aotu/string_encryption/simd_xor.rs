@@ -57,9 +57,6 @@ pub(crate) fn do_handle<'a>(
                     .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
         })
         .filter_map(|global| {
-            // if log_enabled!(Level::Debug) {
-            //     debug!("(strenc) Found global with initializer: {:?}", out);
-            // }
             match global.get_initializer()? {
                 BasicValueEnum::ArrayValue(arr) => Some((global, None, arr)),
                 BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => match stru.get_field_at_index(0)? {
@@ -70,14 +67,22 @@ pub(crate) fn do_handle<'a>(
             }
         })
         .filter(|(_, _, arr)| {
-            // if log_enabled!(Level::Debug) {
-            //     debug!("(strenc) Checking array: {:?}", arr);
-            // }
-            arr.is_const_string() && arr.is_const()
+            arr.is_const_string() && arr.is_const() && || -> bool {
+                let ty = arr.get_type();
+                if ty.is_empty() {
+                    return false;
+                }
+
+                if ty.len() <= 1 {
+                    return false;
+                }
+
+                true
+            }()
         })
         .filter_map(|(global, stru, arr)| {
             if log_enabled!(Level::Debug) {
-                debug!("(strenc) next!");
+                debug!("(strenc) next! name: {:?}", global.get_name());
             }
 
             let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
