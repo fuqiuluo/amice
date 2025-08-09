@@ -12,6 +12,7 @@ use llvm_plugin::inkwell::context::{Context, ContextRef};
 use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
 use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use log::{debug, error, log_enabled, warn, Level};
+use crate::utils::config_utils::{CONFIG, IndirectBranchFlags};
 use rand::Rng;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
@@ -20,16 +21,6 @@ pub struct IndirectBranch {
     enable: bool,
     flags: IndirectBranchFlags,
     xor_key: Option<[u32; 4]>,
-}
-
-bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct IndirectBranchFlags: u32 {
-        const Basic =             0b00000001;
-        const DummyBlock =        0b00000010;
-        const ChainedDummyBlock = 0b00000110;
-        const EncryptBlockIndex = 0b00001000; // make Ylarod happy!
-    }
 }
 
 impl LlvmModulePass for IndirectBranch {
@@ -436,19 +427,7 @@ fn collect_basic_block<'a>(module: &Module<'a>) -> Vec<BasicBlock<'a>> {
 impl IndirectBranch {
     pub fn new(enable: bool) -> Self {
         let mut flags = IndirectBranchFlags::Basic;
-        let indirect_flags_str =
-            std::env::var("AMICE_INDIRECT_BRANCH_FLAGS").unwrap_or_else(|_| "".to_string());
-        for x in indirect_flags_str.split(",") {
-            if x.is_empty() {
-                continue;
-            }
-            match x.to_lowercase().as_str() {
-                "dummy_block" => flags |= IndirectBranchFlags::DummyBlock,
-                "chained_dummy_blocks" => flags |= IndirectBranchFlags::ChainedDummyBlock,
-                "encrypt_block_index" => flags |= IndirectBranchFlags::EncryptBlockIndex,
-                _ => warn!("Unknown AMICE_INDIRECT_BRANCH_FLAGS: \"{x}\", ignoring"),
-            }
-        }
+        flags |= CONFIG.indirect_branch.flags;
 
         if enable {
             debug!("IndirectBranch pass enabled with flags: {flags:?}");
