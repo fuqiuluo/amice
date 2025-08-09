@@ -8,6 +8,10 @@ use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, GlobalValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::error;
 
+/// Stack allocation threshold: strings larger than this will use global timing 
+/// even when stack allocation is enabled
+const STACK_ALLOC_THRESHOLD: u32 = 4096; // 4KB
+
 enum StringEncryptionType {
     Xor,
     SimdXor,
@@ -71,6 +75,9 @@ impl StringEncryption {
         let inline_decrypt = cfg.string_encryption.inline_decrypt_fn;
         let only_llvm_string = cfg.string_encryption.only_llvm_string;
 
+        assert!((decrypt_timing == StringDecryptTiming::Global && !stack_alloc) ||
+                decrypt_timing != StringDecryptTiming::Global, "stack alloc is not supported with global decrypt timing: {:?}", decrypt_timing);
+
         StringEncryption {
             enable,
             decrypt_timing,
@@ -87,6 +94,9 @@ struct EncryptedGlobalValue<'a> {
     len: u32,
     flag: Option<GlobalValue<'a>>,
     oneshot: bool,
+    /// Whether this specific string should use stack allocation for decryption
+    /// This can be false even when overall stack_alloc is true, for strings > 4KB
+    use_stack_alloc: bool,
 }
 
 pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]> {
