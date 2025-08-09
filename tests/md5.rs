@@ -4,7 +4,6 @@ mod tests {
     use std::process::Command;
 
     fn setup_environment(cmd: &mut Command) {
-
         cmd.env("AMICE_SHUFFLE_BLOCKS", "false");
         cmd.env("AMICE_SHUFFLE_BLOCKS_FLAGS", "random");
 
