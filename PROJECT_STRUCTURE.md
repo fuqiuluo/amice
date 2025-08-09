@@ -1,84 +1,66 @@
-### 项目结构
+# 项目结构
+
+- 仓库：amice
+- 生成时间：2025-08-09 04:56:36 UTC
+- 深度：3
+- 忽略：.git|target|node_modules|.idea|.vscode|dist|build
 
 ```text
-.
-├── amice-llvm
-│   ├── build.rs
+
+├── .github/
+│   └── workflows/
+│       └── generate-structure.yml
+├── .gitignore
+├── Cargo.lock
+├── Cargo.toml
+├── PROJECT_STRUCTURE.md
+├── README.md
+├── amice-llvm/
 │   ├── Cargo.lock
 │   ├── Cargo.toml
-│   ├── cpp
+│   ├── build.rs
+│   ├── cpp/
 │   │   └── ffi.cc
-│   ├── .llvm-config-path
-│   ├── .llvm-prefix-path
-│   └── src
+│   └── src/
 │       ├── ffi.rs
-│       ├── ir
-│       │   ├── basic_block.rs
-│       │   ├── constants.rs
-│       │   ├── function.rs
-│       │   └── mod.rs
+│       ├── ir/
 │       ├── lib.rs
 │       └── module_utils.rs
 ├── build.rs
-├── Cargo.lock
-├── Cargo.toml
 ├── fmt.sh
-├── .gitignore
-├── .idea
-│   ├── amice.iml
-│   ├── .gitignore
-│   ├── modules.xml
-│   ├── vcs.xml
-│   └── workspace.xml
-├── PROJECT_STRUCTURE.md
-├── README.md
-├── shells
-│   ├── test_ndk.sh
-│   ├── test.sh
-│   └── test_vm_flatten.sh
-├── src
-│   ├── aotu
-│   │   ├── indirect_branch
-│   │   │   └── mod.rs
-│   │   ├── indirect_call
-│   │   │   └── mod.rs
+├── src/
+│   ├── aotu/
+│   │   ├── indirect_branch/
+│   │   ├── indirect_call/
 │   │   ├── mod.rs
-│   │   ├── split_basic_block
-│   │   │   └── mod.rs
-│   │   ├── string_encryption
-│   │   │   ├── mod.rs
-│   │   │   ├── simd_xor.rs
-│   │   │   └── xor.rs
-│   │   └── vm_flatten
-│   │       └── mod.rs
-│   ├── config
+│   │   ├── split_basic_block/
+│   │   ├── string_encryption/
+│   │   └── vm_flatten/
+│   ├── config/
 │   │   └── mod.rs
 │   ├── lib.rs
-│   ├── llvm_utils
+│   ├── llvm_utils/
 │   │   ├── basic_block.rs
 │   │   ├── branch_inst.rs
 │   │   ├── function.rs
 │   │   ├── mod.rs
 │   │   └── switch_inst.rs
-│   └── utils
+│   └── utils/
 │       └── mod.rs
-└── tests
+└── tests/
+    ├── .gitignore
     ├── const_strings.c
     ├── const_strings.rs
-    ├── .gitignore
     ├── indirect_branch.c
     ├── indirect_branch.rs
     ├── indirect_call.c
     ├── repeated_strings.c
     ├── repeated_strings.rs
-    ├── test1
     ├── test1.c
-    ├── test1.ll
     ├── test2.c
-    ├── test_ndk
-    ├── test_ndk.ll
     └── vm_flatten.c
 
-18 directories, 59 files
-
+18 directories, 35 files
 ```
+
+> 本文件由 GitHub Actions 自动生成，请勿手动编辑。
