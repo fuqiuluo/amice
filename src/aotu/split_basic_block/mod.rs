@@ -2,10 +2,11 @@ use crate::config::CONFIG;
 use crate::llvm_utils::basic_block::split_basic_block;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
+use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled};
 use rand::seq::SliceRandom;
+use amice_llvm::ir::function::{fix_stack, fix_stack_at_terminator, fix_stack_with_max_iterations};
 
 pub struct SplitBasicBlock {
     enable: bool,
@@ -39,7 +40,12 @@ fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) ->
             continue;
         }
 
-        let mut split_points: Vec<u32> = (1..count).collect();
+        // 确保基本块有合适的终结符
+        if !has_valid_terminator(&bb) {
+            continue;
+        }
+
+        let mut split_points: Vec<u32> = (1..count.saturating_sub(1)).collect(); // 避免切割最后一条指令
         shuffle(&mut split_points);
         split_points.truncate(split_num as usize);
         split_points.sort_unstable();
@@ -47,34 +53,46 @@ fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) ->
         let mut to_split = bb;
         let mut it = bb.get_first_instruction();
         let mut last = 0u32;
-        for i in 0..split_num {
-            if count_instructions(&to_split) < 2 {
+
+        for (i, &split_point) in split_points.iter().enumerate() {
+            if count_instructions(&to_split) < 3 { // 确保至少有3条指令
                 break;
             }
-            for j in 0..(split_points[i as usize] - last) {
+
+            // 移动到切割点
+            for _ in 0..(split_point - last) {
                 if let Some(curr_inst) = it {
                     it = curr_inst.get_next_instruction();
                 } else {
-                    break; // No more instructions to process
+                    break;
                 }
             }
-            last = split_points[i as usize];
+
+            last = split_point;
+
             if let Some(curr_inst) = it {
-                if let Some(new_block) = split_basic_block(to_split, curr_inst, ".split", false) {
+                // 确保不在终结符处切割
+                if is_terminator_instruction(&curr_inst) {
+                    continue;
+                }
+
+                let split_name = format!(".split_{}", i);
+                if let Some(new_block) = split_basic_block(to_split, curr_inst, &split_name, false) {
                     to_split = new_block;
                 } else {
-                    error!("Failed to split basic block at point {last}");
+                    error!("Failed to split basic block at point {}", split_point);
                     break;
                 }
             } else {
-                error!("No instruction found to split at point {last}");
-                break; // No more instructions to split
+                break;
             }
         }
+
         if log_enabled!(Level::Debug) {
             debug!("{:?} split points: {:?}", bb.get_name(), split_points);
         }
     }
+
     Ok(())
 }
 
@@ -83,12 +101,35 @@ pub fn shuffle(vec: &mut [u32]) {
     vec.shuffle(&mut rng);
 }
 
+fn is_terminator_instruction(inst: &llvm_plugin::inkwell::values::InstructionValue) -> bool {
+    matches!(inst.get_opcode(),
+        InstructionOpcode::Return |
+        InstructionOpcode::Br |
+        InstructionOpcode::Switch |
+        InstructionOpcode::IndirectBr |
+        InstructionOpcode::Invoke |
+        InstructionOpcode::Resume |
+        InstructionOpcode::Unreachable
+    )
+}
+
 fn flitter_basic_block(bb: &BasicBlock<'_>, split_num: u32, x: &mut u32) -> bool {
-    bb.get_instructions().any(|inst| {
+    let has_problematic_instructions = bb.get_instructions().any(|inst| {
         *x += 1;
-        inst.get_opcode() == InstructionOpcode::Phi
-    }) || *x < 2
-        || split_num > *x
+        match inst.get_opcode() {
+            InstructionOpcode::Phi => true,
+            InstructionOpcode::IndirectBr => true,  // 避免切割间接跳转
+            InstructionOpcode::Switch => true,      // 避免切割switch
+            InstructionOpcode::Invoke => true,      // 避免切割invoke
+            _ => false,
+        }
+    });
+
+    has_problematic_instructions || *x < 2 || split_num > *x
+}
+
+fn has_valid_terminator(bb: &BasicBlock<'_>) -> bool {
+    bb.get_terminator().is_some()
 }
 
 fn count_instructions(bb: &BasicBlock<'_>) -> u32 {
