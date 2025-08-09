@@ -56,6 +56,8 @@ mod tests {
 
         let stdout = stdout.split('\n').collect::<Vec<&str>>();
 
+        stdout.iter().for_each(|s| println!("{}", s));
+
         assert_eq!(stdout[0], "test1 (bytes): 68 65 6C 6C 6F 00 00 39 05 ");
         assert_eq!(stdout[1], "test1 string: hello");
         assert_eq!(stdout[2], "test1 int: 1337");
