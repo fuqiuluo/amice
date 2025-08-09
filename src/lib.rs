@@ -1,5 +1,5 @@
 mod aotu;
-pub(crate) mod llvm_utils;
+mod llvm_utils;
 mod config;
 
 use crate::aotu::indirect_branch::IndirectBranch;

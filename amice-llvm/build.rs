@@ -1,4 +1,11 @@
+use std::env;
+use std::path::PathBuf;
+
 fn main() {
+    link_llvm();
+}
+
+fn link_llvm() {
     println!("cargo::rustc-check-cfg=cfg(LLVM_NOT_FOUND)");
 
     let (major, minor) = *llvm_sys::LLVM_VERSION_FROM_FEATURES;
@@ -43,7 +50,6 @@ fn main() {
     {
         println!("cargo:rustc-link-search=native={}", libdir.trim());
         println!("cargo:rustc-link-lib=dylib=LLVM");
-        //println!("cargo:rustc-link-lib=static=LLVM");
     }
 
     #[cfg(target_os = "windows")]

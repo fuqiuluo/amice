@@ -15,3 +15,11 @@ pub unsafe fn append_to_used(module: *mut std::ffi::c_void, value: *mut std::ffi
 pub unsafe fn append_to_compiler_used(module: *mut std::ffi::c_void, value: *mut std::ffi::c_void) {
     ffi::amiceAppendToCompilerUsed(module, value);
 }
+
+pub fn verify_function(function: *mut std::ffi::c_void) -> bool {
+    unsafe {
+        ffi::amiceVerifyFunction(
+            function
+        ) == 1
+    }
+}

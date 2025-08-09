@@ -54,6 +54,7 @@ bitflags! {
         const DummyBlock =        0b00000010;
         const ChainedDummyBlock = 0b00000110; // note: includes DummyBlock
         const EncryptBlockIndex = 0b00001000;
+        const DummyJunk =         0b00010000; // 在 dummy block 中插入干扰性指令
     }
 }
 
@@ -127,6 +128,7 @@ fn parse_indirect_branch_flags(value: &str) -> IndirectBranchFlags {
             "dummy_block" => flags |= IndirectBranchFlags::DummyBlock,
             "chained_dummy_blocks" => flags |= IndirectBranchFlags::ChainedDummyBlock,
             "encrypt_block_index" => flags |= IndirectBranchFlags::EncryptBlockIndex,
+            "dummy_junk" => flags |= IndirectBranchFlags::DummyJunk,
             _ => warn!("Unknown AMICE_INDIRECT_BRANCH_FLAGS: \"{x}\", ignoring"),
         }
     }

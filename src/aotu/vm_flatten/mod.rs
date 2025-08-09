@@ -16,6 +16,7 @@ use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
+use amice_llvm::module_utils::verify_function;
 
 const MAGIC_NUMBER: u32 = 0x7788ff;
 
@@ -585,15 +586,13 @@ fn do_handle<'a>(
         builder.build_unconditional_branch(vm_entry)?;
     }
 
-    unsafe {
-        if amice_llvm::ir::function::verify_function(
-            function.as_value_ref() as *mut std::ffi::c_void
-        ) {
-            warn!(
+    if verify_function(
+        function.as_value_ref() as *mut std::ffi::c_void
+    ) {
+        warn!(
                 "(vm_flatten) function {} verify failed",
                 function.get_name().to_str().unwrap_or("<unknown>")
             );
-        }
     }
 
     unsafe {
