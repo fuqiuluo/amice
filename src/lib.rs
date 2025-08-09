@@ -10,6 +10,7 @@ use crate::aotu::vm_flatten::VmFlatten;
 use crate::config::CONFIG;
 use log::info;
 use std::io::Write;
+use crate::aotu::shuffle_blocks::ShuffleBlocks;
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1")]
 fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
@@ -39,10 +40,10 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         info!("amice plugin pipeline start callback, level: {level:?}");
 
         let cfg = &*CONFIG;
-
         manager.add_pass(StringEncryption::new(cfg.string_encryption.enable));
         manager.add_pass(IndirectCall::new(cfg.indirect_call.enable));
         manager.add_pass(SplitBasicBlock::new(cfg.split_basic_block.enable));
+        manager.add_pass(ShuffleBlocks::new(cfg.shuffle_blocks.enable));
         manager.add_pass(VmFlatten::new(cfg.vm_flatten.enable));
         manager.add_pass(IndirectBranch::new(cfg.indirect_branch.enable));
     });

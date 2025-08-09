@@ -82,7 +82,7 @@ impl EnvOverlay for IndirectBranchConfig {
             self.enable = bool_var("AMICE_INDIRECT_BRANCH", self.enable);
         }
         if let Ok(v) = std::env::var("AMICE_INDIRECT_BRANCH_FLAGS") {
-            self.flags |= super::indirect_branch::parse_indirect_branch_flags(&v);
+            self.flags |= parse_indirect_branch_flags(&v);
         }
     }
 }

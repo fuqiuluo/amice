@@ -9,6 +9,7 @@ mod indirect_call;
 mod indirect_branch;
 mod split_basic_block;
 mod vm_flatten;
+mod shuffle_blocks;
 
 pub use self::string_encryption::{
     StringAlgorithm, StringDecryptTiming, StringEncryptionConfig,
@@ -17,6 +18,7 @@ pub use self::indirect_call::IndirectCallConfig;
 pub use self::indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
 pub use self::split_basic_block::SplitBasicBlockConfig;
 pub use self::vm_flatten::VmFlattenConfig;
+pub use self::shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
 
 pub trait EnvOverlay {
     fn overlay_env(&mut self);
@@ -38,6 +40,7 @@ pub struct Config {
     pub indirect_branch: IndirectBranchConfig,
     pub split_basic_block: SplitBasicBlockConfig,
     pub vm_flatten: VmFlattenConfig,
+    pub shuffle_blocks: ShuffleBlocksConfig,
 }
 
 fn is_truthy(value: &str) -> bool {
@@ -93,6 +96,7 @@ impl EnvOverlay for Config {
         self.indirect_branch.overlay_env();
         self.split_basic_block.overlay_env();
         self.vm_flatten.overlay_env();
+        self.shuffle_blocks.overlay_env();
     }
 }
 

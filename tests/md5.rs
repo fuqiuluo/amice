@@ -4,12 +4,12 @@ mod tests {
     use std::process::Command;
 
     fn setup_environment(cmd: &mut Command) {
-        cmd.env("AMICE_SHUFFLE_BLOCKS", "false");
+        cmd.env("AMICE_SHUFFLE_BLOCKS", "true");
         cmd.env("AMICE_SHUFFLE_BLOCKS_FLAGS", "random");
 
-        cmd.env("AMICE_SPLIT_BASIC_BLOCK", "false");
+        cmd.env("AMICE_SPLIT_BASIC_BLOCK", "true");
 
-        cmd.env("AMICE_INDIRECT_BRANCH", "false");
+        cmd.env("AMICE_INDIRECT_BRANCH", "true");
         cmd.env("AMICE_INDIRECT_BRANCH_FLAGS", "dummy_block");
 
         cmd.env("AMICE_STRING_ENCRYPTION", "false");
@@ -18,9 +18,9 @@ mod tests {
         cmd.env("AMICE_STRING_STACK_ALLOC", "false");
         cmd.env("AMICE_STRING_INLINE_DECRYPT_FN", "true");
 
-        cmd.env("AMICE_INDIRECT_CALL", "false");
+        cmd.env("AMICE_INDIRECT_CALL", "true");
 
-        cmd.env("AMICE_VM_FLATTEN", "false");
+        cmd.env("AMICE_VM_FLATTEN", "true");
 
         let mut output_env = String::new();
         for x in cmd.get_envs() {
@@ -72,6 +72,10 @@ mod tests {
             .filter(|line| !line.is_empty())
             .map(|line| line.trim())
             .collect::<Vec<&str>>();
+
+        for x in stdout {
+            println!("{}", x);
+        }
 
         assert_eq!(stdout.len(), 8, "Expected 8 lines of output, found: {}", stdout.len());
         assert_eq!(stdout[0], "MD5(\"\") = 906adc8dc99e0b7e4de1afd68e879d9f");
