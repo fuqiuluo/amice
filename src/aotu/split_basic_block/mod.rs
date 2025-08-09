@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use crate::config::CONFIG;
 use crate::llvm_utils::basic_block::split_basic_block;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -7,6 +8,7 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled};
 use rand::seq::SliceRandom;
 use amice_llvm::ir::function::{fix_stack, fix_stack_at_terminator, fix_stack_with_max_iterations};
+use crate::llvm_utils::function::get_basic_block_entry;
 
 pub struct SplitBasicBlock {
     enable: bool,
@@ -34,10 +36,25 @@ impl LlvmModulePass for SplitBasicBlock {
 }
 
 fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) -> anyhow::Result<()> {
+    let Some(entry) = get_basic_block_entry(function) else {
+        return Err(anyhow!("Function {:?} has no entry block", function.get_name()));
+    };
+
     for bb in function.get_basic_blocks() {
+        let is_entry = entry == bb;
+
+        // 非入口块上如发现 alloca，跳过
+        if !is_entry && block_has_alloca(&bb) {
+            continue;
+        }
+
         let mut count = 0u32;
         if flitter_basic_block(&bb, split_num, &mut count) {
-            continue;
+            // 注意：对于入口块，flitter_basic_block 检出 Alloca 会返回 true
+            // 但我们后面仍可能允许在 alloca 之后切（见下）
+            if !(is_entry && count > 0) {
+                continue;
+            }
         }
 
         // 确保基本块有合适的终结符
@@ -45,7 +62,17 @@ fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) ->
             continue;
         }
 
+        // 构造候选切点
         let mut split_points: Vec<u32> = (1..count.saturating_sub(1)).collect(); // 避免切割最后一条指令
+
+        // 入口块：仅允许在首个非 alloca 指令之后切割
+        let start_idx = if is_entry { first_non_alloca_index(&bb) } else { 0 };
+        split_points.retain(|&i| i > start_idx);
+
+        if split_points.is_empty() {
+            continue;
+        }
+
         shuffle(&mut split_points);
         split_points.truncate(split_num as usize);
         split_points.sort_unstable();
@@ -76,6 +103,11 @@ fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) ->
                     continue;
                 }
 
+                if curr_inst.get_opcode() == InstructionOpcode::Alloca {
+                    // 永不在 alloca 处切割
+                    continue;
+                }
+
                 let split_name = format!(".split_{}", i);
                 if let Some(new_block) = split_basic_block(to_split, curr_inst, &split_name, false) {
                     to_split = new_block;
@@ -101,6 +133,22 @@ pub fn shuffle(vec: &mut [u32]) {
     vec.shuffle(&mut rng);
 }
 
+fn block_has_alloca(bb: &BasicBlock<'_>) -> bool {
+    bb.get_instructions().any(|inst| inst.get_opcode() == InstructionOpcode::Alloca)
+}
+
+fn first_non_alloca_index(bb: &BasicBlock<'_>) -> u32 {
+    let mut idx = 0u32;
+    for inst in bb.get_instructions() {
+        match inst.get_opcode() {
+            InstructionOpcode::Alloca => idx += 1,
+            _ => break,
+        }
+    }
+    idx
+}
+
+
 fn is_terminator_instruction(inst: &llvm_plugin::inkwell::values::InstructionValue) -> bool {
     matches!(inst.get_opcode(),
         InstructionOpcode::Return |
@@ -121,6 +169,11 @@ fn flitter_basic_block(bb: &BasicBlock<'_>, split_num: u32, x: &mut u32) -> bool
             InstructionOpcode::IndirectBr => true,  // 避免切割间接跳转
             InstructionOpcode::Switch => true,      // 避免切割switch
             InstructionOpcode::Invoke => true,      // 避免切割invoke
+            InstructionOpcode::Alloca => {
+                // 非入口块上有 alloca，一律视为问题块
+                // 调用处可根据 bb 是否为入口块决定是否跳过
+                true
+            }
             _ => false,
         }
     });
