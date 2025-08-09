@@ -1,4 +1,6 @@
-use crate::aotu::string_encryption::{EncryptedGlobalValue, StringEncryption, array_as_const_string, STACK_ALLOC_THRESHOLD};
+use crate::aotu::string_encryption::{
+    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, array_as_const_string,
+};
 use crate::config::StringDecryptTiming as DecryptTiming;
 use crate::ptr_type;
 use anyhow::anyhow;
@@ -104,7 +106,7 @@ pub(crate) fn do_handle<'a>(
         .map(|(unique_name, global, stru, encoded_str)| {
             let string_len = encoded_str.len() as u32;
             let should_use_stack = pass.stack_alloc && string_len <= STACK_ALLOC_THRESHOLD;
-            
+
             // Warn if stack allocation is requested but string is too large
             if pass.stack_alloc && string_len > STACK_ALLOC_THRESHOLD {
                 warn!(
@@ -112,7 +114,7 @@ pub(crate) fn do_handle<'a>(
                     unique_name, string_len
                 );
             }
-            
+
             let flag = if has_flag {
                 let flag = module.add_global(i32_ty, None, &format!("dec_flag_simd_{unique_name}"));
                 flag.set_initializer(&i32_ty.const_zero());
@@ -265,19 +267,44 @@ fn do_insert_by_user(
     is_stack_fn: bool,
 ) -> anyhow::Result<()> {
     match user {
-        AnyValueEnum::InstructionValue(inst) => {
-            insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag, is_stack_fn)?
-        },
+        AnyValueEnum::InstructionValue(inst) => insert_decrypt_call(
+            ctx,
+            inst,
+            &ev.global,
+            decrypt_fn,
+            global_key,
+            ev.len,
+            ev.flag,
+            is_stack_fn,
+        )?,
         AnyValueEnum::IntValue(value) => {
             if let Some(inst) = value.as_instruction_value() {
-                insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag, is_stack_fn)?
+                insert_decrypt_call(
+                    ctx,
+                    inst,
+                    &ev.global,
+                    decrypt_fn,
+                    global_key,
+                    ev.len,
+                    ev.flag,
+                    is_stack_fn,
+                )?
             } else {
                 error!("(strenc) unexpected IntValue user: {value:?}");
             }
         },
         AnyValueEnum::PointerValue(gv) => {
             if let Some(inst) = gv.as_instruction_value() {
-                insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag, is_stack_fn)?
+                insert_decrypt_call(
+                    ctx,
+                    inst,
+                    &ev.global,
+                    decrypt_fn,
+                    global_key,
+                    ev.len,
+                    ev.flag,
+                    is_stack_fn,
+                )?
             } else {
                 let mut uses = Vec::new();
                 let mut use_opt = gv.get_first_use();
@@ -342,7 +369,13 @@ fn insert_decrypt_call<'a>(
         let container = builder.build_array_alloca(i8_ty, i32_ty.const_int(len as u64 + 1, false), "")?;
         builder.build_call(
             decrypt_fn,
-            &[ptr.into(), container.into(), len_val.into(), key.into(), flag_ptr.into()],
+            &[
+                ptr.into(),
+                container.into(),
+                len_val.into(),
+                key.into(),
+                flag_ptr.into(),
+            ],
             "",
         )?;
 
@@ -451,7 +484,7 @@ fn add_decrypt_function<'a>(
             inkwell::IntPredicate::EQ,
             flag_ptr,
             flag_ptr.get_type().const_null(),
-            ""
+            "",
         )?;
         builder.build_conditional_branch(cond_if_flag_ptr_is_null, key_prepare, entry_has_flags)?;
 

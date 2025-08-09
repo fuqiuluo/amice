@@ -90,8 +90,14 @@ mod tests {
 
         // Check that the large string is properly decrypted
         let stdout = String::from_utf8_lossy(&run_output.stdout);
-        assert!(stdout.contains("Large string length: 4744"), "Large string not properly decrypted");
-        assert!(stdout.contains("Small string: This is a small string"), "Small string not properly decrypted");
+        assert!(
+            stdout.contains("Large string length: 4744"),
+            "Large string not properly decrypted"
+        );
+        assert!(
+            stdout.contains("Small string: This is a small string"),
+            "Small string not properly decrypted"
+        );
     }
 
     #[test]
@@ -138,8 +144,14 @@ mod tests {
 
         // Check that the large string is properly decrypted
         let stdout = String::from_utf8_lossy(&run_output.stdout);
-        assert!(stdout.contains("Large string length: 4744"), "Large string not properly decrypted");
-        assert!(stdout.contains("Small string: This is a small string"), "Small string not properly decrypted");
+        assert!(
+            stdout.contains("Large string length: 4744"),
+            "Large string not properly decrypted"
+        );
+        assert!(
+            stdout.contains("Small string: This is a small string"),
+            "Small string not properly decrypted"
+        );
     }
 
     #[test]

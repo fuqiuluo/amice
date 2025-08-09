@@ -1,4 +1,6 @@
-use crate::aotu::string_encryption::{EncryptedGlobalValue, StringEncryption, array_as_const_string, STACK_ALLOC_THRESHOLD};
+use crate::aotu::string_encryption::{
+    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, array_as_const_string,
+};
 use crate::config::StringDecryptTiming as DecryptTiming;
 use crate::ptr_type;
 use inkwell::module::Module;
@@ -73,7 +75,7 @@ pub(crate) fn do_handle<'a>(
         .map(|(unique_name, global, stru, encoded_str)| {
             let string_len = encoded_str.len() as u32;
             let should_use_stack = pass.stack_alloc && string_len <= STACK_ALLOC_THRESHOLD;
-            
+
             // Warn if stack allocation is requested but string is too large
             if pass.stack_alloc && string_len > STACK_ALLOC_THRESHOLD {
                 warn!(
@@ -81,7 +83,7 @@ pub(crate) fn do_handle<'a>(
                     unique_name, string_len
                 );
             }
-            
+
             let flag = if has_flag {
                 let flag = module.add_global(i32_ty, None, &format!("dec_flag_{unique_name}"));
                 flag.set_initializer(&i32_ty.const_int(0, false));
@@ -124,7 +126,7 @@ pub(crate) fn do_handle<'a>(
 
     // Check if any large strings would force us to use mixed mode
     let has_oversized_strings = pass.stack_alloc && gs.iter().any(|ev| !ev.use_stack_alloc);
-    
+
     // Determine the decryption approach
     let effective_stack_alloc = pass.stack_alloc && !has_oversized_strings;
 
@@ -204,7 +206,9 @@ fn do_insert_by_user(
     user: AnyValueEnum,
 ) -> anyhow::Result<()> {
     match user {
-        AnyValueEnum::InstructionValue(inst) => insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag, stack_alloc)?,
+        AnyValueEnum::InstructionValue(inst) => {
+            insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag, stack_alloc)?
+        },
         AnyValueEnum::IntValue(value) => {
             if let Some(inst) = value.as_instruction_value() {
                 insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag, stack_alloc)?
@@ -275,7 +279,16 @@ fn insert_decrypt_call<'a>(
     let len_val = i32_ty.const_int(len as u64, false);
     if stack_alloc {
         let container = builder.build_array_alloca(i8_ty, i32_ty.const_int(len as u64 + 1, false), "")?;
-        builder.build_call(decrypt_fn, &[ptr.into(), len_val.into(), i32_ptr.const_null().into(), container.into()], "")?;
+        builder.build_call(
+            decrypt_fn,
+            &[
+                ptr.into(),
+                len_val.into(),
+                i32_ptr.const_null().into(),
+                container.into(),
+            ],
+            "",
+        )?;
 
         let mut replaced = false;
         for i in 0..inst.get_num_operands() {
@@ -302,7 +315,11 @@ fn insert_decrypt_call<'a>(
         } else {
             i32_ptr.const_null()
         };
-        builder.build_call(decrypt_fn, &[ptr.into(), len_val.into(), flag_ptr.into(), ptr.into()], "")?;
+        builder.build_call(
+            decrypt_fn,
+            &[ptr.into(), len_val.into(), flag_ptr.into(), ptr.into()],
+            "",
+        )?;
     }
 
     Ok(())
@@ -342,7 +359,9 @@ fn add_decrypt_function<'a>(
     };
     let update_flag = if has_flag {
         ctx.append_basic_block(decrypt_fn, "update_flag").into()
-    } else { None };
+    } else {
+        None
+    };
     let entry = ctx.append_basic_block(decrypt_fn, "entry");
     let body = ctx.append_basic_block(decrypt_fn, "body");
     let next = ctx.append_basic_block(decrypt_fn, "next");
@@ -449,7 +468,11 @@ fn do_global<'a>(
         let len_val = i32_ty.const_int(ev.len as u64, false);
         let flag_ptr = i32_ptr.const_null();
         let dst = ptr;
-        builder.build_call(decrypt_fn, &[ptr.into(), len_val.into(), flag_ptr.into(), dst.into()], "")?;
+        builder.build_call(
+            decrypt_fn,
+            &[ptr.into(), len_val.into(), flag_ptr.into(), dst.into()],
+            "",
+        )?;
     }
 
     builder.build_return(None)?;

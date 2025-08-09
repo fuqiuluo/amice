@@ -8,7 +8,7 @@ use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, GlobalValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::error;
 
-/// Stack allocation threshold: strings larger than this will use global timing 
+/// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled
 const STACK_ALLOC_THRESHOLD: u32 = 4096; // 4KB
 
@@ -75,8 +75,12 @@ impl StringEncryption {
         let inline_decrypt = cfg.string_encryption.inline_decrypt_fn;
         let only_llvm_string = cfg.string_encryption.only_llvm_string;
 
-        assert!((decrypt_timing == StringDecryptTiming::Global && !stack_alloc) ||
-                decrypt_timing != StringDecryptTiming::Global, "stack alloc is not supported with global decrypt timing: {:?}", decrypt_timing);
+        assert!(
+            (decrypt_timing == StringDecryptTiming::Global && !stack_alloc)
+                || decrypt_timing != StringDecryptTiming::Global,
+            "stack alloc is not supported with global decrypt timing: {:?}",
+            decrypt_timing
+        );
 
         StringEncryption {
             enable,
