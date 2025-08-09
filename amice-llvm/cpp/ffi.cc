@@ -30,6 +30,13 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Utils.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 14)
 #include <llvm/Passes/OptimizationLevel.h>
@@ -91,12 +98,26 @@ bool valueEscapes(llvm::Instruction *Inst) {
   return false;
 }
 
-void amiceFixStack(llvm::Function *f, int AtTerminator) {
+static bool valueEscapesOfficial(const llvm::Instruction &Inst) {
+  if (!Inst.getType()->isSized())
+    return false;
+
+  const llvm::BasicBlock *BB = Inst.getParent();
+  for (const llvm::User *U : Inst.users()) {
+    const llvm::Instruction *UI = llvm::cast<llvm::Instruction>(U);
+    if (UI->getParent() != BB || llvm::isa<llvm::PHINode>(UI))
+      return true;
+  }
+  return false;
+}
+
+void amiceFixStack(llvm::Function *f, int AtTerminator, int MaxIterations) {
     // https://bbs.kanxue.com/thread-268789-1.htm
     std::vector<llvm::PHINode *> tmpPhi;
     std::vector<llvm::Instruction *> tmpReg;
     llvm::BasicBlock *bbEntry = &*f->begin();
 
+    int iteration = 0;
     do {
         tmpPhi.clear();
         tmpReg.clear();
@@ -145,7 +166,10 @@ void amiceFixStack(llvm::Function *f, int AtTerminator) {
             }
         }
 #endif
-
+         iteration++;
+         if(MaxIterations != 0 && iteration > MaxIterations) {
+            break;
+         }
     } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
 }
 

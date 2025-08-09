@@ -19,7 +19,7 @@ unsafe extern "C" {
 
     pub(crate) fn amiceAppendToCompilerUsed(module: *mut c_void, value: *mut c_void);
 
-    pub(crate) fn amiceFixStack(function: *mut c_void, at_term: i32);
+    pub(crate) fn amiceFixStack(function: *mut c_void, at_term: i32, max_iterations: i32);
 
     pub(crate) fn amiceVerifyFunction(function: *mut c_void) -> i32;
 
