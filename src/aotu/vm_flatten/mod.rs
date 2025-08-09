@@ -164,8 +164,8 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                 | InstructionOpcode::IndirectBr => {
                     has_eh_or_invoke = true;
                     break 'outer;
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
     }
@@ -213,7 +213,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                     .ok_or(anyhow!("expected right operand for unconditional br"))?
                     .into();
             }
-        }
+        },
         InstructionOpcode::Switch
         | InstructionOpcode::Invoke
         | InstructionOpcode::CallBr
@@ -231,11 +231,11 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                 return Err(anyhow!("Split block has wrong parent"));
             }
             first_basic_block = new_block.into();
-        }
+        },
         InstructionOpcode::Return | InstructionOpcode::Unreachable => {
             // 无后继，不需要做 flatten
             return Ok(());
-        }
+        },
         _ => {
             // 尝试像条件分支一样 split 出一个仅含 terminator 的块
             let mut split_pos = entry_term_inst;
@@ -250,7 +250,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
             } else {
                 return Err(anyhow!("failed to get first basic block: {}", entry_term_inst));
             }
-        }
+        },
     }
 
     // for inst in entry_block.get_instructions() {
