@@ -1,0 +1,77 @@
+name: Generate Structure Markdown
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths-ignore:
+      - "docs/PROJECT_STRUCTURE.md"
+      - "STRUCTURE.md"
+      - "PROJECT_STRUCTURE.md"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gen-structure-md-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    env:
+      MAX_DEPTH: "3"      
+      IGNORE_PATTERN: ".git|target|node_modules|.idea|.vscode|dist|build"
+      SECTION_TITLE: "项目结构"
+      OUTPUT_FILE: "docs/PROJECT_STRUCTURE.md"
+      REPO_NAME: "${{ github.event.repository.name }}"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tree
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tree
+
+      - name: Generate structure markdown
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$(dirname "$OUTPUT_FILE")"
+
+          TMP_TREE="$(mktemp)"
+          tree -a -F -I "$IGNORE_PATTERN" -L "$MAX_DEPTH" \
+            | sed '1s/^\.\///; s/^\.\s*//' > "$TMP_TREE" || true
+
+          {
+            echo "# ${SECTION_TITLE}"
+            echo
+            echo "- 仓库：${REPO_NAME}"
+            echo "- 生成时间：$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "- 深度：$MAX_DEPTH"
+            echo "- 忽略：$IGNORE_PATTERN"
+            echo
+            echo '```text'
+            cat "$TMP_TREE"
+            echo '```'
+            echo
+            echo "> 本文件由 GitHub Actions 自动生成，请勿手动编辑。"
+          } > "$OUTPUT_FILE"
+
+          rm -f "$TMP_TREE" 2>/dev/null || true
+
+          if git diff --quiet -- "$OUTPUT_FILE"; then
+            echo "NO_CHANGES=true" >> $GITHUB_ENV
+          fi
+
+      - name: Commit & push changes
+        if: env.NO_CHANGES != 'true'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "docs(structure): 自动更新项目结构到 ${OUTPUT_FILE} [skip ci]"
+          branch: ${{ github.ref_name }}
