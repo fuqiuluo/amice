@@ -4,10 +4,18 @@ mod tests {
 
     fn build_amice() {
         let output = Command::new("cargo")
+            .env("LLVM_SYS_181_PREFIX", "/usr/lib/llvm-18")
             .arg("build")
             .arg("--release")
+            .arg("--no-default-features")
+            .arg("--features")
+            .arg("llvm18-1")
             .output()
             .expect("Failed to execute cargo build command");
+        if !output.status.success() {
+            eprintln!("STDOUT: {}", String::from_utf8_lossy(&output.stdout));
+            eprintln!("STDERR: {}", String::from_utf8_lossy(&output.stderr));
+        }
         assert!(output.status.success(), "Cargo build failed");
     }
 
@@ -81,6 +89,42 @@ mod tests {
 
         let output = Command::new("clang")
             .env("AMICE_STRING_ALGORITHM", "xor")
+            .env("AMICE_STRING_DECRYPT_TIMING", "global")
+            .arg("-fpass-plugin=target/release/libamice.so")
+            .arg("tests/const_strings.c")
+            .arg("-o")
+            .arg("target/const_strings")
+            .output()
+            .expect("Failed to execute clang command");
+        assert!(output.status.success(), "Clang command failed");
+
+        check_output();
+    }
+
+    #[test]
+    fn test_const_strings_lazy_simd_xor() {
+        build_amice();
+
+        let output = Command::new("clang")
+            .env("AMICE_STRING_ALGORITHM", "simd_xor")
+            .env("AMICE_STRING_DECRYPT_TIMING", "lazy")
+            .arg("-fpass-plugin=target/release/libamice.so")
+            .arg("tests/const_strings.c")
+            .arg("-o")
+            .arg("target/const_strings")
+            .output()
+            .expect("Failed to execute clang command");
+        assert!(output.status.success(), "Clang command failed");
+
+        check_output();
+    }
+
+    #[test]
+    fn test_const_strings_global_simd_xor() {
+        build_amice();
+
+        let output = Command::new("clang")
+            .env("AMICE_STRING_ALGORITHM", "simd_xor")
             .env("AMICE_STRING_DECRYPT_TIMING", "global")
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/const_strings.c")
