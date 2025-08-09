@@ -69,27 +69,6 @@ impl LlvmModulePass for IndirectCall {
             .map(|f| f.as_pointer_value())
             .collect::<Vec<_>>();
 
-        // let encrypted_values: Vec<_> = likely_functions_values.iter()
-        //     .map(|func| {
-        //         unsafe {
-        //             let cast = ir::constants::get_bitcast_constant(
-        //                 func.as_value_ref() as *mut std::ffi::c_void,
-        //                 ptr_type.as_type_ref() as *mut std::ffi::c_void
-        //             );
-        //             let ptr_as_int = ir::constants::get_ptr_to_int_constant(
-        //                 cast,
-        //                 ptr_type.as_type_ref() as *mut std::ffi::c_void
-        //             );
-        //             let xor_value = ir::constants::get_xor_constant(
-        //                 ptr_as_int,
-        //                 int64_type.const_int(self.xor_key, false).as_value_ref() as *mut std::ffi::c_void
-        //             );
-        //             xor_value as LLVMValueRef
-        //         }
-        //     })
-        //     .map(|value| unsafe { PointerValue::new(value) })
-        //     .collect();
-
         let array_type = ptr_type.array_type(likely_functions.len() as u32);
         let initializer = ptr_type.const_array(&likely_functions_values);
         let global_fun_table = module.add_global(array_type, None, ".amice_indirect_call_table");

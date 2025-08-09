@@ -302,8 +302,6 @@ impl LlvmModulePass for IndirectBranch {
                     function.get_name().to_str().unwrap_or("<unknown>")
                 );
             }
-
-            //unsafe { amice_llvm::ir::function::fix_stack(fun.as_value_ref() as *mut std::ffi::c_void) }
         }
 
         PreservedAnalyses::None

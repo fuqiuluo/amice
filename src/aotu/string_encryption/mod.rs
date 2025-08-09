@@ -31,7 +31,7 @@ impl StringEncryptionType {
     pub fn level(&self) -> i32 {
         match self {
             StringEncryptionType::Xor => 0,
-            StringEncryptionType::SimdXor => -4,
+            StringEncryptionType::SimdXor => 4,
         }
     }
 }
