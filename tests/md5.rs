@@ -4,15 +4,15 @@ mod tests {
     use std::process::Command;
 
     fn setup_environment(cmd: &mut Command) {
-        cmd.env("AMICE_SHUFFLE_BLOCKS", "true");
+        cmd.env("AMICE_SHUFFLE_BLOCKS", "false");
         cmd.env("AMICE_SHUFFLE_BLOCKS_FLAGS", "random");
 
-        cmd.env("AMICE_SPLIT_BASIC_BLOCK", "true");
+        cmd.env("AMICE_SPLIT_BASIC_BLOCK", "false");
 
-        cmd.env("AMICE_INDIRECT_BRANCH", "true");
+        cmd.env("AMICE_INDIRECT_BRANCH", "false");
         cmd.env("AMICE_INDIRECT_BRANCH_FLAGS", "chained_dummy_block");
 
-        cmd.env("AMICE_STRING_ENCRYPTION", "true");
+        cmd.env("AMICE_STRING_ENCRYPTION", "false");
         cmd.env("AMICE_STRING_ALGORITHM", "xor_simd");
         cmd.env("AMICE_STRING_DECRYPT_TIMING", "lazy");
         cmd.env("AMICE_STRING_STACK_ALLOC", "false");
@@ -20,7 +20,7 @@ mod tests {
 
         cmd.env("AMICE_INDIRECT_CALL", "true");
 
-        cmd.env("AMICE_VM_FLATTEN", "false");
+        cmd.env("AMICE_VM_FLATTEN", "true");
 
         let mut output_env = String::new();
         for x in cmd.get_envs() {

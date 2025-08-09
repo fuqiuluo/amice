@@ -151,11 +151,32 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         return Ok(());
     }
 
+    let mut has_eh_or_invoke = false;
+    'outer: for bb in function.get_basic_blocks() {
+        for inst in bb.get_instructions() {
+            match inst.get_opcode() {
+                InstructionOpcode::Invoke
+                | InstructionOpcode::LandingPad
+                | InstructionOpcode::CatchSwitch
+                | InstructionOpcode::CatchPad
+                | InstructionOpcode::CleanupPad
+                | InstructionOpcode::CallBr
+                | InstructionOpcode::IndirectBr => {
+                    has_eh_or_invoke = true;
+                    break 'outer;
+                }
+                _ => {}
+            }
+        }
+    }
+    if has_eh_or_invoke {
+        // 跳过该函数，不做扁平化
+        return Ok(());
+    }
+
     let Some(entry_block) = get_basic_block_entry(function) else {
         return Err(anyhow::anyhow!("failed to get entry block"));
     };
-
-    let entry_block_inst_count = entry_block.get_instructions().count();
 
     // 从basic block移除入口基本块
     basic_blocks.retain(|bb| *bb != entry_block);
@@ -815,9 +836,9 @@ fn calculate_pc(opcodes: &Vec<(VmBranchNodeKind, Vec<u32>, u32)>, index: usize) 
         }
     }
 
-    if log_enabled!(Level::Debug) {
-        debug!("(vm_flatten) calculate_pc: index = {index}, pc = {pc}");
-    }
+    // if log_enabled!(Level::Debug) {
+    //     debug!("(vm_flatten) calculate_pc: index = {index}, pc = {pc}");
+    // }
 
     pc as u32
 }
