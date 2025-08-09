@@ -2,12 +2,6 @@ name: Generate Structure Markdown
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main, master ]
-    paths-ignore:
-      - "docs/PROJECT_STRUCTURE.md"
-      - "STRUCTURE.md"
-      - "PROJECT_STRUCTURE.md"
 
 permissions:
   contents: write
