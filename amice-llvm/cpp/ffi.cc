@@ -87,6 +87,9 @@ llvm::BasicBlock * 	amiceSplitBasicBlock (llvm::BasicBlock * BB, llvm::Instructi
 }
 
 bool valueEscapes(llvm::Instruction *Inst) {
+  if (!Inst->getType()->isSized())
+    return false;
+
   llvm::BasicBlock *BB = Inst->getParent();
   for (llvm::Value::use_iterator UI = Inst->use_begin(), E = Inst->use_end(); UI != E;
        ++UI) {
