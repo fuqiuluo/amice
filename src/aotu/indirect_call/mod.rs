@@ -7,7 +7,7 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
-use crate::utils::config_utils::CONFIG;
+use crate::config::CONFIG;
 
 pub struct IndirectCall {
     enable: bool,

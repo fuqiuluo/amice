@@ -1,7 +1,7 @@
 use crate::aotu::string_encryption::{
     EncryptedGlobalValue, StringEncryption, array_as_const_string,
 };
-use crate::utils::config_utils::StringDecryptTiming as DecryptTiming;
+use crate::config::StringDecryptTiming as DecryptTiming;
 use crate::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;

@@ -1,18 +1,17 @@
 use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry_ref;
 use crate::ptr_type;
-use bitflags::bitflags;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::AsTypeRef;
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, InstructionOpcode, PhiValue};
-use llvm_plugin::inkwell::AddressSpace;
+use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use llvm_plugin::inkwell::context::{Context, ContextRef};
 use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
 use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use log::{debug, error, log_enabled, warn, Level};
-use crate::utils::config_utils::{CONFIG, IndirectBranchFlags};
+use crate::config::{IndirectBranchFlags, CONFIG};
 use rand::Rng;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
@@ -278,7 +277,7 @@ impl LlvmModulePass for IndirectBranch {
                         let target =
                             unsafe { cur_dummy_block.get_address().unwrap().as_basic_value_enum() };
 
-                        /*                        if rand::random_range(0..=100) < 45 {
+                        if rand::random_range(0..=100) < 45 {
                             let dummy_val1 = i32_ty.const_int(rand::random::<u32>() as u64, false);
                             let dummy_val2 = i32_ty.const_int(rand::random::<u32>() as u64, false);
                             if let Ok(alloca) = builder.build_alloca(i32_ty, "junk_volatile") {
@@ -309,7 +308,7 @@ impl LlvmModulePass for IndirectBranch {
                                     }
                                 }
                             }
-                        }*/
+                        }
 
                         builder
                             .build_indirect_branch(target, &[cur_dummy_block])
@@ -370,15 +369,12 @@ fn update_phi_nodes<'ctx>(
     new_pred: BasicBlock<'ctx>,
     target_block: BasicBlock<'ctx>,
 ) {
-    let builder = ctx.create_builder();
-
     for phi in target_block.get_first_instruction().iter() {
         if phi.get_opcode() != InstructionOpcode::Phi {
             break;
         }
 
         // %25 = phi i32 [ 1, %21 ], [ %23, %22 ]
-        builder.position_before(phi);
         let phi = unsafe { PhiValue::new(phi.as_value_ref()) };
         let incoming_vec = phi.get_incomings()
             .filter_map(|(value, pred)| {

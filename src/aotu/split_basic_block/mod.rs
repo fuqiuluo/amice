@@ -5,7 +5,7 @@ use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled};
 use rand::seq::SliceRandom;
-use crate::utils::config_utils::CONFIG;
+use crate::config::CONFIG;
 
 pub struct SplitBasicBlock {
     enable: bool,

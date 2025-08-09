@@ -6,7 +6,7 @@ use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, GlobalValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::error;
-use crate::utils::config_utils::{CONFIG, StringAlgorithm, StringDecryptTiming};
+use crate::config::{CONFIG, StringAlgorithm, StringDecryptTiming};
 
 enum StringEncryptionType {
     Xor,
