@@ -123,61 +123,38 @@ pub(crate) fn do_handle<'a>(
         })
         .collect();
 
-    // Separate strings by decryption method
-    let stack_strings: Vec<_> = gs.iter().filter(|ev| ev.use_stack_alloc).collect();
-    let global_strings: Vec<_> = gs.iter().filter(|ev| !ev.use_stack_alloc).collect();
+    // Check if any large strings would force us to use mixed mode
+    let has_oversized_strings = pass.stack_alloc && gs.iter().any(|ev| !ev.use_stack_alloc);
+    
+    // Determine the decryption approach
+    let effective_stack_alloc = pass.stack_alloc && !has_oversized_strings;
 
-    // Create appropriate decrypt functions
-    let decrypt_fn_stack = if !stack_strings.is_empty() {
-        if pass.stack_alloc {
-            warn!(
-                "(strenc) using stack allocation for decryption of {} string(s), this may cause issues with large strings or in multi-threaded contexts.",
-                stack_strings.len()
-            );
-        }
-        Some(add_decrypt_function_stack(
+    let decrypt_fn = if effective_stack_alloc {
+        warn!(
+            "(strenc) using stack allocation for decryption, this may cause issues with large strings or in multi-threaded contexts."
+        );
+        add_decrypt_function_stack(
             module,
             &format!("decrypt_strings_stack_{}", rand::random::<u32>()),
             pass.inline_decrypt,
-        )?)
+        )?
     } else {
-        None
-    };
-
-    let decrypt_fn_global = if !global_strings.is_empty() {
-        Some(add_decrypt_function(
+        add_decrypt_function(
             module,
             &format!("decrypt_strings_{}", rand::random::<u32>()),
-            false, // no flags needed for global strings
+            has_flag,
             pass.inline_decrypt,
-        )?)
-    } else {
-        None
+        )?
     };
 
     match pass.decrypt_timing {
-        DecryptTiming::Lazy => {
-            // Handle stack strings with lazy timing
-            if let Some(decrypt_fn) = decrypt_fn_stack {
-                do_lazy(&stack_strings, decrypt_fn, ctx, true)?;
-            }
-            // Handle global strings with lazy timing (though they'll use global logic)
-            if let Some(decrypt_fn) = decrypt_fn_global {
-                do_lazy(&global_strings, decrypt_fn, ctx, false)?;
-            }
-        },
+        DecryptTiming::Lazy => do_lazy(&gs, decrypt_fn, ctx, effective_stack_alloc)?,
         DecryptTiming::Global => {
-            // For global timing, all strings use global decrypt logic
-            if !gs.is_empty() {
-                let decrypt_fn = add_decrypt_function(
-                    module,
-                    &format!("decrypt_strings_global_{}", rand::random::<u32>()),
-                    false,
-                    pass.inline_decrypt,
-                )?;
-                let gs_refs: Vec<_> = gs.iter().collect();
-                do_global(module, &gs_refs, decrypt_fn, ctx)?;
-            }
+            assert!(
+                !effective_stack_alloc,
+                "(strenc) global decrypt timing is not supported with stack allocation"
+            );
+            do_global(module, &gs, decrypt_fn, ctx)?
         },
     }
 
@@ -185,10 +162,10 @@ pub(crate) fn do_handle<'a>(
 }
 
 fn do_lazy(
-    gs: &[&EncryptedGlobalValue],
+    gs: &[EncryptedGlobalValue],
     decrypt_fn: FunctionValue<'_>,
     ctx: ContextRef,
-    is_stack_fn: bool,
+    stack_alloc: bool,
 ) -> anyhow::Result<()> {
     for ev in gs {
         let mut uses = Vec::new();
@@ -200,7 +177,7 @@ fn do_lazy(
 
         for u in uses {
             let user = u.get_user();
-            do_insert_by_user(decrypt_fn, &ev.global, ctx, is_stack_fn, ev, user)?;
+            do_insert_by_user(decrypt_fn, &ev.global, ctx, stack_alloc, ev, user)?;
         }
     }
 
@@ -211,11 +188,11 @@ fn do_insert_by_user(
     decrypt_fn: FunctionValue<'_>,
     global_key: &GlobalValue,
     ctx: ContextRef,
-    is_stack_fn: bool,
+    stack_alloc: bool,
     ev: &EncryptedGlobalValue,
     user: AnyValueEnum,
 ) -> anyhow::Result<()> {
-    let insert_fn = if is_stack_fn {
+    let insert_fn = if stack_alloc {
         insert_decrypt_stack_call
     } else {
         insert_decrypt_call
@@ -243,7 +220,7 @@ fn do_insert_by_user(
 
                 for u in &uses {
                     let user = u.get_user();
-                    do_insert_by_user(decrypt_fn, global_key, ctx, is_stack_fn, ev, user)?;
+                    do_insert_by_user(decrypt_fn, global_key, ctx, stack_alloc, ev, user)?;
                 }
 
                 if uses.is_empty() {
@@ -261,7 +238,7 @@ fn do_insert_by_user(
 
             for u in uses {
                 let user = u.get_user();
-                do_insert_by_user(decrypt_fn, global_key, ctx, is_stack_fn, ev, user)?;
+                do_insert_by_user(decrypt_fn, global_key, ctx, stack_alloc, ev, user)?;
             }
         },
         _ => {
@@ -515,7 +492,7 @@ fn add_decrypt_function_stack<'a>(
 
 fn do_global<'a>(
     module: &mut Module<'a>,
-    gs: &[&EncryptedGlobalValue],
+    gs: &[EncryptedGlobalValue],
     decrypt_fn: FunctionValue<'a>,
     ctx: ContextRef<'a>,
 ) -> anyhow::Result<()> {
