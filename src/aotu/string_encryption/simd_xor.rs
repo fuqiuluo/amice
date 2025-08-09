@@ -147,9 +147,56 @@ pub(crate) fn do_handle<'a>(
     match pass.decrypt_timing {
         DecryptTiming::Lazy => do_lazy(&gs, decrypt_fn, &key_global, ctx, pass.stack_alloc)?,
         DecryptTiming::Global => {
-            // todo!("(strenc) SIMD XOR with `global` timing is not implemented yet");
+            assert!(
+                !pass.stack_alloc,
+                "(strenc) global decrypt timing is not supported with stack allocation"
+            );
+            do_global(module, &gs, decrypt_fn, &key_global, ctx)?
         },
     }
+    Ok(())
+}
+
+fn do_global<'a>(
+    module: &mut Module<'a>,
+    gs: &[EncryptedGlobalValue],
+    decrypt_fn: FunctionValue<'a>,
+    global_key: &GlobalValue,
+    ctx: ContextRef<'a>,
+) -> anyhow::Result<()> {
+    let i32_ty = ctx.i32_type();
+    let i8_ptr = ptr_type!(ctx, i8_type);
+
+    let decrypt_stub_ty = ctx.void_type().fn_type(&[], false);
+    let decrypt_stub = module.add_function("simd_xor_decrypt_stub", decrypt_stub_ty, None);
+    decrypt_stub.set_linkage(Linkage::Internal);
+
+    let entry = ctx.append_basic_block(decrypt_stub, "entry");
+    let builder = ctx.create_builder();
+
+    builder.position_at_end(entry);
+    for ev in gs {
+        let ptr = ev.global.as_pointer_value();
+        let dst = ev.global.as_pointer_value(); // In-place decryption: src == dst
+        let len_val = i32_ty.const_int(ev.len as u64, false);
+        let key_ptr = global_key.as_pointer_value();
+        let flag_ptr = i8_ptr.const_null(); // No flag for global timing
+        builder.build_call(
+            decrypt_fn,
+            &[ptr.into(), dst.into(), len_val.into(), key_ptr.into(), flag_ptr.into()],
+            "",
+        )?;
+    }
+
+    builder.build_return(None)?;
+
+    let priority = 0; // Default priority
+    unsafe {
+        let module_ref = module.as_mut_ptr() as *mut std::ffi::c_void;
+        let function_ref = decrypt_stub.as_value_ref() as *mut std::ffi::c_void;
+        amice_llvm::module_utils::append_to_global_ctors(module_ref, function_ref, priority);
+    }
+
     Ok(())
 }
 
