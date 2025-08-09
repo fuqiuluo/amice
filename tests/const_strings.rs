@@ -3,20 +3,47 @@ mod tests {
     use std::process::Command;
 
     fn build_amice() {
-        let output = Command::new("cargo")
-            .env("LLVM_SYS_181_PREFIX", "/usr/lib/llvm-18")
-            .arg("build")
-            .arg("--release")
-            .arg("--no-default-features")
-            .arg("--features")
-            .arg("llvm18-1")
-            .output()
-            .expect("Failed to execute cargo build command");
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build").arg("--release");
+
+        // Detect and apply LLVM-specific configuration from environment
+        if let Some((llvm_env_var, llvm_feature)) = detect_llvm_config() {
+            if let Ok(llvm_prefix) = std::env::var(&llvm_env_var) {
+                cmd.env(&llvm_env_var, llvm_prefix);
+            }
+            cmd.arg("--no-default-features").arg("--features").arg(llvm_feature);
+        }
+
+        let output = cmd.output().expect("Failed to execute cargo build command");
         if !output.status.success() {
             eprintln!("STDOUT: {}", String::from_utf8_lossy(&output.stdout));
             eprintln!("STDERR: {}", String::from_utf8_lossy(&output.stderr));
         }
         assert!(output.status.success(), "Cargo build failed");
+    }
+
+    fn detect_llvm_config() -> Option<(String, String)> {
+        // Check for specific LLVM environment variables in order of preference
+        let llvm_versions = [
+            ("LLVM_SYS_201_PREFIX", "llvm20-1"),
+            ("LLVM_SYS_191_PREFIX", "llvm19-1"),
+            ("LLVM_SYS_181_PREFIX", "llvm18-1"),
+            ("LLVM_SYS_170_PREFIX", "llvm17-0"),
+            ("LLVM_SYS_160_PREFIX", "llvm16-0"),
+            ("LLVM_SYS_150_PREFIX", "llvm15-0"),
+            ("LLVM_SYS_140_PREFIX", "llvm14-0"),
+            ("LLVM_SYS_130_PREFIX", "llvm13-0"),
+            ("LLVM_SYS_120_PREFIX", "llvm12-0"),
+            ("LLVM_SYS_110_PREFIX", "llvm11-0"),
+        ];
+
+        for (env_var, feature) in &llvm_versions {
+            if std::env::var(env_var).is_ok() {
+                return Some((env_var.to_string(), feature.to_string()));
+            }
+        }
+
+        None
     }
 
     fn check_output() {

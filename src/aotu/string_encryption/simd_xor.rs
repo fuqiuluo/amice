@@ -177,10 +177,10 @@ fn do_global<'a>(
     builder.position_at_end(entry);
     for ev in gs {
         let ptr = ev.global.as_pointer_value();
-        let dst = ev.global.as_pointer_value();  // In-place decryption: src == dst
+        let dst = ev.global.as_pointer_value(); // In-place decryption: src == dst
         let len_val = i32_ty.const_int(ev.len as u64, false);
         let key_ptr = global_key.as_pointer_value();
-        let flag_ptr = i8_ptr.const_null();  // No flag for global timing
+        let flag_ptr = i8_ptr.const_null(); // No flag for global timing
         builder.build_call(
             decrypt_fn,
             &[ptr.into(), dst.into(), len_val.into(), key_ptr.into(), flag_ptr.into()],
