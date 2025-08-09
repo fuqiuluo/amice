@@ -2,7 +2,10 @@ name: Auto-format Rust
 
 on:
   workflow_dispatch:
-
+  
+permissions:
+  contents: write
+  
 jobs:
   fmt:
     name: Format Rust Code
@@ -33,10 +36,8 @@ jobs:
 
       - name: Commit & push changes
         if: env.NO_CHANGES == 'false'
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v6
         with:
           commit_message: "chore(fmt): auto-format code with rustfmt [skip ci]"
-          commit_options: --no-verify 
           branch: ${{ github.ref_name }}
-          file_pattern: .
-          repository: .
+         
