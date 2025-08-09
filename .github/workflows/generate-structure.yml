@@ -19,7 +19,11 @@ concurrency:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    if: ${{ github.actor != 'github-actions[bot]' }}
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !contains(github.event.head_commit.message, '[ci skip]')
+  
     env:
       MAX_DEPTH: "3"
       IGNORE_PATTERN: ".git|target|node_modules|.idea|.vscode|dist|build"
