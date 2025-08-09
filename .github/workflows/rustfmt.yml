@@ -1,44 +1,97 @@
-name: Auto-format Rust
+name: Auto-format Rust Code
 
 on:
   push:
-  
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
+
+concurrency:
+  group: auto-format-rust-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
-  
+
 jobs:
-  fmt:
+  rustfmt:
     name: Format Rust Code
     runs-on: ubuntu-latest
-
+    
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, '[ci skip]')"
+    
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Install Rust with rustfmt
+          
+      - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-
-      - name: Run rustfmt (format code)
-        run: cargo fmt
-
-      - name: Check if there are changes
-        id: check_changes
+          
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+            
+      - name: Check Rust formatting
+        id: fmt-check
+        run: |
+          if ! cargo fmt --check; then
+            echo "needs_formatting=true" >> $GITHUB_OUTPUT
+            echo "Code needs formatting"
+          else
+            echo "needs_formatting=false" >> $GITHUB_OUTPUT
+            echo "Code is already formatted correctly"
+          fi
+          
+      - name: Format Rust code
+        if: steps.fmt-check.outputs.needs_formatting == 'true'
+        run: cargo fmt --verbose
+        
+      - name: Check for changes
+        if: steps.fmt-check.outputs.needs_formatting == 'true'
+        id: verify-changes
         run: |
           if git diff --quiet; then
-            echo "NO_CHANGES=true" >> $GITHUB_ENV
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No changes after formatting"
           else
-            echo "NO_CHANGES=false" >> $GITHUB_ENV
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changes detected after formatting"
+            echo "Changed files:"
+            git diff --name-only
           fi
-
-      - name: Commit & push changes
-        if: env.NO_CHANGES == 'false'
-        uses: stefanzweifel/git-auto-commit-action@v6
+          
+      - name: Commit and push formatted code
+        if: steps.verify-changes.outputs.has_changes == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore(fmt): auto-format code with rustfmt [skip ci]"
-          branch: ${{ github.ref_name }}
-          push_options: '--force-with-lease'
-         
+          commit_message: 'chore(fmt): auto-format Rust code with rustfmt [skip ci]'
+          file_pattern: '*.rs Cargo.toml'
+          branch: ${{ github.ref_name || github.head_ref }}
+          
+      - name: Summary
+        if: always()
+        run: |
+          if [[ "${{ steps.fmt-check.outputs.needs_formatting }}" == "true" ]]; then
+            if [[ "${{ steps.verify-changes.outputs.has_changes }}" == "true" ]]; then
+              echo "[ok] Code was formatted and committed"
+            else
+              echo "[warn] Code was already formatted correctly"
+            fi
+          else
+            echo "[ok] No formatting needed"
+          fi
