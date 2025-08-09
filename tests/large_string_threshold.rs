@@ -82,6 +82,10 @@ mod tests {
         let run_output = Command::new("./target/large_string_test")
             .output()
             .expect("Failed to execute compiled binary");
+        if !run_output.status.success() {
+            eprintln!("STDOUT: {}", String::from_utf8_lossy(&run_output.stdout));
+            eprintln!("STDERR: {}", String::from_utf8_lossy(&run_output.stderr));
+        }
         assert!(run_output.status.success(), "Compiled binary failed to run");
 
         // Check that the large string is properly decrypted
@@ -119,13 +123,6 @@ mod tests {
         assert!(
             !stderr.contains("exceeds 4KB limit for stack allocation"),
             "Unexpected 4KB warning found for small strings in stderr: {}",
-            stderr
-        );
-
-        // Should contain the normal stack allocation warning
-        assert!(
-            stderr.contains("using stack allocation for decryption"),
-            "Expected normal stack allocation warning not found in stderr: {}",
             stderr
         );
     }

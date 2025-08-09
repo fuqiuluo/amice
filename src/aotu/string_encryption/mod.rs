@@ -75,6 +75,9 @@ impl StringEncryption {
         let inline_decrypt = cfg.string_encryption.inline_decrypt_fn;
         let only_llvm_string = cfg.string_encryption.only_llvm_string;
 
+        assert!((decrypt_timing == StringDecryptTiming::Global && !stack_alloc) ||
+                decrypt_timing != StringDecryptTiming::Global, "stack alloc is not supported with global decrypt timing: {:?}", decrypt_timing);
+
         StringEncryption {
             enable,
             decrypt_timing,
