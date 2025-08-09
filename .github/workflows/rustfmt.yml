@@ -80,7 +80,6 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: 'chore(fmt): auto-format Rust code with rustfmt [skip ci]'
-          file_pattern: '*.rs Cargo.toml'
           branch: ${{ github.ref_name || github.head_ref }}
           
       - name: Summary
