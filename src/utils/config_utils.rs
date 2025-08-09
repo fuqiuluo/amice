@@ -295,5 +295,199 @@ impl Default for VmFlattenConfig {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
 
+    fn tmp_file(ext: &str, content: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("amice_config_test_{}.{ext}", rand::random::<u64>()));
+        let mut file = fs::File::create(&path).expect("create tmp config file");
+        file.write_all(content.as_bytes()).expect("write tmp config");
+        path
+    }
 
+    static ENV_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    fn guard_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_GUARD.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn clear_env() {
+        unsafe {
+            std::env::remove_var("AMICE_CONFIG_PATH");
+            std::env::remove_var("AMICE_STRING_ENCRYPTION");
+            std::env::remove_var("AMICE_STRING_ALGORITHM");
+            std::env::remove_var("AMICE_STRING_DECRYPT_TIMING");
+            std::env::remove_var("AMICE_STRING_STACK_ALLOC");
+            std::env::remove_var("AMICE_STRING_INLINE_DECRYPT_FN");
+            std::env::remove_var("AMICE_STRING_ONLY_LLVM_STRING");
+            std::env::remove_var("AMICE_INDIRECT_CALL");
+            std::env::remove_var("AMICE_INDIRECT_CALL_XOR_KEY");
+            std::env::remove_var("AMICE_INDIRECT_BRANCH");
+            std::env::remove_var("AMICE_INDIRECT_BRANCH_FLAGS");
+            std::env::remove_var("AMICE_SPLIT_BASIC_BLOCK");
+            std::env::remove_var("AMICE_SPLIT_BASIC_BLOCK_NUM");
+            std::env::remove_var("AMICE_VM_FLATTEN");
+        }
+    }
+
+    fn build_cfg_from_path(path: Option<&Path>) -> Config {
+        let mut cfg = match path {
+            Some(p) => load_from_file(p).unwrap_or_default(),
+            None => Config::default(),
+        };
+        overlay_env(&mut cfg);
+        cfg
+    }
+
+    #[test]
+    fn env_only_truthy_and_defaults() {
+        let _g = guard_env();
+        clear_env();
+        let cfg = build_cfg_from_path(None);
+        assert_eq!(cfg.string_encryption.enable, true);
+        assert_eq!(cfg.string_encryption.algorithm, StringAlgorithm::Xor);
+        assert_eq!(cfg.string_encryption.decrypt_timing, StringDecryptTiming::Lazy);
+        assert_eq!(cfg.string_encryption.stack_alloc, false);
+        assert_eq!(cfg.string_encryption.inline_decrypt_fn, false);
+        assert_eq!(cfg.string_encryption.only_llvm_string, true);
+
+        assert_eq!(cfg.indirect_call.enable, true);
+        assert!(cfg.indirect_call.xor_key.is_none());
+
+        assert_eq!(cfg.indirect_branch.enable, true);
+
+        assert_eq!(cfg.split_basic_block.enable, false);
+        assert_eq!(cfg.split_basic_block.num, 3);
+
+        assert_eq!(cfg.vm_flatten.enable, false);
+    }
+
+    #[test]
+    fn file_toml_parsing_and_env_overlay() {
+        let _g = guard_env();
+        clear_env();
+        let toml = r#"
+[string_encryption]
+enable = false
+algorithm = "simd_xor"
+decrypt_timing = "global"
+stack_alloc = true
+inline_decrypt_fn = true
+only_llvm_string = false
+
+[indirect_call]
+enable = false
+xor_key = 123
+
+[indirect_branch]
+enable = true
+flags = ["dummy_block", "chained_dummy_blocks"]
+
+[split_basic_block]
+enable = true
+num = 7
+
+[vm_flatten]
+enable = true
+"#;
+        let path = tmp_file("toml", toml);
+        unsafe { std::env::set_var("AMICE_CONFIG_PATH", &path); }
+
+        // Overlay via env
+        unsafe { std::env::set_var("AMICE_STRING_ENCRYPTION", "on"); }
+        unsafe { std::env::set_var("AMICE_INDIRECT_BRANCH_FLAGS", "encrypt_block_index"); }
+
+        let cfg = build_cfg_from_path(Some(&path));
+        assert_eq!(cfg.string_encryption.enable, true); // env overlay
+        assert_eq!(cfg.string_encryption.algorithm, StringAlgorithm::SimdXor);
+        assert_eq!(cfg.string_encryption.decrypt_timing, StringDecryptTiming::Global);
+        assert_eq!(cfg.string_encryption.stack_alloc, true);
+        assert_eq!(cfg.string_encryption.inline_decrypt_fn, true);
+        assert_eq!(cfg.string_encryption.only_llvm_string, false);
+
+        assert_eq!(cfg.indirect_call.enable, false);
+        assert_eq!(cfg.indirect_call.xor_key, Some(123));
+
+        assert!(cfg.indirect_branch.flags.contains(IndirectBranchFlags::DummyBlock));
+        assert!(cfg.indirect_branch.flags.contains(IndirectBranchFlags::ChainedDummyBlock));
+        // overlay adds encrypt flag
+        assert!(cfg.indirect_branch.flags.contains(IndirectBranchFlags::EncryptBlockIndex));
+
+        assert_eq!(cfg.split_basic_block.enable, true);
+        assert_eq!(cfg.split_basic_block.num, 7);
+
+        assert_eq!(cfg.vm_flatten.enable, true);
+    }
+
+    #[test]
+    fn file_yaml_and_json_parsing() {
+        let _g = guard_env();
+        clear_env();
+        let yaml = r#"
+string_encryption:
+  enable: true
+  algorithm: xor
+  decrypt_timing: lazy
+  stack_alloc: false
+  inline_decrypt_fn: false
+  only_llvm_string: true
+indirect_call:
+  enable: true
+  xor_key: 0
+indirect_branch:
+  enable: true
+  flags: "dummy_block,chained_dummy_blocks"
+split_basic_block:
+  enable: false
+  num: 3
+vm_flatten:
+  enable: false
+"#;
+        let yaml_path = tmp_file("yaml", yaml);
+
+        unsafe { std::env::set_var("AMICE_CONFIG_PATH", &yaml_path); }
+        let cfg_yaml = build_cfg_from_path(Some(&yaml_path));
+        assert!(cfg_yaml.indirect_branch.flags.contains(IndirectBranchFlags::DummyBlock));
+        assert!(cfg_yaml.indirect_branch.flags.contains(IndirectBranchFlags::ChainedDummyBlock));
+
+        // JSON
+        clear_env();
+        let json = r#"
+{
+  "string_encryption": {
+    "enable": true,
+    "algorithm": "xor",
+    "decrypt_timing": "lazy",
+    "stack_alloc": false,
+    "inline_decrypt_fn": false,
+    "only_llvm_string": true
+  },
+  "indirect_call": {
+    "enable": true,
+    "xor_key": 0
+  },
+  "indirect_branch": {
+    "enable": true,
+    "flags": ["dummy_block", "encrypt_block_index"]
+  },
+  "split_basic_block": {
+    "enable": false,
+    "num": 3
+  },
+  "vm_flatten": {
+    "enable": false
+  }
+}
+"#;
+        let json_path = tmp_file("json", json);
+        unsafe { std::env::set_var("AMICE_CONFIG_PATH", &json_path); }
+        let cfg_json = build_cfg_from_path(Some(&json_path));
+        assert!(cfg_json.indirect_branch.flags.contains(IndirectBranchFlags::DummyBlock));
+        assert!(cfg_json.indirect_branch.flags.contains(IndirectBranchFlags::EncryptBlockIndex));
+    }
+}
