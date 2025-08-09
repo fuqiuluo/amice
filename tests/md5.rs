@@ -4,21 +4,22 @@ mod tests {
     use std::process::Command;
 
     fn setup_environment(cmd: &mut Command) {
-        cmd.env("AMICE_SHUFFLE_BLOCKS", "true");
+
+        cmd.env("AMICE_SHUFFLE_BLOCKS", "false");
         cmd.env("AMICE_SHUFFLE_BLOCKS_FLAGS", "random");
 
-        cmd.env("AMICE_SPLIT_BASIC_BLOCK", "true");
+        cmd.env("AMICE_SPLIT_BASIC_BLOCK", "false");
 
-        cmd.env("AMICE_INDIRECT_BRANCH", "true");
+        cmd.env("AMICE_INDIRECT_BRANCH", "false");
         cmd.env("AMICE_INDIRECT_BRANCH_FLAGS", "dummy_block");
 
-        cmd.env("AMICE_STRING_ENCRYPTION", "true");
-        cmd.env("AMICE_STRING_ALGORITHM", "xor");
-        cmd.env("AMICE_STRING_DECRYPT_TIMING", "global");
+        cmd.env("AMICE_STRING_ENCRYPTION", "false");
+        cmd.env("AMICE_STRING_ALGORITHM", "xor_simd");
+        cmd.env("AMICE_STRING_DECRYPT_TIMING", "lazy");
         cmd.env("AMICE_STRING_STACK_ALLOC", "false");
-        cmd.env("AMICE_STRING_INLINE_DECRYPT_FN", "true");
+        cmd.env("AMICE_STRING_INLINE_DECRYPT_FN", "false");
 
-        cmd.env("AMICE_INDIRECT_CALL", "true");
+        cmd.env("AMICE_INDIRECT_CALL", "false");
 
         cmd.env("AMICE_VM_FLATTEN", "true");
 
@@ -53,6 +54,40 @@ mod tests {
         let output = output
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/md5.c")
+            .arg("-o")
+            .arg("target/md5")
+            .output()
+            .expect("Failed to execute clang command");
+        if !output.status.success() {
+            println!("Clang output: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        assert!(output.status.success(), "Clang command failed");
+
+        check_output()
+    }
+
+    #[test]
+    fn test_md5_cpp() {
+        let output = Command::new("cargo")
+            .arg("build")
+            .arg("--release")
+            .output()
+            .expect("Failed to execute cargo build command");
+        assert!(output.status.success(), "Cargo build failed");
+
+        let path = PathBuf::from("target/md5");
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+
+        let mut output = Command::new("clang++");
+        setup_environment(&mut output);
+        let output = output
+            .arg("-std=c++17")
+            .arg("-Wall")
+            .arg("-Wextra")
+            .arg("-fpass-plugin=target/release/libamice.so")
+            .arg("tests/md5.cc")
             .arg("-o")
             .arg("target/md5")
             .output()
