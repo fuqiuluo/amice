@@ -202,25 +202,10 @@ NOINLINE void demo_dispatch(int key) {
 int main(int argc, char** argv) {
     // main 的入口块不打印：只做参数解析与分支
     int seed = 0;
-    if (argc > 1) {
-        seed = atoi(argv[1]);
-    } else {
-        // 使用时间作为非确定输入，避免分支折叠
-        seed = (int)(time(NULL) & 0x7fffffff);
-    }
-
-    // 通过 seed 驱动多条路径，确保都在非入口块打印
-    if ((seed & 1) == 0) {
-        demo_if_else(seed);
-    } else {
-        demo_switch(seed);
-    }
-
-    if ((seed % 3) == 0) {
-        demo_loops((seed % 10) + 3);
-    } else {
-        demo_short_circuit(seed & 2, seed & 4);
-    }
+    demo_if_else(seed);
+    demo_switch(seed);
+    demo_loops((seed % 10) + 3);
+    demo_short_circuit(seed & 2, seed & 4);
 
     demo_ternary(seed - 5);
     demo_goto(seed % 50);
