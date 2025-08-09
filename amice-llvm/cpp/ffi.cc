@@ -120,6 +120,13 @@ void amiceFixStack(llvm::Function *f, int AtTerminator, int MaxIterations) {
     std::vector<llvm::Instruction *> tmpReg;
     llvm::BasicBlock *bbEntry = &*f->begin();
 
+    auto isDemotableValueTy = [](llvm::Type *Ty) -> bool {
+        if (!Ty) return false;
+        if (Ty->isVoidTy()) return false;
+        if (Ty->isTokenTy()) return false;
+        return Ty->isFirstClassType();
+    };
+
     int iteration = 0;
     do {
         tmpPhi.clear();
@@ -131,6 +138,21 @@ void amiceFixStack(llvm::Function *f, int AtTerminator, int MaxIterations) {
                     tmpPhi.push_back(phi);
                     continue;
                 }
+
+                // 跳过 terminator（包括 invoke/switch/ret/br/callbr 等）
+                if (j->isTerminator())
+                    continue;
+
+//                // 跳过 EH pad / landingpad
+//                if (llvm::isa<llvm::LandingPadInst>(j) ||
+//                    llvm::isa<llvm::CatchPadInst>(j) ||
+//                    llvm::isa<llvm::CleanupPadInst>(j))
+//                    continue;
+
+//                if (!isDemotableValueTy(j->getType()))
+//                    continue;
+
+
                 if (!(llvm::isa<llvm::AllocaInst>(j) && j->getParent() == bbEntry) &&
                     (valueEscapes(&*j) || j->isUsedOutsideOfBlock(&*i))) {
                     tmpReg.push_back(&*j);
