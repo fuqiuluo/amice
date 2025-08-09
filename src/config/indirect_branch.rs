@@ -1,7 +1,7 @@
+use super::{EnvOverlay, bool_var};
 use bitflags::bitflags;
 use log::warn;
 use serde::{Deserialize, Serialize};
-use super::{EnvOverlay, bool_var};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,4 +86,3 @@ impl EnvOverlay for IndirectBranchConfig {
         }
     }
 }
-

@@ -1,5 +1,5 @@
-use log::error;
 use super::{EnvOverlay, bool_var};
+use log::error;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,4 +84,3 @@ impl EnvOverlay for StringEncryptionConfig {
         }
     }
 }
-

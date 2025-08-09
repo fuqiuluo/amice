@@ -1,9 +1,9 @@
+use crate::config::{CONFIG, ShuffleBlocksFlags};
+use crate::llvm_utils::function::get_basic_block_entry;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::FunctionValue;
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, log_enabled, warn, Level};
-use crate::config::{ShuffleBlocksFlags, CONFIG};
-use crate::llvm_utils::function::get_basic_block_entry;
+use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
 
 pub struct ShuffleBlocks {
@@ -14,7 +14,7 @@ pub struct ShuffleBlocks {
 impl LlvmModulePass for ShuffleBlocks {
     fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
-            return PreservedAnalyses::All
+            return PreservedAnalyses::All;
         }
 
         for function in module.get_functions() {
@@ -43,14 +43,20 @@ impl ShuffleBlocks {
 
 fn handle_function(function: FunctionValue<'_>, flags: ShuffleBlocksFlags) -> anyhow::Result<()> {
     let mut blocks = function.get_basic_blocks();
-    if blocks.is_empty() || blocks.len() <= 3 { return Ok(()); }
+    if blocks.is_empty() || blocks.len() <= 3 {
+        return Ok(());
+    }
 
-    let entry_block = get_basic_block_entry(function)
-        .ok_or_else(|| anyhow::anyhow!("failed to get entry block"))?;
+    let entry_block = get_basic_block_entry(function).ok_or_else(|| anyhow::anyhow!("failed to get entry block"))?;
     blocks.retain(|block| block != &entry_block);
 
     if log_enabled!(Level::Debug) {
-        debug!("(shuffle-blocks) function {:?} has {:?} basic blocks: {:?}", function.get_name(), blocks.len(), flags);
+        debug!(
+            "(shuffle-blocks) function {:?} has {:?} basic blocks: {:?}",
+            function.get_name(),
+            blocks.len(),
+            flags
+        );
     }
 
     if flags.contains(ShuffleBlocksFlags::Random) {
@@ -60,11 +66,7 @@ fn handle_function(function: FunctionValue<'_>, flags: ShuffleBlocksFlags) -> an
             if i != j {
                 // Move block at index i after block at index j
                 // Get the next block after blocks[j] to use as insertion point
-                let insert_after = if j < blocks.len() - 1 {
-                    Some(blocks[j])
-                } else {
-                    None
-                };
+                let insert_after = if j < blocks.len() - 1 { Some(blocks[j]) } else { None };
 
                 if let Some(after_block) = insert_after {
                     let _ = blocks[i].move_after(after_block);

@@ -1,7 +1,7 @@
+use crate::config::{EnvOverlay, bool_var};
 use bitflags::bitflags;
 use log::warn;
 use serde::{Deserialize, Serialize};
-use crate::config::{bool_var, EnvOverlay};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +44,9 @@ pub(crate) fn parse_shuffle_blocks_flags(value: &str) -> ShuffleBlocksFlags {
     let mut flags = ShuffleBlocksFlags::empty();
     for x in value.split(',') {
         let x = x.trim().to_lowercase();
-        if x.is_empty() { continue; }
+        if x.is_empty() {
+            continue;
+        }
         match x.as_str() {
             "reverse" | "flip" => flags |= ShuffleBlocksFlags::Reverse,
             "random" | "shuffle" => flags |= ShuffleBlocksFlags::Random,
@@ -73,7 +75,9 @@ where
         ShuffleBlocksFlagsRepr::One(s) => parse_shuffle_blocks_flags(&s),
         ShuffleBlocksFlagsRepr::Many(arr) => {
             let mut all = ShuffleBlocksFlags::empty();
-            for s in arr { all |= parse_shuffle_blocks_flags(&s); }
+            for s in arr {
+                all |= parse_shuffle_blocks_flags(&s);
+            }
             all
         },
     };

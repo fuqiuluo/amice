@@ -4,21 +4,19 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-mod string_encryption;
-mod indirect_call;
 mod indirect_branch;
-mod split_basic_block;
-mod vm_flatten;
+mod indirect_call;
 mod shuffle_blocks;
+mod split_basic_block;
+mod string_encryption;
+mod vm_flatten;
 
-pub use self::string_encryption::{
-    StringAlgorithm, StringDecryptTiming, StringEncryptionConfig,
-};
-pub use self::indirect_call::IndirectCallConfig;
 pub use self::indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
-pub use self::split_basic_block::SplitBasicBlockConfig;
-pub use self::vm_flatten::VmFlattenConfig;
+pub use self::indirect_call::IndirectCallConfig;
 pub use self::shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
+pub use self::split_basic_block::SplitBasicBlockConfig;
+pub use self::string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
+pub use self::vm_flatten::VmFlattenConfig;
 
 pub trait EnvOverlay {
     fn overlay_env(&mut self);
@@ -99,4 +97,3 @@ impl EnvOverlay for Config {
         self.shuffle_blocks.overlay_env();
     }
 }
-

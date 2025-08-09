@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use super::{EnvOverlay, bool_var};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -24,4 +24,3 @@ impl EnvOverlay for SplitBasicBlockConfig {
         }
     }
 }
-

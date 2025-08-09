@@ -56,29 +56,29 @@ pub(crate) fn do_handle<'a>(
                     .get_section()
                     .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
         })
-        .filter_map(|global| {
-            match global.get_initializer()? {
-                BasicValueEnum::ArrayValue(arr) => Some((global, None, arr)),
-                BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => match stru.get_field_at_index(0)? {
-                    BasicValueEnum::ArrayValue(arr) => Some((global, Some(stru), arr)),
-                    _ => None,
-                },
+        .filter_map(|global| match global.get_initializer()? {
+            BasicValueEnum::ArrayValue(arr) => Some((global, None, arr)),
+            BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => match stru.get_field_at_index(0)? {
+                BasicValueEnum::ArrayValue(arr) => Some((global, Some(stru), arr)),
                 _ => None,
-            }
+            },
+            _ => None,
         })
         .filter(|(_, _, arr)| {
-            arr.is_const_string() && arr.is_const() && || -> bool {
-                let ty = arr.get_type();
-                if ty.is_empty() {
-                    return false;
-                }
+            arr.is_const_string()
+                && arr.is_const()
+                && || -> bool {
+                    let ty = arr.get_type();
+                    if ty.is_empty() {
+                        return false;
+                    }
 
-                if ty.len() <= 1 {
-                    return false;
-                }
+                    if ty.len() <= 1 {
+                        return false;
+                    }
 
-                true
-            }()
+                    true
+                }()
         })
         .filter_map(|(global, stru, arr)| {
             if log_enabled!(Level::Debug) {

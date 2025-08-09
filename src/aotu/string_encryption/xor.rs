@@ -44,18 +44,20 @@ pub(crate) fn do_handle<'a>(
         })
         .filter(|(_, _, arr)| {
             // needs to be called before `array_as_const_string`, otherwise it may crash
-            arr.is_const_string() && arr.is_const()  && || -> bool {
-                let ty = arr.get_type();
-                if ty.is_empty() {
-                    return false;
-                }
+            arr.is_const_string()
+                && arr.is_const()
+                && || -> bool {
+                    let ty = arr.get_type();
+                    if ty.is_empty() {
+                        return false;
+                    }
 
-                if ty.len() <= 1 {
-                    return false;
-                }
+                    if ty.len() <= 1 {
+                        return false;
+                    }
 
-                true
-            }()
+                    true
+                }()
         })
         .filter_map(|(global, stru, arr)| {
             // we ignore non-UTF8 strings, since they are probably not human-readable
