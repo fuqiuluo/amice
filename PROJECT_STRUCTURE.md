@@ -1,7 +1,7 @@
 # 项目结构
 
 - 仓库：amice
-- 生成时间：2025-08-09 10:15:18 UTC
+- 生成时间：2025-08-09 10:26:35 UTC
 - 深度：3
 - 忽略：.git|target|node_modules|.idea|.vscode|dist|build
 
@@ -9,7 +9,8 @@
 
 ├── .github/
 │   └── workflows/
-│       └── generate-structure.yml
+│       ├── generate-structure.yml
+│       └── rustfmt.yml
 ├── .gitignore
 ├── .rustfmt.toml
 ├── Cargo.lock
@@ -59,7 +60,7 @@
     ├── test2.c
     └── vm_flatten.c
 
-17 directories, 35 files
+17 directories, 36 files
 ```
 
 > 本文件由 GitHub Actions 自动生成，请勿手动编辑。
