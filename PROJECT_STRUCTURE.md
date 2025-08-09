@@ -1,7 +1,7 @@
 # 项目结构
 
 - 仓库：amice
-- 生成时间：2025-08-09 10:26:35 UTC
+- 生成时间：2025-08-09 10:31:56 UTC
 - 深度：3
 - 忽略：.git|target|node_modules|.idea|.vscode|dist|build
 
