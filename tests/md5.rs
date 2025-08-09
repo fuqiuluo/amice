@@ -12,9 +12,9 @@ mod tests {
         cmd.env("AMICE_INDIRECT_BRANCH", "true");
         cmd.env("AMICE_INDIRECT_BRANCH_FLAGS", "dummy_block");
 
-        cmd.env("AMICE_STRING_ENCRYPTION", "false");
+        cmd.env("AMICE_STRING_ENCRYPTION", "true");
         cmd.env("AMICE_STRING_ALGORITHM", "xor");
-        cmd.env("AMICE_STRING_DECRYPT_TIMING", "lazy");
+        cmd.env("AMICE_STRING_DECRYPT_TIMING", "global");
         cmd.env("AMICE_STRING_STACK_ALLOC", "false");
         cmd.env("AMICE_STRING_INLINE_DECRYPT_FN", "true");
 
@@ -79,7 +79,7 @@ mod tests {
             .map(|line| line.trim())
             .collect::<Vec<&str>>();
 
-        for x in stdout {
+        for x in &stdout {
             println!("{}", x);
         }
 

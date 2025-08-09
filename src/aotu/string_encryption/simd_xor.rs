@@ -173,31 +173,71 @@ fn do_lazy(
         }
 
         for u in uses {
-            match u.get_user() {
-                AnyValueEnum::InstructionValue(inst) => {
-                    insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag)?
-                },
-                AnyValueEnum::IntValue(value) => {
-                    if let Some(inst) = value.as_instruction_value() {
-                        insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag)?
-                    } else {
-                        error!("(strenc) unexpected IntValue user: {value:?}");
-                    }
-                },
-                AnyValueEnum::PointerValue(gv) => {
-                    if let Some(inst) = gv.as_instruction_value() {
-                        insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag)?
-                    } else {
-                        error!("(strenc) unexpected PointerValue user: {gv:?}");
-                    }
-                },
-                _ => {
-                    error!("(strenc) unexpected user type: {:?}", u.get_user());
-                },
-            }
+            let user = u.get_user();
+            do_insert_by_user(decrypt_fn, global_key, ctx, stack_alloc, ev, user)?;
         }
     }
 
+    Ok(())
+}
+
+fn do_insert_by_user(
+    decrypt_fn: FunctionValue<'_>,
+    global_key: &GlobalValue,
+    ctx: ContextRef,
+    stack_alloc: bool,
+    ev: &EncryptedGlobalValue,
+    user: AnyValueEnum,
+) -> anyhow::Result<()> {
+    match user {
+        AnyValueEnum::InstructionValue(inst) => {
+            insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag)?
+        },
+        AnyValueEnum::IntValue(value) => {
+            if let Some(inst) = value.as_instruction_value() {
+                insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag)?
+            } else {
+                error!("(strenc) unexpected IntValue user: {value:?}");
+            }
+        },
+        AnyValueEnum::PointerValue(gv) => {
+            if let Some(inst) = gv.as_instruction_value() {
+                insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag)?
+            } else {
+                let mut uses = Vec::new();
+                let mut use_opt = gv.get_first_use();
+                while let Some(u) = use_opt {
+                    use_opt = u.get_next_use();
+                    uses.push(u);
+                }
+
+                for u in &uses {
+                    let user = u.get_user();
+                    do_insert_by_user(decrypt_fn, global_key, ctx, stack_alloc, ev, user)?;
+                }
+
+                if uses.is_empty() {
+                    error!("(strenc) unexpected PointerValue user: {gv:?}");
+                }
+            }
+        },
+        AnyValueEnum::ArrayValue(arr) => {
+            let mut uses = Vec::new();
+            let mut use_opt = arr.get_first_use();
+            while let Some(u) = use_opt {
+                use_opt = u.get_next_use();
+                uses.push(u);
+            }
+
+            for u in uses {
+                let user = u.get_user();
+                do_insert_by_user(decrypt_fn, global_key, ctx, stack_alloc, ev, user)?;
+            }
+        },
+        _ => {
+            error!("(strenc) unexpected user type: {:?}", user);
+        },
+    }
     Ok(())
 }
 

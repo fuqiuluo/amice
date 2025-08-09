@@ -56,8 +56,8 @@ pub(crate) fn parse_string_decrypt_timing(value: &str) -> StringDecryptTiming {
         "lazy" => StringDecryptTiming::Lazy,
         "global" => StringDecryptTiming::Global,
         _ => {
-            error!("(strenc) unknown decrypt timing, using lazy");
-            StringDecryptTiming::Lazy
+            error!("(strenc) unknown decrypt timing, using Global");
+            StringDecryptTiming::Global
         },
     }
 }
@@ -68,10 +68,10 @@ impl EnvOverlay for StringEncryptionConfig {
             self.enable = bool_var("AMICE_STRING_ENCRYPTION", self.enable);
         }
         if let Ok(v) = std::env::var("AMICE_STRING_ALGORITHM") {
-            self.algorithm = super::string_encryption::parse_string_algorithm(&v);
+            self.algorithm = parse_string_algorithm(&v);
         }
         if let Ok(v) = std::env::var("AMICE_STRING_DECRYPT_TIMING") {
-            self.decrypt_timing = super::string_encryption::parse_string_decrypt_timing(&v);
+            self.decrypt_timing = parse_string_decrypt_timing(&v);
         }
         if std::env::var("AMICE_STRING_STACK_ALLOC").is_ok() {
             self.stack_alloc = bool_var("AMICE_STRING_STACK_ALLOC", self.stack_alloc);
