@@ -1,14 +1,14 @@
-use anyhow::anyhow;
 use crate::config::CONFIG;
 use crate::llvm_utils::basic_block::split_basic_block;
+use crate::llvm_utils::function::get_basic_block_entry;
+use amice_llvm::ir::function::{fix_stack, fix_stack_at_terminator, fix_stack_with_max_iterations};
+use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled};
 use rand::seq::SliceRandom;
-use amice_llvm::ir::function::{fix_stack, fix_stack_at_terminator, fix_stack_with_max_iterations};
-use crate::llvm_utils::function::get_basic_block_entry;
 
 pub struct SplitBasicBlock {
     enable: bool,
@@ -82,7 +82,8 @@ fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) ->
         let mut last = 0u32;
 
         for (i, &split_point) in split_points.iter().enumerate() {
-            if count_instructions(&to_split) < 3 { // 确保至少有3条指令
+            if count_instructions(&to_split) < 3 {
+                // 确保至少有3条指令
                 break;
             }
 
@@ -134,7 +135,8 @@ pub fn shuffle(vec: &mut [u32]) {
 }
 
 fn block_has_alloca(bb: &BasicBlock<'_>) -> bool {
-    bb.get_instructions().any(|inst| inst.get_opcode() == InstructionOpcode::Alloca)
+    bb.get_instructions()
+        .any(|inst| inst.get_opcode() == InstructionOpcode::Alloca)
 }
 
 fn first_non_alloca_index(bb: &BasicBlock<'_>) -> u32 {
@@ -148,16 +150,16 @@ fn first_non_alloca_index(bb: &BasicBlock<'_>) -> u32 {
     idx
 }
 
-
 fn is_terminator_instruction(inst: &llvm_plugin::inkwell::values::InstructionValue) -> bool {
-    matches!(inst.get_opcode(),
-        InstructionOpcode::Return |
-        InstructionOpcode::Br |
-        InstructionOpcode::Switch |
-        InstructionOpcode::IndirectBr |
-        InstructionOpcode::Invoke |
-        InstructionOpcode::Resume |
-        InstructionOpcode::Unreachable
+    matches!(
+        inst.get_opcode(),
+        InstructionOpcode::Return
+            | InstructionOpcode::Br
+            | InstructionOpcode::Switch
+            | InstructionOpcode::IndirectBr
+            | InstructionOpcode::Invoke
+            | InstructionOpcode::Resume
+            | InstructionOpcode::Unreachable
     )
 }
 
@@ -166,14 +168,14 @@ fn flitter_basic_block(bb: &BasicBlock<'_>, split_num: u32, x: &mut u32) -> bool
         *x += 1;
         match inst.get_opcode() {
             InstructionOpcode::Phi => true,
-            InstructionOpcode::IndirectBr => true,  // 避免切割间接跳转
-            InstructionOpcode::Switch => true,      // 避免切割switch
-            InstructionOpcode::Invoke => true,      // 避免切割invoke
+            InstructionOpcode::IndirectBr => true, // 避免切割间接跳转
+            InstructionOpcode::Switch => true,     // 避免切割switch
+            InstructionOpcode::Invoke => true,     // 避免切割invoke
             InstructionOpcode::Alloca => {
                 // 非入口块上有 alloca，一律视为问题块
                 // 调用处可根据 bb 是否为入口块决定是否跳过
                 true
-            }
+            },
             _ => false,
         }
     });
