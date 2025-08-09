@@ -1,0 +1,42 @@
+name: Auto-format Rust
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fmt:
+    name: Format Rust Code
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust with rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Run rustfmt (format code)
+        run: cargo fmt
+
+      - name: Check if there are changes
+        id: check_changes
+        run: |
+          if git diff --quiet; then
+            echo "NO_CHANGES=true" >> $GITHUB_ENV
+          else
+            echo "NO_CHANGES=false" >> $GITHUB_ENV
+          fi
+
+      - name: Commit & push changes
+        if: env.NO_CHANGES == 'false'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(fmt): auto-format code with rustfmt [skip ci]"
+          commit_options: --no-verify 
+          branch: ${{ github.ref_name }}
+          file_pattern: .
+          repository: .
