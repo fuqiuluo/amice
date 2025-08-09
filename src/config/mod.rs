@@ -1,9 +1,9 @@
+use bitflags::bitflags;
 use lazy_static::lazy_static;
+use log::{error, warn};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use bitflags::bitflags;
-use log::{error, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -18,18 +18,18 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StringEncryptionConfig {
-    pub enable: bool, // 是否启用字符串加密
-    pub algorithm: StringAlgorithm,         // 控制字符串的加密算法 xor, simd_xor
-    pub decrypt_timing: StringDecryptTiming,    // 控制字符串的解密时机 lazy, global
-    pub stack_alloc: bool,         // 控制解密字符串的是否分配到栈内存 true/false
-    pub inline_decrypt_fn: bool,   // 控制是否内联解密函数 true/false
-    pub only_llvm_string: bool,    // 控制是否只加密`.str`字符串 true/false
+    pub enable: bool,                        // 是否启用字符串加密
+    pub algorithm: StringAlgorithm,          // 控制字符串的加密算法 xor, simd_xor
+    pub decrypt_timing: StringDecryptTiming, // 控制字符串的解密时机 lazy, global
+    pub stack_alloc: bool,                   // 控制解密字符串的是否分配到栈内存 true/false
+    pub inline_decrypt_fn: bool,             // 控制是否内联解密函数 true/false
+    pub only_llvm_string: bool,              // 控制是否只加密`.str`字符串 true/false
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StringAlgorithm {
-    Xor, // 使用异或加密字符串
+    Xor,     // 使用异或加密字符串
     SimdXor, // (beta) 使用SIMD指令的异或加密字符串
 }
 
@@ -43,7 +43,7 @@ pub enum StringDecryptTiming {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IndirectCallConfig {
-    pub enable: bool, // 是否启用间接跳转
+    pub enable: bool,         // 是否启用间接跳转
     pub xor_key: Option<u32>, // 间接跳转下标xor密钥  `0`关闭间接跳转下标加密
 }
 
@@ -70,7 +70,7 @@ pub struct IndirectBranchConfig {
 #[serde(default)]
 pub struct SplitBasicBlockConfig {
     pub enable: bool, // 是否启用切割基本块
-    pub num: u32, // 切割基本块次数 3
+    pub num: u32,     // 切割基本块次数 3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,7 +104,7 @@ fn parse_string_algorithm(value: &str) -> StringAlgorithm {
         _ => {
             error!("(strenc) unknown string encryption algorithm, using XOR");
             StringAlgorithm::Xor
-        }
+        },
     }
 }
 
@@ -115,7 +115,7 @@ fn parse_string_decrypt_timing(value: &str) -> StringDecryptTiming {
         _ => {
             error!("(strenc) unknown decrypt timing, using lazy");
             StringDecryptTiming::Lazy
-        }
+        },
     }
 }
 
@@ -123,7 +123,9 @@ fn parse_indirect_branch_flags(value: &str) -> IndirectBranchFlags {
     let mut flags = IndirectBranchFlags::empty();
     for x in value.split(',') {
         let x = x.trim().to_lowercase();
-        if x.is_empty() { continue; }
+        if x.is_empty() {
+            continue;
+        }
         match x.as_str() {
             "dummy_block" => flags |= IndirectBranchFlags::DummyBlock,
             "chained_dummy_blocks" => flags |= IndirectBranchFlags::ChainedDummyBlock,
@@ -157,7 +159,7 @@ where
                 all |= parse_indirect_branch_flags(&s);
             }
             all
-        }
+        },
     };
     Ok(flags)
 }
@@ -183,10 +185,14 @@ fn load_from_file(path: &Path) -> anyhow::Result<Config> {
         "yml" | "yaml" => serde_yaml::from_str(&content)?,
         "json" => serde_json::from_str(&content)?,
         _ => {
-            if let Ok(v) = toml::from_str(&content) { v }
-            else if let Ok(v) = serde_yaml::from_str(&content) { v }
-            else { serde_json::from_str(&content)? }
-        }
+            if let Ok(v) = toml::from_str(&content) {
+                v
+            } else if let Ok(v) = serde_yaml::from_str(&content) {
+                v
+            } else {
+                serde_json::from_str(&content)?
+            }
+        },
     };
     overlay_env(&mut cfg);
     Ok(cfg)
@@ -207,10 +213,14 @@ fn overlay_env(cfg: &mut Config) {
         cfg.string_encryption.stack_alloc = bool_var("AMICE_STRING_STACK_ALLOC", cfg.string_encryption.stack_alloc);
     }
     if std::env::var("AMICE_STRING_INLINE_DECRYPT_FN").is_ok() {
-        cfg.string_encryption.inline_decrypt_fn = bool_var("AMICE_STRING_INLINE_DECRYPT_FN", cfg.string_encryption.inline_decrypt_fn);
+        cfg.string_encryption.inline_decrypt_fn = bool_var(
+            "AMICE_STRING_INLINE_DECRYPT_FN",
+            cfg.string_encryption.inline_decrypt_fn,
+        );
     }
     if std::env::var("AMICE_STRING_ONLY_LLVM_STRING").is_ok() {
-        cfg.string_encryption.only_llvm_string = bool_var("AMICE_STRING_ONLY_LLVM_STRING", cfg.string_encryption.only_llvm_string);
+        cfg.string_encryption.only_llvm_string =
+            bool_var("AMICE_STRING_ONLY_LLVM_STRING", cfg.string_encryption.only_llvm_string);
     }
 
     // Indirect call
@@ -258,13 +268,19 @@ impl Default for StringEncryptionConfig {
 
 impl Default for IndirectCallConfig {
     fn default() -> Self {
-        Self { enable: true, xor_key: None }
+        Self {
+            enable: true,
+            xor_key: None,
+        }
     }
 }
 
 impl Default for IndirectBranchConfig {
     fn default() -> Self {
-        Self { enable: true, flags: IndirectBranchFlags::empty() }
+        Self {
+            enable: true,
+            flags: IndirectBranchFlags::empty(),
+        }
     }
 }
 
@@ -279,4 +295,3 @@ impl Default for VmFlattenConfig {
         Self { enable: false }
     }
 }
-

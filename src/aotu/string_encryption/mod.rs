@@ -1,12 +1,12 @@
 mod simd_xor;
 mod xor;
 
+use crate::config::{CONFIG, StringAlgorithm, StringDecryptTiming};
 use ascon_hash::{AsconHash256, Digest, Update};
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, GlobalValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::error;
-use crate::config::{CONFIG, StringAlgorithm, StringDecryptTiming};
 
 enum StringEncryptionType {
     Xor,
@@ -46,11 +46,7 @@ pub struct StringEncryption {
 }
 
 impl LlvmModulePass for StringEncryption {
-    fn run_pass<'a>(
-        &self,
-        module: &mut Module<'a>,
-        manager: &ModuleAnalysisManager,
-    ) -> PreservedAnalyses {
+    fn run_pass<'a>(&self, module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }

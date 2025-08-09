@@ -1,15 +1,15 @@
 mod aotu;
-mod llvm_utils;
 mod config;
+mod llvm_utils;
 
 use crate::aotu::indirect_branch::IndirectBranch;
 use crate::aotu::indirect_call::IndirectCall;
 use crate::aotu::split_basic_block::SplitBasicBlock;
 use crate::aotu::string_encryption::StringEncryption;
 use crate::aotu::vm_flatten::VmFlatten;
+use crate::config::CONFIG;
 use log::info;
 use std::io::Write;
-use crate::config::CONFIG;
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1")]
 fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {

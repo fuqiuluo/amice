@@ -1,6 +1,4 @@
-use crate::aotu::string_encryption::{
-    EncryptedGlobalValue, StringEncryption, array_as_const_string,
-};
+use crate::aotu::string_encryption::{EncryptedGlobalValue, StringEncryption, array_as_const_string};
 use crate::config::StringDecryptTiming as DecryptTiming;
 use crate::ptr_type;
 use inkwell::module::Module;
@@ -38,12 +36,10 @@ pub(crate) fn do_handle<'a>(
             // C-like strings
             BasicValueEnum::ArrayValue(arr) => Some((global, None, arr)),
             // Rust-like strings
-            BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => {
-                match stru.get_field_at_index(0)? {
-                    BasicValueEnum::ArrayValue(arr) => Some((global, Some(stru), arr)),
-                    _ => None,
-                }
-            }
+            BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => match stru.get_field_at_index(0)? {
+                BasicValueEnum::ArrayValue(arr) => Some((global, Some(stru), arr)),
+                _ => None,
+            },
             _ => None,
         })
         .filter(|(_, _, arr)| {
@@ -127,7 +123,7 @@ pub(crate) fn do_handle<'a>(
                 "(strenc) global decrypt timing is not supported with stack allocation"
             );
             do_global(module, &gs, decrypt_fn, ctx)?
-        }
+        },
     }
 
     Ok(())
@@ -155,26 +151,24 @@ fn do_lazy(
 
         for u in uses {
             match u.get_user() {
-                AnyValueEnum::InstructionValue(inst) => {
-                    insert_fn(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag)?
-                }
+                AnyValueEnum::InstructionValue(inst) => insert_fn(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag)?,
                 AnyValueEnum::IntValue(value) => {
                     if let Some(inst) = value.as_instruction_value() {
                         insert_fn(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag)?
                     } else {
                         error!("(strenc) unexpected IntValue user: {value:?}");
                     }
-                }
+                },
                 AnyValueEnum::PointerValue(gv) => {
                     if let Some(inst) = gv.as_instruction_value() {
                         insert_fn(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag)?
                     } else {
                         error!("(strenc) unexpected PointerValue user: {gv:?}");
                     }
-                }
+                },
                 _ => {
                     error!("(strenc) unexpected user type: {:?}", u.get_user());
-                }
+                },
             }
         }
     }
@@ -200,8 +194,7 @@ fn insert_decrypt_stack_call<'a>(
     let builder = ctx.create_builder();
     builder.position_before(&inst);
 
-    let container =
-        builder.build_array_alloca(i8_ty, i32_ty.const_int(len as u64 + 1, false), "")?;
+    let container = builder.build_array_alloca(i8_ty, i32_ty.const_int(len as u64 + 1, false), "")?;
     let src_ptr = global.as_pointer_value();
     let len_val = i32_ty.const_int(len as u64, false);
 
@@ -210,11 +203,7 @@ fn insert_decrypt_stack_call<'a>(
     //debug!("(strenc) inst: {:?}", inst);
 
     let decrypted_ptr = builder
-        .build_call(
-            decrypt_fn,
-            &[src_ptr.into(), len_val.into(), container.into()],
-            "",
-        )?
+        .build_call(decrypt_fn, &[src_ptr.into(), len_val.into(), container.into()], "")?
         .try_as_basic_value()
         .left()
         .unwrap()
@@ -257,11 +246,7 @@ fn insert_decrypt_call<'a>(
     let ptr = global.as_pointer_value();
     let len_val = i32_ty.const_int(len as u64, false);
     let flag_ptr = flag.unwrap().as_pointer_value();
-    builder.build_call(
-        decrypt_fn,
-        &[ptr.into(), len_val.into(), flag_ptr.into()],
-        "",
-    )?;
+    builder.build_call(decrypt_fn, &[ptr.into(), len_val.into(), flag_ptr.into()], "")?;
 
     Ok(())
 }
@@ -287,8 +272,7 @@ fn add_decrypt_function<'a>(
     decrypt_fn.set_linkage(Linkage::Internal);
     if inline_fn {
         warn!("(strenc) using inline decryption function, this may increase binary size.");
-        let inlinehint_attr =
-            ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
+        let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
         decrypt_fn.add_attribute(AttributeLoc::Function, inlinehint_attr);
     }
 
@@ -305,15 +289,9 @@ fn add_decrypt_function<'a>(
         .map(|param| param.into_pointer_value())
         .ok_or_else(|| anyhow::anyhow!("Failed to get flag parameter"))?;
     if has_flag {
-        let flag = builder
-            .build_load(i32_ty, flag_ptr, "flag")?
-            .into_int_value();
-        let is_decrypted = builder.build_int_compare(
-            inkwell::IntPredicate::EQ,
-            flag,
-            i32_ty.const_zero(),
-            "is_decrypted",
-        )?;
+        let flag = builder.build_load(i32_ty, flag_ptr, "flag")?.into_int_value();
+        let is_decrypted =
+            builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "is_decrypted")?;
         builder.build_conditional_branch(is_decrypted, entry, exit)?;
     } else {
         builder.build_unconditional_branch(entry)?;
@@ -373,8 +351,7 @@ fn add_decrypt_function_stack<'a>(
 
     let decrypt_fn = module.add_function(name, fn_ty, None);
     if inline_fn {
-        let inlinehint_attr =
-            ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
+        let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
         decrypt_fn.add_attribute(AttributeLoc::Function, inlinehint_attr);
     }
 
@@ -456,11 +433,7 @@ fn do_global<'a>(
         let ptr = ev.global.as_pointer_value();
         let len_val = i32_ty.const_int(ev.len as u64, false);
         let flag_ptr = i32_ptr.const_null();
-        builder.build_call(
-            decrypt_fn,
-            &[ptr.into(), len_val.into(), flag_ptr.into()],
-            "",
-        )?;
+        builder.build_call(decrypt_fn, &[ptr.into(), len_val.into(), flag_ptr.into()], "")?;
     }
 
     builder.build_return(None)?;

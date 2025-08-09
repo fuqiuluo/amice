@@ -1,3 +1,4 @@
+use crate::config::CONFIG;
 use crate::llvm_utils::basic_block::split_basic_block;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::Module;
@@ -5,7 +6,6 @@ use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled};
 use rand::seq::SliceRandom;
-use crate::config::CONFIG;
 
 pub struct SplitBasicBlock {
     enable: bool,
@@ -13,11 +13,7 @@ pub struct SplitBasicBlock {
 }
 
 impl LlvmModulePass for SplitBasicBlock {
-    fn run_pass(
-        &self,
-        module: &mut Module<'_>,
-        manager: &ModuleAnalysisManager,
-    ) -> PreservedAnalyses {
+    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }
@@ -36,11 +32,7 @@ impl LlvmModulePass for SplitBasicBlock {
     }
 }
 
-fn do_split(
-    module: &mut Module<'_>,
-    function: FunctionValue,
-    split_num: u32,
-) -> anyhow::Result<()> {
+fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) -> anyhow::Result<()> {
     for bb in function.get_basic_blocks() {
         let mut count = 0u32;
         if flitter_basic_block(&bb, split_num, &mut count) {

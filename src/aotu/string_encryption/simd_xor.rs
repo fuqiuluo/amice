@@ -1,6 +1,4 @@
-use crate::aotu::string_encryption::{
-    EncryptedGlobalValue, StringEncryption, array_as_const_string,
-};
+use crate::aotu::string_encryption::{EncryptedGlobalValue, StringEncryption, array_as_const_string};
 use crate::config::StringDecryptTiming as DecryptTiming;
 use crate::ptr_type;
 use anyhow::anyhow;
@@ -9,8 +7,7 @@ use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::context::ContextRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
-    AnyValueEnum, ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue,
-    InstructionValue,
+    AnyValueEnum, ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionValue,
 };
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
 use log::{Level, debug, error, log_enabled, warn};
@@ -65,12 +62,10 @@ pub(crate) fn do_handle<'a>(
             // }
             match global.get_initializer()? {
                 BasicValueEnum::ArrayValue(arr) => Some((global, None, arr)),
-                BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => {
-                    match stru.get_field_at_index(0)? {
-                        BasicValueEnum::ArrayValue(arr) => Some((global, Some(stru), arr)),
-                        _ => None,
-                    }
-                }
+                BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => match stru.get_field_at_index(0)? {
+                    BasicValueEnum::ArrayValue(arr) => Some((global, Some(stru), arr)),
+                    _ => None,
+                },
                 _ => None,
             }
         })
@@ -112,10 +107,7 @@ pub(crate) fn do_handle<'a>(
             };
 
             if log_enabled!(Level::Debug) {
-                debug!(
-                    "(strenc) stack_alloc: {}, flag: {:?}",
-                    pass.stack_alloc, flag
-                );
+                debug!("(strenc) stack_alloc: {}, flag: {:?}", pass.stack_alloc, flag);
             }
 
             if let Some(stru) = stru {
@@ -151,7 +143,7 @@ pub(crate) fn do_handle<'a>(
         DecryptTiming::Lazy => do_lazy(&gs, decrypt_fn, &key_global, ctx, pass.stack_alloc)?,
         DecryptTiming::Global => {
             // todo!("(strenc) SIMD XOR with `global` timing is not implemented yet");
-        }
+        },
     }
     Ok(())
 }
@@ -177,30 +169,26 @@ fn do_lazy(
 
         for u in uses {
             match u.get_user() {
-                AnyValueEnum::InstructionValue(inst) => insert_decrypt_call(
-                    ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag,
-                )?,
+                AnyValueEnum::InstructionValue(inst) => {
+                    insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag)?
+                },
                 AnyValueEnum::IntValue(value) => {
                     if let Some(inst) = value.as_instruction_value() {
-                        insert_decrypt_call(
-                            ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag,
-                        )?
+                        insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag)?
                     } else {
                         error!("(strenc) unexpected IntValue user: {value:?}");
                     }
-                }
+                },
                 AnyValueEnum::PointerValue(gv) => {
                     if let Some(inst) = gv.as_instruction_value() {
-                        insert_decrypt_call(
-                            ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag,
-                        )?
+                        insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, global_key, ev.len, ev.flag)?
                     } else {
                         error!("(strenc) unexpected PointerValue user: {gv:?}");
                     }
-                }
+                },
                 _ => {
                     error!("(strenc) unexpected user type: {:?}", u.get_user());
-                }
+                },
             }
         }
     }
@@ -230,13 +218,7 @@ fn insert_decrypt_call<'a>(
     let key = global_key.as_pointer_value();
     builder.build_call(
         decrypt_fn,
-        &[
-            ptr.into(),
-            dst.into(),
-            len_val.into(),
-            key.into(),
-            flag_ptr.into(),
-        ],
+        &[ptr.into(), dst.into(), len_val.into(), key.into(), flag_ptr.into()],
         "",
     )?;
 
@@ -273,8 +255,7 @@ fn add_decrypt_function<'a>(
     let decrypt_fn = module.add_function(name, fn_ty, None);
 
     if inline_fn {
-        let inlinehint_attr =
-            ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
+        let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
         decrypt_fn.add_attribute(AttributeLoc::Function, inlinehint_attr);
     }
 
@@ -316,8 +297,7 @@ fn add_decrypt_function<'a>(
 
     if has_flag {
         let flag = builder.build_load(i32_ty, flag_ptr, "")?.into_int_value();
-        let is_decrypted =
-            builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "")?;
+        let is_decrypted = builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "")?;
         builder.build_conditional_branch(is_decrypted, update_flag, exit)?;
     } else {
         builder.build_unconditional_branch(key_prepare)?;
@@ -357,8 +337,7 @@ fn add_decrypt_function<'a>(
         .set_alignment(1)
         .map_err(|e| anyhow!("Failed to set alignment for store instruction: {}", e))?;
 
-    let next_index =
-        builder.build_int_add(index, ctx.i32_type().const_int(32, false), "next_index")?;
+    let next_index = builder.build_int_add(index, ctx.i32_type().const_int(32, false), "next_index")?;
     builder.build_store(idx, next_index)?;
     builder.build_unconditional_branch(main_loop)?;
 
@@ -374,18 +353,14 @@ fn add_decrypt_function<'a>(
 
     let src_gep = unsafe { builder.build_gep(i8_ty, src_ptr, &[index], "src_rest_gep") }?;
     let ch = builder.build_load(i8_ty, src_gep, "cur")?.into_int_value();
-    let key_index =
-        builder.build_int_signed_rem(index, ctx.i32_type().const_int(32, false), "key_index")?;
+    let key_index = builder.build_int_signed_rem(index, ctx.i32_type().const_int(32, false), "key_index")?;
     let key_gep = unsafe { builder.build_gep(i8_ty, key_ptr, &[key_index], "key_rest_gep") }?;
-    let key_ch = builder
-        .build_load(i8_ty, key_gep, "key_cur")?
-        .into_int_value();
+    let key_ch = builder.build_load(i8_ty, key_gep, "key_cur")?.into_int_value();
     let xored = builder.build_xor(ch, key_ch, "xored_rest")?;
     let dst_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "dst_rest_gep") }?;
     builder.build_store(dst_gep, xored)?;
 
-    let next_index =
-        builder.build_int_add(index, ctx.i32_type().const_int(1, false), "next_index_rest")?;
+    let next_index = builder.build_int_add(index, ctx.i32_type().const_int(1, false), "next_index_rest")?;
     builder.build_store(idx, next_index)?;
     builder.build_unconditional_branch(check_rest)?;
 

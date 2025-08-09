@@ -4,19 +4,17 @@ use crate::llvm_utils::function::get_basic_block_entry;
 use crate::llvm_utils::switch_inst;
 use crate::ptr_type;
 use amice_llvm::ir::function::fix_stack;
+use amice_llvm::module_utils::verify_function;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{
-    ArrayValue, AsValueRef, FunctionValue, InstructionOpcode, IntValue,
-};
+use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, FunctionValue, InstructionOpcode, IntValue};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
-use amice_llvm::module_utils::verify_function;
 
 const MAGIC_NUMBER: u32 = 0x7788ff;
 
@@ -26,11 +24,7 @@ pub struct VmFlatten {
 }
 
 impl LlvmModulePass for VmFlatten {
-    fn run_pass(
-        &self,
-        module: &mut Module<'_>,
-        _manager: &ModuleAnalysisManager,
-    ) -> PreservedAnalyses {
+    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }
@@ -147,11 +141,7 @@ enum VmBranchNodeKind {
     None = 0,
 }
 
-fn do_handle<'a>(
-    pass: &VmFlatten,
-    module: &mut Module<'a>,
-    function: FunctionValue,
-) -> anyhow::Result<()> {
+fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionValue) -> anyhow::Result<()> {
     let mut basic_blocks = function.get_basic_blocks();
     if basic_blocks.is_empty() {
         return Ok(());
@@ -179,9 +169,7 @@ fn do_handle<'a>(
                 if entry_block_inst_count > 0 {
                     split_pos = split_pos.get_previous_instruction().unwrap();
                 }
-                let Some(new_block) =
-                    split_basic_block(entry_block, split_pos, ".no.conditional.br", false)
-                else {
+                let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.br", false) else {
                     panic!("failed to split basic block");
                 };
                 if new_block.get_parent().unwrap() != function {
@@ -222,31 +210,20 @@ fn do_handle<'a>(
                     let left = get_successor(inst, 0);
                     let right = get_successor(inst, 1);
                     let left = left
-                        .ok_or(anyhow!(
-                            "expected left operand for conditional br: op_nums > 1"
-                        ))?
+                        .ok_or(anyhow!("expected left operand for conditional br: op_nums > 1"))?
                         .right()
-                        .ok_or(anyhow!(
-                            "expected left operand for conditional br: is not a block"
-                        ))?;
+                        .ok_or(anyhow!("expected left operand for conditional br: is not a block"))?;
                     let right = right
-                        .ok_or(anyhow!(
-                            "expected right operand for conditional br: op_nums > 1"
-                        ))?
+                        .ok_or(anyhow!("expected right operand for conditional br: op_nums > 1"))?
                         .right()
-                        .ok_or(anyhow!(
-                            "expected right operand for conditional br: is not a block"
-                        ))?;
+                        .ok_or(anyhow!("expected right operand for conditional br: is not a block"))?;
 
                     node.set_left(left);
                     node.set_right(right);
                 } else {
                     let left = inst
                         .get_operand(0)
-                        .ok_or(anyhow!(
-                            "expected left operand for conditional br: {:?}",
-                            inst
-                        ))?
+                        .ok_or(anyhow!("expected left operand for conditional br: {:?}", inst))?
                         .right()
                         .ok_or(anyhow!("expected left operand for is not a block"))?;
 
@@ -328,11 +305,9 @@ fn do_handle<'a>(
             opcode_llvm_values.push(right);
         }
     }
-    let opcode_array =
-        unsafe { ArrayValue::new_const_array(&opcode_array_type, &opcode_llvm_values) };
+    let opcode_array = unsafe { ArrayValue::new_const_array(&opcode_array_type, &opcode_llvm_values) };
 
-    let local_opcodes_value =
-        module.add_global(opcode_array_type, None, ".amice.vm_flatten_opcodes");
+    let local_opcodes_value = module.add_global(opcode_array_type, None, ".amice.vm_flatten_opcodes");
     local_opcodes_value.set_constant(false);
     local_opcodes_value.set_initializer(&opcode_array);
     local_opcodes_value.set_linkage(Linkage::Private);
@@ -416,8 +391,7 @@ fn do_handle<'a>(
             "__right__",
         )?
         .into_int_value();
-    let cond_is_switch =
-        builder.build_int_compare(IntPredicate::EQ, opcode, i32_switch, "cond_is_switch")?;
+    let cond_is_switch = builder.build_int_compare(IntPredicate::EQ, opcode, i32_switch, "cond_is_switch")?;
     let plus_value = builder.build_select(
         cond_is_switch,
         builder.build_int_add(pc_value, builder.build_int_add(left, i32_two, "")?, "")?,
@@ -457,9 +431,7 @@ fn do_handle<'a>(
                 .get_instructions()
                 .filter(|inst| {
                     let op = inst.get_opcode();
-                    op == InstructionOpcode::Br
-                        || op == InstructionOpcode::Return
-                        || op == InstructionOpcode::Switch
+                    op == InstructionOpcode::Br || op == InstructionOpcode::Return || op == InstructionOpcode::Switch
                 })
                 .collect::<Vec<_>>();
             for inst in branches {
@@ -512,11 +484,7 @@ fn do_handle<'a>(
                         new_cases.push((value.into_int_value(), new_block));
                     }
                     builder.position_before(&inst);
-                    let new_switch = builder.build_switch(
-                        condition.into_int_value(),
-                        new_default_block,
-                        &new_cases,
-                    )?;
+                    let new_switch = builder.build_switch(condition.into_int_value(), new_default_block, &new_cases)?;
 
                     inst.replace_all_uses_with(&new_switch);
                     inst.erase_from_basic_block();
@@ -551,9 +519,7 @@ fn do_handle<'a>(
                 "",
             )
         }?;
-        let new_pc = builder
-            .build_load(i32_type, new_pc_gep, "__value__")?
-            .into_int_value();
+        let new_pc = builder.build_load(i32_type, new_pc_gep, "__value__")?.into_int_value();
         builder.build_store(pc, new_pc)?;
         builder.build_unconditional_branch(vm_entry)?;
     }
@@ -573,8 +539,7 @@ fn do_handle<'a>(
         let jump_true = ctx.append_basic_block(function, ".amice.jump_true");
         let jump_false = ctx.append_basic_block(function, ".amice.jump_false");
 
-        let jmp_cmp =
-            builder.build_int_compare(IntPredicate::EQ, flag_value, i32_one, "jmp_cmp")?;
+        let jmp_cmp = builder.build_int_compare(IntPredicate::EQ, flag_value, i32_one, "jmp_cmp")?;
         builder.build_conditional_branch(jmp_cmp, jump_true, jump_false)?;
 
         builder.position_at_end(jump_true);
@@ -586,13 +551,11 @@ fn do_handle<'a>(
         builder.build_unconditional_branch(vm_entry)?;
     }
 
-    if verify_function(
-        function.as_value_ref() as *mut std::ffi::c_void
-    ) {
+    if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
         warn!(
-                "(vm_flatten) function {} verify failed",
-                function.get_name().to_str().unwrap_or("<unknown>")
-            );
+            "(vm_flatten) function {} verify failed",
+            function.get_name().to_str().unwrap_or("<unknown>")
+        );
     }
 
     unsafe {
@@ -618,21 +581,18 @@ fn generate_opcodes(
         let left = node.left();
         let right = node.right();
 
-        let left_value = *basic_block_value_map.get(&left).ok_or(anyhow!(
-            "failed to find left node value for basic block: {:?}",
-            left
-        ))?;
-        let right_value = *basic_block_value_map.get(&right).ok_or(anyhow!(
-            "failed to find right node value for basic block: {:?}",
-            right
-        ))?;
+        let left_value = *basic_block_value_map
+            .get(&left)
+            .ok_or(anyhow!("failed to find left node value for basic block: {:?}", left))?;
+        let right_value = *basic_block_value_map
+            .get(&right)
+            .ok_or(anyhow!("failed to find right node value for basic block: {:?}", right))?;
 
         opcodes.push((VmBranchNodeKind::JmpIf, vec![0, 0], node.value));
         let jmpif_index = opcodes.len() - 1;
 
         // 先生成true分支的代码
-        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(left_value)
-        {
+        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(left_value) {
             let label_values = vec![left_value, right_value];
             opcodes.push((VmBranchNodeKind::Run, label_values, left_value));
             let left_pc_index = opcodes.len() - 1;
@@ -654,8 +614,7 @@ fn generate_opcodes(
         }
 
         // 再生成false分支的代码
-        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(right_value)
-        {
+        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(right_value) {
             let label_values = vec![right_value, left_value];
             opcodes.push((VmBranchNodeKind::Run, label_values, right_value));
             let right_pc_index = opcodes.len() - 1;
@@ -689,25 +648,23 @@ fn generate_opcodes(
         return Ok(());
     } else if node.len() == 1 && node.opcode == InstructionOpcode::Br {
         let left = node.left();
-        let left_value = *basic_block_value_map.get(&left).ok_or(anyhow!(
-            "failed to find left node value for basic block: {:?}",
-            left
-        ))?;
+        let left_value = *basic_block_value_map
+            .get(&left)
+            .ok_or(anyhow!("failed to find left node value for basic block: {:?}", left))?;
         let right_value = if random_none_node_opcode {
             left_value ^ basic_block_value_map.len() as u32
         } else {
             0
         };
-        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(left_value)
-        {
+        if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(left_value) {
             let label_values = vec![left_value, right_value];
             opcodes.push((VmBranchNodeKind::Run, label_values, node.value));
             e.insert(opcodes.len() - 1);
 
-            let next_node = *nodes.iter().find(|n| n.block == left).ok_or(anyhow!(
-                "failed to find next node for basic block: {:?}",
-                left
-            ))?;
+            let next_node = *nodes
+                .iter()
+                .find(|n| n.block == left)
+                .ok_or(anyhow!("failed to find next node for basic block: {:?}", left))?;
             return generate_opcodes(
                 nodes,
                 basic_block_value_map,
@@ -735,9 +692,7 @@ fn generate_opcodes(
                 basic_block
             ))?;
 
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                run_block_index_map.entry(block_value)
-            {
+            if let std::collections::hash_map::Entry::Vacant(e) = run_block_index_map.entry(block_value) {
                 let label_values = vec![block_value, block_value];
                 opcodes.push((VmBranchNodeKind::Run, label_values, block_value));
                 let pc_index = opcodes.len() - 1;

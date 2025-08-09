@@ -9,9 +9,7 @@ use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
 use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::{AsTypeRef, IntType};
-use llvm_plugin::inkwell::values::{
-    ArrayValue, AsValueRef, BasicValue, InstructionOpcode, PhiValue,
-};
+use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, InstructionOpcode, PhiValue};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
@@ -26,11 +24,7 @@ pub struct IndirectBranch {
 }
 
 impl LlvmModulePass for IndirectBranch {
-    fn run_pass(
-        &self,
-        module: &mut Module<'_>,
-        _manager: &ModuleAnalysisManager,
-    ) -> PreservedAnalyses {
+    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable || !self.flags.contains(IndirectBranchFlags::Basic) {
             return PreservedAnalyses::All;
         }
@@ -55,14 +49,9 @@ impl LlvmModulePass for IndirectBranch {
             .collect::<Vec<_>>();
 
         let non_entry_bb_array_ty = ptr_type.array_type(non_entry_basic_blocks.len() as u32);
-        let non_entry_bb_initializer = unsafe {
-            ArrayValue::new_raw_const_array(
-                non_entry_bb_array_ty.as_type_ref(),
-                &non_entry_bb_addrs,
-            )
-        };
-        let global_indirect_branch_table =
-            module.add_global(non_entry_bb_array_ty, None, INDIRECT_BRANCH_TABLE_NAME);
+        let non_entry_bb_initializer =
+            unsafe { ArrayValue::new_raw_const_array(non_entry_bb_array_ty.as_type_ref(), &non_entry_bb_addrs) };
+        let global_indirect_branch_table = module.add_global(non_entry_bb_array_ty, None, INDIRECT_BRANCH_TABLE_NAME);
         global_indirect_branch_table.set_initializer(&non_entry_bb_initializer);
         global_indirect_branch_table.set_linkage(Linkage::Internal);
         global_indirect_branch_table.set_constant(false); // 防止被优化
@@ -77,9 +66,7 @@ impl LlvmModulePass for IndirectBranch {
                 .map(|addr| addr.as_value_ref())
                 .collect::<Vec<_>>();
             let xor_key_array_ty = i32_type.array_type(xor_key.len() as u32);
-            let initializer = unsafe {
-                ArrayValue::new_raw_const_array(xor_key_array_ty.as_type_ref(), &xor_key)
-            };
+            let initializer = unsafe { ArrayValue::new_raw_const_array(xor_key_array_ty.as_type_ref(), &xor_key) };
             let table = module.add_global(xor_key_array_ty, None, ".amice.indirect_branch_key");
             table.set_initializer(&initializer);
             table.set_linkage(Linkage::Private);
@@ -138,33 +125,31 @@ impl LlvmModulePass for IndirectBranch {
                 }
 
                 // 如果是条件跳转或者是没有被收集的基本块（why？），构建局部跳转表
-                let indirect_branch_table = if br_inst.is_conditional()
-                    || !non_entry_bb_addrs.contains(&future_branches_address[0])
-                {
-                    let basic_block_array_ty =
-                        ptr_type.array_type(future_branches_address.len() as u32);
-                    let array_values = future_branches_address
-                        .iter()
-                        .map(|v| unsafe { ArrayValue::new(*v) })
-                        .collect::<Vec<_>>();
+                let indirect_branch_table =
+                    if br_inst.is_conditional() || !non_entry_bb_addrs.contains(&future_branches_address[0]) {
+                        let basic_block_array_ty = ptr_type.array_type(future_branches_address.len() as u32);
+                        let array_values = future_branches_address
+                            .iter()
+                            .map(|v| unsafe { ArrayValue::new(*v) })
+                            .collect::<Vec<_>>();
 
-                    let initializer = basic_block_array_ty.const_array(&array_values);
-                    let local_indirect_branch_table =
-                        module.add_global(basic_block_array_ty, None, ".amice.indirect_branch");
-                    local_indirect_branch_table.set_initializer(&initializer);
-                    local_indirect_branch_table.set_linkage(Linkage::Internal);
-                    local_indirect_branch_table.set_constant(false);
-                    unsafe {
-                        amice_llvm::module_utils::append_to_compiler_used(
-                            module.as_mut_ptr() as *mut std::ffi::c_void,
-                            local_indirect_branch_table.as_value_ref() as *mut std::ffi::c_void,
-                        );
-                    }
-                    Some(local_indirect_branch_table)
-                } else {
-                    // 选择全局跳转表
-                    module.get_global(INDIRECT_BRANCH_TABLE_NAME)
-                };
+                        let initializer = basic_block_array_ty.const_array(&array_values);
+                        let local_indirect_branch_table =
+                            module.add_global(basic_block_array_ty, None, ".amice.indirect_branch");
+                        local_indirect_branch_table.set_initializer(&initializer);
+                        local_indirect_branch_table.set_linkage(Linkage::Internal);
+                        local_indirect_branch_table.set_constant(false);
+                        unsafe {
+                            amice_llvm::module_utils::append_to_compiler_used(
+                                module.as_mut_ptr() as *mut std::ffi::c_void,
+                                local_indirect_branch_table.as_value_ref() as *mut std::ffi::c_void,
+                            );
+                        }
+                        Some(local_indirect_branch_table)
+                    } else {
+                        // 选择全局跳转表
+                        module.get_global(INDIRECT_BRANCH_TABLE_NAME)
+                    };
 
                 let Some(indirect_branch_table) = indirect_branch_table else {
                     warn!("(indirect-branch) indirect branch table is None?");
@@ -184,24 +169,15 @@ impl LlvmModulePass for IndirectBranch {
                 };
                 // 获取一下下标，如果是条件跳转，就把i8扩展成i32就好了
                 let index = if br_inst.is_conditional() {
-                    let cond = br_inst
-                        .get_operand(0)
-                        .unwrap()
-                        .left()
-                        .unwrap()
-                        .into_int_value();
+                    let cond = br_inst.get_operand(0).unwrap().left().unwrap().into_int_value();
                     builder
                         .build_int_z_extend(cond, i32_type, "")
                         .map_err(|e| warn!("(indirect-branch) build_int_z_extend failed: {e}"))
                         .ok()
                 } else {
-                    let index = non_entry_bb_addrs
-                        .iter()
-                        .position(|&x| x == future_branches_address[0]);
+                    let index = non_entry_bb_addrs.iter().position(|&x| x == future_branches_address[0]);
                     let Some(mut index) = index else {
-                        warn!(
-                            "(indirect-branch) index is None, skipping this branch, branch: {br_inst:?}"
-                        );
+                        warn!("(indirect-branch) index is None, skipping this branch, branch: {br_inst:?}");
                         continue;
                     };
 
@@ -240,9 +216,7 @@ impl LlvmModulePass for IndirectBranch {
                     .into()
                 };
                 let Some(index) = index else {
-                    warn!(
-                        "(indirect-branch) index is None, skipping this branch, branch: {br_inst:?}"
-                    );
+                    warn!("(indirect-branch) index is None, skipping this branch, branch: {br_inst:?}");
                     continue;
                 };
                 let Ok(gep) = (unsafe {
@@ -267,18 +241,15 @@ impl LlvmModulePass for IndirectBranch {
                     .build_indirect_branch(loaded_address.as_basic_value_enum(), &successors)
                     .map_err(|e| error!("(indirect-branch) build indirect branch failed: {e}"))
                 else {
-                    panic!(
-                        "(indirect-branch) build indirect branch failed, this should never happen"
-                    );
+                    panic!("(indirect-branch) build indirect branch failed, this should never happen");
                 };
 
                 if self.flags.contains(IndirectBranchFlags::DummyBlock) {
-                    let max_chain_num =
-                        if self.flags.contains(IndirectBranchFlags::ChainedDummyBlock) {
-                            13
-                        } else {
-                            1
-                        };
+                    let max_chain_num = if self.flags.contains(IndirectBranchFlags::ChainedDummyBlock) {
+                        13
+                    } else {
+                        1
+                    };
                     let chain_nums = std::cmp::max(1, rand::random_range(0..=max_chain_num));
                     // 目标块
                     let goal_dummy_block = goal_dummy_block.unwrap();
@@ -287,20 +258,15 @@ impl LlvmModulePass for IndirectBranch {
                     for _ in 0..chain_nums - 1 {
                         let dummy_block = context.append_basic_block(function, "");
                         builder.position_at_end(dummy_block);
-                        let target =
-                            unsafe { cur_dummy_block.get_address().unwrap().as_basic_value_enum() };
+                        let target = unsafe { cur_dummy_block.get_address().unwrap().as_basic_value_enum() };
 
-                        if self.flags.contains(IndirectBranchFlags::DummyJunk)
-                            && rand::random_range(0..=100) < 45
-                        {
+                        if self.flags.contains(IndirectBranchFlags::DummyJunk) && rand::random_range(0..=100) < 45 {
                             emit_dummy_junk(&builder, i32_type);
                         }
 
                         builder
                             .build_indirect_branch(target, &[cur_dummy_block])
-                            .map_err(|e| {
-                                error!("(indirect-branch) build indirect branch failed: {e}")
-                            })
+                            .map_err(|e| error!("(indirect-branch) build indirect branch failed: {e}"))
                             .expect("build indirect branch failed");
                         cur_dummy_block = dummy_block;
                     }
@@ -319,8 +285,7 @@ impl LlvmModulePass for IndirectBranch {
                     }
 
                     builder.position_before(&br_inst);
-                    let target =
-                        unsafe { cur_dummy_block.get_address().unwrap().as_basic_value_enum() };
+                    let target = unsafe { cur_dummy_block.get_address().unwrap().as_basic_value_enum() };
                     indir_br = builder
                         .build_indirect_branch(target, &[cur_dummy_block])
                         .map_err(|e| error!("(indirect-branch) build_indirect_branch failed: {e}"))
@@ -396,9 +361,7 @@ fn emit_dummy_junk<'ctx>(builder: &Builder<'ctx>, i32_ty: IntType<'ctx>) {
             let _ = builder.build_int_compare(IntPredicate::EQ, dummy_val1, dummy_val2, "junk_cmp");
         }
         if rand::random_range(0..=100) < 30 {
-            if let Ok(junk_cmp) =
-                builder.build_int_compare(IntPredicate::NE, dummy_val1, dummy_val2, "junk_cmp")
-            {
+            if let Ok(junk_cmp) = builder.build_int_compare(IntPredicate::NE, dummy_val1, dummy_val2, "junk_cmp") {
                 let _ = builder
                     .build_int_z_extend(junk_cmp, i32_ty, "junk_cmp_zext")
                     .map(|dummy_val| builder.build_store(alloca, dummy_val))
@@ -441,10 +404,6 @@ impl IndirectBranch {
             None
         };
 
-        Self {
-            enable,
-            flags,
-            xor_key,
-        }
+        Self { enable, flags, xor_key }
     }
 }

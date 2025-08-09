@@ -22,8 +22,7 @@ mod tests {
             .expect("Failed to execute clang command");
         assert!(output.status.success(), "Clang command failed");
 
-        let ll = std::fs::read_to_string("target/repeated_strings.ll")
-            .expect("Failed to read LLVM IR file");
+        let ll = std::fs::read_to_string("target/repeated_strings.ll").expect("Failed to read LLVM IR file");
 
         let count = ll.matches("call void @decrypt_strings").count();
         assert!(
