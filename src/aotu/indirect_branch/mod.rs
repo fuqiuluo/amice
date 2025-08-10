@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::config::{CONFIG, IndirectBranchFlags};
 use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry_ref;
@@ -12,6 +13,7 @@ use llvm_plugin::inkwell::types::{AsTypeRef, IntType};
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, InstructionOpcode, PhiValue};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use log::{debug, error, warn};
 use rand::Rng;
 
@@ -54,7 +56,14 @@ impl LlvmModulePass for IndirectBranch {
         let global_indirect_branch_table = module.add_global(non_entry_bb_array_ty, None, INDIRECT_BRANCH_TABLE_NAME);
         global_indirect_branch_table.set_initializer(&non_entry_bb_initializer);
         global_indirect_branch_table.set_linkage(Linkage::Internal);
-        global_indirect_branch_table.set_constant(false); // 防止被优化
+        global_indirect_branch_table.set_constant(true);
+
+        unsafe {
+            amice_llvm::module_utils::append_to_compiler_used(
+                module.as_mut_ptr() as *mut std::ffi::c_void,
+                global_indirect_branch_table.as_value_ref() as *mut std::ffi::c_void,
+            );
+        }
 
         let encrypt_key_global = if self.flags.contains(IndirectBranchFlags::EncryptBlockIndex) {
             let xor_key = self
@@ -70,18 +79,21 @@ impl LlvmModulePass for IndirectBranch {
             let table = module.add_global(xor_key_array_ty, None, ".amice.indirect_branch_key");
             table.set_initializer(&initializer);
             table.set_linkage(Linkage::Private);
-            table.set_constant(false);
+            table.set_constant(true);
+
+            unsafe {
+                amice_llvm::module_utils::append_to_compiler_used(
+                    module.as_mut_ptr() as *mut std::ffi::c_void,
+                    table.as_value_ref() as *mut std::ffi::c_void,
+                );
+            }
+
             Some(table)
         } else {
             None
         };
 
-        unsafe {
-            amice_llvm::module_utils::append_to_compiler_used(
-                module.as_mut_ptr() as *mut std::ffi::c_void,
-                global_indirect_branch_table.as_value_ref() as *mut std::ffi::c_void,
-            );
-        }
+
 
         for function in module.get_functions() {
             let mut branch_instructions = Vec::new();
@@ -137,8 +149,8 @@ impl LlvmModulePass for IndirectBranch {
                         let local_indirect_branch_table =
                             module.add_global(basic_block_array_ty, None, ".amice.indirect_branch");
                         local_indirect_branch_table.set_initializer(&initializer);
-                        local_indirect_branch_table.set_linkage(Linkage::Internal);
-                        local_indirect_branch_table.set_constant(false);
+                        local_indirect_branch_table.set_linkage(Linkage::Private);
+                        local_indirect_branch_table.set_constant(true);
                         unsafe {
                             amice_llvm::module_utils::append_to_compiler_used(
                                 module.as_mut_ptr() as *mut std::ffi::c_void,
@@ -174,7 +186,8 @@ impl LlvmModulePass for IndirectBranch {
                         .build_int_z_extend(cond, i32_type, "")
                         .map_err(|e| warn!("(indirect-branch) build_int_z_extend failed: {e}"))
                         .ok()
-                } else {
+                }
+                else {
                     let index = non_entry_bb_addrs.iter().position(|&x| x == future_branches_address[0]);
                     let Some(mut index) = index else {
                         warn!("(indirect-branch) index is None, skipping this branch, branch: {br_inst:?}");
@@ -292,8 +305,12 @@ impl LlvmModulePass for IndirectBranch {
                         .expect("build_indirect_branch failed");
                 }
 
-                br_inst.replace_all_uses_with(&indir_br);
-                br_inst.remove_from_basic_block();
+                // if let Some(old_pred) = br_inst.get_parent()
+                //     && let Some(new_pred) = indir_br.get_parent() {
+                //     debug!("(indirect-branch) old_pred: {old_pred:?}, new_pred: {new_pred:?}");
+                // }
+
+                br_inst.erase_from_basic_block();
             }
 
             if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
