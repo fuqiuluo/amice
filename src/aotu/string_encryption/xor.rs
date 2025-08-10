@@ -280,6 +280,7 @@ fn emit_global_string_decryptor_ctor<'a>(
     let i32_ty = ctx.i32_type();
     let i32_ptr = ptr_type!(ctx, i32_type);
 
+
     let decrypt_stub_ty = ctx.void_type().fn_type(&[], false);
     let decrypt_stub = module.add_function("decrypt_strings_stub", decrypt_stub_ty, None);
     decrypt_stub.set_linkage(Linkage::Internal);
