@@ -93,6 +93,7 @@ impl StringEncryption {
     }
 }
 
+#[derive(Copy, Clone)]
 struct EncryptedGlobalValue<'a> {
     global: GlobalValue<'a>,
     len: u32,

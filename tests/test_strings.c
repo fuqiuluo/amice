@@ -224,3 +224,19 @@ int main(int argc, char** argv) {
     g_sink ^= seed;
     return (g_sink & 1);
 }
+
+//[IF] Took branch A
+//hello hello
+//line1\nline2\tTabbed\x21!
+//
+//switch: case 0
+//[LOOP] enter loop
+//[LOOP] continue at i=0
+//value = 1
+//[LOOP] continue at i=2
+//[LOOP] exit loop
+//[TERNARY] false path
+//goto: non-negative path
+//[DISPATCH] handler A
+//pair = (0, 1515870810)
+//[MAIN] done seed=0

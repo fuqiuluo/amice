@@ -13,7 +13,7 @@ use llvm_plugin::inkwell::values::{
     AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, GlobalValue, InstructionValue,
 };
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
-use log::{error, warn};
+use log::{error, info, warn};
 
 pub(crate) fn do_handle<'a>(
     pass: &StringEncryption,
@@ -141,24 +141,24 @@ pub(crate) fn do_handle<'a>(
     let mut stack_strings = Vec::new();
     let mut global_strings = Vec::new();
 
-    gs.iter().for_each(|ev| {
+    for ev in &gs {
         if ev.use_stack_alloc {
-            stack_strings.push(ev);
+            stack_strings.push(*ev);
         } else {
-            global_strings.push(ev);
+            global_strings.push(*ev);
             ev.global.set_constant(false);
         }
-    });
+    }
 
     match pass.decrypt_timing {
         DecryptTiming::Lazy => {
             // Handle stack strings with lazy timing
             if !stack_strings.is_empty() {
-                do_lazy(&stack_strings, decrypt_fn, ctx, true)?;
+                do_lazy(module, stack_strings, decrypt_fn, true)?;
             }
             // Handle global strings with lazy timing (though they'll use global logic)
             if !global_strings.is_empty() {
-                do_lazy(&global_strings, decrypt_fn, ctx, false)?;
+                do_lazy(module, global_strings, decrypt_fn, false)?;
             }
         },
         //DecryptTiming::Lazy => do_lazy(&gs, decrypt_fn, ctx, effective_stack_alloc)?,
@@ -167,17 +167,17 @@ pub(crate) fn do_handle<'a>(
                 !effective_stack_alloc,
                 "(strenc) global decrypt timing is not supported with stack allocation"
             );
-            do_global(module, &gs, decrypt_fn, ctx)?
+            do_global(module, &gs, decrypt_fn)?
         },
     }
 
     Ok(())
 }
 
-fn do_lazy(
-    gs: &[&EncryptedGlobalValue],
-    decrypt_fn: FunctionValue<'_>,
-    ctx: ContextRef,
+fn do_lazy<'a>(
+    module: &mut Module<'a>,
+    gs: Vec<EncryptedGlobalValue<'a>>,
+    decrypt_fn: FunctionValue,
     stack_alloc: bool,
 ) -> anyhow::Result<()> {
     for ev in gs {
@@ -190,35 +190,36 @@ fn do_lazy(
 
         for u in uses {
             let user = u.get_user();
-            do_insert_by_user(decrypt_fn, &ev.global, ctx, stack_alloc, ev, user)?;
+            do_insert_by_user(module, decrypt_fn, &ev.global, stack_alloc, ev, user)?;
         }
     }
 
     Ok(())
 }
 
-fn do_insert_by_user(
-    decrypt_fn: FunctionValue<'_>,
+fn do_insert_by_user<'a>(
+    module: &mut Module<'a>,
+    decrypt_fn: FunctionValue,
     global_key: &GlobalValue,
-    ctx: ContextRef,
     stack_alloc: bool,
-    ev: &EncryptedGlobalValue,
+    ev: EncryptedGlobalValue<'a>,
     user: AnyValueEnum,
 ) -> anyhow::Result<()> {
+    info!("(strenc) inserting decrypt call for user: {:?}", user);
     match user {
         AnyValueEnum::InstructionValue(inst) => {
-            insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag, stack_alloc)?
+            insert_decrypt_call(module, inst, &ev.global, decrypt_fn, ev.len, ev.flag, stack_alloc)?
         },
         AnyValueEnum::IntValue(value) => {
             if let Some(inst) = value.as_instruction_value() {
-                insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag, stack_alloc)?
+                insert_decrypt_call(module, inst, &ev.global, decrypt_fn, ev.len, ev.flag, stack_alloc)?
             } else {
                 error!("(strenc) unexpected IntValue user: {value:?}");
             }
         },
         AnyValueEnum::PointerValue(gv) => {
             if let Some(inst) = gv.as_instruction_value() {
-                insert_decrypt_call(ctx, inst, &ev.global, decrypt_fn, ev.len, ev.flag, stack_alloc)?
+                insert_decrypt_call(module, inst, &ev.global, decrypt_fn, ev.len, ev.flag, stack_alloc)?
             } else {
                 let mut uses = Vec::new();
                 let mut use_opt = gv.get_first_use();
@@ -229,7 +230,7 @@ fn do_insert_by_user(
 
                 for u in &uses {
                     let user = u.get_user();
-                    do_insert_by_user(decrypt_fn, global_key, ctx, stack_alloc, ev, user)?;
+                    do_insert_by_user(module, decrypt_fn, global_key, stack_alloc, ev, user)?;
                 }
 
                 if uses.is_empty() {
@@ -245,9 +246,13 @@ fn do_insert_by_user(
                 uses.push(u);
             }
 
-            for u in uses {
+            for u in &uses {
                 let user = u.get_user();
-                do_insert_by_user(decrypt_fn, global_key, ctx, stack_alloc, ev, user)?;
+                do_insert_by_user(module, decrypt_fn, global_key, stack_alloc, ev, user)?;
+            }
+
+            if uses.is_empty() {
+                error!("(strenc) unexpected ArrayValue user: {arr:?}");
             }
         },
         _ => {
@@ -259,21 +264,40 @@ fn do_insert_by_user(
 }
 
 fn insert_decrypt_call<'a>(
-    ctx: ContextRef<'a>,
-    inst: InstructionValue<'a>,
-    global: &GlobalValue<'a>,
-    decrypt_fn: FunctionValue<'a>,
+    module: &mut Module<'a>,
+    inst: InstructionValue,
+    global: &GlobalValue,
+    decrypt_fn: FunctionValue,
     len: u32,
-    flag: Option<GlobalValue<'a>>,
-    stack_alloc: bool,
+    mut flag: Option<GlobalValue<'a>>,
+    mut stack_alloc: bool,
 ) -> anyhow::Result<()> {
+    let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
     let i8_ty = ctx.i8_type();
     let i32_ptr = ptr_type!(ctx, i32_type);
     let parent_bb = inst.get_parent().expect("inst must be in a block");
     let parent_fn = parent_bb.get_parent().expect("block must have parent fn");
 
+    let mut replace_points = Vec::new();
+    for i in 0..inst.get_num_operands() {
+        if let Some(op) = inst.get_operand(i) {
+            if let Some(operand) = op.left() {
+                if operand.as_value_ref() == global.as_value_ref() {
+                    replace_points.push((inst, i));
+                    break;
+                }
+            }
+        }
+    }
+    if replace_points.is_empty() {
+        // 无法找到替换点, 降级到回写模式
+        error!("(strenc) failed to replace global operand in instruction: {inst:?}, using global decrypt timing instead");
+        stack_alloc = false;
+    }
+
     let builder = ctx.create_builder();
+
     builder.position_before(&inst);
     let ptr = global.as_pointer_value();
     let len_val = i32_ty.const_int(len as u64, false);
@@ -290,31 +314,20 @@ fn insert_decrypt_call<'a>(
             "",
         )?;
 
-        let mut replaced = false;
-        for i in 0..inst.get_num_operands() {
-            if let Some(op) = inst.get_operand(i) {
-                if let Some(operand) = op.left() {
-                    if operand.as_value_ref() == global.as_value_ref() {
-                        inst.set_operand(i, container.as_basic_value_enum());
-                        replaced = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if !replaced {
-            error!("(strenc) failed to replace global operand in instruction: {inst:?}");
+        for (inst, i) in replace_points {
+            inst.set_operand(i, container.as_basic_value_enum());
         }
     } else {
-        if global.is_constant() {
-            global.set_constant(false);
+        global.set_constant(false);
+
+        if flag.is_none() {
+            let temp_flag = module.add_global(i32_ty, None, &format!("temp_dec_flag_{}", rand::random::<u32>()));
+            temp_flag.set_initializer(&i32_ty.const_zero());
+            temp_flag.set_linkage(Linkage::Private);
+            flag = Some(temp_flag);
         }
-        let flag_ptr = if let Some(flag) = flag {
-            flag.as_pointer_value()
-        } else {
-            i32_ptr.const_null()
-        };
+
+        let flag_ptr = flag.unwrap().as_pointer_value();
         builder.build_call(
             decrypt_fn,
             &[ptr.into(), len_val.into(), flag_ptr.into(), ptr.into()],
@@ -448,10 +461,10 @@ fn add_decrypt_function<'a>(
 
 fn do_global<'a>(
     module: &mut Module<'a>,
-    gs: &[EncryptedGlobalValue],
+    gs: &[EncryptedGlobalValue<'a>],
     decrypt_fn: FunctionValue<'a>,
-    ctx: ContextRef<'a>,
 ) -> anyhow::Result<()> {
+    let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
     let i32_ptr = ptr_type!(ctx, i32_type);
 

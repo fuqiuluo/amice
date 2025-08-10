@@ -163,10 +163,10 @@ pub(crate) fn do_handle<'a>(
 
     gs.iter().for_each(|ev| {
         if ev.use_stack_alloc {
-            stack_strings.push(ev);
+            stack_strings.push(*ev);
         } else {
             ev.global.set_constant(false);
-            global_strings.push(ev);
+            global_strings.push(*ev);
         }
     });
 
@@ -174,17 +174,17 @@ pub(crate) fn do_handle<'a>(
         DecryptTiming::Lazy => {
             // Handle stack strings with lazy timing
             if !stack_strings.is_empty() {
-                do_lazy(&stack_strings, decrypt_fn, &key_global, ctx, true)?;
+                do_lazy(module, stack_strings, decrypt_fn, &key_global, true)?;
             }
             // Handle global strings with lazy timing (though they'll use global logic)
             if !global_strings.is_empty() {
-                do_lazy(&global_strings, decrypt_fn, &key_global, ctx, false)?;
+                do_lazy(module, global_strings, decrypt_fn, &key_global, false)?;
             }
         },
         DecryptTiming::Global => {
             // For global timing, all strings use global decrypt logic
             if !gs.is_empty() {
-                do_global(module, &gs.iter().collect::<Vec<_>>(), decrypt_fn, &key_global, ctx)?;
+                do_global(module, &gs, decrypt_fn, &key_global)?;
             }
         },
     }
@@ -193,11 +193,11 @@ pub(crate) fn do_handle<'a>(
 
 fn do_global<'a>(
     module: &mut Module<'a>,
-    gs: &[&EncryptedGlobalValue],
+    gs: &[EncryptedGlobalValue<'a>],
     decrypt_fn: FunctionValue<'a>,
     global_key: &GlobalValue,
-    ctx: ContextRef<'a>,
 ) -> anyhow::Result<()> {
+    let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
     let i8_ptr = ptr_type!(ctx, i8_type);
 
@@ -234,11 +234,11 @@ fn do_global<'a>(
     Ok(())
 }
 
-fn do_lazy(
-    gs: &[&EncryptedGlobalValue],
+fn do_lazy<'a>(
+    module: &mut Module<'a>,
+    gs: Vec<EncryptedGlobalValue<'a>>,
     decrypt_fn: FunctionValue<'_>,
     global_key: &GlobalValue,
-    ctx: ContextRef,
     is_stack_fn: bool,
 ) -> anyhow::Result<()> {
     for ev in gs {
@@ -251,24 +251,24 @@ fn do_lazy(
 
         for u in uses {
             let user = u.get_user();
-            do_insert_by_user(decrypt_fn, global_key, ctx, ev, user, is_stack_fn)?;
+            do_insert_by_user(module, decrypt_fn, global_key, ev, user, is_stack_fn)?;
         }
     }
 
     Ok(())
 }
 
-fn do_insert_by_user(
+fn do_insert_by_user<'a>(
+    module: &mut Module<'a>,
     decrypt_fn: FunctionValue<'_>,
     global_key: &GlobalValue,
-    ctx: ContextRef,
-    ev: &EncryptedGlobalValue,
+    ev: EncryptedGlobalValue<'a>,
     user: AnyValueEnum,
     is_stack_fn: bool,
 ) -> anyhow::Result<()> {
     match user {
         AnyValueEnum::InstructionValue(inst) => insert_decrypt_call(
-            ctx,
+            module,
             inst,
             &ev.global,
             decrypt_fn,
@@ -280,7 +280,7 @@ fn do_insert_by_user(
         AnyValueEnum::IntValue(value) => {
             if let Some(inst) = value.as_instruction_value() {
                 insert_decrypt_call(
-                    ctx,
+                    module,
                     inst,
                     &ev.global,
                     decrypt_fn,
@@ -296,7 +296,7 @@ fn do_insert_by_user(
         AnyValueEnum::PointerValue(gv) => {
             if let Some(inst) = gv.as_instruction_value() {
                 insert_decrypt_call(
-                    ctx,
+                    module,
                     inst,
                     &ev.global,
                     decrypt_fn,
@@ -315,7 +315,7 @@ fn do_insert_by_user(
 
                 for u in &uses {
                     let user = u.get_user();
-                    do_insert_by_user(decrypt_fn, global_key, ctx, ev, user, is_stack_fn)?;
+                    do_insert_by_user(module, decrypt_fn, global_key, ev, user, is_stack_fn)?;
                 }
 
                 if uses.is_empty() {
@@ -333,7 +333,7 @@ fn do_insert_by_user(
 
             for u in uses {
                 let user = u.get_user();
-                do_insert_by_user(decrypt_fn, global_key, ctx, ev, user, is_stack_fn)?;
+                do_insert_by_user(module, decrypt_fn, global_key, ev, user, is_stack_fn)?;
             }
         },
         _ => {
@@ -344,27 +344,46 @@ fn do_insert_by_user(
 }
 
 fn insert_decrypt_call<'a>(
-    ctx: ContextRef<'a>,
-    inst: InstructionValue<'a>,
-    global: &GlobalValue<'a>,
-    decrypt_fn: FunctionValue<'a>,
+    module: &mut Module<'a>,
+    inst: InstructionValue,
+    global: &GlobalValue,
+    decrypt_fn: FunctionValue,
     global_key: &GlobalValue,
     len: u32,
-    flag: Option<GlobalValue<'a>>,
-    is_stack_fn: bool,
+    mut flag: Option<GlobalValue<'a>>,
+    mut stack_alloc: bool,
 ) -> anyhow::Result<()> {
+    let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
     let i8_ptr = ptr_type!(ctx, i8_type);
     let i8_ty = ctx.i8_type();
     let parent_bb = inst.get_parent().expect("inst must be in a block");
     let parent_fn = parent_bb.get_parent().expect("block must have parent fn");
+    let mut replace_points = Vec::new();
+
+    for i in 0..inst.get_num_operands() {
+        if let Some(op) = inst.get_operand(i) {
+            if let Some(operand) = op.left() {
+                if operand.as_value_ref() == global.as_value_ref() {
+                    replace_points.push((inst, i));
+                    break;
+                }
+            }
+        }
+    }
+
+    if replace_points.is_empty() {
+        // 无法找到替换点, 降级到回写模式
+        error!("(strenc) failed to replace global operand in instruction: {inst:?}, using global decrypt timing instead");
+        stack_alloc = false;
+    }
 
     let builder = ctx.create_builder();
     builder.position_before(&inst);
     let ptr = global.as_pointer_value();
     let len_val = i32_ty.const_int(len as u64, false);
     let key = global_key.as_pointer_value();
-    if is_stack_fn {
+    if stack_alloc {
         let flag_ptr = i8_ptr.const_null();
         let container = builder.build_array_alloca(i8_ty, i32_ty.const_int(len as u64 + 1, false), "")?;
         builder.build_call(
@@ -379,25 +398,21 @@ fn insert_decrypt_call<'a>(
             "",
         )?;
 
-        let mut replaced = false;
-        for i in 0..inst.get_num_operands() {
-            if let Some(op) = inst.get_operand(i) {
-                if let Some(operand) = op.left() {
-                    if operand.as_value_ref() == global.as_value_ref() {
-                        inst.set_operand(i, container.as_basic_value_enum());
-                        replaced = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if !replaced {
-            error!("(strenc) failed to replace global operand in instruction: {inst:?}");
+        for (inst, i) in replace_points {
+            inst.set_operand(i, container.as_basic_value_enum());
         }
     } else {
-        let dst = global.as_pointer_value();
+        global.set_constant(false);
+
+        if flag.is_none() {
+            let temp_flag = module.add_global(i32_ty, None, &format!("temp_dec_flag_{}", rand::random::<u32>()));
+            temp_flag.set_initializer(&i32_ty.const_zero());
+            temp_flag.set_linkage(Linkage::Private);
+            flag = Some(temp_flag);
+        }
+
         let flag_ptr = flag.unwrap().as_pointer_value();
+        let dst = global.as_pointer_value();
         builder.build_call(
             decrypt_fn,
             &[ptr.into(), dst.into(), len_val.into(), key.into(), flag_ptr.into()],
@@ -424,6 +439,7 @@ fn add_decrypt_function<'a>(
     let i32_ptr = ptr_type!(ctx, i32_type);
     let vector_256 = i8_ty.vec_type(32);
     let vector_ptr_type = vector_256.ptr_type(AddressSpace::default());
+    let i32_one = i32_ty.const_int(1, false);
 
     let fn_ty = i8_ty.fn_type(
         &[
@@ -558,10 +574,9 @@ fn add_decrypt_function<'a>(
     builder.build_unconditional_branch(check_rest)?;
 
     builder.position_at_end(exit);
-    if stack_alloc {
-        let null_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[len], "null_gep") }?;
-        builder.build_store(null_gep, i8_ty.const_zero())?;
-    }
+    let index = builder.build_int_sub(len, i32_one, "")?;
+    let null_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "null_gep") }?;
+    builder.build_store(null_gep, i8_ty.const_zero())?;
     builder.build_return(Some(&dst_ptr))?;
 
     Ok(decrypt_fn)
