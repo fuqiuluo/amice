@@ -292,7 +292,9 @@ fn insert_decrypt_call<'a>(
     }
     if replace_points.is_empty() {
         // 无法找到替换点, 降级到回写模式
-        error!("(strenc) failed to replace global operand in instruction: {inst:?}, using global decrypt timing instead");
+        error!(
+            "(strenc) failed to replace global operand in instruction: {inst:?}, using global decrypt timing instead"
+        );
         stack_alloc = false;
     }
 
