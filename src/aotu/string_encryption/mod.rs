@@ -1,16 +1,18 @@
 mod simd_xor;
 mod xor;
 
-use std::ptr::NonNull;
 use crate::config::{CONFIG, StringAlgorithm, StringDecryptTiming};
+use crate::llvm_utils::function::get_basic_block_entry;
 use ascon_hash::{AsconHash256, Digest, Update};
 use inkwell::llvm_sys::core::LLVMGetAsString;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{AnyValueEnum, ArrayValue, AsValueRef, BasicValue, GlobalValue, InstructionValue, PointerValue};
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::inkwell::values::{
+    AnyValueEnum, ArrayValue, AsValueRef, BasicValue, GlobalValue, InstructionValue, PointerValue,
+};
+use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::{debug, error};
-use crate::llvm_utils::function::get_basic_block_entry;
+use std::ptr::NonNull;
 
 /// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled
@@ -108,7 +110,7 @@ struct EncryptedGlobalValue<'a> {
     /// Whether this specific string should use stack allocation for decryption
     /// This can be false even when overall stack_alloc is true, for strings > 4KB
     use_stack_alloc: bool,
-    users: NonNull<Vec<(InstructionValue<'a>, u32)>>
+    users: NonNull<Vec<(InstructionValue<'a>, u32)>>,
 }
 
 impl<'a> EncryptedGlobalValue<'a> {
@@ -117,29 +119,33 @@ impl<'a> EncryptedGlobalValue<'a> {
         len: u32,
         flag: Option<GlobalValue<'a>>,
         use_stack_alloc: bool,
-        user: Vec<(LLVMValueRef, u32)>
+        user: Vec<(LLVMValueRef, u32)>,
     ) -> Self {
-        let user = Box::new(user.iter().map(|(value_ref, op_num)| unsafe {
-            (InstructionValue::new(*value_ref), *op_num)
-        }).collect::<Vec<_>>());
+        let user = Box::new(
+            user.iter()
+                .map(|(value_ref, op_num)| unsafe { (InstructionValue::new(*value_ref), *op_num) })
+                .collect::<Vec<_>>(),
+        );
         EncryptedGlobalValue {
             global,
             str_len: len,
             flag,
             oneshot: false,
             use_stack_alloc,
-            users: NonNull::new(Box::leak(user)).unwrap()
+            users: NonNull::new(Box::leak(user)).unwrap(),
         }
     }
 
     pub fn push(&self, user: InstructionValue<'a>, op_num: u32) {
-        unsafe { let _ = &(*self.users.as_ptr()).push((user, op_num)); }
+        unsafe {
+            let _ = &(*self.users.as_ptr()).push((user, op_num));
+        }
     }
 
     pub fn user_slice(&self) -> &[(InstructionValue<'a>, u32)] {
         unsafe { (*self.users.as_ptr()).as_slice() }
     }
-    
+
     pub fn len(&self) -> usize {
         unsafe { (*self.users.as_ptr()).len() }
     }

@@ -30,7 +30,6 @@ pub struct StringEncryptionConfig {
     pub allow_non_entry_stack_alloc: bool,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StringAlgorithm {
@@ -105,7 +104,10 @@ impl EnvOverlay for StringEncryptionConfig {
             self.only_dot_str = bool_var("AMICE_STRING_ONLY_DOT_STRING", self.only_dot_str);
         }
         if std::env::var("AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC").is_ok() {
-            self.allow_non_entry_stack_alloc = bool_var("AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC", self.allow_non_entry_stack_alloc);
+            self.allow_non_entry_stack_alloc = bool_var(
+                "AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC",
+                self.allow_non_entry_stack_alloc,
+            );
         }
     }
 }

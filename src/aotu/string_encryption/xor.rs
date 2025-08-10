@@ -1,4 +1,7 @@
-use crate::aotu::string_encryption::{EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, array_as_const_string, collect_insert_points, alloc_stack_string};
+use crate::aotu::string_encryption::{
+    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, alloc_stack_string, array_as_const_string,
+    collect_insert_points,
+};
 use crate::config::StringDecryptTiming as DecryptTiming;
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::ptr_type;
@@ -225,7 +228,8 @@ fn emit_decrypt_before_inst<'a>(
                 let ptr = string.global.as_pointer_value();
                 let len_val = i32_ty.const_int(string.str_len as u64, false);
 
-                if stack_alloc && let Ok(container) = alloc_stack_string(module, string, allow_non_entry_stack_alloc, inst)
+                if stack_alloc
+                    && let Ok(container) = alloc_stack_string(module, string, allow_non_entry_stack_alloc, inst)
                 {
                     string.flag.map(|flag| unsafe { flag.delete() }); // 不用当然要删除！
                     let flag_ptr = i32_ptr.const_null();
@@ -252,12 +256,17 @@ fn emit_decrypt_before_inst<'a>(
 
                     builder.build_call(
                         decrypt_fn,
-                        &[ptr.into(), len_val.into(), flag_ptr.as_pointer_value().into(), ptr.into()],
+                        &[
+                            ptr.into(),
+                            len_val.into(),
+                            flag_ptr.as_pointer_value().into(),
+                            ptr.into(),
+                        ],
                         "",
                     )?;
                 }
             }
-            continue
+            continue;
         }
 
         // user_slice完全为空 -> 出现对字符串的非直接引用
@@ -279,7 +288,6 @@ fn emit_global_string_decryptor_ctor<'a>(
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
     let i32_ptr = ptr_type!(ctx, i32_type);
-
 
     let decrypt_stub_ty = ctx.void_type().fn_type(&[], false);
     let decrypt_stub = module.add_function("decrypt_strings_stub", decrypt_stub_ty, None);
