@@ -1,4 +1,5 @@
 use crate::config::CONFIG;
+use amice_llvm::module_utils::verify_function;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::module::{Linkage, Module};
@@ -7,7 +8,6 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
-use amice_llvm::module_utils::verify_function;
 
 pub struct IndirectCall {
     enable: bool,

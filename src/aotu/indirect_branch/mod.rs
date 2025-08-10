@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use crate::config::{CONFIG, IndirectBranchFlags};
 use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry_ref;
 use amice_llvm::module_utils::verify_function;
+use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
 use llvm_plugin::inkwell::context::ContextRef;
@@ -13,9 +13,9 @@ use llvm_plugin::inkwell::types::{AsTypeRef, IntType};
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, InstructionOpcode, PhiValue};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use log::{debug, error, warn};
 use rand::Rng;
+use std::collections::HashMap;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 
@@ -92,8 +92,6 @@ impl LlvmModulePass for IndirectBranch {
         } else {
             None
         };
-
-
 
         for function in module.get_functions() {
             let mut branch_instructions = Vec::new();
@@ -186,8 +184,7 @@ impl LlvmModulePass for IndirectBranch {
                         .build_int_z_extend(cond, i32_type, "")
                         .map_err(|e| warn!("(indirect-branch) build_int_z_extend failed: {e}"))
                         .ok()
-                }
-                else {
+                } else {
                     let index = non_entry_bb_addrs.iter().position(|&x| x == future_branches_address[0]);
                     let Some(mut index) = index else {
                         warn!("(indirect-branch) index is None, skipping this branch, branch: {br_inst:?}");

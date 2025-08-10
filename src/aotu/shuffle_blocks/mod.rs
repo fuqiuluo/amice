@@ -1,11 +1,11 @@
 use crate::config::{CONFIG, ShuffleBlocksFlags};
 use crate::llvm_utils::function::get_basic_block_entry;
+use amice_llvm::module_utils::verify_function;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
-use amice_llvm::module_utils::verify_function;
 
 pub struct ShuffleBlocks {
     enable: bool,
