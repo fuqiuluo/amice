@@ -113,7 +113,7 @@ mod tests {
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/large_string.c")
             .arg("-o")
-            .arg("target/large_string_test")
+            .arg("target/large_string_test_(lazy+xor_simd)")
             .output()
             .expect("Failed to execute clang command");
 
@@ -133,7 +133,7 @@ mod tests {
         );
 
         // Verify the compiled binary runs successfully
-        let run_output = Command::new("./target/large_string_test")
+        let run_output = Command::new("./target/large_string_test_(lazy+xor_simd)")
             .output()
             .expect("Failed to execute compiled binary");
         if !run_output.status.success() {
@@ -167,7 +167,7 @@ mod tests {
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/const_strings.c")
             .arg("-o")
-            .arg("target/small_strings_test")
+            .arg("target/small_strings_test_(lazy+xor)")
             .output()
             .expect("Failed to execute clang command");
 
