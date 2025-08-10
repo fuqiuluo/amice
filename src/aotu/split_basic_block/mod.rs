@@ -7,8 +7,9 @@ use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{Level, debug, error, log_enabled};
+use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
+use amice_llvm::module_utils::verify_function;
 
 pub struct SplitBasicBlock {
     enable: bool,
@@ -28,6 +29,12 @@ impl LlvmModulePass for SplitBasicBlock {
                     function.get_name().to_str().unwrap_or("unknown"),
                     e
                 );
+            }
+        }
+
+        for f in module.get_functions() {
+            if verify_function(f.as_value_ref() as *mut std::ffi::c_void) {
+                warn!("(split-basic-block) function {:?} is not verified", f.get_name());
             }
         }
 

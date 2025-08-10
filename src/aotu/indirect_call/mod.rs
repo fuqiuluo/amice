@@ -7,6 +7,7 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
+use amice_llvm::module_utils::verify_function;
 
 pub struct IndirectCall {
     enable: bool,
@@ -100,6 +101,12 @@ impl LlvmModulePass for IndirectCall {
             xor_key_global,
         ) {
             error!("(indirect_call) failed to handle: {e}");
+        }
+
+        for f in module.get_functions() {
+            if verify_function(f.as_value_ref() as *mut std::ffi::c_void) {
+                warn!("(indirect_call) function {:?} is not verified", f.get_name());
+            }
         }
 
         PreservedAnalyses::None

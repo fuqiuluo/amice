@@ -1,227 +1,209 @@
-// test_strings.c
-// 目标：让字符串打印只在非入口块中发生，覆盖多种控制流情形
-// 编译：clang -O0 -g test_strings.c -o test_strings
-// 运行：./test_strings [seed]
+// C
+/*
+ * md5.c - 自包含的 MD5 实现与示例
+ * 编译:
+ *   gcc -std=c11 -O2 -Wall -Wextra -o md5 md5.c
+ * 运行:
+ *   ./md5
+ */
 
 #include <stdio.h>
-#include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
-#include <time.h>
 
-#if defined(_MSC_VER)
-#  define NOINLINE __declspec(noinline)
-#else
-#  define NOINLINE __attribute__((noinline))
-#endif
+typedef struct {
+    uint32_t state[4];   // A, B, C, D
+    uint64_t bitlen;     // 总比特长度
+    uint8_t  buffer[64]; // 512-bit 缓冲
+    size_t   buflen;     // 缓冲中已有字节数
+} MD5_CTX;
 
-// 使用 volatile 防止编译器过度优化，保证分支存在
-static volatile int g_flag = 0;
-static volatile int g_sink = 0;
-
-// 一些重复/特殊/多字节字符串用来测试去重与编码处理
-static const char* S_HELLO       = "hello";
-static const char* S_HELLO_DUP   = "hello";              // 与 S_HELLO 重复
-static const char* S_FORMAT_1    = "value = %d\n";
-static const char* S_FORMAT_2    = "pair = (%d, %d)\n";
-static const char* S_ESCAPED     = "line1\\nline2\\tTabbed\\x21!\n";
-static const char* S_UTF8_CN     = "中文测试";
-static const char* S_UTF8_MIXED  = "混合: café – τ – 😊";
-static const char* S_BRANCH_A    = "[IF] Took branch A\n";
-static const char* S_BRANCH_B    = "[IF] Took branch B\n";
-static const char* S_SWITCH_DFT  = "[SWITCH] default\n";
-static const char* S_LOOP_ENTER  = "[LOOP] enter loop\n";
-static const char* S_LOOP_BREAK  = "[LOOP] break at i=%d\n";
-static const char* S_LOOP_CONT   = "[LOOP] continue at i=%d\n";
-static const char* S_LOOP_EXIT   = "[LOOP] exit loop\n";
-static const char* S_SHORT_AND   = "[SC] a && b true\n";
-static const char* S_SHORT_OR    = "[SC] a || b true\n";
-static const char* S_TERN_TRUE   = "[TERNARY] true path\n";
-static const char* S_TERN_FALSE  = "[TERNARY] false path\n";
-static const char* S_GOTO_HIT    = "[GOTO] jumped label\n";
-static const char* S_RECUR_BASE  = "[RECUR] base case\n";
-static const char* S_RECUR_STEP  = "[RECUR] step depth=%d\n";
-static const char* S_DISPATCH_A  = "[DISPATCH] handler A\n";
-static const char* S_DISPATCH_B  = "[DISPATCH] handler B\n";
-static const char* S_MAIN_DONE   = "[MAIN] done seed=%d\n";
-
-// 确保每个函数的打印都不在入口块：先做分支或跳转再打印
-
-NOINLINE void demo_if_else(int x) {
-    // 入口块里不打印：先做条件分支
-    if ((x & 1) == 0) {
-        // 非入口块
-        printf("%s", S_BRANCH_A);
-        printf("%s %s\n", S_HELLO, S_HELLO_DUP); // 重复字符串测试
-    } else {
-        // 非入口块
-        printf("%s", S_BRANCH_B);
-        printf("%s\n", S_UTF8_CN);
-    }
-    // 再在另一个分支中使用格式化字符串
-    if (x > 10) {
-        printf(S_FORMAT_1, x);
-    } else {
-        printf("%s\n", S_ESCAPED);
-    }
-    printf("hello");
+/* 左循环 */
+static inline uint32_t ROTL(uint32_t x, uint32_t n) {
+    return (x << n) | (x >> (32 - n));
 }
 
-NOINLINE void demo_switch(int x) {
-    // 入口块做一次变换，仍不打印
-    int v = x % 5;
-    switch (v) {
-        case 0:
-            printf("switch: case 0\n");
-            break;
-        case 1:
-            printf("switch: case 1\n");
-            // 故意落入下一个 case 以产生更多基本块
-            // 注意：标准 C 需要明确的 fallthrough，使用注释说明
-            /* fallthrough */
-        case 2:
-            printf("switch: case 2 or fallthrough from 1\n");
-            break;
-        case 3:
-            printf("switch: case 3\n");
-            printf("%s\n", S_UTF8_MIXED);
-            break;
-        default:
-            printf("%s", S_SWITCH_DFT);
-            break;
-    }
+/* 基本函数 */
+#define F(x,y,z) (((x) & (y)) | ((~(x)) & (z)))
+#define G(x,y,z) (((x) & (z)) | ((y) & (~(z))))
+#define H(x,y,z) ((x) ^ (y) ^ (z))
+#define I(x,y,z) ((y) ^ ((x) | (~(z))))
+
+/* 每轮操作 */
+#define STEP(f, a, b, c, d, x, t, s) \
+    (a) += f((b), (c), (d)) + (x) + (t); \
+    (a) = (b) + ROTL((a), (s))
+
+/* 小端读取 32 位 */
+static inline uint32_t le32load(const uint8_t p[4]) {
+    return (uint32_t)p[0]
+         | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16)
+         | ((uint32_t)p[3] << 24);
 }
 
-NOINLINE void demo_loops(int n) {
-    // 非入口块打印：先判断
-    if (n <= 0) {
-        // 不打印，直接返回
-        return;
-    } else {
-        printf("%s", S_LOOP_ENTER);
+/* 小端写出 32 位 */
+static inline void le32store(uint8_t p[4], uint32_t v) {
+    p[0] = (uint8_t)(v);
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+static void md5_transform(uint32_t s[4], const uint8_t block[64]) {
+    uint32_t a = s[0], b = s[1], c = s[2], d = s[3];
+    uint32_t x[16];
+    for (int i = 0; i < 16; ++i) {
+        x[i] = le32load(block + i * 4);
     }
 
-    for (int i = 0; i < n; i++) {
-        // 制造 continue 分支
-        if (i % 2 == 0) {
-            printf(S_LOOP_CONT, i);
-            continue;
+    // T 常量 (前 64 个正弦值 * 2^32 的整数部分)
+    static const uint32_t T[64] = {
+        0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,
+        0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,0x6b901122,0xfd987193,0xa679438e,0x49b40821,
+        0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,
+        0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,
+        0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,
+        0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,
+        0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,
+        0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391
+    };
+
+    // 第 1 轮
+    STEP(F,a,b,c,d,x[ 0],T[ 0], 7); STEP(F,d,a,b,c,x[ 1],T[ 1],12);
+    STEP(F,c,d,a,b,x[ 2],T[ 2],17); STEP(F,b,c,d,a,x[ 3],T[ 3],22);
+    STEP(F,a,b,c,d,x[ 4],T[ 4], 7); STEP(F,d,a,b,c,x[ 5],T[ 5],12);
+    STEP(F,c,d,a,b,x[ 6],T[ 6],17); STEP(F,b,c,d,a,x[ 7],T[ 7],22);
+    STEP(F,a,b,c,d,x[ 8],T[ 8], 7); STEP(F,d,a,b,c,x[ 9],T[ 9],12);
+    STEP(F,c,d,a,b,x[10],T[10],17); STEP(F,b,c,d,a,x[11],T[11],22);
+    STEP(F,a,b,c,d,x[12],T[12], 7); STEP(F,d,a,b,c,x[13],T[13],12);
+    STEP(F,c,d,a,b,x[14],T[14],17); STEP(F,b,c,d,a,x[15],T[15],22);
+
+    // 第 2 轮
+    STEP(G,a,b,c,d,x[ 1],T[16], 5); STEP(G,d,a,b,c,x[ 6],T[17], 9);
+    STEP(G,c,d,a,b,x[11],T[18],14); STEP(G,b,c,d,a,x[ 0],T[19],20);
+    STEP(G,a,b,c,d,x[ 5],T[20], 5); STEP(G,d,a,b,c,x[10],T[21], 9);
+    STEP(G,c,d,a,b,x[15],T[22],14); STEP(G,b,c,d,a,x[ 4],T[23],20);
+    STEP(G,a,b,c,d,x[ 9],T[24], 5); STEP(G,d,a,b,c,x[14],T[25], 9);
+    STEP(G,c,d,a,b,x[ 3],T[26],14); STEP(G,b,c,d,a,x[ 8],T[27],20);
+    STEP(G,a,b,c,d,x[13],T[28], 5); STEP(G,d,a,b,c,x[ 2],T[29], 9);
+    STEP(G,c,d,a,b,x[ 7],T[30],14); STEP(G,b,c,d,a,x[12],T[31],20);
+
+    // 第 3 轮
+    STEP(H,a,b,c,d,x[ 5],T[32], 4); STEP(H,d,a,b,c,x[ 8],T[33],11);
+    STEP(H,c,d,a,b,x[11],T[34],16); STEP(H,b,c,d,a,x[14],T[35],23);
+    STEP(H,a,b,c,d,x[ 1],T[36], 4); STEP(H,d,a,b,c,x[ 4],T[37],11);
+    STEP(H,c,d,a,b,x[ 7],T[38],16); STEP(H,b,c,d,a,x[10],T[39],23);
+    STEP(H,a,b,c,d,x[13],T[40], 4); STEP(H,d,a,b,c,x[ 0],T[41],11);
+    STEP(H,c,d,a,b,x[ 3],T[42],16); STEP(H,b,c,d,a,x[ 6],T[43],23);
+    STEP(H,a,b,c,d,x[ 9],T[44], 4); STEP(H,d,a,b,c,x[12],T[45],11);
+    STEP(H,c,d,a,b,x[15],T[46],16); STEP(H,b,c,d,a,x[ 2],T[47],23);
+
+    // 第 4 轮
+    STEP(I,a,b,c,d,x[ 0],T[48], 6); STEP(I,d,a,b,c,x[ 7],T[49],10);
+    STEP(I,c,d,a,b,x[14],T[50],15); STEP(I,b,c,d,a,x[ 5],T[51],21);
+    STEP(I,a,b,c,d,x[12],T[52], 6); STEP(I,d,a,b,c,x[ 3],T[53],10);
+    STEP(I,c,d,a,b,x[10],T[54],15); STEP(I,b,c,d,a,x[ 1],T[55],21);
+    STEP(I,a,b,c,d,x[ 8],T[56], 6); STEP(I,d,a,b,c,x[15],T[57],10);
+    STEP(I,c,d,a,b,x[ 6],T[58],15); STEP(I,b,c,d,a,x[13],T[59],21);
+    STEP(I,a,b,c,d,x[ 4],T[60], 6); STEP(I,d,a,b,c,x[11],T[61],10);
+    STEP(I,c,d,a,b,x[ 2],T[62],15); STEP(I,b,c,d,a,x[ 9],T[63],21);
+
+    s[0] += a; s[1] += b; s[2] += c; s[3] += d;
+}
+
+static void md5_init(MD5_CTX* ctx) {
+    ctx->state[0] = 0x67452301u;
+    ctx->state[1] = 0xefcdab89u;
+    ctx->state[2] = 0x98badcfeu;
+    ctx->state[3] = 0x10325476u;
+    ctx->bitlen   = 0;
+    ctx->buflen   = 0;
+}
+
+static void md5_update(MD5_CTX* ctx, const void* data, size_t len) {
+    const uint8_t* p = (const uint8_t*)data;
+    ctx->bitlen += (uint64_t)len * 8;
+
+    while (len > 0) {
+        size_t space = 64 - ctx->buflen;
+        size_t take = (len < space) ? len : space;
+        memcpy(ctx->buffer + ctx->buflen, p, take);
+        ctx->buflen += take;
+        p += take;
+        len -= take;
+
+        if (ctx->buflen == 64) {
+            md5_transform(ctx->state, ctx->buffer);
+            ctx->buflen = 0;
         }
-        // 制造 break 分支
-        if (i == 5) {
-            printf(S_LOOP_BREAK, i);
-            break;
+    }
+}
+
+static void md5_final(MD5_CTX* ctx, uint8_t out[16]) {
+    // 填充：0x80 后跟 0x00，直到剩余 8 字节放长度
+    uint8_t pad = 0x80;
+    md5_update(ctx, &pad, 1);
+    uint8_t zero = 0x00;
+    while (ctx->buflen != 56) {
+        if (ctx->buflen == 64) {
+            md5_transform(ctx->state, ctx->buffer);
+            ctx->buflen = 0;
         }
-        // 普通路径
-        printf(S_FORMAT_1, i);
+        md5_update(ctx, &zero, 1);
     }
 
-    // 循环结束后的块
-    printf("%s", S_LOOP_EXIT);
-}
-
-NOINLINE void demo_short_circuit(int a, int b) {
-    // 先计算，后打印
-    int cond_and = (a != 0) && (b != 0);
-    if (cond_and) {
-        printf("%s", S_SHORT_AND);
+    // 附加长度（小端 64 位）
+    uint8_t lenle[8];
+    uint64_t bitlen = ctx->bitlen;
+    for (int i = 0; i < 8; ++i) {
+        lenle[i] = (uint8_t)(bitlen >> (8 * i));
     }
+    md5_update(ctx, lenle, 8);
 
-    int cond_or = (a != 0) || (b != 0);
-    if (cond_or) {
-        printf("%s", S_SHORT_OR);
+    // 导出摘要（A,B,C,D 小端）
+    for (int i = 0; i < 4; ++i) {
+        le32store(out + 4*i, ctx->state[i]);
     }
 }
 
-NOINLINE void demo_ternary(int x) {
-    // 入口只做条件与赋值，不打印
-    const char* msg = (x > 0) ? S_TERN_TRUE : S_TERN_FALSE;
-    // 把打印放到后续块
-    if (msg == S_TERN_TRUE) {
-        printf("%s", S_TERN_TRUE);
-    } else {
-        printf("%s", S_TERN_FALSE);
-    }
+static void md5(const void* data, size_t len, uint8_t out[16]) {
+    MD5_CTX ctx;
+    md5_init(&ctx);
+    md5_update(&ctx, data, len);
+    md5_final(&ctx, out);
 }
 
-NOINLINE void demo_goto(int x) {
-    // 入口判定，不打印
-    if (x == 42) {
-        goto hit;
-    } else {
-        // 再次分支以形成更多块
-        if (x < 0) {
-            printf("goto: negative path\n");
-        } else {
-            printf("goto: non-negative path\n");
-        }
-        return;
+static void md5_hex(const void* data, size_t len, char hex[33]) {
+    static const char* digits = "0123456789abcdef";
+    uint8_t digest[16];
+    md5(data, len, digest);
+    for (int i = 0; i < 16; ++i) {
+        hex[2*i]   = digits[(digest[i] >> 4) & 0xF];
+        hex[2*i+1] = digits[digest[i] & 0xF];
     }
-hit:
-    // 只有跳转后才打印
-    printf("%s", S_GOTO_HIT);
+    hex[32] = '\0';
 }
 
-NOINLINE void demo_recursion(int depth) {
-    // 入口块：先判断，不打印
-    if (depth <= 0) {
-        printf("%s", S_RECUR_BASE);
-        return;
-    } else {
-        printf(S_RECUR_STEP, depth);
-        // 使用 volatile 防止尾递归优化
-        g_sink = depth;
-        demo_recursion(depth - 1);
-    }
-}
+int main(void) {
+    const char* tests[] = {
+        "", "a", "abc", "message digest",
+        "abcdefghijklmnopqrstuvwxyz",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+        "1234567890"
+    };
+    const size_t n = sizeof(tests)/sizeof(tests[0]);
 
-typedef void (*handler_t)(void);
-
-NOINLINE void handler_a(void) {
-    // 入口先通过全局标志决定打印
-    if (g_flag == 0) {
-        printf("%s", S_DISPATCH_A);
-    } else {
-        printf("handler A alt path\n");
-    }
-}
-
-NOINLINE void handler_b(void) {
-    if (g_flag != 0) {
-        printf("%s", S_DISPATCH_B);
-    } else {
-        printf("handler B alt path\n");
-    }
-}
-
-NOINLINE void demo_dispatch(int key) {
-    // 入口块：先选择函数指针，不打印
-    handler_t h = (key % 2 == 0) ? handler_a : handler_b;
-    // 非入口：间接调用，内部才打印
-    h();
-}
-
-int main(int argc, char** argv) {
-    // main 的入口块不打印：只做参数解析与分支
-    int seed = 0;
-    demo_if_else(seed);
-    demo_switch(seed);
-    demo_loops((seed % 10) + 3);
-    demo_short_circuit(seed & 2, seed & 4);
-
-    demo_ternary(seed - 5);
-    demo_goto(seed % 50);
-    g_flag = (seed >> 3) & 1;
-    demo_dispatch(seed);
-
-    // 最后的打印也放在分支中，避免位于入口基本块
-    if (seed != 0xdeadbeef) {
-        printf(S_FORMAT_2, seed, seed ^ 0x5a5a5a5a);
-        printf(S_MAIN_DONE, seed);
-    } else {
-        printf("Unlikely seed matched sentinel\n");
+    for (size_t i = 0; i < n; ++i) {
+        char hex[33];
+        md5_hex(tests[i], strlen(tests[i]), hex);
+        printf("MD5(\"%s\") = %s\n", tests[i], hex);
     }
 
-    // 使用未优化的全局读写，避免过度 DCE
-    g_sink ^= seed;
-    return (g_sink & 1);
+    const uint8_t data_bin[] = {0x00, 0x01, 0x02, 0xFF};
+    char hex_bin[33];
+    md5_hex(data_bin, sizeof(data_bin), hex_bin);
+    printf("MD5([00 01 02 FF]) = %s\n", hex_bin);
+
+    return 0;
 }

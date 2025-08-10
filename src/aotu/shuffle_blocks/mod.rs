@@ -1,10 +1,11 @@
 use crate::config::{CONFIG, ShuffleBlocksFlags};
 use crate::llvm_utils::function::get_basic_block_entry;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::FunctionValue;
+use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
+use amice_llvm::module_utils::verify_function;
 
 pub struct ShuffleBlocks {
     enable: bool,
@@ -76,6 +77,10 @@ fn handle_function(function: FunctionValue<'_>, flags: ShuffleBlocksFlags) -> an
                 }
             }
         }
+    }
+
+    if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
+        warn!("(shuffle-blocks) function {:?} is not verified", function.get_name());
     }
 
     Ok(())
