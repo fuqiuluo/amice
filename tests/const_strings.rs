@@ -46,8 +46,8 @@ mod tests {
         None
     }
 
-    fn check_output() {
-        let output = Command::new("./target/const_strings")
+    fn check_output(name: &str) {
+        let output = Command::new(format!("./target/const_strings_{}", name))
             .output()
             .expect("Failed to execute const_strings binary");
         assert!(output.status.success(), "Const strings test failed");
@@ -86,12 +86,12 @@ mod tests {
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/const_strings.c")
             .arg("-o")
-            .arg("target/const_strings")
+            .arg("target/const_strings_(lazy+xor+stack)")
             .output()
             .expect("Failed to execute clang command");
         assert!(output.status.success(), "Clang command failed");
 
-        check_output();
+        check_output("(lazy+xor+stack)");
     }
 
     #[test]
@@ -104,12 +104,12 @@ mod tests {
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/const_strings.c")
             .arg("-o")
-            .arg("target/const_strings")
+            .arg("target/const_strings_(lazy+xor)")
             .output()
             .expect("Failed to execute clang command");
         assert!(output.status.success(), "Clang command failed");
 
-        check_output();
+        check_output("(lazy+xor)");
     }
 
     #[test]
@@ -122,12 +122,12 @@ mod tests {
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/const_strings.c")
             .arg("-o")
-            .arg("target/const_strings")
+            .arg("target/const_strings_(global+xor)")
             .output()
             .expect("Failed to execute clang command");
         assert!(output.status.success(), "Clang command failed");
 
-        check_output();
+        check_output("(global+xor)");
     }
 
     #[test]
@@ -140,12 +140,12 @@ mod tests {
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/const_strings.c")
             .arg("-o")
-            .arg("target/const_strings")
+            .arg("target/const_strings_(lazy+simd_xor)")
             .output()
             .expect("Failed to execute clang command");
         assert!(output.status.success(), "Clang command failed");
 
-        check_output();
+        check_output("(lazy+simd_xor)");
     }
 
     #[test]
@@ -158,11 +158,11 @@ mod tests {
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/const_strings.c")
             .arg("-o")
-            .arg("target/const_strings")
+            .arg("target/const_strings_(global+simd_xor)")
             .output()
             .expect("Failed to execute clang command");
         assert!(output.status.success(), "Clang command failed");
 
-        check_output();
+        check_output("(global+simd_xor)");
     }
 }

@@ -1,12 +1,16 @@
 mod simd_xor;
 mod xor;
 
+use std::ptr::NonNull;
 use crate::config::{CONFIG, StringAlgorithm, StringDecryptTiming};
 use ascon_hash::{AsconHash256, Digest, Update};
+use inkwell::llvm_sys::core::LLVMGetAsString;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, GlobalValue};
+use llvm_plugin::inkwell::values::{AnyValueEnum, ArrayValue, AsValueRef, BasicValue, GlobalValue, InstructionValue, PointerValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
-use log::error;
+use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
+use log::{debug, error};
+use crate::llvm_utils::function::get_basic_block_entry;
 
 /// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled
@@ -42,11 +46,12 @@ impl StringEncryptionType {
 
 pub struct StringEncryption {
     enable: bool,
-    decrypt_timing: StringDecryptTiming,
+    timing: StringDecryptTiming,
     encryption_type: StringEncryptionType,
     stack_alloc: bool,
     inline_decrypt: bool,
-    only_llvm_string: bool,
+    only_dot_string: bool,
+    allow_non_entry_stack_alloc: bool,
 }
 
 impl LlvmModulePass for StringEncryption {
@@ -70,10 +75,10 @@ impl StringEncryption {
             StringAlgorithm::Xor => StringEncryptionType::Xor,
             StringAlgorithm::SimdXor => StringEncryptionType::SimdXor,
         };
-        let decrypt_timing = cfg.string_encryption.decrypt_timing;
+        let decrypt_timing = cfg.string_encryption.timing;
         let stack_alloc = cfg.string_encryption.stack_alloc;
-        let inline_decrypt = cfg.string_encryption.inline_decrypt_fn;
-        let only_llvm_string = cfg.string_encryption.only_llvm_string;
+        let inline_decrypt = cfg.string_encryption.inline_decrypt;
+        let only_llvm_string = cfg.string_encryption.only_dot_str;
 
         assert!(
             (decrypt_timing == StringDecryptTiming::Global && !stack_alloc)
@@ -84,11 +89,12 @@ impl StringEncryption {
 
         StringEncryption {
             enable,
-            decrypt_timing,
+            timing: decrypt_timing,
             encryption_type: algo,
             stack_alloc,
             inline_decrypt,
-            only_llvm_string,
+            only_dot_string: only_llvm_string,
+            allow_non_entry_stack_alloc: cfg.string_encryption.allow_non_entry_stack_alloc,
         }
     }
 }
@@ -96,18 +102,63 @@ impl StringEncryption {
 #[derive(Copy, Clone)]
 struct EncryptedGlobalValue<'a> {
     global: GlobalValue<'a>,
-    len: u32,
+    str_len: u32,
     flag: Option<GlobalValue<'a>>,
     oneshot: bool,
     /// Whether this specific string should use stack allocation for decryption
     /// This can be false even when overall stack_alloc is true, for strings > 4KB
     use_stack_alloc: bool,
+    users: NonNull<Vec<(InstructionValue<'a>, u32)>>
+}
+
+impl<'a> EncryptedGlobalValue<'a> {
+    pub fn new(
+        global: GlobalValue<'a>,
+        len: u32,
+        flag: Option<GlobalValue<'a>>,
+        use_stack_alloc: bool,
+        user: Vec<(LLVMValueRef, u32)>
+    ) -> Self {
+        let user = Box::new(user.iter().map(|(value_ref, op_num)| unsafe {
+            (InstructionValue::new(*value_ref), *op_num)
+        }).collect::<Vec<_>>());
+        EncryptedGlobalValue {
+            global,
+            str_len: len,
+            flag,
+            oneshot: false,
+            use_stack_alloc,
+            users: NonNull::new(Box::leak(user)).unwrap()
+        }
+    }
+
+    pub fn push(&self, user: InstructionValue<'a>, op_num: u32) {
+        unsafe { let _ = &(*self.users.as_ptr()).push((user, op_num)); }
+    }
+
+    pub fn user_slice(&self) -> &[(InstructionValue<'a>, u32)] {
+        unsafe { (*self.users.as_ptr()).as_slice() }
+    }
+    
+    pub fn len(&self) -> usize {
+        unsafe { (*self.users.as_ptr()).len() }
+    }
+
+    pub fn free(&self) {
+        unsafe {
+            let _ = Box::from_raw(self.users.as_ptr());
+        }
+    }
+}
+
+pub(crate) fn array_as_rust_string(arr: &ArrayValue) -> Option<String> {
+    let str = array_as_const_string(arr)?;
+    String::from_utf8(str.to_vec()).ok()
 }
 
 pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]> {
     let mut len = 0;
-    let ptr = unsafe { inkwell::llvm_sys::core::LLVMGetAsString(arr.as_value_ref(), &mut len) };
-
+    let ptr = unsafe { LLVMGetAsString(arr.as_value_ref(), &mut len) };
     if ptr.is_null() {
         None
     } else {
@@ -115,14 +166,125 @@ pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]>
     }
 }
 
-pub(crate) fn generate_global_value_hash(global: &GlobalValue) -> String {
-    let mut hasher = AsconHash256::new();
-    if let Ok(name) = global.get_name().to_str() {
-        Update::update(&mut hasher, name.as_bytes());
-    } else {
-        let rand_str = rand::random::<u32>().to_string();
-        Update::update(&mut hasher, rand_str.as_bytes());
+pub(crate) fn collect_insert_points<'a>(
+    string_global: GlobalValue,
+    user: AnyValueEnum<'a>,
+    output: &mut Vec<(LLVMValueRef, u32)>,
+) -> anyhow::Result<()> {
+    use std::collections::HashSet;
+
+    // visited: 按 ValueRef 去重，避免重复与潜在环
+    let mut visited = HashSet::new();
+    let mut worklist = vec![user.as_value_ref()];
+
+    while let Some(curr_ptr) = worklist.pop() {
+        // 如果已访问，继续
+        if !visited.insert(curr_ptr) {
+            continue;
+        }
+
+        // 通过 ValueRef 还原为 AnyValueEnum
+        let curr = unsafe { AnyValueEnum::new(curr_ptr) };
+
+        // 如果能解析到“指令”层面，就在该指令上找操作数
+        // 否则（常见于 PointerValue/ArrayValue 非 instruction 值），
+        // 沿着 use 链继续向上游 user 追溯，直到遇到指令为止
+        let mut target_inst: Option<InstructionValue<'a>> = None;
+
+        match curr {
+            AnyValueEnum::InstructionValue(inst) => {
+                target_inst = Some(inst);
+            },
+            AnyValueEnum::IntValue(v) => {
+                if let Some(inst) = v.as_instruction_value() {
+                    target_inst = Some(inst);
+                } else {
+                    error!("(strenc) unexpected IntValue user: {v:?}");
+                }
+            },
+            AnyValueEnum::PointerValue(v) => {
+                if let Some(inst) = v.as_instruction_value() {
+                    target_inst = Some(inst);
+                } else {
+                    let mut found = false;
+                    let mut use_opt = v.get_first_use();
+                    while let Some(u) = use_opt {
+                        use_opt = u.get_next_use();
+                        found = true;
+                        debug!("{:?}", u.get_user());
+                        worklist.push(u.get_user().as_value_ref());
+                    }
+                    if !found {
+                        error!("(strenc) unexpected PointerValue user (no uses): {v:?}");
+                    }
+                }
+            },
+            AnyValueEnum::ArrayValue(v) => {
+                let mut found = false;
+                let mut use_opt = v.get_first_use();
+                while let Some(u) = use_opt {
+                    use_opt = u.get_next_use();
+                    found = true;
+                    worklist.push(u.get_user().as_value_ref());
+                }
+                if !found {
+                    error!("(strenc) unexpected ArrayValue user (no uses): {v:?}");
+                }
+            },
+            // 其他类型：目前未覆盖，打印日志
+            _ => error!("(strenc) unexpected user type: {curr:?}"),
+        }
+
+        // 在找到的目标指令上遍历其操作数，定位引用到目标全局的操作数索引
+        if let Some(inst) = target_inst {
+            for i in 0..inst.get_num_operands() {
+                if let Some(op) = inst.get_operand(i) {
+                    if let Some(operand) = op.left() {
+                        // 只收集直接引用的插入点
+                        if operand.as_value_ref() == string_global.as_value_ref() {
+                            output.push((inst.as_value_ref(), i));
+                        }
+                    }
+                }
+            }
+        }
     }
-    let hash = hasher.finalize();
-    hex::encode(hash)
+
+    Ok(())
+}
+
+fn alloc_stack_string<'a>(
+    module: &mut Module<'a>,
+    string: EncryptedGlobalValue,
+    in_entry_block: bool,
+    inst: &InstructionValue,
+) -> anyhow::Result<PointerValue<'a>> {
+    let ctx = module.get_context();
+    let i32_ty = ctx.i32_type();
+    let i8_ty = ctx.i8_type();
+    let string_len = i32_ty.const_int(string.str_len as u64 + 1, false);
+
+    let builder = ctx.create_builder();
+    if !in_entry_block {
+        // 在非入口块分配，许多LLVM优化pass假设所有 alloca 都在入口块
+        // 可能阻止某些优化的进行
+        // 寄存器提升等优化可能受影响
+        builder.position_before(inst);
+        let container = builder.build_array_alloca(i8_ty, string_len, "string_container")?;
+        return Ok(container);
+    }
+
+    if in_entry_block
+        && let Some(parent_block) = inst.get_parent()
+        && let Some(parent_function) = parent_block.get_parent()
+        && let Some(entry_block) = get_basic_block_entry(parent_function)
+        && let Some(terminator) = entry_block.get_terminator()
+    {
+        builder.position_before(&terminator);
+        let container = builder.build_array_alloca(i8_ty, string_len, "string_container")?;
+        Ok(container)
+    } else {
+        // 尝试栈入口块分配栈空间失败！
+        Err(anyhow::anyhow!("Failed to allocate stack string"))
+    }
 }

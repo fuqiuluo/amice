@@ -9,23 +9,13 @@ use crate::aotu::split_basic_block::SplitBasicBlock;
 use crate::aotu::string_encryption::StringEncryption;
 use crate::aotu::vm_flatten::VmFlatten;
 use crate::config::CONFIG;
-use log::info;
+use log::{info, Level};
 use std::io::Write;
+use env_logger::fmt::style::Color;
 
-#[llvm_plugin::plugin(name = "amice", version = "0.1")]
+#[llvm_plugin::plugin(name = "amice", version = "0.1.2")]
 fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
     env_logger::builder()
-        .format(|buf, record| {
-            let time = buf.timestamp();
-            let level = record.level();
-            writeln!(
-                buf,
-                "[{} {} amice]: {}",
-                time,
-                level.as_str().to_lowercase(),
-                record.args()
-            )
-        })
         .init();
 
     info!(

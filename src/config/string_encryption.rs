@@ -5,13 +5,31 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StringEncryptionConfig {
+    /// 是否启用字符串加密
+    #[serde(alias = "enable")]
     pub enable: bool,
+
+    /// 加密/解密算法
     pub algorithm: StringAlgorithm,
-    pub decrypt_timing: StringDecryptTiming,
+
+    /// 解密时机
+    pub timing: StringDecryptTiming,
+
+    /// 是否开启栈栈上解密
     pub stack_alloc: bool,
-    pub inline_decrypt_fn: bool,
-    pub only_llvm_string: bool,
+
+    /// 是否将解密函数标记为 inline
+    #[serde(alias = "inline_decrypt_fn")]
+    pub inline_decrypt: bool,
+
+    /// 仅处理 `.str` 段中的字符串
+    pub only_dot_str: bool,
+
+    /// 是否允许在非入口块也进行栈上解密临时分配
+    /// false 时将把相关栈分配限制在入口块，便于优化与栈生存期分析
+    pub allow_non_entry_stack_alloc: bool,
 }
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,10 +50,11 @@ impl Default for StringEncryptionConfig {
         Self {
             enable: true,
             algorithm: StringAlgorithm::Xor,
-            decrypt_timing: StringDecryptTiming::Lazy,
+            timing: StringDecryptTiming::Lazy,
             stack_alloc: false,
-            inline_decrypt_fn: false,
-            only_llvm_string: true,
+            inline_decrypt: false,
+            only_dot_str: true,
+            allow_non_entry_stack_alloc: false,
         }
     }
 }
@@ -71,16 +90,22 @@ impl EnvOverlay for StringEncryptionConfig {
             self.algorithm = parse_string_algorithm(&v);
         }
         if let Ok(v) = std::env::var("AMICE_STRING_DECRYPT_TIMING") {
-            self.decrypt_timing = parse_string_decrypt_timing(&v);
+            self.timing = parse_string_decrypt_timing(&v);
         }
         if std::env::var("AMICE_STRING_STACK_ALLOC").is_ok() {
             self.stack_alloc = bool_var("AMICE_STRING_STACK_ALLOC", self.stack_alloc);
         }
         if std::env::var("AMICE_STRING_INLINE_DECRYPT_FN").is_ok() {
-            self.inline_decrypt_fn = bool_var("AMICE_STRING_INLINE_DECRYPT_FN", self.inline_decrypt_fn);
+            self.inline_decrypt = bool_var("AMICE_STRING_INLINE_DECRYPT_FN", self.inline_decrypt);
         }
         if std::env::var("AMICE_STRING_ONLY_LLVM_STRING").is_ok() {
-            self.only_llvm_string = bool_var("AMICE_STRING_ONLY_LLVM_STRING", self.only_llvm_string);
+            self.only_dot_str = bool_var("AMICE_STRING_ONLY_LLVM_STRING", self.only_dot_str);
+        }
+        if std::env::var("AMICE_STRING_ONLY_DOT_STRING").is_ok() {
+            self.only_dot_str = bool_var("AMICE_STRING_ONLY_DOT_STRING", self.only_dot_str);
+        }
+        if std::env::var("AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC").is_ok() {
+            self.allow_non_entry_stack_alloc = bool_var("AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC", self.allow_non_entry_stack_alloc);
         }
     }
 }

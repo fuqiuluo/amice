@@ -63,6 +63,7 @@ NOINLINE void demo_if_else(int x) {
     } else {
         printf("%s\n", S_ESCAPED);
     }
+    printf("hello");
 }
 
 NOINLINE void demo_switch(int x) {
