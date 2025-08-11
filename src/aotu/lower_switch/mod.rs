@@ -90,6 +90,13 @@ fn demote_switch_to_if(
         return Err(anyhow::anyhow!("Unsupported condition type: {:?}", condition_ty));
     }
 
+    if cases.is_empty() {
+        builder.position_before(&inst);
+        builder.build_unconditional_branch(default)?;
+        inst.erase_from_basic_block();
+        return Ok(());
+    }
+
     let mut lower_branches = Vec::new();
     let mut current_branch = ctx.append_basic_block(function, "lower_switch_branch");
     for (case, dest) in cases {
