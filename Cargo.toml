@@ -48,5 +48,5 @@ semver = "1"
 
 [patch.crates-io]
 inkwell = { git = "https://github.com/fuqiuluo/inkwell", rev = "a30816bd721e24a0882e3fe994125c2829d9021a" }
-llvm-plugin = { git = "https://github.com/fuqiuluo/llvm-plugin-rs", rev = "c9c1dc119bf72ca866da177f475b08f68c7e433a" }
+llvm-plugin = { git = "https://github.com/fuqiuluo/llvm-plugin-rs", rev = "30dd9dcfb083f4bc3f65afbeefa59319ab3b473d" }
 
