@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use crate::config::{bool_var, IndirectCallConfig};
+use crate::config::bool_var;
 use crate::pass_registry::EnvOverlay;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

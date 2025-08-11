@@ -1,4 +1,4 @@
-use crate::config::{CONFIG, Config, ShuffleBlocksFlags};
+use crate::config::{Config, ShuffleBlocksFlags};
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::AmicePassLoadable;
 use amice_llvm::module_utils::verify_function;
@@ -7,7 +7,6 @@ use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
-use rand::seq::SliceRandom;
 
 #[amice(priority = 970, name = "ShuffleBlocks")]
 #[derive(Default)]

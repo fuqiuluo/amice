@@ -1,10 +1,9 @@
-use crate::config::{CONFIG, Config, IndirectBranchFlags};
+use crate::config::{Config, IndirectBranchFlags};
 use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry_ref;
 use crate::pass_registry::AmicePassLoadable;
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
-use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
 use llvm_plugin::inkwell::context::ContextRef;
@@ -17,7 +16,6 @@ use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
-use std::collections::HashMap;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 

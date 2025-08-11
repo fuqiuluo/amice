@@ -2,7 +2,6 @@ use crate::config::Config;
 use lazy_static::lazy_static;
 use llvm_plugin::ModulePassManager;
 use log::info;
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Mutex;
 

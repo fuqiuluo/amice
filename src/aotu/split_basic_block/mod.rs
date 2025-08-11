@@ -1,8 +1,7 @@
-use crate::config::{CONFIG, Config};
+use crate::config::Config;
 use crate::llvm_utils::basic_block::split_basic_block;
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::AmicePassLoadable;
-use amice_llvm::ir::function::{fix_stack, fix_stack_at_terminator, fix_stack_with_max_iterations};
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use anyhow::anyhow;

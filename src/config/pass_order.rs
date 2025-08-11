@@ -1,4 +1,4 @@
-use crate::config::{bool_var, parse_kv_map, parse_list};
+use crate::config::{parse_kv_map, parse_list};
 use crate::pass_registry::EnvOverlay;
 use log::warn;
 use serde::{Deserialize, Serialize};

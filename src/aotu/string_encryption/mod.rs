@@ -1,11 +1,11 @@
 mod simd_xor;
 mod xor;
 
-use crate::config::{CONFIG, Config, StringAlgorithm, StringDecryptTiming};
+use crate::config::{Config, StringAlgorithm, StringDecryptTiming};
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::AmicePassLoadable;
 use amice_macro::amice;
-use ascon_hash::{AsconHash256, Digest, Update};
+use ascon_hash::Digest;
 use inkwell::llvm_sys::core::LLVMGetAsString;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::Module;

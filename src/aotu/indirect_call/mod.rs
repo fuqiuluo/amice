@@ -1,4 +1,4 @@
-use crate::config::{CONFIG, Config};
+use crate::config::Config;
 use crate::pass_registry::AmicePassLoadable;
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;

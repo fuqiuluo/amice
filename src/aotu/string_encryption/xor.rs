@@ -3,21 +3,17 @@ use crate::aotu::string_encryption::{
     collect_insert_points,
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
-use crate::llvm_utils::function::get_basic_block_entry;
 use crate::ptr_type;
 use inkwell::module::Module;
 use inkwell::values::FunctionValue;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
-use llvm_plugin::inkwell::context::ContextRef;
-use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{
-    AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, GlobalValue, InstructionValue, PointerValue,
+    AsValueRef, BasicValue, BasicValueEnum,
 };
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
-use log::{debug, error, info, warn};
-use std::collections::{HashMap, HashSet};
+use log::{debug, error, warn};
 
 pub(crate) fn do_handle<'a>(
     pass: &StringEncryption,
