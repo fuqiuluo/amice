@@ -1,13 +1,14 @@
 # 项目结构
 
 - 仓库：amice
-- 生成时间：2025-08-09 18:14:26 UTC
+- 生成时间：2025-08-11 16:47:31 UTC
 - 深度：3
 - 忽略：.git|target|node_modules|.idea|.vscode|dist|build
 
 ```text
 
 ├── .github/
+│   ├── copilot-instructions.md
 │   └── workflows/
 │       ├── generate-structure.yml
 │       └── rustfmt.yml
@@ -28,6 +29,11 @@
 │       ├── ir/
 │       ├── lib.rs
 │       └── module_utils.rs
+├── amice-macro/
+│   ├── Cargo.lock
+│   ├── Cargo.toml
+│   └── src/
+│       └── lib.rs
 ├── build.rs
 ├── src/
 │   ├── aotu/
@@ -42,17 +48,20 @@
 │   │   ├── indirect_branch.rs
 │   │   ├── indirect_call.rs
 │   │   ├── mod.rs
+│   │   ├── pass_order.rs
 │   │   ├── shuffle_blocks.rs
 │   │   ├── split_basic_block.rs
 │   │   ├── string_encryption.rs
 │   │   └── vm_flatten.rs
 │   ├── lib.rs
-│   └── llvm_utils/
-│       ├── basic_block.rs
-│       ├── branch_inst.rs
-│       ├── function.rs
-│       ├── mod.rs
-│       └── switch_inst.rs
+│   ├── llvm_utils/
+│   │   ├── basic_block.rs
+│   │   ├── branch_inst.rs
+│   │   ├── function.rs
+│   │   ├── mod.rs
+│   │   └── switch_inst.rs
+│   └── pass_registry/
+│       └── mod.rs
 └── tests/
     ├── .gitignore
     ├── const_strings.c
@@ -60,15 +69,18 @@
     ├── indirect_branch.c
     ├── indirect_branch.rs
     ├── indirect_call.c
+    ├── large_string.c
+    ├── large_string_threshold.rs
     ├── md5.c
     ├── md5.cc
     ├── md5.rs
     ├── repeated_strings.c
     ├── repeated_strings.rs
     ├── test1.c
+    ├── test_strings.c
     └── vm_flatten.c
 
-18 directories, 43 files
+21 directories, 52 files
 ```
 
 > 本文件由 GitHub Actions 自动生成，请勿手动编辑。
