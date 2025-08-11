@@ -1,10 +1,10 @@
+use crate::pass_registry::EnvOverlay;
+use amice_macro::amice_config_manager;
 use lazy_static::lazy_static;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use amice_macro::amice_config_manager;
-use crate::pass_registry::EnvOverlay;
 
 mod indirect_branch;
 mod indirect_call;
@@ -85,4 +85,3 @@ fn load_from_file(path: &Path) -> anyhow::Result<Config> {
     cfg.overlay_env();
     Ok(cfg)
 }
-

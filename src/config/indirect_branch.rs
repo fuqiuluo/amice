@@ -1,8 +1,8 @@
-use super::{bool_var};
+use super::bool_var;
+use crate::pass_registry::EnvOverlay;
 use bitflags::bitflags;
 use log::warn;
 use serde::{Deserialize, Serialize};
-use crate::pass_registry::EnvOverlay;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

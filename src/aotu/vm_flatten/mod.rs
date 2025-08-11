@@ -1,10 +1,13 @@
+use crate::config::Config;
 use crate::llvm_utils::basic_block::split_basic_block;
 use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::llvm_utils::switch_inst;
+use crate::pass_registry::AmicePassLoadable;
 use crate::ptr_type;
 use amice_llvm::ir::function::fix_stack;
 use amice_llvm::module_utils::verify_function;
+use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::{Linkage, Module};
@@ -15,9 +18,6 @@ use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
-use amice_macro::amice;
-use crate::config::Config;
-use crate::pass_registry::AmicePassLoadable;
 
 const MAGIC_NUMBER: u32 = 0x7788ff;
 
@@ -32,7 +32,7 @@ impl AmicePassLoadable for VmFlatten {
     fn init(&mut self, cfg: &Config) -> bool {
         self.enable = cfg.vm_flatten.enable;
         self.random_none_node_opcode = true;
-        
+
         self.enable
     }
 }
