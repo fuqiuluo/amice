@@ -134,10 +134,6 @@ impl<'a> VmBranchNode<'a> {
         }
     }
 
-    // fn block(&self) -> BasicBlock<'a> {
-    //     self.block
-    // }
-
     fn free(&self) {
         unsafe {
             let _ = Box::from_raw(self.labels.as_ptr());
@@ -293,7 +289,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     //     }
     // }
 
-    let Some(first_basic_block) = first_basic_block else {
+    let Some(first_basic_block) = first_basic_block.take() else {
         return Err(anyhow::anyhow!("failed to get first basic block: {entry_term_inst}"));
     };
     if !basic_blocks.contains(&first_basic_block) {
