@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::pass_registry::EnvOverlay;
 use amice_macro::amice_config_manager;
 use lazy_static::lazy_static;
@@ -5,6 +6,7 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use pass_order::PassOrderConfig;
 
 mod indirect_branch;
 mod indirect_call;
@@ -12,6 +14,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
+mod pass_order;
 
 pub use self::indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
 pub use self::indirect_call::IndirectCallConfig;
@@ -32,6 +35,7 @@ lazy_static! {
 #[serde(default)]
 #[amice_config_manager]
 pub struct Config {
+    pub pass_order: PassOrderConfig,
     pub string_encryption: StringEncryptionConfig,
     pub indirect_call: IndirectCallConfig,
     pub indirect_branch: IndirectBranchConfig,
@@ -58,8 +62,44 @@ fn bool_var(key: &str, default: bool) -> bool {
     }
 }
 
-// the parsers and serde helpers for sub-configs are defined in their own modules
+/// 解析逗号/分号分隔的列表，去除空项与首尾空白
+fn parse_list(input: &str) -> Vec<String> {
+    input
+        .split(|c| c == ',' || c == ';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
 
+/// 解析形如 "Name=123,Other=456" 的映射；忽略无效项并给出告警
+fn parse_kv_map(input: &str) -> HashMap<String, i32> {
+    let mut out = HashMap::new();
+    for part in input.split(|c| c == ',' || c == ';') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        let mut it = p.splitn(2, '=');
+        let k = it.next().map(str::trim).unwrap_or_default();
+        let v = it.next().map(str::trim).unwrap_or_default();
+        if k.is_empty() || v.is_empty() {
+            warn!("Ignoring malformed priority override entry: \"{p}\"");
+            continue;
+        }
+        match v.parse::<i32>() {
+            Ok(num) => {
+                out.insert(k.to_string(), num);
+            }
+            Err(_) => {
+                warn!("Ignoring priority override with non-integer value: \"{p}\"");
+            }
+        }
+    }
+    out
+}
+
+// the parsers and serde helpers for sub-configs are defined in their own modules
 fn load_from_file_env() -> Option<Config> {
     let path = std::env::var("AMICE_CONFIG_PATH").ok()?;
     load_from_file(Path::new(&path)).ok()

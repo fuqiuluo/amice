@@ -80,6 +80,7 @@ struct EncryptedGlobalValue<'a> {
     global: GlobalValue<'a>,
     str_len: u32,
     flag: Option<GlobalValue<'a>>,
+    #[allow(dead_code)]
     oneshot: bool,
     /// Whether this specific string should use stack allocation for decryption
     /// This can be false even when overall stack_alloc is true, for strings > 4KB
@@ -110,6 +111,7 @@ impl<'a> EncryptedGlobalValue<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn push(&self, user: InstructionValue<'a>, op_num: u32) {
         unsafe {
             let _ = &(*self.users.as_ptr()).push((user, op_num));
@@ -120,6 +122,7 @@ impl<'a> EncryptedGlobalValue<'a> {
         unsafe { (*self.users.as_ptr()).as_slice() }
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         unsafe { (*self.users.as_ptr()).len() }
     }
@@ -131,6 +134,7 @@ impl<'a> EncryptedGlobalValue<'a> {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn array_as_rust_string(arr: &ArrayValue) -> Option<String> {
     let str = array_as_const_string(arr)?;
     String::from_utf8(str.to_vec()).ok()

@@ -44,6 +44,7 @@ pub enum StringAlgorithm {
 impl StringAlgorithm {
     /// 等级 0~7, 数字越大可能越安全，但是开销更大！
     /// 如果是负数代表可能并不稳定！
+    #[allow(dead_code)]
     pub fn level(&self) -> i32 {
         match self {
             StringAlgorithm::Xor => 0,

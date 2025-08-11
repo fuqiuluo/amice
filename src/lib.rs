@@ -37,9 +37,5 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         pass_registry::install_all(cfg, manager);
     });
 
-    if log_enabled!(Level::Debug) {
-        print_all_registry();
-    }
-
     info!("amice plugin registered");
 }

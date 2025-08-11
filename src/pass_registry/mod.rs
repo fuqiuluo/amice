@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use crate::config::Config;
 use lazy_static::lazy_static;
 use llvm_plugin::ModulePassManager;
@@ -41,10 +43,38 @@ pub fn install_all(cfg: &Config, manager: &mut ModulePassManager) {
         reg.clone()
     };
 
-    // priority 越大越先安装
-    entries.sort_by_key(|e| -e.priority);
+    // 如果提供了显式顺序 pass_order，则按该顺序优先
+    if let Some(order) = &cfg.pass_order.order {
+        // name -> index
+        let mut idx = HashMap::with_capacity(order.len());
+        for (i, name) in order.iter().enumerate() {
+            idx.insert(name.as_str(), i as i32);
+        }
+
+        // 不运行不在显示顺序内的模块
+        entries.retain(|e| idx.contains_key(e.name));
+        entries.sort_by(|a, b| {
+            let a_idx = idx.get(a.name).unwrap_or(&i32::MAX);
+            let b_idx = idx.get(b.name).unwrap_or(&i32::MAX);
+            a_idx.cmp(b_idx)
+        });
+    }
+    else if let Some(priority_override) = &cfg.pass_order.priority_override {
+        entries.sort_by_key(|e| {
+            -if let Some(priority) = priority_override.get(e.name) {
+                *priority
+            } else {
+                e.priority
+            }
+        });
+    }
+    else {
+        // priority 越大越先安装
+        entries.sort_by_key(|e| -e.priority);
+    }
 
     for e in entries {
+        info!("pass_registry: install pass: {}", e.name);
         (e.add)(cfg, manager);
     }
 }

@@ -29,6 +29,7 @@ pub fn get_basic_block_entry(fun: FunctionValue) -> Option<BasicBlock> {
     }
 }
 
+#[allow(dead_code)]
 pub fn cast_ptr_to_fn_ptr<'a>(addr: PointerValue<'a>, function_type: FunctionType<'a>) -> Option<FunctionValue<'a>> {
     unsafe {
         let value = ir::constants::get_bitcast_constant(
