@@ -301,7 +301,7 @@ dependencies = [
 [[package]]
 name = "inkwell"
 version = "0.6.0"
-source = "git+https://github.com/TheDan64/inkwell?rev=50c16a6#50c16a644c6f5d5b41c27cc1620d63097cad43dd"
+source = "git+https://github.com/fuqiuluo/inkwell?rev=a30816bd721e24a0882e3fe994125c2829d9021a#a30816bd721e24a0882e3fe994125c2829d9021a"
 dependencies = [
  "either",
  "inkwell_internals",
@@ -323,7 +323,7 @@ dependencies = [
 [[package]]
 name = "inkwell_internals"
 version = "0.11.0"
-source = "git+https://github.com/TheDan64/inkwell?rev=50c16a6#50c16a644c6f5d5b41c27cc1620d63097cad43dd"
+source = "git+https://github.com/fuqiuluo/inkwell?rev=a30816bd721e24a0882e3fe994125c2829d9021a#a30816bd721e24a0882e3fe994125c2829d9021a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -381,7 +381,7 @@ checksum = "1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776"
 [[package]]
 name = "llvm-plugin"
 version = "0.6.0"
-source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=8b6b136575fd6fcb4ff74a5bec732f2329bcb810#8b6b136575fd6fcb4ff74a5bec732f2329bcb810"
+source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=2d8ca06c610f0a4e87cd8773634e6e9b9eee479c#2d8ca06c610f0a4e87cd8773634e6e9b9eee479c"
 dependencies = [
  "cc",
  "inkwell",
@@ -394,7 +394,7 @@ dependencies = [
 [[package]]
 name = "llvm-plugin-macros"
 version = "0.2.0"
-source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=8b6b136575fd6fcb4ff74a5bec732f2329bcb810#8b6b136575fd6fcb4ff74a5bec732f2329bcb810"
+source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=2d8ca06c610f0a4e87cd8773634e6e9b9eee479c#2d8ca06c610f0a4e87cd8773634e6e9b9eee479c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1005,8 +1005,3 @@ dependencies = [
  "quote",
  "syn 2.0.104",
 ]
-
-[[patch.unused]]
-name = "inkwell"
-version = "0.6.0"
-source = "git+https://github.com/fuqiuluo/inkwell?rev=a30816bd721e24a0882e3fe994125c2829d9021a#a30816bd721e24a0882e3fe994125c2829d9021a"
