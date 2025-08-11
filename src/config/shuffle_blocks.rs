@@ -4,7 +4,7 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct ShuffleBlocksFlags: u32 {
         const Reverse          = 0b0000_0001; // 反转顺序
         const Random           = 0b0000_0010; // 随机打乱

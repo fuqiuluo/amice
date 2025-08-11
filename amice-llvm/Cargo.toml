@@ -17,6 +17,7 @@ llvm19-1 = []
 llvm20-1 = []
 
 [dependencies]
+lazy_static = "1.5.0"
 
 [build-dependencies]
 cc = "1"

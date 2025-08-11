@@ -15,12 +15,26 @@ use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
+use amice_macro::amice;
+use crate::config::Config;
+use crate::pass_registry::AmicePassLoadable;
 
 const MAGIC_NUMBER: u32 = 0x7788ff;
 
+#[amice(priority = 960, name = "VmFlatten")]
+#[derive(Default)]
 pub struct VmFlatten {
     enable: bool,
     random_none_node_opcode: bool,
+}
+
+impl AmicePassLoadable for VmFlatten {
+    fn init(&mut self, cfg: &Config) -> bool {
+        self.enable = cfg.vm_flatten.enable;
+        self.random_none_node_opcode = true;
+        
+        self.enable
+    }
 }
 
 impl LlvmModulePass for VmFlatten {
@@ -850,15 +864,6 @@ fn generate_unique_value(nodes: &[VmBranchNode<'_>]) -> u32 {
         let candidate = rng.random::<u32>();
         if candidate != MAGIC_NUMBER && !exists.contains(&candidate) {
             return candidate;
-        }
-    }
-}
-
-impl VmFlatten {
-    pub fn new(enable: bool) -> Self {
-        Self {
-            enable,
-            random_none_node_opcode: false,
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::config::{CONFIG, ShuffleBlocksFlags};
+use crate::config::{CONFIG, ShuffleBlocksFlags, Config};
 use crate::llvm_utils::function::get_basic_block_entry;
 use amice_llvm::module_utils::verify_function;
 use llvm_plugin::inkwell::module::Module;
@@ -6,10 +6,26 @@ use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
+use amice_macro::amice;
+use crate::pass_registry::AmicePassLoadable;
 
+#[amice(priority = 970, name = "ShuffleBlocks")]
+#[derive(Default)]
 pub struct ShuffleBlocks {
     enable: bool,
     flags: ShuffleBlocksFlags,
+}
+
+impl AmicePassLoadable for ShuffleBlocks {
+    fn init(&mut self, cfg: &Config) -> bool {
+        self.enable = cfg.shuffle_blocks.enable;
+        self.flags = cfg.shuffle_blocks.flags;
+        if self.flags.is_empty() {
+            warn!("(shuffle-blocks) no flags set, disabling shuffle blocks");
+            self.enable = false;
+        }
+        self.enable
+    }
 }
 
 impl LlvmModulePass for ShuffleBlocks {
@@ -28,17 +44,6 @@ impl LlvmModulePass for ShuffleBlocks {
         }
 
         PreservedAnalyses::None
-    }
-}
-
-impl ShuffleBlocks {
-    pub fn new(mut enable: bool) -> Self {
-        let flags = CONFIG.shuffle_blocks.flags;
-        if flags.is_empty() {
-            warn!("(shuffle-blocks) no flags set, disabling shuffle blocks");
-            enable = false;
-        }
-        Self { enable, flags }
     }
 }
 

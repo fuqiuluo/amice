@@ -1,10 +1,11 @@
-use super::{EnvOverlay, bool_var};
+use super::{bool_var};
 use bitflags::bitflags;
 use log::warn;
 use serde::{Deserialize, Serialize};
+use crate::pass_registry::EnvOverlay;
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct IndirectBranchFlags: u32 {
         const Basic =             0b00000001;
         const DummyBlock =        0b00000010;

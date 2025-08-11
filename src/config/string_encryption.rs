@@ -1,6 +1,9 @@
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::ModuleAnalysisManager;
 use super::{EnvOverlay, bool_var};
 use log::error;
 use serde::{Deserialize, Serialize};
+use crate::aotu::string_encryption::StringEncryption;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -30,17 +33,30 @@ pub struct StringEncryptionConfig {
     pub allow_non_entry_stack_alloc: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StringAlgorithm {
+    #[default]
     Xor,
     SimdXor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+impl StringAlgorithm {
+    /// 等级 0~7, 数字越大可能越安全，但是开销更大！
+    /// 如果是负数代表可能并不稳定！
+    pub fn level(&self) -> i32 {
+        match self {
+            StringAlgorithm::Xor => 0,
+            StringAlgorithm::SimdXor => 4,
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StringDecryptTiming {
     Lazy,
+    #[default]
     Global,
 }
 

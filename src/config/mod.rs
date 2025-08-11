@@ -3,6 +3,8 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use amice_macro::amice_config_manager;
+use crate::pass_registry::EnvOverlay;
 
 mod indirect_branch;
 mod indirect_call;
@@ -18,10 +20,6 @@ pub use self::split_basic_block::SplitBasicBlockConfig;
 pub use self::string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use self::vm_flatten::VmFlattenConfig;
 
-pub trait EnvOverlay {
-    fn overlay_env(&mut self);
-}
-
 lazy_static! {
     pub static ref CONFIG: Config = {
         let mut cfg = load_from_file_env().unwrap_or_default();
@@ -32,6 +30,7 @@ lazy_static! {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
+#[amice_config_manager]
 pub struct Config {
     pub string_encryption: StringEncryptionConfig,
     pub indirect_call: IndirectCallConfig,
@@ -87,13 +86,3 @@ fn load_from_file(path: &Path) -> anyhow::Result<Config> {
     Ok(cfg)
 }
 
-impl EnvOverlay for Config {
-    fn overlay_env(&mut self) {
-        self.string_encryption.overlay_env();
-        self.indirect_call.overlay_env();
-        self.indirect_branch.overlay_env();
-        self.split_basic_block.overlay_env();
-        self.vm_flatten.overlay_env();
-        self.shuffle_blocks.overlay_env();
-    }
-}

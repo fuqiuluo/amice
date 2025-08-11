@@ -1,7 +1,7 @@
 mod simd_xor;
 mod xor;
 
-use crate::config::{CONFIG, StringAlgorithm, StringDecryptTiming};
+use crate::config::{CONFIG, StringAlgorithm, StringDecryptTiming, Config};
 use crate::llvm_utils::function::get_basic_block_entry;
 use ascon_hash::{AsconHash256, Digest, Update};
 use inkwell::llvm_sys::core::LLVMGetAsString;
@@ -13,70 +13,27 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::{debug, error};
 use std::ptr::NonNull;
+use amice_macro::amice;
+use crate::pass_registry::AmicePassLoadable;
 
 /// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled
 const STACK_ALLOC_THRESHOLD: u32 = 4096; // 4KB
 
-enum StringEncryptionType {
-    Xor,
-    SimdXor,
-}
-
-impl StringEncryptionType {
-    pub fn do_handle(
-        &self,
-        pass: &StringEncryption,
-        module: &mut Module<'_>,
-        manager: &ModuleAnalysisManager,
-    ) -> anyhow::Result<()> {
-        match self {
-            StringEncryptionType::Xor => xor::do_handle(pass, module, manager),
-            StringEncryptionType::SimdXor => simd_xor::do_handle(pass, module, manager),
-        }
-    }
-
-    /// 等级 0~7, 数字越大可能越安全，但是开销更大！
-    /// 如果是负数代表可能并不稳定！
-    pub fn level(&self) -> i32 {
-        match self {
-            StringEncryptionType::Xor => 0,
-            StringEncryptionType::SimdXor => 4,
-        }
-    }
-}
-
+#[amice(priority = 1000, name = "StringEncryption")]
+#[derive(Default)]
 pub struct StringEncryption {
     enable: bool,
     timing: StringDecryptTiming,
-    encryption_type: StringEncryptionType,
+    encryption_type: StringAlgorithm,
     stack_alloc: bool,
     inline_decrypt: bool,
     only_dot_string: bool,
     allow_non_entry_stack_alloc: bool,
 }
 
-impl LlvmModulePass for StringEncryption {
-    fn run_pass<'a>(&self, module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
-        }
-
-        if let Err(e) = self.encryption_type.do_handle(self, module, manager) {
-            error!("(strenc) failed to handle string encryption: {e}");
-        }
-
-        PreservedAnalyses::None
-    }
-}
-
-impl StringEncryption {
-    pub fn new(enable: bool) -> Self {
-        let cfg = &*CONFIG;
-        let algo = match cfg.string_encryption.algorithm {
-            StringAlgorithm::Xor => StringEncryptionType::Xor,
-            StringAlgorithm::SimdXor => StringEncryptionType::SimdXor,
-        };
+impl AmicePassLoadable for StringEncryption {
+    fn init(&mut self, cfg: &Config) -> bool {
         let decrypt_timing = cfg.string_encryption.timing;
         let stack_alloc = cfg.string_encryption.stack_alloc;
         let inline_decrypt = cfg.string_encryption.inline_decrypt;
@@ -89,15 +46,32 @@ impl StringEncryption {
             decrypt_timing
         );
 
-        StringEncryption {
-            enable,
-            timing: decrypt_timing,
-            encryption_type: algo,
-            stack_alloc,
-            inline_decrypt,
-            only_dot_string: only_llvm_string,
-            allow_non_entry_stack_alloc: cfg.string_encryption.allow_non_entry_stack_alloc,
+        self.enable = cfg.string_encryption.enable;
+        self.timing = decrypt_timing;
+        self.encryption_type = cfg.string_encryption.algorithm;
+        self.stack_alloc = stack_alloc;
+        self.inline_decrypt = inline_decrypt;
+        self.only_dot_string = only_llvm_string;
+        self.allow_non_entry_stack_alloc = cfg.string_encryption.allow_non_entry_stack_alloc;
+
+        self.enable
+    }
+}
+
+impl LlvmModulePass for StringEncryption {
+    fn run_pass<'a>(&self, module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+        if !self.enable {
+            return PreservedAnalyses::All;
         }
+
+        if let Err(e) = match self.encryption_type {
+            StringAlgorithm::Xor => xor::do_handle(self, module, manager),
+            StringAlgorithm::SimdXor => simd_xor::do_handle(self, module, manager),
+        } {
+            error!("(strenc) failed to handle string encryption: {e}");
+        }
+
+        PreservedAnalyses::None
     }
 }
 

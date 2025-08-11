@@ -1,4 +1,4 @@
-use crate::config::CONFIG;
+use crate::config::{Config, CONFIG};
 use crate::llvm_utils::basic_block::split_basic_block;
 use crate::llvm_utils::function::get_basic_block_entry;
 use amice_llvm::ir::function::{fix_stack, fix_stack_at_terminator, fix_stack_with_max_iterations};
@@ -10,10 +10,23 @@ use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode}
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
+use amice_macro::amice;
+use crate::pass_registry::AmicePassLoadable;
 
+#[amice(priority = 980, name = "SplitBasicBlock")]
+#[derive(Default)]
 pub struct SplitBasicBlock {
     enable: bool,
     split_num: u32,
+}
+
+impl AmicePassLoadable for SplitBasicBlock {
+    fn init(&mut self, cfg: &Config) -> bool {
+        self.enable = cfg.split_basic_block.enable;
+        self.split_num = cfg.split_basic_block.num;
+
+        self.enable
+    }
 }
 
 impl LlvmModulePass for SplitBasicBlock {
@@ -196,11 +209,4 @@ fn has_valid_terminator(bb: &BasicBlock<'_>) -> bool {
 
 fn count_instructions(bb: &BasicBlock<'_>) -> u32 {
     bb.get_instructions().count() as u32
-}
-
-impl SplitBasicBlock {
-    pub fn new(enable: bool) -> Self {
-        let split_num = CONFIG.split_basic_block.num;
-        Self { enable, split_num }
-    }
 }

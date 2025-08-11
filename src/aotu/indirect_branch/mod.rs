@@ -1,4 +1,4 @@
-use crate::config::{CONFIG, IndirectBranchFlags};
+use crate::config::{CONFIG, IndirectBranchFlags, Config};
 use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry_ref;
 use amice_llvm::module_utils::verify_function;
@@ -16,13 +16,39 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
 use std::collections::HashMap;
+use amice_macro::amice;
+use crate::pass_registry::AmicePassLoadable;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 
+#[amice(priority = 800, name = "IndirectBranch")]
+#[derive(Default)]
 pub struct IndirectBranch {
     enable: bool,
     flags: IndirectBranchFlags,
     xor_key: Option<[u32; 4]>,
+}
+
+impl AmicePassLoadable for IndirectBranch {
+    fn init(&mut self, cfg: &Config) -> bool {
+        self.enable = cfg.indirect_branch.enable;
+        self.flags = IndirectBranchFlags::Basic;
+        self.flags |= cfg.indirect_branch.flags;
+
+        if self.enable {
+            debug!("IndirectBranch pass enabled with flags: {:?}", self.flags);
+        }
+
+        self.xor_key = if self.flags.contains(IndirectBranchFlags::EncryptBlockIndex) {
+            let mut xor_key = [0u32; 4];
+            rand::rng().fill(&mut xor_key[..]);
+            xor_key.into()
+        } else {
+            None
+        };
+
+        self.enable
+    }
 }
 
 impl LlvmModulePass for IndirectBranch {
@@ -397,25 +423,4 @@ fn collect_basic_block<'a>(module: &Module<'a>) -> Vec<BasicBlock<'a>> {
     }
 
     basic_blocks
-}
-
-impl IndirectBranch {
-    pub fn new(enable: bool) -> Self {
-        let mut flags = IndirectBranchFlags::Basic;
-        flags |= CONFIG.indirect_branch.flags;
-
-        if enable {
-            debug!("IndirectBranch pass enabled with flags: {flags:?}");
-        }
-
-        let xor_key = if flags.contains(IndirectBranchFlags::EncryptBlockIndex) {
-            let mut xor_key = [0u32; 4];
-            rand::rng().fill(&mut xor_key[..]);
-            xor_key.into()
-        } else {
-            None
-        };
-
-        Self { enable, flags, xor_key }
-    }
 }

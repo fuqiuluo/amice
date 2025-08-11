@@ -1,5 +1,7 @@
-use crate::config::CONFIG;
+use crate::config::{CONFIG, Config};
+use crate::pass_registry::AmicePassLoadable;
 use amice_llvm::module_utils::verify_function;
+use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::module::{Linkage, Module};
@@ -9,9 +11,31 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 
+#[amice(priority = 990, name = "IndirectCall")]
+#[derive(Default)]
 pub struct IndirectCall {
     enable: bool,
     xor_key: u32,
+}
+
+impl AmicePassLoadable for IndirectCall {
+    fn init(&mut self, cfg: &Config) -> bool {
+        self.enable = cfg.indirect_call.enable;
+
+        self.xor_key = cfg
+            .indirect_call
+            .xor_key
+            .unwrap_or(if self.enable { rand::random::<u32>() } else { 0 });
+
+        if self.xor_key != 0 {
+            warn!(
+                "Indirect call XOR key is set to {}, this may cause issues if the key is not known at runtime.",
+                self.xor_key
+            );
+        }
+
+        self.enable
+    }
 }
 
 impl LlvmModulePass for IndirectCall {
@@ -203,23 +227,6 @@ fn do_handle<'a>(
         inst.erase_from_basic_block();
     }
     Ok(())
-}
-
-impl IndirectCall {
-    pub fn new(enable: bool) -> Self {
-        let xor_key = CONFIG
-            .indirect_call
-            .xor_key
-            .unwrap_or(if enable { rand::random::<u32>() } else { 0 });
-
-        if xor_key != 0 {
-            warn!(
-                "Indirect call XOR key is set to {xor_key}, this may cause issues if the key is not known at runtime."
-            );
-        }
-
-        Self { enable, xor_key }
-    }
 }
 
 // ==== type 1
