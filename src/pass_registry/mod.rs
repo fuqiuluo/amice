@@ -1,9 +1,9 @@
-use std::cmp::Ordering;
-use std::collections::HashMap;
 use crate::config::Config;
 use lazy_static::lazy_static;
 use llvm_plugin::ModulePassManager;
 use log::info;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 lazy_static! {
@@ -58,8 +58,7 @@ pub fn install_all(cfg: &Config, manager: &mut ModulePassManager) {
             let b_idx = idx.get(b.name).unwrap_or(&i32::MAX);
             a_idx.cmp(b_idx)
         });
-    }
-    else if let Some(priority_override) = &cfg.pass_order.priority_override {
+    } else if let Some(priority_override) = &cfg.pass_order.priority_override {
         entries.sort_by_key(|e| {
             -if let Some(priority) = priority_override.get(e.name) {
                 *priority
@@ -67,8 +66,7 @@ pub fn install_all(cfg: &Config, manager: &mut ModulePassManager) {
                 e.priority
             }
         });
-    }
-    else {
+    } else {
         // priority 越大越先安装
         entries.sort_by_key(|e| -e.priority);
     }

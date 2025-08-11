@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use log::warn;
-use serde::{Deserialize, Serialize};
 use crate::config::{bool_var, parse_kv_map, parse_list};
 use crate::pass_registry::EnvOverlay;
+use log::warn;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -31,7 +31,7 @@ impl EnvOverlay for PassOrderConfig {
             if map.is_empty() {
                 warn!("AMICE_PASS_PRIORITY_OVERRIDE is set but empty after parsing, ignoring");
             } else {
-                if self.priority_override.is_none() { 
+                if self.priority_override.is_none() {
                     self.priority_override = Some(HashMap::new());
                 }
 
@@ -42,6 +42,5 @@ impl EnvOverlay for PassOrderConfig {
                 }
             }
         }
-
     }
 }

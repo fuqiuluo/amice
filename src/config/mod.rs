@@ -1,20 +1,20 @@
-use std::collections::HashMap;
 use crate::pass_registry::EnvOverlay;
 use amice_macro::amice_config_manager;
 use lazy_static::lazy_static;
 use log::warn;
+use pass_order::PassOrderConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use pass_order::PassOrderConfig;
 
 mod indirect_branch;
 mod indirect_call;
+mod pass_order;
 mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
-mod pass_order;
 
 pub use self::indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
 pub use self::indirect_call::IndirectCallConfig;
@@ -90,10 +90,10 @@ fn parse_kv_map(input: &str) -> HashMap<String, i32> {
         match v.parse::<i32>() {
             Ok(num) => {
                 out.insert(k.to_string(), num);
-            }
+            },
             Err(_) => {
                 warn!("Ignoring priority override with non-integer value: \"{p}\"");
-            }
+            },
         }
     }
     out
