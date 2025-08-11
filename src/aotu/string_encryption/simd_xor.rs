@@ -8,9 +8,7 @@ use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{
-    ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue,
-};
+use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue};
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
 use log::{error, warn};
 use rand::Rng;

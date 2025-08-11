@@ -9,9 +9,7 @@ use inkwell::values::FunctionValue;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::Linkage;
-use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicValue, BasicValueEnum,
-};
+use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, BasicValueEnum};
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
 use log::{debug, error, warn};
 

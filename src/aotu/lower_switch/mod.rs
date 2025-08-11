@@ -1,17 +1,17 @@
 use crate::config::Config;
+use crate::llvm_utils::switch_inst;
 use crate::pass_registry::AmicePassLoadable;
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
+use llvm_plugin::inkwell::IntPredicate;
+use llvm_plugin::inkwell::basic_block::BasicBlock;
+use llvm_plugin::inkwell::context::ContextRef;
+use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
+use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, PhiValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::context::ContextRef;
-use llvm_plugin::inkwell::IntPredicate;
-use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
-use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use log::{error, warn};
-use crate::llvm_utils::switch_inst;
 
 #[amice(priority = 961, name = "LowerSwitch")]
 #[derive(Default)]
@@ -54,7 +54,8 @@ impl LlvmModulePass for LowerSwitch {
 }
 
 fn do_lower_switch(module: &mut Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
-    let switch_inst_list = function.get_basic_blocks()
+    let switch_inst_list = function
+        .get_basic_blocks()
         .into_iter()
         .filter_map(|bb| bb.get_terminator())
         .filter(|inst| inst.get_opcode() == InstructionOpcode::Switch)
@@ -71,12 +72,9 @@ fn do_lower_switch(module: &mut Module<'_>, function: FunctionValue) -> anyhow::
     Ok(())
 }
 
-fn demote_switch_to_if(
-    module: &mut Module<'_>,
-    function: FunctionValue,
-    inst: InstructionValue,
-) -> anyhow::Result<()> {
-    let switch_block = inst.get_parent()
+fn demote_switch_to_if(module: &mut Module<'_>, function: FunctionValue, inst: InstructionValue) -> anyhow::Result<()> {
+    let switch_block = inst
+        .get_parent()
         .ok_or_else(|| anyhow::anyhow!("Switch instruction has no parent block"))?;
     let default = switch_inst::get_default_block(inst);
     let condition = switch_inst::get_condition(inst);
@@ -102,12 +100,8 @@ fn demote_switch_to_if(
     for (case, dest) in cases {
         let next_branch = ctx.append_basic_block(function, "lower_switch_branch");
         builder.position_at_end(current_branch);
-        let cond = builder.build_int_compare(
-            IntPredicate::EQ,
-            condition.into_int_value(),
-            case.into_int_value(),
-            ""
-        )?;
+        let cond =
+            builder.build_int_compare(IntPredicate::EQ, condition.into_int_value(), case.into_int_value(), "")?;
         update_phi_nodes(switch_block, current_branch, dest);
         builder.build_conditional_branch(cond, dest, next_branch)?;
 
@@ -128,11 +122,7 @@ fn demote_switch_to_if(
     Ok(())
 }
 
-fn update_phi_nodes<'ctx>(
-    old_pred: BasicBlock<'ctx>,
-    new_pred: BasicBlock<'ctx>,
-    target_block: BasicBlock<'ctx>,
-) {
+fn update_phi_nodes<'ctx>(old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>, target_block: BasicBlock<'ctx>) {
     for phi in target_block.get_first_instruction().iter() {
         if phi.get_opcode() != InstructionOpcode::Phi {
             break;
