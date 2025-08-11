@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use lower_switch::LowerSwitchConfig;
 
 mod indirect_branch;
 mod indirect_call;
@@ -15,6 +16,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
+mod lower_switch;
 
 pub use self::indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
 pub use self::indirect_call::IndirectCallConfig;
@@ -42,6 +44,7 @@ pub struct Config {
     pub split_basic_block: SplitBasicBlockConfig,
     pub vm_flatten: VmFlattenConfig,
     pub shuffle_blocks: ShuffleBlocksConfig,
+    pub lower_switch: LowerSwitchConfig,
 }
 
 fn is_truthy(value: &str) -> bool {
