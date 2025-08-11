@@ -83,6 +83,24 @@ fn handle_function(function: FunctionValue<'_>, flags: ShuffleBlocksFlags) -> an
         }
     }
 
+    if flags.contains(ShuffleBlocksFlags::Reverse) {
+        // Reverse the order of blocks (excluding entry block which is already removed from blocks)
+        // Move blocks from back to front to reverse the order
+        for i in (1..blocks.len()).rev() {
+            let first_block = blocks[0];
+            let _ = blocks[i].move_before(first_block);
+        }
+    }
+
+    if flags.contains(ShuffleBlocksFlags::Rotate) {
+        // Rotate blocks left by 1 (move first block to end)
+        if !blocks.is_empty() {
+            let first_block = blocks[0];
+            let last_block = blocks[blocks.len() - 1];
+            let _ = first_block.move_after(last_block);
+        }
+    }
+
     if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
         warn!("(shuffle-blocks) function {:?} is not verified", function.get_name());
     }
