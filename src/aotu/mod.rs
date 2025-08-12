@@ -6,6 +6,7 @@ pub mod shuffle_blocks;
 pub mod split_basic_block;
 pub mod string_encryption;
 pub mod vm_flatten;
+pub mod mba;
 
 #[cfg(any(feature = "llvm15-0", feature = "llvm16-0",))]
 #[macro_export]

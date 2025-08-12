@@ -3,12 +3,21 @@ use crate::pass_registry::EnvOverlay;
 use amice_macro::amice_config_manager;
 use lazy_static::lazy_static;
 use log::warn;
-use lower_switch::LowerSwitchConfig;
-use pass_order::PassOrderConfig;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+
+pub use pass_order::PassOrderConfig;
+pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
+pub use indirect_call::IndirectCallConfig;
+pub use shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
+pub use split_basic_block::SplitBasicBlockConfig;
+pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
+pub use vm_flatten::VmFlattenConfig;
+pub use lower_switch::LowerSwitchConfig;
+pub use mba::MbaConfig;
 
 mod flatten;
 mod indirect_branch;
@@ -19,13 +28,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
-
-pub use self::indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
-pub use self::indirect_call::IndirectCallConfig;
-pub use self::shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
-pub use self::split_basic_block::SplitBasicBlockConfig;
-pub use self::string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
-pub use self::vm_flatten::VmFlattenConfig;
+mod mba;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
@@ -48,6 +51,7 @@ pub struct Config {
     pub shuffle_blocks: ShuffleBlocksConfig,
     pub lower_switch: LowerSwitchConfig,
     pub flatten: FlattenConfig,
+    pub mba: MbaConfig,
 }
 
 fn is_truthy(value: &str) -> bool {
