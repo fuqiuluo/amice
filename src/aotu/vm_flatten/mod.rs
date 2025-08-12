@@ -291,7 +291,9 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     // }
 
     let Some(first_basic_block) = first_basic_block.take() else {
-        return Err(anyhow::anyhow!("failed to get first basic block: {entry_terminator_inst}"));
+        return Err(anyhow::anyhow!(
+            "failed to get first basic block: {entry_terminator_inst}"
+        ));
     };
     if !basic_blocks.contains(&first_basic_block) {
         basic_blocks.insert(0, first_basic_block);
@@ -655,10 +657,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     }
 
     if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
-        warn!(
-            "(vm_flatten) function {:?} verify failed",
-            function.get_name()
-        );
+        warn!("(vm_flatten) function {:?} verify failed", function.get_name());
     }
 
     unsafe {

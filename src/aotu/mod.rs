@@ -1,3 +1,4 @@
+mod flatten;
 pub mod indirect_branch;
 pub mod indirect_call;
 pub mod lower_switch;
@@ -5,7 +6,6 @@ pub mod shuffle_blocks;
 pub mod split_basic_block;
 pub mod string_encryption;
 pub mod vm_flatten;
-mod flatten;
 
 #[cfg(any(feature = "llvm15-0", feature = "llvm16-0",))]
 #[macro_export]

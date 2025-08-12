@@ -1,8 +1,10 @@
+use crate::aotu::lower_switch::demote_switch_to_if;
 use crate::config::{Config, IndirectBranchFlags};
 use crate::llvm_utils::basic_block::split_basic_block;
 use crate::llvm_utils::branch_inst;
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::AmicePassLoadable;
+use amice_llvm::ir::function::fix_stack;
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -14,8 +16,6 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, warn};
 use rand::Rng;
 use std::collections::HashMap;
-use amice_llvm::ir::function::fix_stack;
-use crate::aotu::lower_switch::demote_switch_to_if;
 
 #[amice(priority = 959, name = "Flatten")]
 #[derive(Default)]
@@ -153,9 +153,8 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue) -> anyhow::Result
     let mut switch = Vec::new();
 
     for bb in basic_blocks {
-        bb.move_before(dispatcher).expect(
-            "failed to move basic block after dispatcher",
-        );
+        bb.move_before(dispatcher)
+            .expect("failed to move basic block after dispatcher");
         if let Some(terminator) = bb.get_terminator() {
             match terminator.get_opcode() {
                 InstructionOpcode::Br => {
@@ -194,7 +193,8 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue) -> anyhow::Result
         let dispatch_id_false = i32_ty.const_int(dispatch_id_false as u64, false);
         let cond = terminator.get_operand(0).unwrap().left().unwrap().into_int_value();
         builder.position_before(&terminator);
-        let successor_id = builder.build_select(cond, dispatch_id_true, dispatch_id_false, "")?
+        let successor_id = builder
+            .build_select(cond, dispatch_id_true, dispatch_id_false, "")?
             .into_int_value();
         builder.build_store(dispatch_id_ptr, successor_id)?;
         builder.build_unconditional_branch(dispatcher)?;
@@ -202,12 +202,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue) -> anyhow::Result
     }
 
     for terminator in switch {
-        if let Err(e) = demote_switch_to_if(
-            module,
-            function,
-            terminator,
-            false
-        ) {
+        if let Err(e) = demote_switch_to_if(module, function, terminator, false) {
             warn!("(flatten) failed to demote switch to if: {}", e);
             continue;
         }

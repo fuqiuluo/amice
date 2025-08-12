@@ -40,11 +40,7 @@ impl LlvmModulePass for LowerSwitch {
 
         for function in module.get_functions() {
             if let Err(e) = do_lower_switch(module, function, self.append_dummy_code) {
-                error!(
-                    "Failed to lower switch in function {:?}: {}",
-                    function.get_name(),
-                    e
-                );
+                error!("Failed to lower switch in function {:?}: {}", function.get_name(), e);
             }
         }
 

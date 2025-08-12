@@ -1,3 +1,4 @@
+use crate::config::flatten::FlattenConfig;
 use crate::pass_registry::EnvOverlay;
 use amice_macro::amice_config_manager;
 use lazy_static::lazy_static;
@@ -8,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use crate::config::flatten::FlattenConfig;
 
+mod flatten;
 mod indirect_branch;
 mod indirect_call;
 mod lower_switch;
@@ -18,7 +19,6 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
-mod flatten;
 
 pub use self::indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
 pub use self::indirect_call::IndirectCallConfig;
