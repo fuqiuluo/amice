@@ -165,7 +165,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     'outer: for bb in function.get_basic_blocks() {
         for inst in bb.get_instructions() {
             match inst.get_opcode() {
-                InstructionOpcode::Invoke
+                InstructionOpcode::Invoke // TODO: support it!
                 | InstructionOpcode::LandingPad
                 | InstructionOpcode::CatchSwitch
                 | InstructionOpcode::CatchPad
