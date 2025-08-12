@@ -77,7 +77,7 @@ fn do_lower_switch(module: &mut Module<'_>, function: FunctionValue, append_dumm
     Ok(())
 }
 
-fn demote_switch_to_if(
+pub(crate) fn demote_switch_to_if(
     module: &mut Module<'_>,
     function: FunctionValue,
     inst: InstructionValue,
