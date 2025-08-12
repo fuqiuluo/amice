@@ -33,7 +33,9 @@ impl AmicePassLoadable for Flatten {
 
         if !self.fix_stack && !self.demote_switch {
             // switch降级没有开启且fixStack也没有开启意味着PHI 99%有问题！
-            error!("(flatten) both fix_stack and lower_switch are disabled, this will likely cause issues with PHI nodes");
+            error!(
+                "(flatten) both fix_stack and lower_switch are disabled, this will likely cause issues with PHI nodes"
+            );
             // 给个警告，然后听天由命，这个是用户自己决定的，hhh
         }
 
@@ -96,11 +98,7 @@ impl LlvmModulePass for Flatten {
     }
 }
 
-fn do_handle(
-    module: &mut Module<'_>,
-    function: FunctionValue,
-    demote_switch: bool,
-) -> anyhow::Result<()> {
+fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bool) -> anyhow::Result<()> {
     let Some(entry_block) = get_basic_block_entry(function) else {
         return Err(anyhow::anyhow!(
             "(flatten) function {:?} has no entry block",

@@ -74,7 +74,9 @@ enum Expr {
 }
 
 impl Expr {
-    fn const0() -> Self { Expr::Const(0) }
+    fn const0() -> Self {
+        Expr::Const(0)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -97,11 +99,7 @@ impl MbaConfig {
 fn rand_u128_mod2n<R: Rng + ?Sized>(rng: &mut R, bits: u32) -> u128 {
     // 生成 [0, 2^n) 的随机数（通过掩码到 n 位）
     let v: u128 = rng.random();
-    if bits == 128 {
-        v
-    } else {
-        v & ((1u128 << bits) - 1)
-    }
+    if bits == 128 { v } else { v & ((1u128 << bits) - 1) }
 }
 
 // 基础恒等项：恒为 0
@@ -110,8 +108,8 @@ fn gen_base_zero_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize) -> Expr {
     let a = rng.random_range(0..safe);
     match rng.random_range(0..3) {
         0 => Expr::And(Box::new(Expr::Var(a)), Box::new(Expr::Not(Box::new(Expr::Var(a))))), // a & ~a = 0
-        1 => Expr::Xor(Box::new(Expr::Var(a)), Box::new(Expr::Var(a))), // a ^ a = 0
-        _ => Expr::Sub(Box::new(Expr::Var(a)), Box::new(Expr::Var(a))), // a - a = 0
+        1 => Expr::Xor(Box::new(Expr::Var(a)), Box::new(Expr::Var(a))),                      // a ^ a = 0
+        _ => Expr::Sub(Box::new(Expr::Var(a)), Box::new(Expr::Var(a))),                      // a - a = 0
     }
 }
 
@@ -122,47 +120,56 @@ fn gen_base_mask_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize) -> Expr {
     match rng.random_range(0..3) {
         0 => Expr::Or(Box::new(Expr::Var(a)), Box::new(Expr::Not(Box::new(Expr::Var(a))))), // a | ~a = mask
         1 => Expr::Not(Box::new(Expr::Xor(Box::new(Expr::Var(a)), Box::new(Expr::Var(a))))), // ~(a ^ a) = mask
-        _ => Expr::Not(Box::new(Expr::And(Box::new(Expr::Var(a)), Box::new(Expr::Not(Box::new(Expr::Var(a))))))), // ~(a & ~a) = mask
+        _ => Expr::Not(Box::new(Expr::And(
+            Box::new(Expr::Var(a)),
+            Box::new(Expr::Not(Box::new(Expr::Var(a)))),
+        ))), // ~(a & ~a) = mask
     }
 }
 
 // 等价重写（不改变表达式语义）
 fn rewrite_once<R: Rng + ?Sized>(rng: &mut R, e: Expr, nmask: u128, aux_count: usize) -> Expr {
     use Expr::*;
-    match rng.random_range(0..9) {  // 9个安全的重写规则
-        0 => Not(Box::new(Not(Box::new(e)))),         // ~~e = e
-        1 => Xor(Box::new(e), Box::new(Const(0))),    // e ^ 0 = e
-        2 => Or(Box::new(e), Box::new(Const(0))),     // e | 0 = e
-        3 => And(Box::new(e), Box::new(Const(nmask))),// e & mask = e
-        4 => { // 德摩根定律（保持等价）
+    match rng.random_range(0..9) {
+        // 9个安全的重写规则
+        0 => Not(Box::new(Not(Box::new(e)))),          // ~~e = e
+        1 => Xor(Box::new(e), Box::new(Const(0))),     // e ^ 0 = e
+        2 => Or(Box::new(e), Box::new(Const(0))),      // e | 0 = e
+        3 => And(Box::new(e), Box::new(Const(nmask))), // e & mask = e
+        4 => {
+            // 德摩根定律（保持等价）
             match e {
                 And(a, b) => Not(Box::new(Or(Box::new(Not(a)), Box::new(Not(b))))),
-                Or(a, b)  => Not(Box::new(And(Box::new(Not(a)), Box::new(Not(b))))),
+                Or(a, b) => Not(Box::new(And(Box::new(Not(a)), Box::new(Not(b))))),
                 other => other,
             }
-        }
-        5 => { // 交换律
+        },
+        5 => {
+            // 交换律
             match e {
                 And(a, b) => And(b, a),
-                Or(a, b)  => Or(b, a),
+                Or(a, b) => Or(b, a),
                 Xor(a, b) => Xor(b, a),
                 Add(a, b) => Add(b, a),
                 other => other,
             }
-        }
-        6 => { // 加/减 0
+        },
+        6 => {
+            // 加/减 0
             if rng.random_bool(0.5) {
                 Add(Box::new(e), Box::new(Const(0)))
             } else {
                 Sub(Box::new(e), Box::new(Const(0)))
             }
-        }
-        7 => { // e = e & mask（冗余但安全）
+        },
+        7 => {
+            // e = e & mask（冗余但安全）
             And(Box::new(e), Box::new(Const(nmask)))
-        }
-        _ => { // e = e | 0（冗余但安全）
+        },
+        _ => {
+            // e = e | 0（冗余但安全）
             Or(Box::new(e), Box::new(Const(0)))
-        }
+        },
     }
 }
 
@@ -230,7 +237,9 @@ fn build_constant_mba<R: Rng + ?Sized>(rng: &mut R, cfg: &MbaConfig) -> Expr {
 
     let mut sum_others: u128 = 0;
     for &idx in &mask_term_indices {
-        if idx == adjust_idx { continue; }
+        if idx == adjust_idx {
+            continue;
+        }
         sum_others = sum_others.wrapping_add(terms[idx].0);
     }
     sum_others &= nmask;
@@ -302,8 +311,12 @@ struct CPrinter {
 }
 
 impl CPrinter {
-    fn c_ty(&self) -> &'static str { self.width.c_type() }
-    fn mask(&self) -> u128 { self.width.mask_u128() }
+    fn c_ty(&self) -> &'static str {
+        self.width.c_type()
+    }
+    fn mask(&self) -> u128 {
+        self.width.mask_u128()
+    }
 
     fn const_c_u128_hex(v: u128) -> String {
         let hi = (v >> 64) as u64;
@@ -337,7 +350,7 @@ impl CPrinter {
             MulConst(c, x) => {
                 let cc = self.const_c(*c);
                 format!("({} * ({}))", cc, self.print_expr(x))
-            }
+            },
         }
     }
 
@@ -347,12 +360,13 @@ impl CPrinter {
         for i in 0..aux_count {
             args.push(format!("{} aux{}", ret_ty, i));
         }
-        let arglist = if args.is_empty() { "void".to_string() } else { args.join(", ") };
+        let arglist = if args.is_empty() {
+            "void".to_string()
+        } else {
+            args.join(", ")
+        };
         let expr = self.print_expr(body);
-        format!(
-            "{} {}({}) {{\n\treturn {};\n}}",
-            ret_ty, func_name, arglist, expr
-        )
+        format!("{} {}({}) {{\n\treturn {};\n}}", ret_ty, func_name, arglist, expr)
     }
 }
 
@@ -396,7 +410,10 @@ fn verify_mba(expr: &Expr, expected: u128, width: BitWidth, aux_count: usize) ->
 
         let result = eval_expr(expr, &aux_values, width);
         if result != expected {
-            println!("Verification failed: aux={:?}, expected={}, got={}", aux_values, expected, result);
+            println!(
+                "Verification failed: aux={:?}, expected={}, got={}",
+                aux_values, expected, result
+            );
             return false;
         }
     }
@@ -446,7 +463,13 @@ mod tests {
             func_name: "f".to_string(),
         };
 
-        let all_bits = [BitWidth::W8, BitWidth::W16, BitWidth::W32, BitWidth::W64, BitWidth::W128];
+        let all_bits = [
+            BitWidth::W8,
+            BitWidth::W16,
+            BitWidth::W32,
+            BitWidth::W64,
+            BitWidth::W128,
+        ];
         for bits in all_bits {
             cfg.width = bits;
             let mask = bits.mask_u128();
@@ -459,7 +482,7 @@ mod tests {
                         let is_valid = verify_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
                         assert!(is_valid, "width={:?}, constant={} failed", bits, c);
                     }
-                }
+                },
                 BitWidth::W32 => {
                     let mut u32_samples = [0u32; 10000];
                     for i in 0..u32_samples.len() {
@@ -471,7 +494,7 @@ mod tests {
                         let is_valid = verify_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
                         assert!(is_valid, "width={:?}, constant={} failed", bits, u32_samples[i]);
                     }
-                }
+                },
                 BitWidth::W64 => {
                     let mut u64_samples = [0u64; 10000];
                     for i in 0..u64_samples.len() {
@@ -503,7 +526,7 @@ mod tests {
                         let is_valid = verify_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
                         assert!(is_valid, "width={:?}, constant={} failed", bits, u64_samples[i]);
                     }
-                }
+                },
                 BitWidth::W128 => {
                     let mut u128_samples = [0u128; 10000];
                     for i in 0..u128_samples.len() {
@@ -513,7 +536,7 @@ mod tests {
                         cfg.constant = u128_samples[i];
                         let ir = generate_mba(&cfg);
                     }
-                }
+                },
             }
         }
     }

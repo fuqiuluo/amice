@@ -27,8 +27,6 @@ impl LlvmModulePass for Mba {
             return PreservedAnalyses::All;
         }
 
-
-
         PreservedAnalyses::None
     }
 }
