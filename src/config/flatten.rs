@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct FlattenConfig {
     pub enable: bool,
     pub fix_stack: bool,
+    pub lower_switch: bool,
 }
 
 impl Default for FlattenConfig {
@@ -15,6 +16,7 @@ impl Default for FlattenConfig {
         Self {
             enable: false,
             fix_stack: true,
+            lower_switch: true,
         }
     }
 }
@@ -27,6 +29,10 @@ impl EnvOverlay for FlattenConfig {
 
         if std::env::var("AMICE_FLATTEN_FIX_STACK").is_ok() {
             self.fix_stack = bool_var("AMICE_FLATTEN_FIX_STACK", self.fix_stack);
+        }
+        
+        if std::env::var("AMICE_FLATTEN_LOWER_SWITCH").is_ok() {
+            self.lower_switch = bool_var("AMICE_FLATTEN_LOWER_SWITCH", self.lower_switch);
         }
     }
 }

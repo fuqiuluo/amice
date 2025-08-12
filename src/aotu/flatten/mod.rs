@@ -13,7 +13,7 @@ use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, warn};
+use log::{debug, error, warn};
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -22,12 +22,20 @@ use std::collections::HashMap;
 pub struct Flatten {
     enable: bool,
     fix_stack: bool,
+    demote_switch: bool,
 }
 
 impl AmicePassLoadable for Flatten {
     fn init(&mut self, cfg: &Config) -> bool {
         self.enable = cfg.flatten.enable;
         self.fix_stack = cfg.flatten.fix_stack;
+        self.demote_switch = cfg.flatten.lower_switch;
+
+        if !self.fix_stack && !self.demote_switch {
+            // switch降级没有开启且fixStack也没有开启意味着PHI 99%有问题！
+            error!("(flatten) both fix_stack and lower_switch are disabled, this will likely cause issues with PHI nodes");
+            // 给个警告，然后听天由命，这个是用户自己决定的，hhh
+        }
 
         self.enable
     }
@@ -68,7 +76,7 @@ impl LlvmModulePass for Flatten {
                 continue;
             }
 
-            if let Err(err) = do_handle(module, function) {
+            if let Err(err) = do_handle(module, function, self.demote_switch) {
                 warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
                 continue;
             }
@@ -88,7 +96,11 @@ impl LlvmModulePass for Flatten {
     }
 }
 
-fn do_handle(module: &mut Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
+fn do_handle(
+    module: &mut Module<'_>,
+    function: FunctionValue,
+    demote_switch: bool,
+) -> anyhow::Result<()> {
     let Some(entry_block) = get_basic_block_entry(function) else {
         return Err(anyhow::anyhow!(
             "(flatten) function {:?} has no entry block",
@@ -201,10 +213,12 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue) -> anyhow::Result
         terminator.erase_from_basic_block();
     }
 
-    for terminator in switch {
-        if let Err(e) = demote_switch_to_if(module, function, terminator, false) {
-            warn!("(flatten) failed to demote switch to if: {}", e);
-            continue;
+    if demote_switch {
+        for terminator in switch {
+            if let Err(e) = demote_switch_to_if(module, function, terminator, false) {
+                warn!("(flatten) failed to demote switch to if: {}", e);
+                continue;
+            }
         }
     }
 
