@@ -336,8 +336,8 @@ impl LlvmModulePass for IndirectBranch {
 
             if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
                 warn!(
-                    "(indirect-branch) function {} verify failed",
-                    function.get_name().to_str().unwrap_or("<unknown>")
+                    "(indirect-branch) function {:?} verify failed",
+                    function.get_name()
                 );
             }
         }

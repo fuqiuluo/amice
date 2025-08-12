@@ -37,8 +37,8 @@ impl LlvmModulePass for SplitBasicBlock {
         for function in module.get_functions() {
             if let Err(e) = do_split(module, function, self.split_num) {
                 error!(
-                    "Failed to split basic blocks in function {}: {}",
-                    function.get_name().to_str().unwrap_or("unknown"),
+                    "Failed to split basic blocks in function {:?}: {}",
+                    function.get_name(),
                     e
                 );
             }

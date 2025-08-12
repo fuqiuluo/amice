@@ -46,8 +46,8 @@ impl LlvmModulePass for VmFlatten {
         for function in module.get_functions() {
             if let Err(err) = do_handle(self, module, function) {
                 error!(
-                    "(vm_flatten) failed to handle function: {}, err = {}",
-                    function.get_name().to_str().unwrap_or("<unknown>"),
+                    "(vm_flatten) failed to handle function: {:?}, err = {}",
+                    function.get_name(),
                     err
                 );
             }
@@ -169,6 +169,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                 | InstructionOpcode::LandingPad
                 | InstructionOpcode::CatchSwitch
                 | InstructionOpcode::CatchPad
+                | InstructionOpcode::CatchRet
                 | InstructionOpcode::CleanupPad
                 | InstructionOpcode::CallBr
                 | InstructionOpcode::IndirectBr => {
@@ -367,8 +368,8 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     let opcode_array_size = calculate_pc(&opcodes, opcodes.len());
 
     debug!(
-        "(vm_flatten) fun: {} opcodes: {:?}, size: {}",
-        function.get_name().to_str().unwrap_or("<unknown>"),
+        "(vm_flatten) fun: {:?} opcodes: {:?}, size: {}",
+        function.get_name(),
         opcodes,
         opcode_array_size,
     );
@@ -655,8 +656,8 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
 
     if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
         warn!(
-            "(vm_flatten) function {} verify failed",
-            function.get_name().to_str().unwrap_or("<unknown>")
+            "(vm_flatten) function {:?} verify failed",
+            function.get_name()
         );
     }
 
