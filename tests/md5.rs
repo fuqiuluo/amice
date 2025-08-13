@@ -74,7 +74,7 @@ mod tests {
             .expect("Failed to execute cargo build command");
         assert!(output.status.success(), "Cargo build failed");
 
-        let path = PathBuf::from("target/md5");
+        let path = PathBuf::from("target/md5(o3)");
         if path.exists() {
             std::fs::remove_file(path).unwrap();
         }
@@ -86,7 +86,7 @@ mod tests {
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/md5.c")
             .arg("-o")
-            .arg("target/md5")
+            .arg("target/md5(o3)")
             .output()
             .expect("Failed to execute clang command");
         if !output.status.success() {
@@ -106,7 +106,7 @@ mod tests {
             .expect("Failed to execute cargo build command");
         assert!(output.status.success(), "Cargo build failed");
 
-        let path = PathBuf::from("target/md5");
+        let path = PathBuf::from("target/md5(cpp)");
         if path.exists() {
             std::fs::remove_file(path).unwrap();
         }
@@ -122,7 +122,7 @@ mod tests {
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/md5.cc")
             .arg("-o")
-            .arg("target/md5")
+            .arg("target/md5(cpp)")
             .output()
             .expect("Failed to execute clang command");
         if !output.status.success() {
@@ -142,7 +142,7 @@ mod tests {
             .expect("Failed to execute cargo build command");
         assert!(output.status.success(), "Cargo build failed");
 
-        let path = PathBuf::from("target/md5");
+        let path = PathBuf::from("target/md5(cpp+o3)");
         if path.exists() {
             std::fs::remove_file(path).unwrap();
         }
@@ -159,7 +159,7 @@ mod tests {
             .arg("-fpass-plugin=target/release/libamice.so")
             .arg("tests/md5.cc")
             .arg("-o")
-            .arg("target/md5")
+            .arg("target/md5(cpp+o3)")
             .output()
             .expect("Failed to execute clang command");
         if !output.status.success() {
