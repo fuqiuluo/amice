@@ -4,7 +4,6 @@ mod constant_mba;
 mod expr;
 mod generator;
 
-use std::cmp::max;
 use crate::aotu::mba::binary_expr_mba::{BinOp, mba_binop};
 use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType};
 use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
@@ -17,9 +16,12 @@ use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::llvm_sys;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, PointerValue};
+use llvm_plugin::inkwell::values::{
+    AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, PointerValue,
+};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, info, warn};
+use std::cmp::max;
 use std::collections::HashMap;
 
 #[amice(priority = 955, name = "Mba", position = PassPosition::PipelineStart | PassPosition::OptimizerLast
@@ -195,10 +197,18 @@ fn rewrite_binop_with_mba<'a>(
     global_aux_params: Option<&HashMap<BitWidth, Vec<GlobalValue>>>,
     stack_aux_params: Option<&HashMap<BitWidth, Vec<PointerValue>>>,
 ) -> anyhow::Result<()> {
-    let Some(lhs) = binop_inst.get_operand(0).ok_or(anyhow::anyhow!("failed to get lhs"))?.left() else {
+    let Some(lhs) = binop_inst
+        .get_operand(0)
+        .ok_or(anyhow::anyhow!("failed to get lhs"))?
+        .left()
+    else {
         return Ok(());
     };
-    let Some(rhs) = binop_inst.get_operand(1).ok_or(anyhow::anyhow!("failed to get rhs"))?.left() else {
+    let Some(rhs) = binop_inst
+        .get_operand(1)
+        .ok_or(anyhow::anyhow!("failed to get rhs"))?
+        .left()
+    else {
         return Ok(());
     };
 
@@ -240,12 +250,12 @@ fn rewrite_binop_with_mba<'a>(
     for i in 0..cfg.aux_count {
         if i == 0 {
             aux_params.push(lhs);
-            continue
+            continue;
         }
 
         if i == 1 {
             aux_params.push(rhs);
-            continue
+            continue;
         }
 
         if pass.alloc_aux_params_in_global

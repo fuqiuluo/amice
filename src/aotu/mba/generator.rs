@@ -1,3 +1,4 @@
+use crate::aotu::mba::binary_expr_mba::{BinOp, mba_binop};
 use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig};
 use crate::aotu::mba::expr::Expr;
 use llvm_plugin::inkwell::builder::Builder;
@@ -5,9 +6,8 @@ use llvm_plugin::inkwell::context::ContextRef;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::types::{BasicTypeEnum, IntType};
 use llvm_plugin::inkwell::values::{FunctionValue, IntValue};
-use rand::prelude::StdRng;
 use rand::SeedableRng;
-use crate::aotu::mba::binary_expr_mba::{mba_binop, BinOp};
+use rand::prelude::StdRng;
 
 pub fn build_u128_constant<'ctx>(
     context: ContextRef<'ctx>,
@@ -201,4 +201,3 @@ pub fn generate_binary_mba_function<'ctx>(
 
     function
 }
-
