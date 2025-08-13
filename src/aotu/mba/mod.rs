@@ -26,7 +26,6 @@ impl LlvmModulePass for Mba {
         if !self.enable {
             return PreservedAnalyses::All;
         }
-        
 
         PreservedAnalyses::None
     }

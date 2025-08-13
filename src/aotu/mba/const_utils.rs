@@ -130,7 +130,14 @@ pub(super) struct ConstMbaConfig {
 }
 
 impl ConstMbaConfig {
-    pub fn new(width: BitWidth, number_type: NumberType, aux_count: usize, rewrite_ops: usize, rewrite_depth: usize, func_name: String) -> Self {
+    pub fn new(
+        width: BitWidth,
+        number_type: NumberType,
+        aux_count: usize,
+        rewrite_ops: usize,
+        rewrite_depth: usize,
+        func_name: String,
+    ) -> Self {
         ConstMbaConfig {
             width,
             number_type,
@@ -447,7 +454,7 @@ impl CPrinter {
             (_, NumberType::Signed) => {
                 let signed_val = bits_to_signed(vv, self.width);
                 format!("(({}) {})", self.c_ty(), signed_val)
-            }
+            },
         }
     }
 
@@ -505,8 +512,12 @@ pub(super) fn eval_const_mba_expr(expr: &Expr, aux_values: &[u128], width: BitWi
         And(a, b) => (eval_const_mba_expr(a, aux_values, width) & eval_const_mba_expr(b, aux_values, width)) & mask,
         Or(a, b) => (eval_const_mba_expr(a, aux_values, width) | eval_const_mba_expr(b, aux_values, width)) & mask,
         Xor(a, b) => (eval_const_mba_expr(a, aux_values, width) ^ eval_const_mba_expr(b, aux_values, width)) & mask,
-        Add(a, b) => (eval_const_mba_expr(a, aux_values, width).wrapping_add(eval_const_mba_expr(b, aux_values, width))) & mask,
-        Sub(a, b) => (eval_const_mba_expr(a, aux_values, width).wrapping_sub(eval_const_mba_expr(b, aux_values, width))) & mask,
+        Add(a, b) => {
+            (eval_const_mba_expr(a, aux_values, width).wrapping_add(eval_const_mba_expr(b, aux_values, width))) & mask
+        },
+        Sub(a, b) => {
+            (eval_const_mba_expr(a, aux_values, width).wrapping_sub(eval_const_mba_expr(b, aux_values, width))) & mask
+        },
         MulConst(c, x) => ((*c & mask).wrapping_mul(eval_const_mba_expr(x, aux_values, width))) & mask,
     }
 }
@@ -556,9 +567,12 @@ mod tests {
         let cfg = ConstMbaConfig::new(
             BitWidth::W64,
             NumberType::Signed,
-            2, 24, 3,
+            2,
+            24,
+            3,
             "signed_function".to_string(),
-        ).with_signed_constant(-114514);
+        )
+        .with_signed_constant(-114514);
 
         let ir = generate_const_mba(&cfg);
         println!("Signed IR:");
@@ -569,8 +583,9 @@ mod tests {
 
         let c = CPrinter {
             width: cfg.width,
-            number_type: cfg.number_type
-        }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
+            number_type: cfg.number_type,
+        }
+        .emit_function(&cfg.func_name, cfg.aux_count, &ir);
         println!("\nSigned C Code:");
         println!("{}", c);
 
@@ -585,21 +600,28 @@ mod tests {
         let cfg = ConstMbaConfig::new(
             BitWidth::W64,
             NumberType::Unsigned,
-            2, 24, 3,
+            2,
+            24,
+            3,
             "unsigned_function".to_string(),
-        ).with_unsigned_constant(0xDEADBEEF);
+        )
+        .with_unsigned_constant(0xDEADBEEF);
 
         let ir = generate_const_mba(&cfg);
         println!("Unsigned IR:");
         println!("{}", ir);
 
         let is_valid = verify_const_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
-        println!("\nUnsigned Verification: {}", if is_valid { "PASSED" } else { "FAILED" });
+        println!(
+            "\nUnsigned Verification: {}",
+            if is_valid { "PASSED" } else { "FAILED" }
+        );
 
         let c = CPrinter {
             width: cfg.width,
-            number_type: cfg.number_type
-        }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
+            number_type: cfg.number_type,
+        }
+        .emit_function(&cfg.func_name, cfg.aux_count, &ir);
         println!("\nUnsigned C Code:");
         println!("{}", c);
 
@@ -620,26 +642,32 @@ mod tests {
         ];
 
         for (width, signed_val, name) in test_cases {
-            let cfg = ConstMbaConfig::new(
-                width,
-                NumberType::Signed,
-                2, 24, 3,
-                name.to_string(),
-            ).with_signed_constant(signed_val);
+            let cfg = ConstMbaConfig::new(width, NumberType::Signed, 2, 24, 3, name.to_string())
+                .with_signed_constant(signed_val);
 
             let ir = generate_const_mba(&cfg);
             let is_valid = verify_const_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
 
-            println!("// Testing {}: signed_val={}, bits=0x{:x}, verification={}",
-                     name, signed_val, cfg.constant, if is_valid { "PASSED" } else { "FAILED" });
+            println!(
+                "// Testing {}: signed_val={}, bits=0x{:x}, verification={}",
+                name,
+                signed_val,
+                cfg.constant,
+                if is_valid { "PASSED" } else { "FAILED" }
+            );
 
             let c = CPrinter {
                 width: cfg.width,
-                number_type: cfg.number_type
-            }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
+                number_type: cfg.number_type,
+            }
+            .emit_function(&cfg.func_name, cfg.aux_count, &ir);
             println!("{}\n", c);
 
-            assert!(is_valid, "Generated signed MBA for {} does not return the expected constant", name);
+            assert!(
+                is_valid,
+                "Generated signed MBA for {} does not return the expected constant",
+                name
+            );
         }
     }
 
@@ -659,26 +687,32 @@ mod tests {
         ];
 
         for (width, signed_val, name) in test_cases {
-            let cfg = ConstMbaConfig::new(
-                width,
-                NumberType::Unsigned,
-                2, 24, 3,
-                name.to_string(),
-            ).with_unsigned_constant(signed_val);
+            let cfg = ConstMbaConfig::new(width, NumberType::Unsigned, 2, 24, 3, name.to_string())
+                .with_unsigned_constant(signed_val);
 
             let ir = generate_const_mba(&cfg);
             let is_valid = verify_const_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
 
-            println!("// Testing {}: unsigned_val={}, bits=0x{:x}, verification={}",
-                     name, signed_val, cfg.constant, if is_valid { "PASSED" } else { "FAILED" });
+            println!(
+                "// Testing {}: unsigned_val={}, bits=0x{:x}, verification={}",
+                name,
+                signed_val,
+                cfg.constant,
+                if is_valid { "PASSED" } else { "FAILED" }
+            );
 
             let c = CPrinter {
                 width: cfg.width,
-                number_type: cfg.number_type
-            }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
+                number_type: cfg.number_type,
+            }
+            .emit_function(&cfg.func_name, cfg.aux_count, &ir);
             println!("{}\n", c);
 
-            assert!(is_valid, "Generated unsigned MBA for {} does not return the expected constant", name);
+            assert!(
+                is_valid,
+                "Generated unsigned MBA for {} does not return the expected constant",
+                name
+            );
         }
     }
 }
