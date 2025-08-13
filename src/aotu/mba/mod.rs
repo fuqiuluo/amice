@@ -6,7 +6,9 @@ mod generator;
 use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType};
 use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
 use crate::aotu::mba::generator::generate_constant_mba_function;
+use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::function::fix_stack;
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::llvm_sys;
@@ -15,8 +17,6 @@ use llvm_plugin::inkwell::values::{AsValueRef, GlobalValue, InstructionOpcode, I
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
-use amice_llvm::ir::function::fix_stack;
-use crate::llvm_utils::function::get_basic_block_entry;
 
 #[amice(priority = 955, name = "Mba", position = PassPosition::PipelineStart | PassPosition::OptimizerLast)]
 #[derive(Default)]
@@ -26,7 +26,7 @@ pub struct Mba {
     rewrite_ops: u32,
     rewrite_depth: u32,
     alloc_aux_params_in_global: bool, // 仅测试用途
-    fix_stack: bool
+    fix_stack: bool,
 }
 
 impl AmicePassLoadable for Mba {
@@ -41,7 +41,7 @@ impl AmicePassLoadable for Mba {
         // 如果alloc_aux_params_in_global为true则允许在没有优化的时候注册该Pass
         if cfg.mba.alloc_aux_params_in_global {
             // 如果直接返回true，你回收获一个超级大的可执行文件，hhh
-            return position == PassPosition::PipelineStart
+            return position == PassPosition::PipelineStart;
         }
 
         position == PassPosition::OptimizerLast
@@ -107,7 +107,7 @@ impl LlvmModulePass for Mba {
             }
 
             if constant_inst_vec.is_empty() || binary_inst_vec.is_empty() {
-                continue
+                continue;
             }
 
             let stack_aux_params = if !self.alloc_aux_params_in_global
@@ -130,16 +130,20 @@ impl LlvmModulePass for Mba {
                         };
                         let value_type = mba_int_width.to_llvm_int_type(ctx);
                         let aux_param = value_type.const_int(rand, false);
-                        let aux_param_alloca = builder.build_alloca(value_type, "")
+                        let aux_param_alloca = builder
+                            .build_alloca(value_type, "")
                             .expect("(mba) failed to build alloca");
-                        builder.build_store(aux_param_alloca, aux_param)
+                        builder
+                            .build_store(aux_param_alloca, aux_param)
                             .expect("(mba) failed to build store");
                         stack_aux_params.push(aux_param_alloca);
                     }
                     aux_params_map.insert(mba_int_width, stack_aux_params);
                 }
                 aux_params_map.into()
-            } else { None };
+            } else {
+                None
+            };
 
             for inst in constant_inst_vec {
                 if let Err(e) = rewrite_constant_ir_with_mba(
@@ -241,17 +245,13 @@ fn rewrite_constant_ir_with_mba<'a>(
                     .build_load(value_type, global_aux.as_pointer_value(), "")?
                     .into_int_value();
                 aux_params.push(int);
-            }
-            else if let Some(stack_aux) = stack_aux_params
+            } else if let Some(stack_aux) = stack_aux_params
                 && let Some(stack_aux_params) = stack_aux.get(&mba_int_width)
             {
                 let stack_aux = stack_aux_params[i];
-                let int = builder
-                    .build_load(value_type, stack_aux, "")?
-                    .into_int_value();
+                let int = builder.build_load(value_type, stack_aux, "")?.into_int_value();
                 aux_params.push(int);
-            }
-            else {
+            } else {
                 let rand = match mba_int_width {
                     BitWidth::W8 => rand::random::<u8>() as u64,
                     BitWidth::W16 => rand::random::<u16>() as u64,
