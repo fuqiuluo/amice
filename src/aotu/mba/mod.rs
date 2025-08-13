@@ -112,7 +112,7 @@ impl LlvmModulePass for Mba {
                 }
             }
 
-            if constant_inst_vec.is_empty() || binary_inst_vec.is_empty() {
+            if constant_inst_vec.is_empty() && binary_inst_vec.is_empty() {
                 continue;
             }
 
@@ -151,18 +151,20 @@ impl LlvmModulePass for Mba {
                 None
             };
 
-            // for inst in constant_inst_vec {
-            //     if let Err(e) = rewrite_constant_inst_with_mba(
-            //         self,
-            //         module,
-            //         inst,
-            //         global_aux_params.as_ref(),
-            //         stack_aux_params.as_ref(),
-            //     ) {
-            //         warn!("(mba) rewrite store with mba failed: {:?}", e);
-            //     }
-            // }
+            debug!("(mba) rewrite constant inst with mba done: {} insts", constant_inst_vec.len());
+            for inst in constant_inst_vec {
+                if let Err(e) = rewrite_constant_inst_with_mba(
+                    self,
+                    module,
+                    inst,
+                    global_aux_params.as_ref(),
+                    stack_aux_params.as_ref(),
+                ) {
+                    warn!("(mba) rewrite store with mba failed: {:?}", e);
+                }
+            }
 
+            debug!("(mba) rewrite binop inst with mba done: {} insts", binary_inst_vec.len());
             for binary in binary_inst_vec {
                 if let Err(e) = rewrite_binop_with_mba(
                     self,
@@ -310,7 +312,7 @@ fn rewrite_constant_inst_with_mba<'a>(
             && basic_value.is_int_value()
         {
             let int_value = basic_value.into_int_value();
-            if !int_value.is_constant_int() || !int_value.is_const() {
+            if !int_value.is_constant_int() {
                 continue;
             }
 
