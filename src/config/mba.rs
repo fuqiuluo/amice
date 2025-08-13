@@ -13,6 +13,7 @@ pub struct MbaConfig {
     // 这里设置为true，会在表达式里面插入一个全局变量
     // 以保证至少不被那么完全地优化
     pub alloc_aux_params_in_global: bool,
+    pub fix_stack: bool,
 }
 
 impl Default for MbaConfig {
@@ -23,6 +24,7 @@ impl Default for MbaConfig {
             rewrite_ops: 24,
             rewrite_depth: 3,
             alloc_aux_params_in_global: false,
+            fix_stack: false,
         }
     }
 }
@@ -48,6 +50,10 @@ impl EnvOverlay for MbaConfig {
         if std::env::var("AMICE_MBA_ALLOC_AUX_PARAMS_IN_GLOBAL").is_ok() {
             self.alloc_aux_params_in_global =
                 bool_var("AMICE_MBA_ALLOC_AUX_PARAMS_IN_GLOBAL", self.alloc_aux_params_in_global);
+        }
+
+        if std::env::var("AMICE_MBA_FIX_STACK").is_ok() {
+            self.fix_stack = bool_var("AMICE_MBA_FIX_STACK", self.fix_stack);
         }
     }
 }
