@@ -1,205 +1,7 @@
 use rand::prelude::*;
 use std::fmt;
-
-#[derive(Clone, Copy, Debug)]
-pub(super) enum BitWidth {
-    W8,
-    W16,
-    W32,
-    W64,
-    W128,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(super) enum NumberType {
-    Unsigned,
-    Signed,
-}
-
-impl BitWidth {
-    pub fn from_bits(bits: u32) -> Option<Self> {
-        match bits {
-            8 => Some(BitWidth::W8),
-            16 => Some(BitWidth::W16),
-            32 => Some(BitWidth::W32),
-            64 => Some(BitWidth::W64),
-            128 => Some(BitWidth::W128),
-            _ => None,
-        }
-    }
-
-    pub fn bits(self) -> u32 {
-        match self {
-            BitWidth::W8 => 8,
-            BitWidth::W16 => 16,
-            BitWidth::W32 => 32,
-            BitWidth::W64 => 64,
-            BitWidth::W128 => 128,
-        }
-    }
-
-    pub fn mask_u128(self) -> u128 {
-        match self {
-            BitWidth::W128 => u128::MAX,
-            _ => (1u128 << self.bits()) - 1,
-        }
-    }
-
-    pub fn c_type(&self, number_type: NumberType) -> &'static str {
-        match (self, number_type) {
-            (BitWidth::W8, NumberType::Unsigned) => "uint8_t",
-            (BitWidth::W8, NumberType::Signed) => "int8_t",
-            (BitWidth::W16, NumberType::Unsigned) => "uint16_t",
-            (BitWidth::W16, NumberType::Signed) => "int16_t",
-            (BitWidth::W32, NumberType::Unsigned) => "uint32_t",
-            (BitWidth::W32, NumberType::Signed) => "int32_t",
-            (BitWidth::W64, NumberType::Unsigned) => "uint64_t",
-            (BitWidth::W64, NumberType::Signed) => "int64_t",
-            (BitWidth::W128, NumberType::Unsigned) => "__uint128_t",
-            (BitWidth::W128, NumberType::Signed) => "__int128_t",
-        }
-    }
-
-    pub fn rust_type(&self, number_type: NumberType) -> &'static str {
-        match (self, number_type) {
-            (BitWidth::W8, NumberType::Unsigned) => "u8",
-            (BitWidth::W8, NumberType::Signed) => "i8",
-            (BitWidth::W16, NumberType::Unsigned) => "u16",
-            (BitWidth::W16, NumberType::Signed) => "i16",
-            (BitWidth::W32, NumberType::Unsigned) => "u32",
-            (BitWidth::W32, NumberType::Signed) => "i32",
-            (BitWidth::W64, NumberType::Unsigned) => "u64",
-            (BitWidth::W64, NumberType::Signed) => "i64",
-            (BitWidth::W128, NumberType::Unsigned) => "u128",
-            (BitWidth::W128, NumberType::Signed) => "i128",
-        }
-    }
-
-    // 获取有符号数的最大值
-    pub fn signed_max(self) -> u128 {
-        match self {
-            BitWidth::W8 => i8::MAX as u128,
-            BitWidth::W16 => i16::MAX as u128,
-            BitWidth::W32 => i32::MAX as u128,
-            BitWidth::W64 => i64::MAX as u128,
-            BitWidth::W128 => i128::MAX as u128,
-        }
-    }
-
-    // 获取有符号数的最小值的位模式
-    pub fn signed_min_bits(self) -> u128 {
-        match self {
-            BitWidth::W8 => i8::MIN as u8 as u128,
-            BitWidth::W16 => i16::MIN as u16 as u128,
-            BitWidth::W32 => i32::MIN as u32 as u128,
-            BitWidth::W64 => i64::MIN as u64 as u128,
-            BitWidth::W128 => i128::MIN as u128,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(super) enum Expr {
-    Const(u128),
-    Var(usize), // aux index: aux0, aux1, ...
-    Not(Box<Expr>),
-    And(Box<Expr>, Box<Expr>),
-    Or(Box<Expr>, Box<Expr>),
-    Xor(Box<Expr>, Box<Expr>),
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
-    MulConst(u128, Box<Expr>), // c * expr（按位宽溢出）
-}
-
-impl Expr {
-    pub(super) fn const0() -> Self {
-        Expr::Const(0)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct ConstMbaConfig {
-    width: BitWidth,
-    number_type: NumberType,
-    aux_count: usize,
-    rewrite_ops: usize,
-    rewrite_depth: usize,
-    constant: u128, // desired constant (mod 2^n)，存储为位模式
-    seed: Option<u64>,
-    func_name: String,
-}
-
-impl ConstMbaConfig {
-    pub fn new(
-        width: BitWidth,
-        number_type: NumberType,
-        aux_count: usize,
-        rewrite_ops: usize,
-        rewrite_depth: usize,
-        func_name: String,
-    ) -> Self {
-        ConstMbaConfig {
-            width,
-            number_type,
-            aux_count,
-            rewrite_ops,
-            rewrite_depth,
-            constant: 0,
-            seed: None,
-            func_name,
-        }
-    }
-
-    fn normalized_constant(&self) -> u128 {
-        self.constant & self.width.mask_u128()
-    }
-
-    // 从有符号整数创建配置
-    pub fn with_signed_constant(mut self, signed_value: i128) -> Self {
-        self.number_type = NumberType::Signed;
-        self.constant = signed_to_bits(signed_value, self.width);
-        self
-    }
-
-    // 从无符号整数创建配置
-    pub fn with_unsigned_constant(mut self, unsigned_value: u128) -> Self {
-        self.number_type = NumberType::Unsigned;
-        self.constant = unsigned_value & self.width.mask_u128();
-        self
-    }
-
-    // 获取常数的有符号解释
-    fn get_signed_constant(&self) -> i128 {
-        bits_to_signed(self.constant, self.width)
-    }
-
-    // 获取常数的无符号解释
-    fn get_unsigned_constant(&self) -> u128 {
-        self.constant & self.width.mask_u128()
-    }
-}
-
-// 将有符号数转换为位模式
-fn signed_to_bits(value: i128, width: BitWidth) -> u128 {
-    let mask = width.mask_u128();
-    (value as u128) & mask
-}
-
-// 将位模式转换为有符号数
-fn bits_to_signed(bits: u128, width: BitWidth) -> i128 {
-    let sign_bit = 1u128 << (width.bits() - 1);
-    let mask = width.mask_u128();
-    let value = bits & mask;
-
-    if value & sign_bit != 0 {
-        // 负数，需要符号扩展
-        let extended = value | (!mask);
-        extended as i128
-    } else {
-        // 正数
-        value as i128
-    }
-}
+use crate::aotu::mba::config::{bits_to_signed, BitWidth, ConstantMbaConfig, NumberType};
+use crate::aotu::mba::expr::Expr;
 
 fn rand_u128_mod2n<R: Rng + ?Sized>(rng: &mut R, bits: u32) -> u128 {
     // 生成 [0, 2^n) 的随机数（通过掩码到 n 位）
@@ -295,7 +97,7 @@ fn gen_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize, want_mask: bool, dep
     rewrite_n(rng, base, depth, nmask, aux_count)
 }
 
-fn build_constant_mba<R: Rng + ?Sized>(rng: &mut R, cfg: &ConstMbaConfig) -> Expr {
+fn build_constant_mba<R: Rng + ?Sized>(rng: &mut R, cfg: &ConstantMbaConfig) -> Expr {
     let bits = cfg.width.bits();
     let nmask = cfg.width.mask_u128();
     let k = cfg.normalized_constant();
@@ -411,9 +213,9 @@ impl fmt::Display for Expr {
     }
 }
 
-struct CPrinter {
-    width: BitWidth,
-    number_type: NumberType,
+pub(super) struct CPrinter {
+    pub(crate) width: BitWidth,
+    pub(crate) number_type: NumberType,
 }
 
 impl CPrinter {
@@ -476,7 +278,7 @@ impl CPrinter {
         }
     }
 
-    fn emit_function(&self, func_name: &str, aux_count: usize, body: &Expr) -> String {
+    pub fn emit_function(&self, func_name: &str, aux_count: usize, body: &Expr) -> String {
         let ret_ty = self.c_ty();
         let mut args = Vec::new();
         for i in 0..aux_count {
@@ -492,7 +294,7 @@ impl CPrinter {
     }
 }
 
-pub(super) fn generate_const_mba(cfg: &ConstMbaConfig) -> Expr {
+pub(super) fn generate_const_mba(cfg: &ConstantMbaConfig) -> Expr {
     let mut rng: StdRng = match cfg.seed {
         Some(s) => StdRng::seed_from_u64(s),
         None => StdRng::from_os_rng(),
@@ -548,6 +350,7 @@ pub(super) fn verify_const_mba(expr: &Expr, expected: u128, width: BitWidth, aux
 
 #[cfg(test)]
 mod tests {
+    use crate::aotu::mba::config::signed_to_bits;
     use super::*;
 
     #[test]
@@ -564,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_mba_signed_const() {
-        let cfg = ConstMbaConfig::new(
+        let cfg = ConstantMbaConfig::new(
             BitWidth::W64,
             NumberType::Signed,
             2,
@@ -597,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_mba_unsigned_const() {
-        let cfg = ConstMbaConfig::new(
+        let cfg = ConstantMbaConfig::new(
             BitWidth::W64,
             NumberType::Unsigned,
             2,
@@ -642,7 +445,7 @@ mod tests {
         ];
 
         for (width, signed_val, name) in test_cases {
-            let cfg = ConstMbaConfig::new(width, NumberType::Signed, 2, 24, 3, name.to_string())
+            let cfg = ConstantMbaConfig::new(width, NumberType::Signed, 2, 24, 3, name.to_string())
                 .with_signed_constant(signed_val);
 
             let ir = generate_const_mba(&cfg);
@@ -687,7 +490,7 @@ mod tests {
         ];
 
         for (width, signed_val, name) in test_cases {
-            let cfg = ConstMbaConfig::new(width, NumberType::Unsigned, 2, 24, 3, name.to_string())
+            let cfg = ConstantMbaConfig::new(width, NumberType::Unsigned, 2, 24, 3, name.to_string())
                 .with_unsigned_constant(signed_val);
 
             let ir = generate_const_mba(&cfg);

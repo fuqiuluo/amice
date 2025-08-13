@@ -1,288 +1,178 @@
+// 文件：mba_constants_demo.c
+// 说明：纯 C、无随机、单文件、常量驱动的表达式集合，覆盖 8/16/32/64 位（含有符号/无符号）。
+// 注意点：
+// - 使用 <stdint.h> 的精确宽度类型与 INTx_C/UINTx_C 常量宏，避免实现相关差异。
+// - 避免未定义行为：不对负数做右移；移位量小于位宽；有符号运算避免溢出；循环移位在无符号类型上实现。
+// - 所有表达式均仅由常量组合；输出用于人工/脚本比对。
+
+#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
 
-// 简单的计算函数
-int calculate(int a, int b, int op) {
-    switch(op) {
-        case 0: return a + b;
-        case 1: return a - b;
-        case 2: return a * b;
-        case 3: return (b != 0) ? a / b : 0;
-        default: return a;
-    }
+#define U8(x)  UINT8_C(x)
+#define S8(x)  INT8_C(x)
+#define U16(x) UINT16_C(x)
+#define S16(x) INT16_C(x)
+#define U32(x) UINT32_C(x)
+#define S32(x) INT32_C(x)
+#define U64(x) UINT64_C(x)
+#define S64(x) INT64_C(x)
+
+// 安全循环移位（仅用于无符号类型）
+static inline uint8_t  rotl8 (uint8_t  v, unsigned r){ r&=7;  return (uint8_t)((uint8_t)(v<<r)|(uint8_t)(v>>(8-r))); }
+static inline uint8_t  rotr8 (uint8_t  v, unsigned r){ r&=7;  return (uint8_t)((uint8_t)(v>>r)|(uint8_t)(v<<(8-r))); }
+static inline uint16_t rotl16(uint16_t v, unsigned r){ r&=15; return (uint16_t)((uint16_t)(v<<r)|(uint16_t)(v>>(16-r))); }
+static inline uint16_t rotr16(uint16_t v, unsigned r){ r&=15; return (uint16_t)((uint16_t)(v>>r)|(uint16_t)(v<<(16-r))); }
+static inline uint32_t rotl32(uint32_t v, unsigned r){ r&=31; return (uint32_t)((v<<r)|(v>>(32u-r))); }
+static inline uint32_t rotr32(uint32_t v, unsigned r){ r&=31; return (uint32_t)((v>>r)|(v<<(32u-r))); }
+static inline uint64_t rotl64(uint64_t v, unsigned r){ r&=63; return (uint64_t)((v<<r)|(v>>(64u-r))); }
+static inline uint64_t rotr64(uint64_t v, unsigned r){ r&=63; return (uint64_t)((v>>r)|(v<<(64u-r))); }
+
+static void test_u8(void){
+    puts("=== uint8_t ===");
+    uint8_t a = U8(0x5A);
+    uint8_t b = (U8(0x12) + U8(7)) ^ U8(0xF0);
+    uint8_t c = (U8(0xFF) & U8(0x3C)) | U8(0x02);
+    uint8_t d = (U8(0x81) << 1);                // 0x102 -> 截断为 0x02
+    uint8_t e = (U8(0x40) >> 2);
+    uint8_t f = (uint8_t)(~U8(0x0F));
+    uint8_t g = rotl8(U8(0x3C), 3);
+    uint8_t h = rotr8(U8(0xA5), 4);
+    uint8_t i = (U8(200) - U8(57));             // 143 -> 0x8F
+    uint8_t j = (U8(11) * U8(7));               // 77
+    uint8_t k = (U8(0x55) ^ U8(0xAA)) + (U8(1) | U8(2));
+    uint8_t m = (U8(0x10) ? U8(0xFE) : U8(0x01));
+    uint8_t arr[4] = {U8(0x11),U8(0x22),U8(0x33),U8(0x44)};
+    uint8_t n = arr[(U8(6) & U8(3))];           // 6&3=2 -> 0x33
+    printf("a=%3u 0x%02X, b=%3u 0x%02X, c=%3u 0x%02X, d=%3u 0x%02X\n", a,a,b,b,c,c,d,d);
+    printf("e=%3u 0x%02X, f=%3u 0x%02X, g=%3u 0x%02X, h=%3u 0x%02X\n", e,e,f,f,g,g,h,h);
+    printf("i=%3u 0x%02X, j=%3u 0x%02X, k=%3u 0x%02X, m=%3u 0x%02X, n=%3u 0x%02X\n",
+           i,i,j,j,k,k,m,m,n,n);
 }
 
-// 包含嵌套控制流的函数
-int complex_function(int input) {
-    int result = 0;
-    int i, j;
-
-    // 嵌套的if-else和循环
-    if (input > 0) {
-        if (input < 10) {
-            // 嵌套for循环
-            for (i = 0; i < input; i++) {
-                for (j = 0; j < 3; j++) {
-                    result += calculate(i, j, j % 4);
-                }
-
-                // 嵌套的while循环
-                int temp = input;
-                while (temp > 0) {
-                    result += temp % 2;
-                    temp /= 2;
-                }
-            }
-        } else {
-            // 另一个分支
-            i = input;
-            while (i > 10) {
-                if (i % 2 == 0) {
-                    result += i / 2;
-                    i -= 3;
-                } else {
-                    result += i * 2;
-                    i -= 5;
-                }
-            }
-        }
-    } else if (input < 0) {
-        // 负数处理
-        input = -input;
-        for (i = input; i > 0; i--) {
-            if (i % 3 == 0) {
-                result -= i;
-            } else if (i % 3 == 1) {
-                result += i * 2;
-            } else {
-                result += i / 2;
-            }
-        }
-    } else {
-        // input == 0的情况
-        result = 42;
-    }
-
-    return result;
+static void test_s8(void){
+    puts("=== int8_t ===");
+    int8_t a = S8(42);
+    int8_t b = (int8_t)(S8(100) - S8(27));      // 73
+    int8_t c = (int8_t)(S8(12) * S8(5));        // 60
+    int8_t d = (int8_t)(S8(-60) + S8(50));      // -10
+    int8_t e = (int8_t)(S8(0x7F) & S8(0x3C));   // 60
+    int8_t f = (int8_t)(S8(0x55) ^ S8(0x2A));   // 0x7F
+    // 移位在有符号上小心：仅对非负数做右移，避免实现定义
+    int8_t g = (int8_t)((uint8_t)S8(0x7C) >> 2); // 0x1F -> 31
+    int8_t h = (int8_t)((uint8_t)S8(0x11) << 3); // 0x88 -> -120
+    int8_t i = (S8(-1) ? S8(5) : S8(6));        // 5
+    printf("a=%4d, b=%4d, c=%4d, d=%4d, e=%4d, f=%4d, g=%4d, h=%4d, i=%4d\n",
+           a,b,c,d,e,f,g,h,i);
 }
 
-// 包含多层嵌套的数据处理函数
-void process_array(int* arr, int size) {
-    int i, j, k;
-
-    // 三层嵌套循环
-    for (i = 0; i < size; i++) {
-        if (arr[i] > 0) {
-            for (j = 0; j < arr[i] % 5 + 1; j++) {
-                for (k = 0; k < 3; k++) {
-                    if (j * k > 0) {
-                        arr[i] += calculate(j, k, k % 3);
-                    } else {
-                        arr[i] -= j + k;
-                    }
-                }
-
-                // 内层的条件分支
-                if (arr[i] % 2 == 0) {
-                    arr[i] /= 2;
-                } else {
-                    arr[i] = arr[i] * 3 + 1;
-                }
-            }
-        } else {
-            // 处理负数或零
-            int temp = arr[i];
-            while (temp != 0) {
-                if (temp > 0) {
-                    temp--;
-                    arr[i]++;
-                } else {
-                    temp++;
-                    arr[i]--;
-                }
-            }
-        }
-    }
+static void test_u16(void){
+    puts("=== uint16_t ===");
+    uint16_t a = U16(0x1234) + U16(0x0101);
+    uint16_t b = (U16(0xFFFF) ^ U16(0x00FF));
+    uint16_t c = (U16(0x0F0F) | U16(0x00F0));
+    uint16_t d = (U16(0x8001) << 1);            // -> 0x0002 (溢出截断)
+    uint16_t e = (U16(0x4000) >> 3);
+    uint16_t f = (uint16_t)(~U16(0x00FF));
+    uint16_t g = rotl16(U16(0x1337), 7);
+    uint16_t h = rotr16(U16(0xBEEF), 9);
+    uint16_t i = (U16(5000) - U16(1234));
+    uint16_t j = (U16(123) * U16(45));
+    printf("a=0x%04X b=0x%04X c=0x%04X d=0x%04X e=0x%04X f=0x%04X g=0x%04X h=0x%04X i=%u j=%u\n",
+           a,b,c,d,e,f,g,h,i,j);
 }
 
-// 递归函数（测试函数调用的扁平化）
-int fibonacci(int n) {
-    if (n <= 1) {
-        return n;
-    } else if (n == 2) {
-        return 1;
-    } else {
-        // 迭代版本避免太深的递归
-        int a = 0, b = 1, c;
-        int i;
-        for (i = 2; i <= n; i++) {
-            c = a + b;
-            a = b;
-            b = c;
-
-            // 添加一些条件分支
-            if (c % 3 == 0) {
-                c += 1;
-            } else if (c % 5 == 0) {
-                c -= 1;
-            }
-            b = c;
-        }
-        return b;
-    }
+static void test_s16(void){
+    puts("=== int16_t ===");
+    int16_t a = S16(30000) - S16(1000);         // 29000 (安全范围)
+    int16_t b = (int16_t)(S16(1234) * S16(5));  // 6170
+    int16_t c = (int16_t)(S16(0x7FFF) & S16(0x0FF0));
+    int16_t d = (int16_t)(S16(-32000) + S16(123)); // -31877
+    int16_t e = (int16_t)((uint16_t)S16(0x7F00) >> 4); // 0x07F0 -> 2032
+    int16_t f = (S16(0) ? S16(1) : S16(-1));    // -1
+    printf("a=%6d b=%6d c=0x%04X d=%6d e=%6d f=%6d\n", a,b,(uint16_t)c,d,e,f);
 }
 
-// 主函数包含多种控制流
-int main() {
-    printf("=== 扁平化混淆测试Demo ===\n");
+static void test_u32(void){
+    puts("=== uint32_t ===");
+    uint32_t a = U32(0x89ABCDEF) ^ U32(0x13579BDF);
+    uint32_t b = (U32(0xDEADBEEF) & U32(0x00FFFFFF)) | U32(0x11000000);
+    uint32_t c = U32(0x01234567) + U32(0x89ABCDEF);
+    uint32_t d = U32(0x1) << 31;                // 最高位
+    uint32_t e = U32(0x80000000) >> 3;          // 逻辑右移
+    uint32_t f = (uint32_t)(~U32(0x0F0F0F0F));
+    uint32_t g = rotl32(U32(0x13371337), 13);
+    uint32_t h = rotr32(U32(0xC001D00D), 7);
+    uint32_t i = (U32(100000) * U32(300)) + (U32(1)<<5);
+    uint32_t j = (U32(0xAAAAAAAA) | U32(0x55555555)) ^ U32(0xFFFFFFFF);
+    printf("a=0x%08X b=0x%08X c=0x%08X d=0x%08X e=0x%08X f=0x%08X\n", a,b,c,d,e,f);
+    printf("g=0x%08X h=0x%08X i=%u (0x%08X) j=0x%08X\n", g,h,i,i,j);
+}
 
-    int test_values[] = {-5, -1, 0, 3, 7, 15, 25};
-    int num_tests = sizeof(test_values) / sizeof(test_values[0]);
-    int i, j;
+static void test_s32(void){
+    puts("=== int32_t ===");
+    int32_t a = S32(2000000000) - S32(123456789); // 1876543211 (安全)
+    int32_t b = (int32_t)(S32(123456) * S32(7));  // 864192
+    int32_t c = (int32_t)(S32(0x7FFFFFFF) & S32(0x0FFF0FFF));
+    int32_t d = (int32_t)((uint32_t)S32(0x7FFF0000) >> 8); // 逻辑右移后再转回
+    int32_t e = (S32(42) ? S32(-3141592) : S32(2718281));
+    printf("a=%11d b=%9d c=0x%08X d=%11d e=%11d\n", a,b,(uint32_t)c,d,e);
+}
 
-    printf("测试复杂函数:\n");
-    for (i = 0; i < num_tests; i++) {
-        int input = test_values[i];
-        int result = complex_function(input);
-        printf("complex_function(%d) = %d\n", input, result);
+static void test_u64(void){
+    puts("=== uint64_t ===");
+    uint64_t a = U64(0x0123456789ABCDEF) ^ U64(0xF0E1D2C3B4A59687);
+    uint64_t b = (U64(0xDEADBEEFCAFEBABE) & U64(0x00000000FFFFFFFF)) | U64(0x1234567800000000);
+    uint64_t c = U64(0x0000FFFF0000FFFF) + U64(0x1111111100000001);
+    uint64_t d = U64(1) << 63;                   // 最高位
+    uint64_t e = U64(0x8000000000000000) >> 4;   // 逻辑右移
+    uint64_t f = (uint64_t)(~U64(0x00FF00FF00FF00FF));
+    uint64_t g = rotl64(U64(0x0123456789ABCDEF), 29);
+    uint64_t h = rotr64(U64(0xF00DBABEDEADC0DE), 17);
+    uint64_t i = (U64(123456789) * U64(1000000)) + U64(0x1234);
+    uint64_t j = ((U64(0xAAAAAAAAAAAAAAAA) | U64(0x5555555555555555)) ^ U64(0xFFFFFFFFFFFFFFFF));
+    printf("a=0x%016llX\nb=0x%016llX\nc=0x%016llX\nd=0x%016llX\ne=0x%016llX\n",
+           (unsigned long long)a,(unsigned long long)b,(unsigned long long)c,
+           (unsigned long long)d,(unsigned long long)e);
+    printf("f=0x%016llX\ng=0x%016llX\nh=0x%016llX\ni=%llu (0x%016llX)\nj=0x%016llX\n",
+           (unsigned long long)f,(unsigned long long)g,(unsigned long long)h,
+           (unsigned long long)i,(unsigned long long)i,(unsigned long long)j);
+}
 
-        // 根据结果进行不同处理
-        if (result > 100) {
-            printf("  结果较大，进行额外处理\n");
-            for (j = 0; j < 3; j++) {
-                result = calculate(result, j + 1, j % 4);
-                printf("  处理步骤%d: %d\n", j + 1, result);
-            }
-        } else if (result < 0) {
-            printf("  负结果，转换为正数: %d\n", -result);
-        } else {
-            printf("  结果正常\n");
-        }
-    }
+static void test_s64(void){
+    puts("=== int64_t ===");
+    int64_t a = S64(4000000000000000000) - S64(1234567890123456789); // 安全
+    int64_t b = (int64_t)(S64(123456789) * S64(9876));               // 安全
+    int64_t c = (int64_t)(S64(0x7FFFFFFFFFFFFFFF) & S64(0x0000FFFF0000FFFF));
+    // 逻辑右移在无符号上进行再转回
+    int64_t d = (int64_t)((uint64_t)S64(0x7FFF000000000000) >> 12);
+    int64_t e = (S64(-1) ? S64(-9223372036854775807) : S64(123));   // 避免用 INT64_MIN 直接字面量相加减
+    printf("a=%20lld\nb=%20lld\nc=0x%016llX\nd=%20lld\ne=%20lld\n",
+           (long long)a,(long long)b,(unsigned long long)c,(long long)d,(long long)e);
+}
 
-    // 测试数组处理
-    printf("\n测试数组处理:\n");
-    int test_array[] = {5, -3, 0, 12, 8, -7, 15, 2};
-    int array_size = sizeof(test_array) / sizeof(test_array[0]);
+static void test_mixed_width(void){
+    puts("=== Mixed width ===");
+    // 不同宽度的常量混合与显式收缩
+    uint16_t a = (uint16_t)(U8(200) + U16(1000));          // 1200
+    uint8_t  b = (uint8_t)((U16(0x1234) + U32(0x89)) & U16(0x00FF)); // 0xBD -> 189
+    uint32_t c = (uint32_t)(U64(0x1FFFF) * U32(3));        // 0x5FFFD
+    uint64_t d = (uint64_t)(U32(0xDEADBEEF) | U64(0xF000000000000000));
+    uint8_t  e = (uint8_t)((U32(0x0000ABCD) >> 2) & U32(0xFF));
+    int16_t  f = (int16_t)((S32(30000) - S32(123)) & S32(0x7FFF));   // 保证非负
+    uint32_t g = (uint32_t)((U8(0xF0) << 20) | (U16(0x0AAA) << 4) | (U8(0x0F)));
+    printf("a=%u b=%u c=%u d=0x%016llX e=%u f=%d g=0x%08X\n",
+           a,b,c,(unsigned long long)d,e,f,g);
+}
 
-    printf("原始数组: ");
-    for (i = 0; i < array_size; i++) {
-        printf("%d ", test_array[i]);
-    }
-    printf("\n");
-
-    process_array(test_array, array_size);
-
-    printf("处理后数组: ");
-    for (i = 0; i < array_size; i++) {
-        printf("%d ", test_array[i]);
-    }
-    printf("\n");
-
-    // 测试斐波那契数列
-    printf("\n测试斐波那契数列:\n");
-    for (i = 0; i <= 10; i++) {
-        int fib = fibonacci(i);
-        printf("fib(%d) = %d", i, fib);
-
-        // 添加一些额外的控制流
-        if (fib % 2 == 0) {
-            printf(" (偶数)");
-        } else {
-            printf(" (奇数)");
-        }
-
-        if (fib > 20) {
-            printf(" - 较大的数");
-        }
-        printf("\n");
-    }
-
-    // 最终的综合测试
-    printf("\n综合测试:\n");
-    int final_result = 0;
-
-    for (i = 0; i < 5; i++) {
-        int temp = i;
-
-        switch (temp % 4) {
-            case 0:
-                final_result += complex_function(temp);
-                printf("情况0: 加法操作，temp=%d\n", temp);
-                break;
-            case 1:
-                final_result -= fibonacci(abs(temp) % 8);
-                printf("情况1: 减法操作，temp=%d\n", temp);
-                break;
-            case 2:
-                final_result *= (temp == 0) ? 1 : temp;
-                printf("情况2: 乘法操作，temp=%d\n", temp);
-                break;
-            default:
-                if (temp != 0) {
-                    final_result /= temp;
-                } else {
-                    final_result += 10;
-                }
-                printf("情况3: 除法/加法操作，temp=%d\n", temp);
-                break;
-        }
-
-        printf("当前结果: %d\n", final_result);
-    }
-
-    printf("\n最终结果: %d\n", final_result);
-    printf("测试完成！\n");
-
+int main(void){
+    test_u8();
+    test_s8();
+    test_u16();
+    test_s16();
+    test_u32();
+    test_s32();
+    test_u64();
+    test_s64();
+    test_mixed_width();
     return 0;
 }
-
-//=== 扁平化混淆测试Demo ===
-//测试复杂函数:
-//complex_function(-5) = 10
-//  结果正常
-//complex_function(-1) = 2
-//  结果正常
-//complex_function(0) = 42
-//  结果正常
-//complex_function(3) = 15
-//  结果正常
-//complex_function(7) = 98
-//  结果正常
-//complex_function(15) = 30
-//  结果正常
-//complex_function(25) = 100
-//  结果正常
-//
-//测试数组处理:
-//原始数组: 5 -3 0 12 8 -7 15 2
-//处理后数组: 1 -6 0 838 166 -14 76 -2
-//
-//测试斐波那契数列:
-//fib(0) = 0 (偶数)
-//fib(1) = 1 (奇数)
-//fib(2) = 1 (奇数)
-//fib(3) = 2 (偶数)
-//fib(4) = 4 (偶数)
-//fib(5) = 7 (奇数)
-//fib(6) = 11 (奇数)
-//fib(7) = 19 (奇数)
-//fib(8) = 31 (奇数) - 较大的数
-//fib(9) = 49 (奇数) - 较大的数
-//fib(10) = 79 (奇数) - 较大的数
-//
-//综合测试:
-//情况0: 加法操作，temp=0
-//当前结果: 42
-//情况1: 减法操作，temp=1
-//当前结果: 41
-//情况2: 乘法操作，temp=2
-//当前结果: 82
-//情况3: 除法/加法操作，temp=3
-//当前结果: 27
-//情况0: 加法操作，temp=4
-//当前结果: 51
-//
-//最终结果: 51
-//测试完成！
