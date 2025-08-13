@@ -1,6 +1,6 @@
 use crate::config::{Config, ShuffleBlocksFlags};
 use crate::llvm_utils::function::get_basic_block_entry;
-use crate::pass_registry::AmicePassLoadable;
+use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::module::Module;
@@ -8,7 +8,7 @@ use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 
-#[amice(priority = 970, name = "ShuffleBlocks")]
+#[amice(priority = 970, name = "ShuffleBlocks", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct ShuffleBlocks {
     enable: bool,
@@ -16,7 +16,7 @@ pub struct ShuffleBlocks {
 }
 
 impl AmicePassLoadable for ShuffleBlocks {
-    fn init(&mut self, cfg: &Config) -> bool {
+    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
         self.enable = cfg.shuffle_blocks.enable;
         self.flags = cfg.shuffle_blocks.flags;
         if self.flags.is_empty() {

@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::llvm_utils::switch_inst;
-use crate::pass_registry::AmicePassLoadable;
+use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
@@ -16,7 +16,7 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
 
-#[amice(priority = 961, name = "LowerSwitch")]
+#[amice(priority = 961, name = "LowerSwitch", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct LowerSwitch {
     enable: bool,
@@ -24,7 +24,7 @@ pub struct LowerSwitch {
 }
 
 impl AmicePassLoadable for LowerSwitch {
-    fn init(&mut self, cfg: &Config) -> bool {
+    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
         self.enable = cfg.lower_switch.enable;
         self.append_dummy_code = cfg.lower_switch.append_dummy_code;
 

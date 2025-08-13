@@ -3,7 +3,7 @@ mod xor;
 
 use crate::config::{Config, StringAlgorithm, StringDecryptTiming};
 use crate::llvm_utils::function::get_basic_block_entry;
-use crate::pass_registry::AmicePassLoadable;
+use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_macro::amice;
 use ascon_hash::Digest;
 use inkwell::llvm_sys::core::LLVMGetAsString;
@@ -20,7 +20,7 @@ use std::ptr::NonNull;
 /// even when stack allocation is enabled
 const STACK_ALLOC_THRESHOLD: u32 = 4096; // 4KB
 
-#[amice(priority = 1000, name = "StringEncryption")]
+#[amice(priority = 1000, name = "StringEncryption", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct StringEncryption {
     enable: bool,
@@ -33,7 +33,7 @@ pub struct StringEncryption {
 }
 
 impl AmicePassLoadable for StringEncryption {
-    fn init(&mut self, cfg: &Config) -> bool {
+    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
         let decrypt_timing = cfg.string_encryption.timing;
         let stack_alloc = cfg.string_encryption.stack_alloc;
         let inline_decrypt = cfg.string_encryption.inline_decrypt;

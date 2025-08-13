@@ -3,7 +3,7 @@ use crate::llvm_utils::basic_block::split_basic_block;
 use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::llvm_utils::switch_inst;
-use crate::pass_registry::AmicePassLoadable;
+use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use crate::ptr_type;
 use amice_llvm::ir::function::fix_stack;
 use amice_llvm::module_utils::verify_function;
@@ -21,7 +21,7 @@ use std::ptr::NonNull;
 
 const MAGIC_NUMBER: u32 = 0x7788ff;
 
-#[amice(priority = 960, name = "VmFlatten")]
+#[amice(priority = 960, name = "VmFlatten", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct VmFlatten {
     enable: bool,
@@ -29,7 +29,7 @@ pub struct VmFlatten {
 }
 
 impl AmicePassLoadable for VmFlatten {
-    fn init(&mut self, cfg: &Config) -> bool {
+    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
         self.enable = cfg.vm_flatten.enable;
         self.random_none_node_opcode = true;
 

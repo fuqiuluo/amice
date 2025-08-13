@@ -43,6 +43,8 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
     // 默认值
     let mut priority_val: i32 = 0;
     let mut name_ts: Option<proc_macro2::TokenStream> = None;
+    let mut description_ts: Option<proc_macro2::TokenStream> = None;
+    let mut position_ts: Option<proc_macro2::TokenStream> = None;
 
     for kv in args.items {
         let key = kv.key.to_string();
@@ -69,6 +71,29 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
                     panic!("#[amice] name 必须是字符串字面量");
                 }
             }
+            "description" => {
+                if let Expr::Lit(expr_lit) = &kv.value {
+                    if let Lit::Str(ls) = &expr_lit.lit {
+                        description_ts = Some(quote! { #ls });
+                    } else {
+                        panic!("#[amice] description 必须是字符串字面量");
+                    }
+                } else {
+                    panic!("#[amice] description 必须是字符串字面量");
+                }
+            }
+            "position" => {
+                // `PassPosition::PipelineStart | PassPosition::OptimizerLast` 的表达式
+                match &kv.value {
+                    Expr::Path(_) | Expr::Binary(_) | Expr::Group(_) | Expr::Paren(_) => {
+                        let v = &kv.value;
+                        position_ts = Some(quote! { #v });
+                    }
+                    _ => {
+                        panic!("#[amice] position 必须是 PassPosition 表达式，例如 `PassPosition::PipelineStart` 或用 `|` 组合");
+                    }
+                }
+            }
             other => {
                 panic!("#[amice] 未知参数: {}", other);
             }
@@ -78,6 +103,9 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
     // get_name 默认用结构体名字符串
     let default_name = struct_name.to_string();
     let name_value = name_ts.unwrap_or_else(|| quote! { #default_name });
+
+    // position 默认值
+    let position_value = position_ts.expect("Pass必须指定 position");
 
     // 唯一注册函数名
     let reg_fn_ident = format_ident!("__amice_register__{}", struct_name.to_string().to_lowercase());
@@ -93,13 +121,20 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
 
         #[ctor::ctor]
         fn #reg_fn_ident() {
-            fn installer(cfg: &crate::config::Config, manager: &mut llvm_plugin::ModulePassManager) {
+            fn installer(cfg: &crate::config::Config, manager: &mut llvm_plugin::ModulePassManager, postion: crate::pass_registry::PassPosition) -> bool {
+                let allowed_position = #position_value;
+                if !allowed_position.contains(postion) {
+                    return false;
+                }
+
                 let mut pass = #struct_name::default();
-                let enabled = <#struct_name as crate::pass_registry::AmicePassLoadable>::init(&mut pass, cfg);
+                let enabled = <#struct_name as crate::pass_registry::AmicePassLoadable>::init(&mut pass, cfg, postion);
                 if !enabled {
-                    return;
+                    return false;
                 }
                 manager.add_pass(pass);
+
+                true
             }
 
             crate::pass_registry::register(

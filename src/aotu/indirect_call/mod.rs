@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::pass_registry::AmicePassLoadable;
+use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
@@ -11,7 +11,7 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 
-#[amice(priority = 990, name = "IndirectCall")]
+#[amice(priority = 990, name = "IndirectCall", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct IndirectCall {
     enable: bool,
@@ -19,7 +19,7 @@ pub struct IndirectCall {
 }
 
 impl AmicePassLoadable for IndirectCall {
-    fn init(&mut self, cfg: &Config) -> bool {
+    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
         self.enable = cfg.indirect_call.enable;
 
         self.xor_key = cfg

@@ -6,7 +6,7 @@ mod generator;
 use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType};
 use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
 use crate::aotu::mba::generator::generate_constant_mba_function;
-use crate::pass_registry::AmicePassLoadable;
+use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::llvm_sys;
@@ -16,7 +16,7 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
 
-#[amice(priority = 955, name = "Mba")]
+#[amice(priority = 955, name = "Mba", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct Mba {
     enable: bool,
@@ -27,7 +27,7 @@ pub struct Mba {
 }
 
 impl AmicePassLoadable for Mba {
-    fn init(&mut self, cfg: &crate::config::Config) -> bool {
+    fn init(&mut self, cfg: &crate::config::Config, position: PassPosition) -> bool {
         self.enable = cfg.mba.enable;
         self.aux_count = cfg.mba.aux_count;
         self.rewrite_ops = cfg.mba.rewrite_ops;

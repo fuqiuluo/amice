@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::llvm_utils::basic_block::split_basic_block;
 use crate::llvm_utils::function::get_basic_block_entry;
-use crate::pass_registry::AmicePassLoadable;
+use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -12,7 +12,7 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
 
-#[amice(priority = 980, name = "SplitBasicBlock")]
+#[amice(priority = 980, name = "SplitBasicBlock", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct SplitBasicBlock {
     enable: bool,
@@ -20,7 +20,7 @@ pub struct SplitBasicBlock {
 }
 
 impl AmicePassLoadable for SplitBasicBlock {
-    fn init(&mut self, cfg: &Config) -> bool {
+    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
         self.enable = cfg.split_basic_block.enable;
         self.split_num = cfg.split_basic_block.num;
 

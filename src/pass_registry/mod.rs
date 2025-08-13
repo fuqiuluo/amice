@@ -4,6 +4,8 @@ use llvm_plugin::ModulePassManager;
 use log::info;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use bitflags::bitflags;
+use serde::{Deserialize, Serialize};
 
 lazy_static! {
     static ref REGISTRY: Mutex<Vec<PassEntry>> = Mutex::new(Vec::new());
@@ -14,18 +16,27 @@ pub trait AmicePass {
 }
 
 pub trait AmicePassLoadable {
-    fn init(&mut self, cfg: &Config) -> bool;
+    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool;
 }
 
 pub trait EnvOverlay {
     fn overlay_env(&mut self);
 }
 
+bitflags! {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct  PassPosition: u32 {
+        const PipelineStart = 0b0001; // add_pipeline_start_ep_callback
+        const OptimizerLast = 0b0010; // add_optimizer_last_ep_callback
+        const FullLtoLast =   0b0100;   // add_full_lto_last_ep_callback
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct PassEntry {
     pub name: &'static str,
     pub priority: i32, // 优先级越大越先执行
-    pub add: fn(&Config, &mut ModulePassManager),
+    pub add: fn(&Config, &mut ModulePassManager, PassPosition) -> bool,
 }
 
 /// 供宏生成的注册函数调用
@@ -35,7 +46,7 @@ pub fn register(entry: PassEntry) {
 }
 
 /// 安装全部已注册的 pass：按优先级从高到低排序后依次调用 add
-pub fn install_all(cfg: &Config, manager: &mut ModulePassManager) {
+pub fn install_all(cfg: &Config, manager: &mut ModulePassManager, position: PassPosition) {
     // 拷贝一份快照，避免持锁执行用户代码
     let mut entries = {
         let reg = REGISTRY.lock().expect("pass_registry: lock poisoned");
@@ -71,8 +82,9 @@ pub fn install_all(cfg: &Config, manager: &mut ModulePassManager) {
     }
 
     for e in entries {
-        info!("pass_registry: install pass: {}", e.name);
-        (e.add)(cfg, manager);
+        if (e.add)(cfg, manager, position) {
+            info!("pass_registry: install pass: {} \tin {:?}", e.name, position);
+        }
     }
 }
 

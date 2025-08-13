@@ -3,7 +3,7 @@ use crate::config::{Config, IndirectBranchFlags};
 use crate::llvm_utils::basic_block::split_basic_block;
 use crate::llvm_utils::branch_inst;
 use crate::llvm_utils::function::get_basic_block_entry;
-use crate::pass_registry::AmicePassLoadable;
+use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::fix_stack;
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
@@ -17,7 +17,7 @@ use log::{debug, error, warn};
 use rand::Rng;
 use std::collections::HashMap;
 
-#[amice(priority = 959, name = "Flatten")]
+#[amice(priority = 959, name = "Flatten", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct Flatten {
     enable: bool,
@@ -26,7 +26,7 @@ pub struct Flatten {
 }
 
 impl AmicePassLoadable for Flatten {
-    fn init(&mut self, cfg: &Config) -> bool {
+    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
         self.enable = cfg.flatten.enable;
         self.fix_stack = cfg.flatten.fix_stack;
         self.demote_switch = cfg.flatten.lower_switch;

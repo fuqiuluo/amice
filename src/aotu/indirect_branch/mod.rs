@@ -1,7 +1,7 @@
 use crate::config::{Config, IndirectBranchFlags};
 use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry_ref;
-use crate::pass_registry::AmicePassLoadable;
+use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -19,7 +19,7 @@ use rand::Rng;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 
-#[amice(priority = 800, name = "IndirectBranch")]
+#[amice(priority = 800, name = "IndirectBranch", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct IndirectBranch {
     enable: bool,
@@ -28,7 +28,7 @@ pub struct IndirectBranch {
 }
 
 impl AmicePassLoadable for IndirectBranch {
-    fn init(&mut self, cfg: &Config) -> bool {
+    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
         self.enable = cfg.indirect_branch.enable;
         self.flags = IndirectBranchFlags::Basic;
         self.flags |= cfg.indirect_branch.flags;
