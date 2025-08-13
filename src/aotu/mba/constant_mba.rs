@@ -3,14 +3,14 @@ use crate::aotu::mba::expr::Expr;
 use rand::prelude::*;
 use std::fmt;
 
-fn rand_u128_mod2n<R: Rng + ?Sized>(rng: &mut R, bits: u32) -> u128 {
+pub fn rand_u128_mod2n<R: Rng + ?Sized>(rng: &mut R, bits: u32) -> u128 {
     // 生成 [0, 2^n) 的随机数（通过掩码到 n 位）
     let v: u128 = rng.random();
     if bits == 128 { v } else { v & ((1u128 << bits) - 1) }
 }
 
 // 基础恒等项：恒为 0
-fn gen_base_zero_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize) -> Expr {
+pub fn gen_base_zero_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize) -> Expr {
     let safe = aux_count.max(1);
     let a = rng.random_range(0..safe);
     match rng.random_range(0..3) {
@@ -21,7 +21,7 @@ fn gen_base_zero_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize) -> Expr {
 }
 
 // 基础恒等项：恒为 mask（全 1）
-fn gen_base_mask_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize) -> Expr {
+pub fn gen_base_mask_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize) -> Expr {
     let safe = aux_count.max(1);
     let a = rng.random_range(0..safe);
     match rng.random_range(0..3) {
@@ -35,7 +35,7 @@ fn gen_base_mask_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize) -> Expr {
 }
 
 // 等价重写（不改变表达式语义）
-fn rewrite_once<R: Rng + ?Sized>(rng: &mut R, e: Expr, nmask: u128, aux_count: usize) -> Expr {
+pub fn rewrite_once<R: Rng + ?Sized>(rng: &mut R, e: Expr, nmask: u128, aux_count: usize) -> Expr {
     use Expr::*;
     match rng.random_range(0..9) {
         // 9个安全的重写规则
@@ -80,7 +80,7 @@ fn rewrite_once<R: Rng + ?Sized>(rng: &mut R, e: Expr, nmask: u128, aux_count: u
     }
 }
 
-fn rewrite_n<R: Rng + ?Sized>(rng: &mut R, e: Expr, depth: usize, nmask: u128, aux_count: usize) -> Expr {
+pub fn rewrite_n<R: Rng + ?Sized>(rng: &mut R, e: Expr, depth: usize, nmask: u128, aux_count: usize) -> Expr {
     let mut cur = e;
     for _ in 0..depth {
         cur = rewrite_once(rng, cur, nmask, aux_count);
@@ -88,7 +88,7 @@ fn rewrite_n<R: Rng + ?Sized>(rng: &mut R, e: Expr, depth: usize, nmask: u128, a
     cur
 }
 
-fn gen_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize, want_mask: bool, depth: usize, nmask: u128) -> Expr {
+pub fn gen_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize, want_mask: bool, depth: usize, nmask: u128) -> Expr {
     let base = if want_mask {
         gen_base_mask_term(rng, aux_count)
     } else {

@@ -5,6 +5,9 @@ use llvm_plugin::inkwell::context::ContextRef;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::types::{BasicTypeEnum, IntType};
 use llvm_plugin::inkwell::values::{FunctionValue, IntValue};
+use rand::prelude::StdRng;
+use rand::SeedableRng;
+use crate::aotu::mba::binary_expr_mba::{mba_binop, BinOp};
 
 pub fn build_u128_constant<'ctx>(
     context: ContextRef<'ctx>,
@@ -144,3 +147,58 @@ pub fn generate_constant_mba_function<'ctx>(
 
     function
 }
+
+#[allow(dead_code)]
+pub fn generate_binary_mba_function<'ctx>(
+    module: &Module<'ctx>,
+    op: BinOp,
+    cfg: &ConstantMbaConfig,
+) -> FunctionValue<'ctx> {
+    assert!(
+        cfg.aux_count >= 2,
+        "binary MBA function needs at least 2 params for lhs and rhs"
+    );
+
+    let context = module.get_context();
+    let builder = context.create_builder();
+    let int_type = cfg.width.to_llvm_int_type(context);
+
+    // 构造函数参数类型：共 cfg.aux_count 个，约定 aux0=lhs, aux1=rhs，其余为附加 aux
+    let param_types: Vec<_> = (0..cfg.aux_count).map(|_| int_type.into()).collect();
+    let fn_type = int_type.fn_type(&param_types, false);
+
+    let function = module.add_function(&cfg.func_name, fn_type, None);
+    let entry = context.append_basic_block(function, "entry");
+    builder.position_at_end(entry);
+
+    // 收集参数为 aux_params（索引与 Expr::Var 一致）
+    let mut aux_params: Vec<IntValue> = Vec::with_capacity(cfg.aux_count);
+    for i in 0..cfg.aux_count {
+        let param = function.get_nth_param(i as u32).unwrap().into_int_value();
+        // 命名：0->lhs, 1->rhs, 2..->aux{i}
+        if i == 0 {
+            param.set_name("lhs");
+        } else if i == 1 {
+            param.set_name("rhs");
+        } else {
+            param.set_name(&format!("aux{}", i));
+        }
+        aux_params.push(param);
+    }
+
+    // 生成二元 MBA 表达式：Var(0)=lhs, Var(1)=rhs；noise 可使用 <= cfg.aux_count-1 的变量
+    let mut rng: StdRng = match cfg.seed {
+        Some(s) => StdRng::seed_from_u64(s),
+        None => StdRng::from_os_rng(),
+    };
+    let a = Expr::Var(0);
+    let b = Expr::Var(1);
+    let expr = mba_binop(&mut rng, op, a, b, cfg);
+
+    // 降为 LLVM IR 并返回
+    let result = expr_to_llvm_value(context, &builder, &expr, &aux_params, int_type, cfg.width);
+    builder.build_return(Some(&result)).unwrap();
+
+    function
+}
+

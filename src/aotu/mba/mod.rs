@@ -1,10 +1,14 @@
+mod binary_expr_mba;
 mod config;
 mod constant_mba;
 mod expr;
 mod generator;
 
+use std::cmp::max;
+use crate::aotu::mba::binary_expr_mba::{BinOp, mba_binop};
 use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType};
 use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
+use crate::aotu::mba::expr::Expr;
 use crate::aotu::mba::generator::generate_constant_mba_function;
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
@@ -13,12 +17,13 @@ use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::llvm_sys;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{AsValueRef, GlobalValue, InstructionOpcode, InstructionValue, PointerValue};
+use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, PointerValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
 
-#[amice(priority = 955, name = "Mba", position = PassPosition::PipelineStart | PassPosition::OptimizerLast)]
+#[amice(priority = 955, name = "Mba", position = PassPosition::PipelineStart | PassPosition::OptimizerLast
+)]
 #[derive(Default)]
 pub struct Mba {
     enable: bool,
@@ -32,9 +37,9 @@ pub struct Mba {
 impl AmicePassLoadable for Mba {
     fn init(&mut self, cfg: &crate::config::Config, position: PassPosition) -> bool {
         self.enable = cfg.mba.enable;
-        self.aux_count = cfg.mba.aux_count;
-        self.rewrite_ops = cfg.mba.rewrite_ops;
-        self.rewrite_depth = cfg.mba.rewrite_depth;
+        self.aux_count = max(2, cfg.mba.aux_count);
+        self.rewrite_ops = max(24, cfg.mba.rewrite_ops);
+        self.rewrite_depth = max(3, cfg.mba.rewrite_depth);
         self.alloc_aux_params_in_global = cfg.mba.alloc_aux_params_in_global;
         self.fix_stack = cfg.mba.fix_stack;
 
@@ -98,7 +103,6 @@ impl LlvmModulePass for Mba {
                     match inst.get_opcode() {
                         InstructionOpcode::Add
                         | InstructionOpcode::Sub
-                        | InstructionOpcode::And
                         | InstructionOpcode::Or
                         | InstructionOpcode::Xor => binary_inst_vec.push(inst),
                         _ => constant_inst_vec.push(inst),
@@ -145,20 +149,28 @@ impl LlvmModulePass for Mba {
                 None
             };
 
-            for inst in constant_inst_vec {
-                if let Err(e) = rewrite_constant_ir_with_mba(
+            // for inst in constant_inst_vec {
+            //     if let Err(e) = rewrite_constant_inst_with_mba(
+            //         self,
+            //         module,
+            //         inst,
+            //         global_aux_params.as_ref(),
+            //         stack_aux_params.as_ref(),
+            //     ) {
+            //         warn!("(mba) rewrite store with mba failed: {:?}", e);
+            //     }
+            // }
+
+            for binary in binary_inst_vec {
+                if let Err(e) = rewrite_binop_with_mba(
                     self,
                     module,
-                    inst,
+                    binary,
                     global_aux_params.as_ref(),
                     stack_aux_params.as_ref(),
                 ) {
-                    warn!("(mba) rewrite store with mba failed: {:?}", e);
+                    warn!("(mba) rewrite binop with mba failed: {:?}", e);
                 }
-            }
-
-            for binary in binary_inst_vec {
-                // todo
             }
 
             if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
@@ -176,7 +188,104 @@ impl LlvmModulePass for Mba {
     }
 }
 
-fn rewrite_constant_ir_with_mba<'a>(
+fn rewrite_binop_with_mba<'a>(
+    pass: &Mba,
+    module: &mut Module<'a>,
+    binop_inst: InstructionValue<'a>,
+    global_aux_params: Option<&HashMap<BitWidth, Vec<GlobalValue>>>,
+    stack_aux_params: Option<&HashMap<BitWidth, Vec<PointerValue>>>,
+) -> anyhow::Result<()> {
+    let Some(lhs) = binop_inst.get_operand(0).ok_or(anyhow::anyhow!("failed to get lhs"))?.left() else {
+        return Ok(());
+    };
+    let Some(rhs) = binop_inst.get_operand(1).ok_or(anyhow::anyhow!("failed to get rhs"))?.left() else {
+        return Ok(());
+    };
+
+    if !lhs.is_int_value() || !rhs.is_int_value() {
+        return Ok(());
+    }
+
+    let lhs = lhs.into_int_value();
+    let rhs = rhs.into_int_value();
+    assert_eq!(lhs.get_type().get_bit_width(), rhs.get_type().get_bit_width());
+
+    let value_type = lhs.get_type();
+    let mba_int_width =
+        BitWidth::from_bits(value_type.get_bit_width()).ok_or(anyhow::anyhow!("unsupported int type"))?;
+
+    let binop = match binop_inst.get_opcode() {
+        InstructionOpcode::Add => BinOp::Add,
+        InstructionOpcode::Sub => BinOp::Sub,
+        InstructionOpcode::Or => BinOp::Or,
+        InstructionOpcode::Xor => BinOp::Xor,
+        _ => return Err(anyhow::anyhow!("unsupported binop: {:?}", binop_inst)),
+    };
+    let mut rng = rand::rng();
+    let cfg = ConstantMbaConfig::new(
+        mba_int_width,
+        NumberType::Signed,
+        pass.aux_count as usize,
+        pass.rewrite_ops as usize,
+        pass.rewrite_depth as usize,
+        format!("store_const_{}", rand::random::<u64>()),
+    );
+    let expr = mba_binop(&mut rng, binop, Expr::Var(0), Expr::Var(1), &cfg);
+
+    let ctx = module.get_context();
+    let builder = ctx.create_builder();
+    builder.position_before(&binop_inst);
+
+    let mut aux_params = vec![];
+    for i in 0..cfg.aux_count {
+        if i == 0 {
+            aux_params.push(lhs);
+            continue
+        }
+
+        if i == 1 {
+            aux_params.push(rhs);
+            continue
+        }
+
+        if pass.alloc_aux_params_in_global
+            && let Some(global_aux) = global_aux_params
+            && let Some(global_aux_params) = global_aux.get(&mba_int_width)
+        {
+            let global_aux = global_aux_params[i];
+            let int = builder
+                .build_load(value_type, global_aux.as_pointer_value(), "")?
+                .into_int_value();
+            aux_params.push(int);
+        } else if let Some(stack_aux) = stack_aux_params
+            && let Some(stack_aux_params) = stack_aux.get(&mba_int_width)
+        {
+            let stack_aux = stack_aux_params[i];
+            let int = builder.build_load(value_type, stack_aux, "")?.into_int_value();
+            aux_params.push(int);
+        } else {
+            let rand = match mba_int_width {
+                BitWidth::W8 => rand::random::<u8>() as u64,
+                BitWidth::W16 => rand::random::<u16>() as u64,
+                BitWidth::W32 => rand::random::<u32>() as u64,
+                BitWidth::W64 => rand::random::<u64>(),
+                BitWidth::W128 => panic!("(mba) not support 128 bit"),
+            };
+            let aux_param = value_type.const_int(rand, false);
+            aux_params.push(aux_param);
+        }
+    }
+
+    let value = generator::expr_to_llvm_value(ctx, &builder, &expr, &aux_params, value_type, mba_int_width);
+    let new_inst = value.as_instruction_value().unwrap();
+
+    binop_inst.replace_all_uses_with(&new_inst);
+    binop_inst.erase_from_basic_block();
+
+    Ok(())
+}
+
+fn rewrite_constant_inst_with_mba<'a>(
     pass: &Mba,
     module: &mut Module<'a>,
     store: InstructionValue<'a>,
