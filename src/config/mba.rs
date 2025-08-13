@@ -46,7 +46,8 @@ impl EnvOverlay for MbaConfig {
         }
 
         if std::env::var("AMICE_MBA_ALLOC_AUX_PARAMS_IN_GLOBAL").is_ok() {
-            self.alloc_aux_params_in_global = bool_var("AMICE_MBA_ALLOC_AUX_PARAMS_IN_GLOBAL", self.alloc_aux_params_in_global);
+            self.alloc_aux_params_in_global =
+                bool_var("AMICE_MBA_ALLOC_AUX_PARAMS_IN_GLOBAL", self.alloc_aux_params_in_global);
         }
     }
 }

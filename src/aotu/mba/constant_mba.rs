@@ -1,7 +1,7 @@
+use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType, bits_to_signed};
+use crate::aotu::mba::expr::Expr;
 use rand::prelude::*;
 use std::fmt;
-use crate::aotu::mba::config::{bits_to_signed, BitWidth, ConstantMbaConfig, NumberType};
-use crate::aotu::mba::expr::Expr;
 
 fn rand_u128_mod2n<R: Rng + ?Sized>(rng: &mut R, bits: u32) -> u128 {
     // 生成 [0, 2^n) 的随机数（通过掩码到 n 位）
@@ -350,8 +350,8 @@ pub(super) fn verify_const_mba(expr: &Expr, expected: u128, width: BitWidth, aux
 
 #[cfg(test)]
 mod tests {
-    use crate::aotu::mba::config::signed_to_bits;
     use super::*;
+    use crate::aotu::mba::config::signed_to_bits;
 
     #[test]
     fn test_signed_number_conversion() {

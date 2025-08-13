@@ -1,16 +1,16 @@
+use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig};
+use crate::aotu::mba::expr::Expr;
 use llvm_plugin::inkwell::builder::Builder;
 use llvm_plugin::inkwell::context::ContextRef;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::types::{BasicTypeEnum, IntType};
 use llvm_plugin::inkwell::values::{FunctionValue, IntValue};
-use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig};
-use crate::aotu::mba::expr::Expr;
 
 pub fn build_u128_constant<'ctx>(
     context: ContextRef<'ctx>,
     builder: &Builder<'ctx>,
     value: u128,
-    int_type: IntType<'ctx>
+    int_type: IntType<'ctx>,
 ) -> IntValue<'ctx> {
     match int_type.get_bit_width() {
         8 => int_type.const_int(value as u64, false),
@@ -25,11 +25,13 @@ pub fn build_u128_constant<'ctx>(
             let high_val = context.i64_type().const_int(high, false);
 
             // 创建128位值：(high << 64) | low
-            let high_shifted = builder.build_left_shift(
-                high_val.const_bit_cast(int_type),
-                int_type.const_int(64, false),
-                "high_shift"
-            ).unwrap();
+            let high_shifted = builder
+                .build_left_shift(
+                    high_val.const_bit_cast(int_type),
+                    int_type.const_int(64, false),
+                    "high_shift",
+                )
+                .unwrap();
 
             let low_extended = low_val.const_bit_cast(int_type);
             builder.build_or(high_shifted, low_extended, "const128").unwrap()
@@ -54,11 +56,7 @@ pub fn expr_to_llvm_value<'ctx>(
             build_u128_constant(context, builder, masked_value, int_type)
         },
 
-        Var(index) => {
-            aux_params.get(*index)
-                .copied()
-                .unwrap_or_else(|| int_type.const_zero())
-        },
+        Var(index) => aux_params.get(*index).copied().unwrap_or_else(|| int_type.const_zero()),
 
         Not(inner) => {
             let inner_val = expr_to_llvm_value(context, builder, inner, aux_params, int_type, width);
@@ -108,7 +106,7 @@ pub fn expr_to_llvm_value<'ctx>(
 pub fn generate_constant_mba_function<'ctx>(
     module: &Module<'ctx>,
     expr: &Expr,
-    cfg: &ConstantMbaConfig
+    cfg: &ConstantMbaConfig,
 ) -> FunctionValue<'ctx> {
     let context = module.get_context();
     let builder = context.create_builder();
@@ -133,9 +131,7 @@ pub fn generate_constant_mba_function<'ctx>(
     // 获取函数参数
     let mut aux_params: Vec<IntValue> = Vec::new();
     for i in 0..cfg.aux_count {
-        let param = function.get_nth_param(i as u32)
-            .unwrap()
-            .into_int_value();
+        let param = function.get_nth_param(i as u32).unwrap().into_int_value();
         param.set_name(&format!("aux{}", i));
         aux_params.push(param);
     }
