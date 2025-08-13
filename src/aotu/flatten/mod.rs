@@ -64,8 +64,7 @@ impl LlvmModulePass for Flatten {
                         | InstructionOpcode::CatchPad
                         | InstructionOpcode::CatchRet
                         | InstructionOpcode::CleanupPad
-                        | InstructionOpcode::CallBr
-                        | InstructionOpcode::IndirectBr => {
+                        | InstructionOpcode::CallBr => {
                             has_eh_or_invoke = true;
                             break 'outer;
                         },
