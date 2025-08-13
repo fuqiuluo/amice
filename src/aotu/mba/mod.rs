@@ -151,7 +151,10 @@ impl LlvmModulePass for Mba {
                 None
             };
 
-            debug!("(mba) rewrite constant inst with mba done: {} insts", constant_inst_vec.len());
+            debug!(
+                "(mba) rewrite constant inst with mba done: {} insts",
+                constant_inst_vec.len()
+            );
             for inst in constant_inst_vec {
                 if let Err(e) = rewrite_constant_inst_with_mba(
                     self,
@@ -164,7 +167,10 @@ impl LlvmModulePass for Mba {
                 }
             }
 
-            debug!("(mba) rewrite binop inst with mba done: {} insts", binary_inst_vec.len());
+            debug!(
+                "(mba) rewrite binop inst with mba done: {} insts",
+                binary_inst_vec.len()
+            );
             for binary in binary_inst_vec {
                 if let Err(e) = rewrite_binop_with_mba(
                     self,
