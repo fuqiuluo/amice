@@ -1,11 +1,11 @@
 use crate::config::Config;
+use bitflags::bitflags;
 use lazy_static::lazy_static;
 use llvm_plugin::ModulePassManager;
 use log::info;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use bitflags::bitflags;
-use serde::{Deserialize, Serialize};
 
 lazy_static! {
     static ref REGISTRY: Mutex<Vec<PassEntry>> = Mutex::new(Vec::new());

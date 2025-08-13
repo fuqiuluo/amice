@@ -3,10 +3,10 @@ pub(crate) mod config;
 pub(crate) mod llvm_utils;
 pub(crate) mod pass_registry;
 
-use env_logger::builder;
 use crate::config::CONFIG;
-use log::info;
 use crate::pass_registry::PassPosition;
+use env_logger::builder;
+use log::info;
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1.2")]
 fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
