@@ -2,7 +2,7 @@ use rand::prelude::*;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug)]
-enum BitWidth {
+pub(super) enum BitWidth {
     W8,
     W16,
     W32,
@@ -10,8 +10,14 @@ enum BitWidth {
     W128,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) enum NumberType {
+    Unsigned,
+    Signed,
+}
+
 impl BitWidth {
-    fn from_bits(bits: u32) -> Option<Self> {
+    pub fn from_bits(bits: u32) -> Option<Self> {
         match bits {
             8 => Some(BitWidth::W8),
             16 => Some(BitWidth::W16),
@@ -22,7 +28,7 @@ impl BitWidth {
         }
     }
 
-    fn bits(self) -> u32 {
+    pub fn bits(self) -> u32 {
         match self {
             BitWidth::W8 => 8,
             BitWidth::W16 => 16,
@@ -32,36 +38,68 @@ impl BitWidth {
         }
     }
 
-    fn mask_u128(self) -> u128 {
+    pub fn mask_u128(self) -> u128 {
         match self {
             BitWidth::W128 => u128::MAX,
             _ => (1u128 << self.bits()) - 1,
         }
     }
 
-    fn c_type(&self) -> &'static str {
-        match self {
-            BitWidth::W8 => "uint8_t",
-            BitWidth::W16 => "uint16_t",
-            BitWidth::W32 => "uint32_t",
-            BitWidth::W64 => "uint64_t",
-            BitWidth::W128 => "__uint128_t",
+    pub fn c_type(&self, number_type: NumberType) -> &'static str {
+        match (self, number_type) {
+            (BitWidth::W8, NumberType::Unsigned) => "uint8_t",
+            (BitWidth::W8, NumberType::Signed) => "int8_t",
+            (BitWidth::W16, NumberType::Unsigned) => "uint16_t",
+            (BitWidth::W16, NumberType::Signed) => "int16_t",
+            (BitWidth::W32, NumberType::Unsigned) => "uint32_t",
+            (BitWidth::W32, NumberType::Signed) => "int32_t",
+            (BitWidth::W64, NumberType::Unsigned) => "uint64_t",
+            (BitWidth::W64, NumberType::Signed) => "int64_t",
+            (BitWidth::W128, NumberType::Unsigned) => "__uint128_t",
+            (BitWidth::W128, NumberType::Signed) => "__int128_t",
         }
     }
 
-    fn rust_type(&self) -> &'static str {
+    pub fn rust_type(&self, number_type: NumberType) -> &'static str {
+        match (self, number_type) {
+            (BitWidth::W8, NumberType::Unsigned) => "u8",
+            (BitWidth::W8, NumberType::Signed) => "i8",
+            (BitWidth::W16, NumberType::Unsigned) => "u16",
+            (BitWidth::W16, NumberType::Signed) => "i16",
+            (BitWidth::W32, NumberType::Unsigned) => "u32",
+            (BitWidth::W32, NumberType::Signed) => "i32",
+            (BitWidth::W64, NumberType::Unsigned) => "u64",
+            (BitWidth::W64, NumberType::Signed) => "i64",
+            (BitWidth::W128, NumberType::Unsigned) => "u128",
+            (BitWidth::W128, NumberType::Signed) => "i128",
+        }
+    }
+
+    // 获取有符号数的最大值
+    pub fn signed_max(self) -> u128 {
         match self {
-            BitWidth::W8 => "u8",
-            BitWidth::W16 => "u16",
-            BitWidth::W32 => "u32",
-            BitWidth::W64 => "u64",
-            BitWidth::W128 => "u128",
+            BitWidth::W8 => i8::MAX as u128,
+            BitWidth::W16 => i16::MAX as u128,
+            BitWidth::W32 => i32::MAX as u128,
+            BitWidth::W64 => i64::MAX as u128,
+            BitWidth::W128 => i128::MAX as u128,
+        }
+    }
+
+    // 获取有符号数的最小值的位模式
+    pub fn signed_min_bits(self) -> u128 {
+        match self {
+            BitWidth::W8 => i8::MIN as u8 as u128,
+            BitWidth::W16 => i16::MIN as u16 as u128,
+            BitWidth::W32 => i32::MIN as u32 as u128,
+            BitWidth::W64 => i64::MIN as u64 as u128,
+            BitWidth::W128 => i128::MIN as u128,
         }
     }
 }
 
 #[derive(Clone, Debug)]
-enum Expr {
+pub(super) enum Expr {
     Const(u128),
     Var(usize), // aux index: aux0, aux1, ...
     Not(Box<Expr>),
@@ -74,25 +112,85 @@ enum Expr {
 }
 
 impl Expr {
-    fn const0() -> Self {
+    pub(super) fn const0() -> Self {
         Expr::Const(0)
     }
 }
 
 #[derive(Clone, Debug)]
-struct MbaConfig {
+pub(super) struct ConstMbaConfig {
     width: BitWidth,
+    number_type: NumberType,
     aux_count: usize,
     rewrite_ops: usize,
     rewrite_depth: usize,
-    constant: u128, // desired constant (mod 2^n)
+    constant: u128, // desired constant (mod 2^n)，存储为位模式
     seed: Option<u64>,
     func_name: String,
 }
 
-impl MbaConfig {
+impl ConstMbaConfig {
+    pub fn new(width: BitWidth, number_type: NumberType, aux_count: usize, rewrite_ops: usize, rewrite_depth: usize, func_name: String) -> Self {
+        ConstMbaConfig {
+            width,
+            number_type,
+            aux_count,
+            rewrite_ops,
+            rewrite_depth,
+            constant: 0,
+            seed: None,
+            func_name,
+        }
+    }
+
     fn normalized_constant(&self) -> u128 {
         self.constant & self.width.mask_u128()
+    }
+
+    // 从有符号整数创建配置
+    pub fn with_signed_constant(mut self, signed_value: i128) -> Self {
+        self.number_type = NumberType::Signed;
+        self.constant = signed_to_bits(signed_value, self.width);
+        self
+    }
+
+    // 从无符号整数创建配置
+    pub fn with_unsigned_constant(mut self, unsigned_value: u128) -> Self {
+        self.number_type = NumberType::Unsigned;
+        self.constant = unsigned_value & self.width.mask_u128();
+        self
+    }
+
+    // 获取常数的有符号解释
+    fn get_signed_constant(&self) -> i128 {
+        bits_to_signed(self.constant, self.width)
+    }
+
+    // 获取常数的无符号解释
+    fn get_unsigned_constant(&self) -> u128 {
+        self.constant & self.width.mask_u128()
+    }
+}
+
+// 将有符号数转换为位模式
+fn signed_to_bits(value: i128, width: BitWidth) -> u128 {
+    let mask = width.mask_u128();
+    (value as u128) & mask
+}
+
+// 将位模式转换为有符号数
+fn bits_to_signed(bits: u128, width: BitWidth) -> i128 {
+    let sign_bit = 1u128 << (width.bits() - 1);
+    let mask = width.mask_u128();
+    let value = bits & mask;
+
+    if value & sign_bit != 0 {
+        // 负数，需要符号扩展
+        let extended = value | (!mask);
+        extended as i128
+    } else {
+        // 正数
+        value as i128
     }
 }
 
@@ -190,7 +288,7 @@ fn gen_term<R: Rng + ?Sized>(rng: &mut R, aux_count: usize, want_mask: bool, dep
     rewrite_n(rng, base, depth, nmask, aux_count)
 }
 
-fn build_constant_mba<R: Rng + ?Sized>(rng: &mut R, cfg: &MbaConfig) -> Expr {
+fn build_constant_mba<R: Rng + ?Sized>(rng: &mut R, cfg: &ConstMbaConfig) -> Expr {
     let bits = cfg.width.bits();
     let nmask = cfg.width.mask_u128();
     let k = cfg.normalized_constant();
@@ -308,12 +406,14 @@ impl fmt::Display for Expr {
 
 struct CPrinter {
     width: BitWidth,
+    number_type: NumberType,
 }
 
 impl CPrinter {
     fn c_ty(&self) -> &'static str {
-        self.width.c_type()
+        self.width.c_type(self.number_type)
     }
+
     fn mask(&self) -> u128 {
         self.width.mask_u128()
     }
@@ -328,11 +428,26 @@ impl CPrinter {
         }
     }
 
+    fn const_c_i128_hex(v: u128) -> String {
+        let hi = (v >> 64) as u64;
+        let lo = (v & 0xFFFF_FFFF_FFFF_FFFFu128) as u64;
+        if hi == 0 {
+            format!("((__int128_t)0x{lo:016x}ull)")
+        } else {
+            format!("((((__int128_t)0x{hi:016x}ull) << 64) | ((__int128_t)0x{lo:016x}ull))")
+        }
+    }
+
     fn const_c(&self, v: u128) -> String {
         let vv = v & self.mask();
-        match self.width {
-            BitWidth::W128 => Self::const_c_u128_hex(vv),
-            _ => format!("(({}) {})", self.c_ty(), vv),
+        match (self.width, self.number_type) {
+            (BitWidth::W128, NumberType::Unsigned) => Self::const_c_u128_hex(vv),
+            (BitWidth::W128, NumberType::Signed) => Self::const_c_i128_hex(vv),
+            (_, NumberType::Unsigned) => format!("(({}) {})", self.c_ty(), vv),
+            (_, NumberType::Signed) => {
+                let signed_val = bits_to_signed(vv, self.width);
+                format!("(({}) {})", self.c_ty(), signed_val)
+            }
         }
     }
 
@@ -370,7 +485,7 @@ impl CPrinter {
     }
 }
 
-fn generate_mba(cfg: &MbaConfig) -> Expr {
+pub(super) fn generate_const_mba(cfg: &ConstMbaConfig) -> Expr {
     let mut rng: StdRng = match cfg.seed {
         Some(s) => StdRng::seed_from_u64(s),
         None => StdRng::from_os_rng(),
@@ -379,25 +494,25 @@ fn generate_mba(cfg: &MbaConfig) -> Expr {
 }
 
 // 评估表达式
-fn eval_expr(expr: &Expr, aux_values: &[u128], width: BitWidth) -> u128 {
+pub(super) fn eval_const_mba_expr(expr: &Expr, aux_values: &[u128], width: BitWidth) -> u128 {
     use Expr::*;
     let mask = width.mask_u128();
 
     match expr {
         Const(v) => *v & mask,
         Var(i) => aux_values.get(*i).copied().unwrap_or(0) & mask,
-        Not(x) => (!eval_expr(x, aux_values, width)) & mask,
-        And(a, b) => (eval_expr(a, aux_values, width) & eval_expr(b, aux_values, width)) & mask,
-        Or(a, b) => (eval_expr(a, aux_values, width) | eval_expr(b, aux_values, width)) & mask,
-        Xor(a, b) => (eval_expr(a, aux_values, width) ^ eval_expr(b, aux_values, width)) & mask,
-        Add(a, b) => (eval_expr(a, aux_values, width).wrapping_add(eval_expr(b, aux_values, width))) & mask,
-        Sub(a, b) => (eval_expr(a, aux_values, width).wrapping_sub(eval_expr(b, aux_values, width))) & mask,
-        MulConst(c, x) => ((*c & mask).wrapping_mul(eval_expr(x, aux_values, width))) & mask,
+        Not(x) => (!eval_const_mba_expr(x, aux_values, width)) & mask,
+        And(a, b) => (eval_const_mba_expr(a, aux_values, width) & eval_const_mba_expr(b, aux_values, width)) & mask,
+        Or(a, b) => (eval_const_mba_expr(a, aux_values, width) | eval_const_mba_expr(b, aux_values, width)) & mask,
+        Xor(a, b) => (eval_const_mba_expr(a, aux_values, width) ^ eval_const_mba_expr(b, aux_values, width)) & mask,
+        Add(a, b) => (eval_const_mba_expr(a, aux_values, width).wrapping_add(eval_const_mba_expr(b, aux_values, width))) & mask,
+        Sub(a, b) => (eval_const_mba_expr(a, aux_values, width).wrapping_sub(eval_const_mba_expr(b, aux_values, width))) & mask,
+        MulConst(c, x) => ((*c & mask).wrapping_mul(eval_const_mba_expr(x, aux_values, width))) & mask,
     }
 }
 
 // 验证MBA表达式是否返回预期常数
-fn verify_mba(expr: &Expr, expected: u128, width: BitWidth, aux_count: usize) -> bool {
+pub(super) fn verify_const_mba(expr: &Expr, expected: u128, width: BitWidth, aux_count: usize) -> bool {
     let expected = expected & width.mask_u128();
 
     // 测试一些随机的aux值组合
@@ -408,7 +523,7 @@ fn verify_mba(expr: &Expr, expected: u128, width: BitWidth, aux_count: usize) ->
             aux_values[j] = rand_u128_mod2n(&mut rng, width.bits());
         }
 
-        let result = eval_expr(expr, &aux_values, width);
+        let result = eval_const_mba_expr(expr, &aux_values, width);
         if result != expected {
             println!(
                 "Verification failed: aux={:?}, expected={}, got={}",
@@ -425,202 +540,145 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mba_const() {
-        let cfg = MbaConfig {
-            width: BitWidth::W64,
-            aux_count: 2,
-            rewrite_ops: 24,
-            rewrite_depth: 3,
-            constant: 56645,
-            seed: None,
-            func_name: "f".to_string(),
-        };
+    fn test_signed_number_conversion() {
+        // 测试有符号数转换
+        assert_eq!(signed_to_bits(-1, BitWidth::W8), 0xFF);
+        assert_eq!(signed_to_bits(-128, BitWidth::W8), 0x80);
+        assert_eq!(signed_to_bits(127, BitWidth::W8), 0x7F);
 
-        let ir = generate_mba(&cfg);
-        println!("IR:");
-        println!("{}", ir);
-
-        // 验证MBA是否正确返回期望的常数
-        let is_valid = verify_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
-        println!("\nVerification: {}", if is_valid { "PASSED" } else { "FAILED" });
-
-        let c = CPrinter { width: cfg.width }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
-        println!("\nC Code:");
-        println!("{}", c);
-
-        assert!(is_valid, "Generated MBA does not return the expected constant");
+        assert_eq!(bits_to_signed(0xFF, BitWidth::W8), -1);
+        assert_eq!(bits_to_signed(0x80, BitWidth::W8), -128);
+        assert_eq!(bits_to_signed(0x7F, BitWidth::W8), 127);
     }
 
     #[test]
-    fn test_mba_const_all_bits() {
-        let mut cfg = MbaConfig {
-            width: BitWidth::W8,
-            aux_count: 2,
-            rewrite_ops: 24,
-            rewrite_depth: 3,
-            constant: 0,
-            seed: None,
-            func_name: "f".to_string(),
-        };
-
-        let all_bits = [
-            BitWidth::W8,
-            BitWidth::W16,
-            BitWidth::W32,
+    fn test_mba_signed_const() {
+        let cfg = ConstMbaConfig::new(
             BitWidth::W64,
-            BitWidth::W128,
-        ];
-        for bits in all_bits {
-            cfg.width = bits;
-            let mask = bits.mask_u128();
-            match bits {
-                BitWidth::W8 | BitWidth::W16 => {
-                    // 小位宽做全量验证
-                    for c in 0..=mask {
-                        cfg.constant = c;
-                        let ir = generate_mba(&cfg);
-                        let is_valid = verify_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
-                        assert!(is_valid, "width={:?}, constant={} failed", bits, c);
-                    }
-                },
-                BitWidth::W32 => {
-                    let mut u32_samples = [0u32; 10000];
-                    for i in 0..u32_samples.len() {
-                        u32_samples[i] = rand::random::<u32>() & (mask as u32);
-                    }
-                    for i in 0..u32_samples.len() {
-                        cfg.constant = u32_samples[i] as u128;
-                        let ir = generate_mba(&cfg);
-                        let is_valid = verify_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
-                        assert!(is_valid, "width={:?}, constant={} failed", bits, u32_samples[i]);
-                    }
-                },
-                BitWidth::W64 => {
-                    let mut u64_samples = [0u64; 10000];
-                    for i in 0..u64_samples.len() {
-                        u64_samples[i] = rand::random::<u64>() & (mask as u64);
-                    }
-                    for i in 0..u64_samples.len() {
-                        cfg.constant = u64_samples[i] as u128;
-                        let ir = generate_mba(&cfg);
-                        let is_valid = verify_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
-                        assert!(is_valid, "width={:?}, constant={} failed", bits, u64_samples[i]);
-                    }
+            NumberType::Signed,
+            2, 24, 3,
+            "signed_function".to_string(),
+        ).with_signed_constant(-114514);
 
-                    let u64_samples = [
-                        114514u64,
-                        1919810u64,
-                        263283829,
-                        0xdeadbeaf,
-                        0xfaceb00c,
-                        0x13371337,
-                        0x123456789abcdef,
-                        0x123456789abcdef0,
-                        0x123456789abcdef5,
-                        0x911566,
-                        0x20250812,
-                    ];
-                    for i in 0..u64_samples.len() {
-                        cfg.constant = u64_samples[i] as u128;
-                        let ir = generate_mba(&cfg);
-                        let is_valid = verify_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
-                        assert!(is_valid, "width={:?}, constant={} failed", bits, u64_samples[i]);
-                    }
-                },
-                BitWidth::W128 => {
-                    let mut u128_samples = [0u128; 10000];
-                    for i in 0..u128_samples.len() {
-                        u128_samples[i] = rand::random::<u128>() & mask;
-                    }
-                    for i in 0..u128_samples.len() {
-                        cfg.constant = u128_samples[i];
-                        let ir = generate_mba(&cfg);
-                    }
-                },
-            }
-        }
-    }
-
-    #[test]
-    fn test_signed_number() {
-        fn bit_cast_to_unsigned(value: i128, width: BitWidth) -> u128 {
-            (value as u128) & width.mask_u128()
-        }
-
-        let mut cfg = MbaConfig {
-            width: BitWidth::W64,
-            aux_count: 2,
-            rewrite_ops: 24,
-            rewrite_depth: 3,
-            constant: 0,
-            seed: None,
-            func_name: "f".to_string(),
-        };
-
-        let value = -114514;
-        let bit_cast = bit_cast_to_unsigned(value, cfg.width);
-        cfg.constant = bit_cast;
-
-        let ir = generate_mba(&cfg);
-        println!("IR:");
+        let ir = generate_const_mba(&cfg);
+        println!("Signed IR:");
         println!("{}", ir);
 
-        let is_valid = verify_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
-        println!("\nVerification: {}", if is_valid { "PASSED" } else { "FAILED" });
+        let is_valid = verify_const_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
+        println!("\nSigned Verification: {}", if is_valid { "PASSED" } else { "FAILED" });
 
-        let c = CPrinter { width: cfg.width }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
-        println!("\nC Code:");
+        let c = CPrinter {
+            width: cfg.width,
+            number_type: cfg.number_type
+        }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
+        println!("\nSigned C Code:");
         println!("{}", c);
+
+        println!("Expected signed value: {}", cfg.get_signed_constant());
+        println!("Expected unsigned bits: 0x{:x}", cfg.get_unsigned_constant());
+
+        assert!(is_valid, "Generated signed MBA does not return the expected constant");
     }
 
     #[test]
-    fn test_mba_minmax() {
-        let mut cfg = MbaConfig {
-            width: BitWidth::W8,
-            aux_count: 2,
-            rewrite_ops: 24,
-            rewrite_depth: 3,
-            constant: (i8::MIN as u128),
-            seed: None,
-            func_name: "f".to_string(),
-        };
+    fn test_mba_unsigned_const() {
+        let cfg = ConstMbaConfig::new(
+            BitWidth::W64,
+            NumberType::Unsigned,
+            2, 24, 3,
+            "unsigned_function".to_string(),
+        ).with_unsigned_constant(0xDEADBEEF);
 
-        let pairs = vec![
-            ("i8_min".to_string(), i8::MIN as u128, BitWidth::W8),
-            ("i8_max".to_string(), i8::MAX as u128, BitWidth::W8),
-            ("i16_min".to_string(), i16::MIN as u128, BitWidth::W16),
-            ("i16_max".to_string(), i16::MAX as u128, BitWidth::W16),
-            ("i32_min".to_string(), i32::MIN as u128, BitWidth::W32),
-            ("i32_max".to_string(), i32::MAX as u128, BitWidth::W32),
-            ("i64_min".to_string(), i64::MIN as u128, BitWidth::W64),
-            ("i64_max".to_string(), i64::MAX as u128, BitWidth::W64),
-            ("i128_min".to_string(), i128::MIN as u128, BitWidth::W128),
-            ("i128_max".to_string(), i128::MAX as u128, BitWidth::W128),
-            ("u8_min".to_string(), u8::MIN as u128, BitWidth::W8),
-            ("u8_max".to_string(), u8::MAX as u128, BitWidth::W8),
-            ("u16_min".to_string(), u16::MIN as u128, BitWidth::W16),
-            ("u16_max".to_string(), u16::MAX as u128, BitWidth::W16),
-            ("u32_min".to_string(), u32::MIN as u128, BitWidth::W32),
-            ("u32_max".to_string(), u32::MAX as u128, BitWidth::W32),
-            ("u64_min".to_string(), u64::MIN as u128, BitWidth::W64),
-            ("u64_max".to_string(), u64::MAX as u128, BitWidth::W64),
-            ("u128_min".to_string(), u128::MIN as u128, BitWidth::W128),
-            ("u128_max".to_string(), u128::MAX as u128, BitWidth::W128),
+        let ir = generate_const_mba(&cfg);
+        println!("Unsigned IR:");
+        println!("{}", ir);
+
+        let is_valid = verify_const_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
+        println!("\nUnsigned Verification: {}", if is_valid { "PASSED" } else { "FAILED" });
+
+        let c = CPrinter {
+            width: cfg.width,
+            number_type: cfg.number_type
+        }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
+        println!("\nUnsigned C Code:");
+        println!("{}", c);
+
+        assert!(is_valid, "Generated unsigned MBA does not return the expected constant");
+    }
+
+    #[test]
+    fn test_extreme_signed_values() {
+        let test_cases = vec![
+            (BitWidth::W8, i8::MIN as i128, "i8_min"),
+            (BitWidth::W8, i8::MAX as i128, "i8_max"),
+            (BitWidth::W16, i16::MIN as i128, "i16_min"),
+            (BitWidth::W16, i16::MAX as i128, "i16_max"),
+            (BitWidth::W32, i32::MIN as i128, "i32_min"),
+            (BitWidth::W32, i32::MAX as i128, "i32_max"),
+            (BitWidth::W64, i64::MIN as i128, "i64_min"),
+            (BitWidth::W64, i64::MAX as i128, "i64_max"),
         ];
 
-        for (name, constant, width) in pairs {
-            cfg.constant = constant;
-            cfg.width = width;
-            cfg.func_name = name;
+        for (width, signed_val, name) in test_cases {
+            let cfg = ConstMbaConfig::new(
+                width,
+                NumberType::Signed,
+                2, 24, 3,
+                name.to_string(),
+            ).with_signed_constant(signed_val);
 
-            let ir = generate_mba(&cfg);
-            let is_valid = verify_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
-            println!("// Verification: {}", if is_valid { "PASSED" } else { "FAILED" });
-            let c = CPrinter { width: cfg.width }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
-            println!("// C Code:");
-            println!("{}", c);
+            let ir = generate_const_mba(&cfg);
+            let is_valid = verify_const_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
 
-            assert!(is_valid, "Generated MBA does not return the expected constant");
+            println!("// Testing {}: signed_val={}, bits=0x{:x}, verification={}",
+                     name, signed_val, cfg.constant, if is_valid { "PASSED" } else { "FAILED" });
+
+            let c = CPrinter {
+                width: cfg.width,
+                number_type: cfg.number_type
+            }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
+            println!("{}\n", c);
+
+            assert!(is_valid, "Generated signed MBA for {} does not return the expected constant", name);
+        }
+    }
+
+    #[test]
+    fn test_extreme_unsigned_values() {
+        let test_cases = vec![
+            (BitWidth::W8, u8::MIN as u128, "u8_min"),
+            (BitWidth::W8, u8::MAX as u128, "u8_max"),
+            (BitWidth::W16, u16::MIN as u128, "u16_min"),
+            (BitWidth::W16, u16::MAX as u128, "u16_max"),
+            (BitWidth::W32, u32::MIN as u128, "u32_min"),
+            (BitWidth::W32, u32::MAX as u128, "u32_max"),
+            (BitWidth::W64, u64::MIN as u128, "u64_min"),
+            (BitWidth::W64, u64::MAX as u128, "u64_max"),
+            (BitWidth::W128, u128::MIN as u128, "u128_min"),
+            (BitWidth::W128, u128::MAX as u128, "u128_max"),
+        ];
+
+        for (width, signed_val, name) in test_cases {
+            let cfg = ConstMbaConfig::new(
+                width,
+                NumberType::Unsigned,
+                2, 24, 3,
+                name.to_string(),
+            ).with_unsigned_constant(signed_val);
+
+            let ir = generate_const_mba(&cfg);
+            let is_valid = verify_const_mba(&ir, cfg.constant, cfg.width, cfg.aux_count);
+
+            println!("// Testing {}: unsigned_val={}, bits=0x{:x}, verification={}",
+                     name, signed_val, cfg.constant, if is_valid { "PASSED" } else { "FAILED" });
+
+            let c = CPrinter {
+                width: cfg.width,
+                number_type: cfg.number_type
+            }.emit_function(&cfg.func_name, cfg.aux_count, &ir);
+            println!("{}\n", c);
+
+            assert!(is_valid, "Generated unsigned MBA for {} does not return the expected constant", name);
         }
     }
 }
