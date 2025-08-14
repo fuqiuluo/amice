@@ -1,5 +1,5 @@
 pub mod bogus_control_flow;
-mod flatten;
+pub mod flatten;
 pub mod indirect_branch;
 pub mod indirect_call;
 pub mod lower_switch;
