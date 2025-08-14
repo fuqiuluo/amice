@@ -12,9 +12,7 @@ pub struct BogusControlFlowConfig {
 
 impl Default for BogusControlFlowConfig {
     fn default() -> Self {
-        Self {
-            enable: false,
-        }
+        Self { enable: false }
     }
 }
 

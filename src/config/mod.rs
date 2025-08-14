@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+pub use bogus_control_flow::BogusControlFlowConfig;
 pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
 pub use indirect_call::IndirectCallConfig;
 pub use lower_switch::LowerSwitchConfig;
@@ -18,8 +19,8 @@ pub use shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
 pub use split_basic_block::SplitBasicBlockConfig;
 pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use vm_flatten::VmFlattenConfig;
-pub use bogus_control_flow::{BogusControlFlowConfig};
 
+mod bogus_control_flow;
 mod flatten;
 mod indirect_branch;
 mod indirect_call;
@@ -30,7 +31,6 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
-mod bogus_control_flow;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
