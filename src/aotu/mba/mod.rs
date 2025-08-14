@@ -16,7 +16,9 @@ use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::llvm_sys;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue};
+use llvm_plugin::inkwell::values::{
+    AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue,
+};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, info, warn};
 use std::cmp::max;
@@ -127,7 +129,7 @@ impl LlvmModulePass for Mba {
                             }
 
                             if const_operands.is_empty() {
-                                continue
+                                continue;
                             }
 
                             constant_inst_vec.push((inst, const_operands))
