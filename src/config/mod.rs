@@ -18,6 +18,7 @@ pub use shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
 pub use split_basic_block::SplitBasicBlockConfig;
 pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use vm_flatten::VmFlattenConfig;
+pub use bogus_control_flow::{BogusControlFlowConfig};
 
 mod flatten;
 mod indirect_branch;
@@ -29,6 +30,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
+mod bogus_control_flow;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
@@ -52,6 +54,7 @@ pub struct Config {
     pub lower_switch: LowerSwitchConfig,
     pub flatten: FlattenConfig,
     pub mba: MbaConfig,
+    pub bogus_control_flow: BogusControlFlowConfig,
 }
 
 fn is_truthy(value: &str) -> bool {

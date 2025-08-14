@@ -6,6 +6,7 @@ pub(crate) mod pass_registry;
 use crate::config::CONFIG;
 use crate::pass_registry::PassPosition;
 use env_logger::builder;
+use llvm_plugin::PipelineParsing;
 use log::info;
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1.2")]
@@ -19,6 +20,10 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         amice_llvm::get_llvm_version_major(),
         amice_llvm::get_llvm_version_minor()
     );
+
+    builder.add_module_pipeline_parsing_callback(|name, manager| {
+        panic!("amice plugin module pipeline parsing callback, name: {}", name);
+    });
 
     builder.add_pipeline_start_ep_callback(|manager, opt| {
         info!("amice plugin pipeline start callback, level: {opt:?}");
