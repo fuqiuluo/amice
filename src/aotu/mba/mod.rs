@@ -16,9 +16,7 @@ use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::llvm_sys;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, PointerValue,
-};
+use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, info, warn};
 use std::cmp::max;
@@ -107,7 +105,33 @@ impl LlvmModulePass for Mba {
                         | InstructionOpcode::Sub
                         | InstructionOpcode::Or
                         | InstructionOpcode::Xor => binary_inst_vec.push(inst),
-                        _ => constant_inst_vec.push(inst),
+                        _ => {
+                            let mut const_operands = Vec::new();
+                            for i in 0..inst.get_num_operands() {
+                                let op = inst.get_operand(i);
+                                if let Some(operand) = op
+                                    && let Some(basic_value) = operand.left()
+                                    && basic_value.is_int_value()
+                                {
+                                    let int_value = basic_value.into_int_value();
+                                    if !int_value.is_constant_int() {
+                                        continue;
+                                    }
+
+                                    if int_value.is_null() {
+                                        continue;
+                                    }
+
+                                    const_operands.push((i, int_value));
+                                }
+                            }
+
+                            if const_operands.is_empty() {
+                                continue
+                            }
+
+                            constant_inst_vec.push((inst, const_operands))
+                        },
                     }
                 }
             }
@@ -155,11 +179,12 @@ impl LlvmModulePass for Mba {
                 "(mba) rewrite constant inst with mba done: {} insts",
                 constant_inst_vec.len()
             );
-            for inst in constant_inst_vec {
+            for (inst, const_operands) in constant_inst_vec {
                 if let Err(e) = rewrite_constant_inst_with_mba(
                     self,
                     module,
                     inst,
+                    const_operands,
                     global_aux_params.as_ref(),
                     stack_aux_params.as_ref(),
                 ) {
@@ -307,33 +332,10 @@ fn rewrite_constant_inst_with_mba<'a>(
     pass: &Mba,
     module: &mut Module<'a>,
     store: InstructionValue<'a>,
+    const_operands: Vec<(u32, IntValue<'a>)>,
     global_aux_params: Option<&HashMap<BitWidth, Vec<GlobalValue>>>,
     stack_aux_params: Option<&HashMap<BitWidth, Vec<PointerValue>>>,
 ) -> anyhow::Result<()> {
-    let mut const_operands = Vec::new();
-    for i in 0..store.get_num_operands() {
-        let op = store.get_operand(i);
-        if let Some(operand) = op
-            && let Some(basic_value) = operand.left()
-            && basic_value.is_int_value()
-        {
-            let int_value = basic_value.into_int_value();
-            if !int_value.is_constant_int() {
-                continue;
-            }
-
-            if int_value.is_null() {
-                continue;
-            }
-
-            const_operands.push((i, int_value));
-        }
-    }
-
-    if const_operands.is_empty() {
-        return Ok(());
-    }
-
     let ctx = module.get_context();
     let builder = ctx.create_builder();
     builder.position_before(&store);
