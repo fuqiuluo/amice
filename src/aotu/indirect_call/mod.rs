@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::module_utils::verify_function;
+use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
@@ -128,7 +128,7 @@ impl LlvmModulePass for IndirectCall {
         }
 
         for f in module.get_functions() {
-            if verify_function(f.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(f.as_value_ref() as *mut std::ffi::c_void) {
                 warn!("(indirect_call) function {:?} is not verified", f.get_name());
             }
         }
@@ -189,20 +189,6 @@ fn do_handle<'a>(
             args.push(get_operand);
         }
         let return_attributes = call_site.attributes(AttributeLoc::Return);
-
-        // TODO: https://github.com/TheDan64/inkwell/issues/592
-        // let fn_ptr = unsafe {
-        //     let value = LLVMBuildBitCast(
-        //         builder.as_mut_ptr(),
-        //         addr.as_value_ref(),
-        //         function.get_type().as_type_ref(),
-        //         to_c_str("").as_ptr()
-        //     );
-        //     InstructionValue::new(value)
-        // };
-        // 不再需要构建一个BitCast将指针转换为函数指针类型
-        // llvm高版本将所有的指针趋于同一个类型
-        // 直接传递指针即可
 
         let args = args.iter().map(|v| v.as_basic_value_enum().into()).collect::<Vec<_>>();
 

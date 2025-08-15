@@ -1,178 +1,209 @@
-// 文件：mba_constants_demo.c
-// 说明：纯 C、无随机、单文件、常量驱动的表达式集合，覆盖 8/16/32/64 位（含有符号/无符号）。
-// 注意点：
-// - 使用 <stdint.h> 的精确宽度类型与 INTx_C/UINTx_C 常量宏，避免实现相关差异。
-// - 避免未定义行为：不对负数做右移；移位量小于位宽；有符号运算避免溢出；循环移位在无符号类型上实现。
-// - 所有表达式均仅由常量组合；输出用于人工/脚本比对。
+// C
+/*
+ * md5.c - 自包含的 MD5 实现与示例
+ * 编译:
+ *   gcc -std=c11 -O2 -Wall -Wextra -o md5 md5.c
+ * 运行:
+ *   ./md5
+ */
 
-#include <stdint.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <string.h>
 
-#define U8(x)  UINT8_C(x)
-#define S8(x)  INT8_C(x)
-#define U16(x) UINT16_C(x)
-#define S16(x) INT16_C(x)
-#define U32(x) UINT32_C(x)
-#define S32(x) INT32_C(x)
-#define U64(x) UINT64_C(x)
-#define S64(x) INT64_C(x)
+typedef struct {
+    uint32_t state[4];   // A, B, C, D
+    uint64_t bitlen;     // 总比特长度
+    uint8_t  buffer[64]; // 512-bit 缓冲
+    size_t   buflen;     // 缓冲中已有字节数
+} MD5_CTX;
 
-// 安全循环移位（仅用于无符号类型）
-static inline uint8_t  rotl8 (uint8_t  v, unsigned r){ r&=7;  return (uint8_t)((uint8_t)(v<<r)|(uint8_t)(v>>(8-r))); }
-static inline uint8_t  rotr8 (uint8_t  v, unsigned r){ r&=7;  return (uint8_t)((uint8_t)(v>>r)|(uint8_t)(v<<(8-r))); }
-static inline uint16_t rotl16(uint16_t v, unsigned r){ r&=15; return (uint16_t)((uint16_t)(v<<r)|(uint16_t)(v>>(16-r))); }
-static inline uint16_t rotr16(uint16_t v, unsigned r){ r&=15; return (uint16_t)((uint16_t)(v>>r)|(uint16_t)(v<<(16-r))); }
-static inline uint32_t rotl32(uint32_t v, unsigned r){ r&=31; return (uint32_t)((v<<r)|(v>>(32u-r))); }
-static inline uint32_t rotr32(uint32_t v, unsigned r){ r&=31; return (uint32_t)((v>>r)|(v<<(32u-r))); }
-static inline uint64_t rotl64(uint64_t v, unsigned r){ r&=63; return (uint64_t)((v<<r)|(v>>(64u-r))); }
-static inline uint64_t rotr64(uint64_t v, unsigned r){ r&=63; return (uint64_t)((v>>r)|(v<<(64u-r))); }
-
-static void test_u8(void){
-    puts("=== uint8_t ===");
-    uint8_t a = U8(0x5A);
-    uint8_t b = (U8(0x12) + U8(7)) ^ U8(0xF0);
-    uint8_t c = (U8(0xFF) & U8(0x3C)) | U8(0x02);
-    uint8_t d = (U8(0x81) << 1);                // 0x102 -> 截断为 0x02
-    uint8_t e = (U8(0x40) >> 2);
-    uint8_t f = (uint8_t)(~U8(0x0F));
-    uint8_t g = rotl8(U8(0x3C), 3);
-    uint8_t h = rotr8(U8(0xA5), 4);
-    uint8_t i = (U8(200) - U8(57));             // 143 -> 0x8F
-    uint8_t j = (U8(11) * U8(7));               // 77
-    uint8_t k = (U8(0x55) ^ U8(0xAA)) + (U8(1) | U8(2));
-    uint8_t m = (U8(0x10) ? U8(0xFE) : U8(0x01));
-    uint8_t arr[4] = {U8(0x11),U8(0x22),U8(0x33),U8(0x44)};
-    uint8_t n = arr[(U8(6) & U8(3))];           // 6&3=2 -> 0x33
-    printf("a=%3u 0x%02X, b=%3u 0x%02X, c=%3u 0x%02X, d=%3u 0x%02X\n", a,a,b,b,c,c,d,d);
-    printf("e=%3u 0x%02X, f=%3u 0x%02X, g=%3u 0x%02X, h=%3u 0x%02X\n", e,e,f,f,g,g,h,h);
-    printf("i=%3u 0x%02X, j=%3u 0x%02X, k=%3u 0x%02X, m=%3u 0x%02X, n=%3u 0x%02X\n",
-           i,i,j,j,k,k,m,m,n,n);
+/* 左循环 */
+static inline uint32_t ROTL(uint32_t x, uint32_t n) {
+    return (x << n) | (x >> (32 - n));
 }
 
-static void test_s8(void){
-    puts("=== int8_t ===");
-    int8_t a = S8(42);
-    int8_t b = (int8_t)(S8(100) - S8(27));      // 73
-    int8_t c = (int8_t)(S8(12) * S8(5));        // 60
-    int8_t d = (int8_t)(S8(-60) + S8(50));      // -10
-    int8_t e = (int8_t)(S8(0x7F) & S8(0x3C));   // 60
-    int8_t f = (int8_t)(S8(0x55) ^ S8(0x2A));   // 0x7F
-    // 移位在有符号上小心：仅对非负数做右移，避免实现定义
-    int8_t g = (int8_t)((uint8_t)S8(0x7C) >> 2); // 0x1F -> 31
-    int8_t h = (int8_t)((uint8_t)S8(0x11) << 3); // 0x88 -> -120
-    int8_t i = (S8(-1) ? S8(5) : S8(6));        // 5
-    printf("a=%4d, b=%4d, c=%4d, d=%4d, e=%4d, f=%4d, g=%4d, h=%4d, i=%4d\n",
-           a,b,c,d,e,f,g,h,i);
+/* 基本函数 */
+#define F(x,y,z) (((x) & (y)) | ((~(x)) & (z)))
+#define G(x,y,z) (((x) & (z)) | ((y) & (~(z))))
+#define H(x,y,z) ((x) ^ (y) ^ (z))
+#define I(x,y,z) ((y) ^ ((x) | (~(z))))
+
+/* 每轮操作 */
+#define STEP(f, a, b, c, d, x, t, s) \
+    (a) += f((b), (c), (d)) + (x) + (t); \
+    (a) = (b) + ROTL((a), (s))
+
+/* 小端读取 32 位 */
+static inline uint32_t le32load(const uint8_t p[4]) {
+    return (uint32_t)p[0]
+         | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16)
+         | ((uint32_t)p[3] << 24);
 }
 
-static void test_u16(void){
-    puts("=== uint16_t ===");
-    uint16_t a = U16(0x1234) + U16(0x0101);
-    uint16_t b = (U16(0xFFFF) ^ U16(0x00FF));
-    uint16_t c = (U16(0x0F0F) | U16(0x00F0));
-    uint16_t d = (U16(0x8001) << 1);            // -> 0x0002 (溢出截断)
-    uint16_t e = (U16(0x4000) >> 3);
-    uint16_t f = (uint16_t)(~U16(0x00FF));
-    uint16_t g = rotl16(U16(0x1337), 7);
-    uint16_t h = rotr16(U16(0xBEEF), 9);
-    uint16_t i = (U16(5000) - U16(1234));
-    uint16_t j = (U16(123) * U16(45));
-    printf("a=0x%04X b=0x%04X c=0x%04X d=0x%04X e=0x%04X f=0x%04X g=0x%04X h=0x%04X i=%u j=%u\n",
-           a,b,c,d,e,f,g,h,i,j);
+/* 小端写出 32 位 */
+static inline void le32store(uint8_t p[4], uint32_t v) {
+    p[0] = (uint8_t)(v);
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
 }
 
-static void test_s16(void){
-    puts("=== int16_t ===");
-    int16_t a = S16(30000) - S16(1000);         // 29000 (安全范围)
-    int16_t b = (int16_t)(S16(1234) * S16(5));  // 6170
-    int16_t c = (int16_t)(S16(0x7FFF) & S16(0x0FF0));
-    int16_t d = (int16_t)(S16(-32000) + S16(123)); // -31877
-    int16_t e = (int16_t)((uint16_t)S16(0x7F00) >> 4); // 0x07F0 -> 2032
-    int16_t f = (S16(0) ? S16(1) : S16(-1));    // -1
-    printf("a=%6d b=%6d c=0x%04X d=%6d e=%6d f=%6d\n", a,b,(uint16_t)c,d,e,f);
+static void md5_transform(uint32_t s[4], const uint8_t block[64]) {
+    uint32_t a = s[0], b = s[1], c = s[2], d = s[3];
+    uint32_t x[16];
+    for (int i = 0; i < 16; ++i) {
+        x[i] = le32load(block + i * 4);
+    }
+
+    // T 常量 (前 64 个正弦值 * 2^32 的整数部分)
+    static const uint32_t T[64] = {
+        0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,
+        0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,0x6b901122,0xfd987193,0xa679438e,0x49b40821,
+        0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,
+        0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,
+        0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,
+        0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,
+        0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,
+        0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391
+    };
+
+    // 第 1 轮
+    STEP(F,a,b,c,d,x[ 0],T[ 0], 7); STEP(F,d,a,b,c,x[ 1],T[ 1],12);
+    STEP(F,c,d,a,b,x[ 2],T[ 2],17); STEP(F,b,c,d,a,x[ 3],T[ 3],22);
+    STEP(F,a,b,c,d,x[ 4],T[ 4], 7); STEP(F,d,a,b,c,x[ 5],T[ 5],12);
+    STEP(F,c,d,a,b,x[ 6],T[ 6],17); STEP(F,b,c,d,a,x[ 7],T[ 7],22);
+    STEP(F,a,b,c,d,x[ 8],T[ 8], 7); STEP(F,d,a,b,c,x[ 9],T[ 9],12);
+    STEP(F,c,d,a,b,x[10],T[10],17); STEP(F,b,c,d,a,x[11],T[11],22);
+    STEP(F,a,b,c,d,x[12],T[12], 7); STEP(F,d,a,b,c,x[13],T[13],12);
+    STEP(F,c,d,a,b,x[14],T[14],17); STEP(F,b,c,d,a,x[15],T[15],22);
+
+    // 第 2 轮
+    STEP(G,a,b,c,d,x[ 1],T[16], 5); STEP(G,d,a,b,c,x[ 6],T[17], 9);
+    STEP(G,c,d,a,b,x[11],T[18],14); STEP(G,b,c,d,a,x[ 0],T[19],20);
+    STEP(G,a,b,c,d,x[ 5],T[20], 5); STEP(G,d,a,b,c,x[10],T[21], 9);
+    STEP(G,c,d,a,b,x[15],T[22],14); STEP(G,b,c,d,a,x[ 4],T[23],20);
+    STEP(G,a,b,c,d,x[ 9],T[24], 5); STEP(G,d,a,b,c,x[14],T[25], 9);
+    STEP(G,c,d,a,b,x[ 3],T[26],14); STEP(G,b,c,d,a,x[ 8],T[27],20);
+    STEP(G,a,b,c,d,x[13],T[28], 5); STEP(G,d,a,b,c,x[ 2],T[29], 9);
+    STEP(G,c,d,a,b,x[ 7],T[30],14); STEP(G,b,c,d,a,x[12],T[31],20);
+
+    // 第 3 轮
+    STEP(H,a,b,c,d,x[ 5],T[32], 4); STEP(H,d,a,b,c,x[ 8],T[33],11);
+    STEP(H,c,d,a,b,x[11],T[34],16); STEP(H,b,c,d,a,x[14],T[35],23);
+    STEP(H,a,b,c,d,x[ 1],T[36], 4); STEP(H,d,a,b,c,x[ 4],T[37],11);
+    STEP(H,c,d,a,b,x[ 7],T[38],16); STEP(H,b,c,d,a,x[10],T[39],23);
+    STEP(H,a,b,c,d,x[13],T[40], 4); STEP(H,d,a,b,c,x[ 0],T[41],11);
+    STEP(H,c,d,a,b,x[ 3],T[42],16); STEP(H,b,c,d,a,x[ 6],T[43],23);
+    STEP(H,a,b,c,d,x[ 9],T[44], 4); STEP(H,d,a,b,c,x[12],T[45],11);
+    STEP(H,c,d,a,b,x[15],T[46],16); STEP(H,b,c,d,a,x[ 2],T[47],23);
+
+    // 第 4 轮
+    STEP(I,a,b,c,d,x[ 0],T[48], 6); STEP(I,d,a,b,c,x[ 7],T[49],10);
+    STEP(I,c,d,a,b,x[14],T[50],15); STEP(I,b,c,d,a,x[ 5],T[51],21);
+    STEP(I,a,b,c,d,x[12],T[52], 6); STEP(I,d,a,b,c,x[ 3],T[53],10);
+    STEP(I,c,d,a,b,x[10],T[54],15); STEP(I,b,c,d,a,x[ 1],T[55],21);
+    STEP(I,a,b,c,d,x[ 8],T[56], 6); STEP(I,d,a,b,c,x[15],T[57],10);
+    STEP(I,c,d,a,b,x[ 6],T[58],15); STEP(I,b,c,d,a,x[13],T[59],21);
+    STEP(I,a,b,c,d,x[ 4],T[60], 6); STEP(I,d,a,b,c,x[11],T[61],10);
+    STEP(I,c,d,a,b,x[ 2],T[62],15); STEP(I,b,c,d,a,x[ 9],T[63],21);
+
+    s[0] += a; s[1] += b; s[2] += c; s[3] += d;
 }
 
-static void test_u32(void){
-    puts("=== uint32_t ===");
-    uint32_t a = U32(0x89ABCDEF) ^ U32(0x13579BDF);
-    uint32_t b = (U32(0xDEADBEEF) & U32(0x00FFFFFF)) | U32(0x11000000);
-    uint32_t c = U32(0x01234567) + U32(0x89ABCDEF);
-    uint32_t d = U32(0x1) << 31;                // 最高位
-    uint32_t e = U32(0x80000000) >> 3;          // 逻辑右移
-    uint32_t f = (uint32_t)(~U32(0x0F0F0F0F));
-    uint32_t g = rotl32(U32(0x13371337), 13);
-    uint32_t h = rotr32(U32(0xC001D00D), 7);
-    uint32_t i = (U32(100000) * U32(300)) + (U32(1)<<5);
-    uint32_t j = (U32(0xAAAAAAAA) | U32(0x55555555)) ^ U32(0xFFFFFFFF);
-    printf("a=0x%08X b=0x%08X c=0x%08X d=0x%08X e=0x%08X f=0x%08X\n", a,b,c,d,e,f);
-    printf("g=0x%08X h=0x%08X i=%u (0x%08X) j=0x%08X\n", g,h,i,i,j);
+static void md5_init(MD5_CTX* ctx) {
+    ctx->state[0] = 0x67452301u;
+    ctx->state[1] = 0xefcdab89u;
+    ctx->state[2] = 0x98badcfeu;
+    ctx->state[3] = 0x10325476u;
+    ctx->bitlen   = 0;
+    ctx->buflen   = 0;
 }
 
-static void test_s32(void){
-    puts("=== int32_t ===");
-    int32_t a = S32(2000000000) - S32(123456789); // 1876543211 (安全)
-    int32_t b = (int32_t)(S32(123456) * S32(7));  // 864192
-    int32_t c = (int32_t)(S32(0x7FFFFFFF) & S32(0x0FFF0FFF));
-    int32_t d = (int32_t)((uint32_t)S32(0x7FFF0000) >> 8); // 逻辑右移后再转回
-    int32_t e = (S32(42) ? S32(-3141592) : S32(2718281));
-    printf("a=%11d b=%9d c=0x%08X d=%11d e=%11d\n", a,b,(uint32_t)c,d,e);
+static void md5_update(MD5_CTX* ctx, const void* data, size_t len) {
+    const uint8_t* p = (const uint8_t*)data;
+    ctx->bitlen += (uint64_t)len * 8;
+
+    while (len > 0) {
+        size_t space = 64 - ctx->buflen;
+        size_t take = (len < space) ? len : space;
+        memcpy(ctx->buffer + ctx->buflen, p, take);
+        ctx->buflen += take;
+        p += take;
+        len -= take;
+
+        if (ctx->buflen == 64) {
+            md5_transform(ctx->state, ctx->buffer);
+            ctx->buflen = 0;
+        }
+    }
 }
 
-static void test_u64(void){
-    puts("=== uint64_t ===");
-    uint64_t a = U64(0x0123456789ABCDEF) ^ U64(0xF0E1D2C3B4A59687);
-    uint64_t b = (U64(0xDEADBEEFCAFEBABE) & U64(0x00000000FFFFFFFF)) | U64(0x1234567800000000);
-    uint64_t c = U64(0x0000FFFF0000FFFF) + U64(0x1111111100000001);
-    uint64_t d = U64(1) << 63;                   // 最高位
-    uint64_t e = U64(0x8000000000000000) >> 4;   // 逻辑右移
-    uint64_t f = (uint64_t)(~U64(0x00FF00FF00FF00FF));
-    uint64_t g = rotl64(U64(0x0123456789ABCDEF), 29);
-    uint64_t h = rotr64(U64(0xF00DBABEDEADC0DE), 17);
-    uint64_t i = (U64(123456789) * U64(1000000)) + U64(0x1234);
-    uint64_t j = ((U64(0xAAAAAAAAAAAAAAAA) | U64(0x5555555555555555)) ^ U64(0xFFFFFFFFFFFFFFFF));
-    printf("a=0x%016llX\nb=0x%016llX\nc=0x%016llX\nd=0x%016llX\ne=0x%016llX\n",
-           (unsigned long long)a,(unsigned long long)b,(unsigned long long)c,
-           (unsigned long long)d,(unsigned long long)e);
-    printf("f=0x%016llX\ng=0x%016llX\nh=0x%016llX\ni=%llu (0x%016llX)\nj=0x%016llX\n",
-           (unsigned long long)f,(unsigned long long)g,(unsigned long long)h,
-           (unsigned long long)i,(unsigned long long)i,(unsigned long long)j);
+static void md5_final(MD5_CTX* ctx, uint8_t out[16]) {
+    // 填充：0x80 后跟 0x00，直到剩余 8 字节放长度
+    uint8_t pad = 0x80;
+    md5_update(ctx, &pad, 1);
+    uint8_t zero = 0x00;
+    while (ctx->buflen != 56) {
+        if (ctx->buflen == 64) {
+            md5_transform(ctx->state, ctx->buffer);
+            ctx->buflen = 0;
+        }
+        md5_update(ctx, &zero, 1);
+    }
+
+    // 附加长度（小端 64 位）
+    uint8_t lenle[8];
+    uint64_t bitlen = ctx->bitlen;
+    for (int i = 0; i < 8; ++i) {
+        lenle[i] = (uint8_t)(bitlen >> (8 * i));
+    }
+    md5_update(ctx, lenle, 8);
+
+    // 导出摘要（A,B,C,D 小端）
+    for (int i = 0; i < 4; ++i) {
+        le32store(out + 4*i, ctx->state[i]);
+    }
 }
 
-static void test_s64(void){
-    puts("=== int64_t ===");
-    int64_t a = S64(4000000000000000000) - S64(1234567890123456789); // 安全
-    int64_t b = (int64_t)(S64(123456789) * S64(9876));               // 安全
-    int64_t c = (int64_t)(S64(0x7FFFFFFFFFFFFFFF) & S64(0x0000FFFF0000FFFF));
-    // 逻辑右移在无符号上进行再转回
-    int64_t d = (int64_t)((uint64_t)S64(0x7FFF000000000000) >> 12);
-    int64_t e = (S64(-1) ? S64(-9223372036854775807) : S64(123));   // 避免用 INT64_MIN 直接字面量相加减
-    printf("a=%20lld\nb=%20lld\nc=0x%016llX\nd=%20lld\ne=%20lld\n",
-           (long long)a,(long long)b,(unsigned long long)c,(long long)d,(long long)e);
+static void md5(const void* data, size_t len, uint8_t out[16]) {
+    MD5_CTX ctx;
+    md5_init(&ctx);
+    md5_update(&ctx, data, len);
+    md5_final(&ctx, out);
 }
 
-static void test_mixed_width(void){
-    puts("=== Mixed width ===");
-    // 不同宽度的常量混合与显式收缩
-    uint16_t a = (uint16_t)(U8(200) + U16(1000));          // 1200
-    uint8_t  b = (uint8_t)((U16(0x1234) + U32(0x89)) & U16(0x00FF)); // 0xBD -> 189
-    uint32_t c = (uint32_t)(U64(0x1FFFF) * U32(3));        // 0x5FFFD
-    uint64_t d = (uint64_t)(U32(0xDEADBEEF) | U64(0xF000000000000000));
-    uint8_t  e = (uint8_t)((U32(0x0000ABCD) >> 2) & U32(0xFF));
-    int16_t  f = (int16_t)((S32(30000) - S32(123)) & S32(0x7FFF));   // 保证非负
-    uint32_t g = (uint32_t)((U8(0xF0) << 20) | (U16(0x0AAA) << 4) | (U8(0x0F)));
-    printf("a=%u b=%u c=%u d=0x%016llX e=%u f=%d g=0x%08X\n",
-           a,b,c,(unsigned long long)d,e,f,g);
+static void md5_hex(const void* data, size_t len, char hex[33]) {
+    static const char* digits = "0123456789abcdef";
+    uint8_t digest[16];
+    md5(data, len, digest);
+    for (int i = 0; i < 16; ++i) {
+        hex[2*i]   = digits[(digest[i] >> 4) & 0xF];
+        hex[2*i+1] = digits[digest[i] & 0xF];
+    }
+    hex[32] = '\0';
 }
 
-int main(void){
-    test_u8();
-    test_s8();
-    test_u16();
-    test_s16();
-    test_u32();
-    test_s32();
-    test_u64();
-    test_s64();
-    test_mixed_width();
+int main(void) {
+    const char* tests[] = {
+        "", "a", "abc", "message digest",
+        "abcdefghijklmnopqrstuvwxyz",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+        "1234567890"
+    };
+    const size_t n = sizeof(tests)/sizeof(tests[0]);
+
+    for (size_t i = 0; i < n; ++i) {
+        char hex[33];
+        md5_hex(tests[i], strlen(tests[i]), hex);
+        printf("MD5(\"%s\") = %s\n", tests[i], hex);
+    }
+
+    const uint8_t data_bin[] = {0x00, 0x01, 0x02, 0xFF};
+    char hex_bin[33];
+    md5_hex(data_bin, sizeof(data_bin), hex_bin);
+    printf("MD5([00 01 02 FF]) = %s\n", hex_bin);
+
     return 0;
 }

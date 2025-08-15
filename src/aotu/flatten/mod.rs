@@ -5,7 +5,7 @@ use crate::llvm_utils::branch_inst;
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::fix_stack;
-use amice_llvm::module_utils::verify_function;
+use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -88,7 +88,7 @@ impl LlvmModulePass for Flatten {
                 }
             }
 
-            if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
                 warn!("(flatten) function {:?} verify failed", function.get_name());
             }
         }

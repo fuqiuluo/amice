@@ -12,7 +12,7 @@ use crate::aotu::mba::generator::generate_constant_mba_function;
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::fix_stack;
-use amice_llvm::module_utils::verify_function;
+use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use llvm_plugin::inkwell::llvm_sys;
 use llvm_plugin::inkwell::module::{Linkage, Module};
@@ -24,7 +24,10 @@ use log::{debug, error, info, warn};
 use std::cmp::max;
 use std::collections::HashMap;
 
-#[amice(priority = 955, name = "Mba", position = PassPosition::PipelineStart | PassPosition::OptimizerLast
+#[amice(
+    priority = 955,
+    name = "Mba",
+    position = PassPosition::PipelineStart | PassPosition::OptimizerLast
 )]
 #[derive(Default)]
 pub struct Mba {
@@ -44,6 +47,10 @@ impl AmicePassLoadable for Mba {
         self.rewrite_depth = max(3, cfg.mba.rewrite_depth);
         self.alloc_aux_params_in_global = cfg.mba.alloc_aux_params_in_global;
         self.fix_stack = cfg.mba.fix_stack;
+
+        if !self.enable {
+            return false;
+        }
 
         // 如果alloc_aux_params_in_global为true则允许在没有优化的时候注册该Pass
         if cfg.mba.alloc_aux_params_in_global {
@@ -210,7 +217,7 @@ impl LlvmModulePass for Mba {
                 }
             }
 
-            if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
                 warn!("(mba) function {:?} is not verified", function.get_name());
             }
 
