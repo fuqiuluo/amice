@@ -1,20 +1,22 @@
 use crate::config::Config;
+use crate::llvm_utils::branch_inst;
+use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::module_utils::verify_function;
+use amice_llvm::module_utils::{verify_function, VerifyResult};
 use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::types::BasicType;
-use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, FunctionValue, GlobalValue, InstructionOpcode, IntValue, PhiValue};
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
 use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::inkwell::types::BasicType;
+use llvm_plugin::inkwell::values::{
+    AsValueRef, BasicValue, FunctionValue, GlobalValue, InstructionOpcode, IntValue, PhiValue,
+};
+use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, warn};
 use rand::Rng;
-use crate::llvm_utils::branch_inst;
-use crate::llvm_utils::function::get_basic_block_entry;
 
 #[amice(priority = 950, name = "BogusControlFlow", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -22,6 +24,8 @@ pub struct BogusControlFlow {
     enable: bool,
     probability: u32,
     loop_count: u32,
+    x: i32,
+    y: i32,
 }
 
 impl AmicePassLoadable for BogusControlFlow {
@@ -37,6 +41,9 @@ impl AmicePassLoadable for BogusControlFlow {
             );
         }
 
+        self.x = rand::random();
+        self.y = rand::random();
+
         self.enable
     }
 }
@@ -48,7 +55,7 @@ impl LlvmModulePass for BogusControlFlow {
         }
 
         // Create global variables for opaque predicates
-        let globals = create_opaque_predicate_globals(module);
+        let globals = create_opaque_predicate_globals(self, module);
 
         for function in module.get_functions() {
             if function.count_basic_blocks() == 0 {
@@ -56,14 +63,14 @@ impl LlvmModulePass for BogusControlFlow {
             }
 
             for _ in 0..self.loop_count {
-                if let Err(e) = handle_function(function, &globals, self.probability) {
+                if let Err(e) = handle_function(self, function, &globals, self.probability) {
                     warn!("(bogus-control-flow) failed to obfuscate function: {}", e);
                 }
             }
 
             // Verify function after transformation
-            if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
-                warn!("(bogus-control-flow) function {:?} verify failed", function.get_name());
+            if let VerifyResult::Broken(msg) = verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
+                warn!("(bogus-control-flow) function {:?} verify failed: {}", function.get_name(), msg);
             }
         }
 
@@ -72,16 +79,16 @@ impl LlvmModulePass for BogusControlFlow {
 }
 
 /// Create global variables used for opaque predicates
-fn create_opaque_predicate_globals<'a>(module: &mut Module<'a>) -> OpaquePredicateGlobals<'a> {
+fn create_opaque_predicate_globals<'a>(pass: &BogusControlFlow, module: &mut Module<'a>) -> OpaquePredicateGlobals<'a> {
     let context = module.get_context();
     let i32_type = context.i32_type();
 
     // Create global x and y variables for opaque predicates
     let x_global = module.add_global(i32_type, None, "amice_x");
-    x_global.set_initializer(&i32_type.const_int(1, false));
+    x_global.set_initializer(&i32_type.const_int(pass.x as u64, false));
 
     let y_global = module.add_global(i32_type, None, "amice_y");
-    y_global.set_initializer(&i32_type.const_int(0, false));
+    y_global.set_initializer(&i32_type.const_int(pass.y as u64, false));
 
     OpaquePredicateGlobals {
         x: x_global,
@@ -95,6 +102,7 @@ struct OpaquePredicateGlobals<'a> {
 }
 
 fn handle_function(
+    pass: &BogusControlFlow,
     function: FunctionValue<'_>,
     globals: &OpaquePredicateGlobals<'_>,
     probability: u32,
@@ -126,7 +134,7 @@ fn handle_function(
 
     // Apply bogus control flow to selected blocks
     for bb in blocks_to_modify {
-        if let Err(e) = apply_bogus_control_flow_to_unconditional_branch(function, bb, globals) {
+        if let Err(e) = apply_bogus_control_flow_to_unconditional_branch(pass, function, bb, globals) {
             warn!("Failed to apply bogus control flow to block: {}", e);
         }
     }
@@ -136,6 +144,7 @@ fn handle_function(
 
 /// Apply a simplified version of bogus control flow
 fn apply_bogus_control_flow_to_unconditional_branch(
+    pass: &BogusControlFlow,
     function: FunctionValue<'_>,
     original_block: BasicBlock<'_>,
     globals: &OpaquePredicateGlobals<'_>,
@@ -168,21 +177,20 @@ fn apply_bogus_control_flow_to_unconditional_branch(
     // Build from original block to condition block
     builder.position_at_end(original_block);
     builder.build_unconditional_branch(condition_block)?;
+    update_phi_nodes(original_block, condition_block, target_bb);
 
     // Build condition block with opaque predicate
     builder.position_at_end(condition_block);
-    let condition = create_simple_opaque_predicate(&builder, globals)?;
-    builder.build_conditional_branch(condition, target_bb, fake_block)?;
+    let (is_true, condition) = create_simple_opaque_predicate(pass, &builder, globals)?;
+    let then_block = if is_true { target_bb } else { fake_block };
+    let else_block = if is_true { fake_block } else { target_bb };
+    builder.build_conditional_branch(condition, then_block, else_block)?;
 
     // Build fake block (should never be executed)
     builder.position_at_end(fake_block);
-
     // Add some junk instructions
-
-    match rand::random_range(0 ..= 5) {
-        0 => {
-
-        }
+    match rand::random_range(0..=5) {
+        0 => {},
         _ => {
             let i32_type = context.i32_type();
             let val1 = i32_type.const_int(rand::random::<u32>() as u64, false);
@@ -191,24 +199,12 @@ fn apply_bogus_control_flow_to_unconditional_branch(
             let junk2 = builder.build_int_mul(val1, val2, "junk2")?;
             builder.build_store(globals.x.as_pointer_value(), junk1)?;
             builder.build_store(globals.y.as_pointer_value(), junk2)?;
-        }
+        },
     }
-
     // Jump to target (this should never execute)
     builder.build_unconditional_branch(target_bb)?;
+    update_phi_nodes(condition_block, fake_block, target_bb);
 
-    update_phi_nodes(
-        original_block,
-        condition_block,
-        target_bb,
-    );
-    update_phi_nodes(
-        condition_block,
-        fake_block,
-        target_bb,
-    );
-
-    // Remove the original terminator
     terminator.erase_from_basic_block();
 
     Ok(())
@@ -252,11 +248,16 @@ fn update_phi_nodes<'ctx>(old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>
 
 /// Create a simple opaque predicate that always evaluates to true
 fn create_simple_opaque_predicate<'a>(
+    pass: &BogusControlFlow,
     builder: &Builder<'a>,
     globals: &OpaquePredicateGlobals<'a>,
-) -> anyhow::Result<IntValue<'a>> {
+) -> anyhow::Result<(bool, IntValue<'a>)> {
     let context = builder.get_insert_block().unwrap().get_context();
     let i32_type = context.i32_type();
+    let i32_zero = i32_type.const_int(0, false);
+
+    let mut bits = [false; 2];
+    rand::fill(&mut bits);
 
     // Load global variables
     let x_val = builder
@@ -266,9 +267,69 @@ fn create_simple_opaque_predicate<'a>(
         .build_load(i32_type, globals.y.as_pointer_value(), "y_val")?
         .into_int_value();
 
-    // Simple predicate: y < 10 (should always be true since y = 0)
-    let ten = i32_type.const_int(10, false);
-    let result = builder.build_int_compare(IntPredicate::SLT, y_val, ten, "always_true")?;
+    let (mut opaque_val, val) = if bits[0] {
+        (x_val, pass.x) // Use x if first bit is true
+    } else {
+        (y_val, pass.y) // Use y if first bit is false
+    };
 
-    Ok(result)
+    let mut new_val = if rand::random::<bool>() {
+        rand::random::<i32>()
+    } else {
+        val
+    };
+
+    let op = [
+        InstructionOpcode::And,
+        InstructionOpcode::Or,
+        InstructionOpcode::Xor,
+        InstructionOpcode::Return,
+    ];
+    let op = op[rand::random_range(0..op.len())];
+    match op {
+        InstructionOpcode::And => {
+            opaque_val = builder.build_and(opaque_val, i32_type.const_int(new_val as u64, false), "opaque_and")?;
+            new_val = new_val & val;
+        },
+        InstructionOpcode::Or => {
+            opaque_val = builder.build_or(opaque_val, i32_type.const_int(new_val as u64, false), "opaque_or")?;
+            new_val = new_val | val;
+        },
+        InstructionOpcode::Xor => {
+            opaque_val = builder.build_xor(opaque_val, i32_type.const_int(new_val as u64, false), "opaque_xor")?;
+            new_val = new_val ^ val;
+        },
+        _ => {},
+    };
+
+    let rand_val = rand::random::<i32>();
+    let is_gt = new_val > rand_val;
+    let is_lt = new_val < rand_val;
+    let is_eq = new_val == rand_val;
+    let rand_val = i32_type.const_int(rand_val as u64, false);
+
+    // bits[1] is true ==> condition always true
+    let (pred, lhs, rhs) = match (is_gt, is_lt, is_eq) {
+        (true, false, false) => (
+            IntPredicate::SGT,
+            if bits[1] { opaque_val } else { rand_val },
+            if bits[1] { rand_val } else { opaque_val },
+        ),
+        (false, true, false) => (
+            IntPredicate::SLT,
+            if bits[1] { opaque_val } else { rand_val },
+            if bits[1] { rand_val } else { opaque_val },
+        ),
+        (false, false, true) => (
+            if bits[1] { IntPredicate::EQ } else { IntPredicate::NE },
+            if bits[1] { opaque_val } else { rand_val },
+            if bits[1] { rand_val } else { opaque_val },
+        ),
+        _ => panic!("Invalid condition"),
+    };
+
+    let label = if bits[1] { "always_true" } else { "always_false" };
+    let result = builder.build_int_compare(pred, lhs, rhs, label)?;
+
+    Ok((bits[1], result))
 }
