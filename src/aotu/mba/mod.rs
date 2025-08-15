@@ -48,6 +48,10 @@ impl AmicePassLoadable for Mba {
         self.alloc_aux_params_in_global = cfg.mba.alloc_aux_params_in_global;
         self.fix_stack = cfg.mba.fix_stack;
 
+        if !self.enable {
+            return false;
+        }
+
         // 如果alloc_aux_params_in_global为true则允许在没有优化的时候注册该Pass
         if cfg.mba.alloc_aux_params_in_global {
             // 如果直接返回true，你回收获一个超级大的可执行文件，hhh
