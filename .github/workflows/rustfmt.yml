@@ -5,10 +5,6 @@ on:
     branches:
       - master
       - main
-  pull_request:
-    branches:
-      - master
-      - main
 
 concurrency:
   group: auto-format-rust-${{ github.ref }}
