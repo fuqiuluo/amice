@@ -15,7 +15,7 @@ use llvm_plugin::inkwell::values::{
     AsValueRef, BasicValue, FunctionValue, GlobalValue, InstructionOpcode, IntValue, PhiValue, PointerValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, log_enabled, warn, Level};
+use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 
 #[amice(priority = 950, name = "BogusControlFlow", position = PassPosition::PipelineStart)]
@@ -151,13 +151,8 @@ fn handle_function(
 
     // Apply bogus control flow to selected blocks
     for bb in blocks_to_modify {
-        if let Err(e) = apply_bogus_control_flow_to_unconditional_branch(
-            pass,
-            function,
-            bb,
-            globals,
-            &stack_predicates
-        ) {
+        if let Err(e) = apply_bogus_control_flow_to_unconditional_branch(pass, function, bb, globals, &stack_predicates)
+        {
             warn!("Failed to apply bogus control flow to block: {}", e);
         }
     }
@@ -216,12 +211,7 @@ fn apply_bogus_control_flow_to_unconditional_branch(
             globals.y.as_pointer_value(),
         )?
     } else {
-        create_simple_opaque_predicate(
-            pass,
-            &builder,
-            stack.0,
-            stack.1,
-        )?
+        create_simple_opaque_predicate(pass, &builder, stack.0, stack.1)?
     };
     let then_block = if is_true { target_bb } else { fake_block };
     let else_block = if is_true { fake_block } else { target_bb };
@@ -230,7 +220,7 @@ fn apply_bogus_control_flow_to_unconditional_branch(
     // Build fake block (should never be executed)
     builder.position_at_end(fake_block);
     // Add some junk instructions
-    match rand::random_range(0 ..= 10) {
+    match rand::random_range(0..=10) {
         0..3 => {
             let junk1 = builder.build_load(i32_type, globals.x.as_pointer_value(), "junk1")?;
             let junk2 = builder.build_load(i32_type, globals.y.as_pointer_value(), "junk2")?;
@@ -252,10 +242,10 @@ fn apply_bogus_control_flow_to_unconditional_branch(
             } else {
                 builder.build_unconditional_branch(else_block)?;
             }
-        }
+        },
         8 => {
             builder.build_unreachable()?;
-        }
+        },
         _ => {
             let val1 = i32_type.const_int(rand::random::<u32>() as u64, false);
             let val2 = i32_type.const_int(13, false);

@@ -1,8 +1,8 @@
-use std::cmp::{max, min};
 use super::bool_var;
 use crate::pass_registry::EnvOverlay;
 use log::warn;
 use serde::{Deserialize, Serialize};
+use std::cmp::{max, min};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -34,10 +34,7 @@ impl EnvOverlay for BogusControlFlowConfig {
                 if val <= 100 {
                     self.probability = val;
                 } else {
-                    warn!(
-                        "AMICE_BOGUS_CONTROL_FLOW_PROB must be <= 100, got {}, using 100%",
-                        val
-                    );
+                    warn!("AMICE_BOGUS_CONTROL_FLOW_PROB must be <= 100, got {}, using 100%", val);
                     self.probability = min(100, max(0, val));
                 }
             } else {
