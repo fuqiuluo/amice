@@ -190,20 +190,6 @@ fn do_handle<'a>(
         }
         let return_attributes = call_site.attributes(AttributeLoc::Return);
 
-        // TODO: https://github.com/TheDan64/inkwell/issues/592
-        // let fn_ptr = unsafe {
-        //     let value = LLVMBuildBitCast(
-        //         builder.as_mut_ptr(),
-        //         addr.as_value_ref(),
-        //         function.get_type().as_type_ref(),
-        //         to_c_str("").as_ptr()
-        //     );
-        //     InstructionValue::new(value)
-        // };
-        // 不再需要构建一个BitCast将指针转换为函数指针类型
-        // llvm高版本将所有的指针趋于同一个类型
-        // 直接传递指针即可
-
         let args = args.iter().map(|v| v.as_basic_value_enum().into()).collect::<Vec<_>>();
 
         let new_call_site = builder.build_indirect_call(function.get_type(), addr, &args, "")?;
