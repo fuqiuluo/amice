@@ -1,3 +1,4 @@
+use std::cmp::{max, min};
 use super::bool_var;
 use crate::pass_registry::EnvOverlay;
 use log::warn;
@@ -17,7 +18,7 @@ impl Default for BogusControlFlowConfig {
     fn default() -> Self {
         Self {
             enable: false,
-            probability: 30,
+            probability: 80,
             loop_count: 1,
         }
     }
@@ -34,9 +35,10 @@ impl EnvOverlay for BogusControlFlowConfig {
                     self.probability = val;
                 } else {
                     warn!(
-                        "AMICE_BOGUS_CONTROL_FLOW_PROB must be 0-100, got {}, using default",
+                        "AMICE_BOGUS_CONTROL_FLOW_PROB must be <= 100, got {}, using 100%",
                         val
                     );
+                    self.probability = min(100, max(0, val));
                 }
             } else {
                 warn!("Invalid AMICE_BOGUS_CONTROL_FLOW_PROB value: {}, using default", prob);

@@ -24,7 +24,10 @@ use log::{debug, error, info, warn};
 use std::cmp::max;
 use std::collections::HashMap;
 
-#[amice(priority = 890, name = "Mba", position = PassPosition::PipelineStart | PassPosition::OptimizerLast
+#[amice(
+    priority = 955,
+    name = "Mba",
+    position = PassPosition::PipelineStart | PassPosition::OptimizerLast
 )]
 #[derive(Default)]
 pub struct Mba {
