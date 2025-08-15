@@ -1,7 +1,7 @@
 # 项目结构
 
 - 仓库：amice
-- 生成时间：2025-08-13 22:12:09 UTC
+- 生成时间：2025-08-15 18:57:36 UTC
 - 深度：3
 - 忽略：.git|target|node_modules|.idea|.vscode|dist|build
 
@@ -37,6 +37,7 @@
 ├── build.rs
 ├── src/
 │   ├── aotu/
+│   │   ├── bogus_control_flow/
 │   │   ├── flatten/
 │   │   ├── indirect_branch/
 │   │   ├── indirect_call/
@@ -48,6 +49,7 @@
 │   │   ├── string_encryption/
 │   │   └── vm_flatten/
 │   ├── config/
+│   │   ├── bogus_control_flow.rs
 │   │   ├── flatten.rs
 │   │   ├── indirect_branch.rs
 │   │   ├── indirect_call.rs
@@ -70,6 +72,7 @@
 │       └── mod.rs
 └── tests/
     ├── .gitignore
+    ├── bogus_control_flow.c
     ├── complex_switch_test.c
     ├── const_strings.c
     ├── const_strings.rs
@@ -90,7 +93,7 @@
     ├── test_strings.c
     └── vm_flatten.c
 
-24 directories, 59 files
+25 directories, 61 files
 ```
 
 > 本文件由 GitHub Actions 自动生成，请勿手动编辑。
