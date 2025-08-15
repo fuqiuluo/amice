@@ -1,10 +1,13 @@
 // copy from https://github.com/jamesmth/llvm-plugin-rs/blob/feat%2Fllvm-20/llvm-plugin/cpp/ffi.cc
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <utility>
 #include <vector>
+#include <string>
 #include <optional>
 
 #include <llvm/ADT/ArrayRef.h>
@@ -198,8 +201,26 @@ void amiceFixStack(llvm::Function *f, int AtTerminator, int MaxIterations) {
     } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
 }
 
-int amiceVerifyFunction(llvm::Function& F) {
-    return llvm::verifyFunction(F);
+int amiceVerifyFunction(llvm::Function& F, char** errmsg) {
+    std::string err;
+    llvm::raw_string_ostream rso(err);
+    bool broken = llvm::verifyFunction(F, &rso);
+    rso.flush();
+    if (broken) {
+        size_t n = err.length() + 1;
+        char* p = (char*)malloc(n);
+        if (p) memcpy(p, err.c_str(), n);
+        *errmsg = p;
+    }
+   return broken;
+}
+
+int amiceFreeMsg(char* err) {
+    if(err) {
+        free(err);
+        return 0;
+    }
+    return -1;
 }
 
 }

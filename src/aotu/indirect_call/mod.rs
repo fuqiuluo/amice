@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::module_utils::verify_function;
+use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
@@ -128,7 +128,7 @@ impl LlvmModulePass for IndirectCall {
         }
 
         for f in module.get_functions() {
-            if verify_function(f.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(f.as_value_ref() as *mut std::ffi::c_void) {
                 warn!("(indirect_call) function {:?} is not verified", f.get_name());
             }
         }

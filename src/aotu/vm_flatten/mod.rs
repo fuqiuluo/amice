@@ -6,7 +6,7 @@ use crate::llvm_utils::switch_inst;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use crate::ptr_type;
 use amice_llvm::ir::function::fix_stack;
-use amice_llvm::module_utils::verify_function;
+use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -656,7 +656,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         builder.build_unconditional_branch(vm_entry)?;
     }
 
-    if verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
+    if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
         warn!("(vm_flatten) function {:?} verify failed", function.get_name());
     }
 
