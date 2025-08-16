@@ -691,7 +691,9 @@ fn generate_opcodes(
     node: VmBranchNode<'_>,
     random_none_node_opcode: bool,
 ) -> anyhow::Result<()> {
-    if (node.len() == 2 && node.opcode == InstructionOpcode::Br) || (node.len() == 2 && node.opcode == InstructionOpcode::Invoke) {
+    if (node.len() == 2 && node.opcode == InstructionOpcode::Br)
+        || (node.len() == 2 && node.opcode == InstructionOpcode::Invoke)
+    {
         let left = node.left();
         let right = node.right();
 
