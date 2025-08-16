@@ -41,6 +41,7 @@ name = "amice-llvm"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "dobby-sys",
  "lazy_static",
  "regex",
  "semver 1.0.26",
@@ -203,6 +204,12 @@ dependencies = [
  "block-buffer",
  "crypto-common",
 ]
+
+[[package]]
+name = "dobby-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cdffdeaa52be950db80677f22f549050675f226b77e97fdbe10bb2dd846ac7b"
 
 [[package]]
 name = "dtor"
