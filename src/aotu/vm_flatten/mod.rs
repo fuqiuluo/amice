@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::llvm_utils::basic_block::split_basic_block;
 use crate::llvm_utils::branch_inst::get_successor;
 use crate::llvm_utils::function::get_basic_block_entry;
+use crate::llvm_utils::invoke_inst;
 use crate::llvm_utils::switch_inst;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use crate::ptr_type;
@@ -165,8 +166,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     'outer: for bb in function.get_basic_blocks() {
         for inst in bb.get_instructions() {
             match inst.get_opcode() {
-                InstructionOpcode::Invoke // TODO: support it!
-                | InstructionOpcode::LandingPad
+                InstructionOpcode::LandingPad
                 | InstructionOpcode::CatchSwitch
                 | InstructionOpcode::CatchPad
                 | InstructionOpcode::CatchRet
@@ -353,6 +353,18 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                     node.push(bb);
                 }
                 node.opcode = InstructionOpcode::Switch;
+            } else if inst.get_opcode() == InstructionOpcode::Invoke {
+                // invoke return_type @function(args...) to label %normal unwind label %exception
+                // Treat invoke like a conditional branch with two destinations
+                let normal_dest = invoke_inst::get_normal_destination(inst)
+                    .ok_or(anyhow!("expected normal destination for invoke"))?;
+                let exception_dest = invoke_inst::get_exception_destination(inst)
+                    .ok_or(anyhow!("expected exception destination for invoke"))?;
+
+                node.set_left(normal_dest);
+                node.set_right(exception_dest);
+                node.opcode = InstructionOpcode::Invoke;
+                break;
             }
         }
     }
@@ -679,7 +691,7 @@ fn generate_opcodes(
     node: VmBranchNode<'_>,
     random_none_node_opcode: bool,
 ) -> anyhow::Result<()> {
-    if node.len() == 2 && node.opcode == InstructionOpcode::Br {
+    if (node.len() == 2 && node.opcode == InstructionOpcode::Br) || (node.len() == 2 && node.opcode == InstructionOpcode::Invoke) {
         let left = node.left();
         let right = node.right();
 

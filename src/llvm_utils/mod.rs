@@ -4,6 +4,7 @@ use std::ffi::{CStr, CString};
 pub mod basic_block;
 pub mod branch_inst;
 pub mod function;
+pub mod invoke_inst;
 pub mod switch_inst;
 
 pub(crate) fn to_c_str(mut s: &str) -> Cow<'_, CStr> {
