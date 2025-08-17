@@ -13,7 +13,7 @@ use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, warn};
+use log::{debug, error, log_enabled, warn, Level};
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -54,29 +54,6 @@ impl LlvmModulePass for Flatten {
                 continue;
             }
 
-            let mut has_eh_or_invoke = false;
-            'outer: for bb in function.get_basic_blocks() {
-                for inst in bb.get_instructions() {
-                    match inst.get_opcode() {
-                        InstructionOpcode::Invoke // TODO: support it!
-                        | InstructionOpcode::LandingPad
-                        | InstructionOpcode::CatchSwitch
-                        | InstructionOpcode::CatchPad
-                        | InstructionOpcode::CatchRet
-                        | InstructionOpcode::CleanupPad
-                        | InstructionOpcode::CallBr => {
-                            has_eh_or_invoke = true;
-                            break 'outer;
-                        },
-                        _ => {},
-                    }
-                }
-            }
-            if has_eh_or_invoke {
-                // 跳过该函数，不做扁平化
-                continue;
-            }
-
             if let Err(err) = do_handle(module, function, self.demote_switch) {
                 warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
                 continue;
@@ -104,6 +81,29 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
             function.get_name()
         ));
     };
+
+    let mut has_eh_or_invoke_in_entry = false;
+    for inst in entry_block.get_instructions() {
+        match inst.get_opcode() {
+            InstructionOpcode::Invoke
+            | InstructionOpcode::LandingPad
+            | InstructionOpcode::CatchSwitch
+            | InstructionOpcode::CatchPad
+            | InstructionOpcode::CatchRet
+            | InstructionOpcode::CleanupPad
+            | InstructionOpcode::CallBr => {
+                has_eh_or_invoke_in_entry = true;
+                break;
+            },
+            _ => {},
+        }
+    }
+    if has_eh_or_invoke_in_entry {
+        // 跳过该函数，不做扁平化
+        warn!("(flatten) function {:?} has exception handling or invoke in entry block, skipping", function.get_name());
+        return Ok(());
+    }
+
     let mut basic_blocks = function.get_basic_blocks();
     basic_blocks.retain(|bb| bb != &entry_block);
     if !split_entry_block_for_flatten(function, entry_block, &mut basic_blocks)? {
@@ -111,6 +111,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
         // 这并不是错误，是可预期的！
         return Ok(());
     }
+
     let entry_terminator = entry_block.get_terminator().ok_or(anyhow::anyhow!(
         "(flatten) function {:?} has no entry terminator",
         function.get_name()
