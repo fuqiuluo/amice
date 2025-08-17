@@ -38,5 +38,8 @@ pub fn verify_function(function: *mut std::ffi::c_void) -> VerifyResult {
 }
 
 pub fn verify_function2(function: *mut std::ffi::c_void) -> bool {
-    verify_function(function) == VerifyResult::Ok
+    match verify_function(function) {
+        VerifyResult::Broken(_) => true,
+        VerifyResult::Ok => false
+    }
 }
