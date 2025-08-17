@@ -5,7 +5,7 @@ use crate::llvm_utils::branch_inst;
 use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::fix_stack;
-use amice_llvm::module_utils::{verify_function, verify_function2, VerifyResult};
+use amice_llvm::module_utils::{VerifyResult, verify_function, verify_function2};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -13,7 +13,7 @@ use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, log_enabled, warn, Level};
+use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -100,7 +100,10 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     }
     if has_eh_or_invoke_in_entry {
         // 跳过该函数，不做扁平化
-        warn!("(flatten) function {:?} has exception handling or invoke in entry block, skipping", function.get_name());
+        warn!(
+            "(flatten) function {:?} has exception handling or invoke in entry block, skipping",
+            function.get_name()
+        );
         return Ok(());
     }
 
