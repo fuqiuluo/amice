@@ -215,6 +215,10 @@ int amiceVerifyFunction(llvm::Function& F, char** errmsg) {
    return broken;
 }
 
+llvm::Instruction* amiceGetFirstInsertionPt(llvm::BasicBlock* bb) {
+    return llvm::cast<llvm::Instruction>(bb->getFirstInsertionPt());
+}
+
 int amiceFreeMsg(char* err) {
     if(err) {
         free(err);

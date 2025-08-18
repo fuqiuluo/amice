@@ -17,3 +17,7 @@ pub unsafe fn split_basic_block(
 ) -> *mut std::ffi::c_void {
     crate::ffi::amiceSplitBasicBlock(basic_block, inst, new_name, if before { 1 } else { 0 })
 }
+
+pub unsafe fn get_first_insertion_pt(basic_block: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
+    crate::ffi::amiceGetFirstInsertionPt(basic_block)
+}

@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{CStr, c_char, c_void};
 
 #[link(name = "amice-llvm-ffi")]
 unsafe extern "C" {
@@ -25,25 +25,13 @@ unsafe extern "C" {
 
     pub(crate) fn amiceFreeMsg(errmsg: *const c_char) -> i32;
 
-    pub(crate) fn amiceConstantGetBitCast(
-        value: *mut c_void,
-        ty: *mut c_void,
-    ) -> *mut c_void;
+    pub(crate) fn amiceConstantGetBitCast(value: *mut c_void, ty: *mut c_void) -> *mut c_void;
 
-    pub(crate) fn amiceConstantGetPtrToInt(
-        value: *mut c_void,
-        ty: *mut c_void,
-    ) -> *mut c_void;
+    pub(crate) fn amiceConstantGetPtrToInt(value: *mut c_void, ty: *mut c_void) -> *mut c_void;
 
-    pub(crate) fn amiceConstantGetIntToPtr(
-        value: *mut c_void,
-        ty: *mut c_void,
-    ) -> *mut c_void;
+    pub(crate) fn amiceConstantGetIntToPtr(value: *mut c_void, ty: *mut c_void) -> *mut c_void;
 
-    pub(crate) fn amiceConstantGetXor(
-        value1: *mut c_void,
-        value2: *mut c_void,
-    ) -> *mut c_void;
+    pub(crate) fn amiceConstantGetXor(value1: *mut c_void, value2: *mut c_void) -> *mut c_void;
 
     pub(crate) fn amiceSplitBasicBlock(
         block: *mut c_void,
@@ -51,6 +39,8 @@ unsafe extern "C" {
         name: *const i8,
         before: i32,
     ) -> *mut c_void;
+
+    pub(crate) fn amiceGetFirstInsertionPt(block: *mut c_void) -> *mut c_void;
 
     pub(crate) fn amiceGetLLVMVersionMajor() -> i32;
 
