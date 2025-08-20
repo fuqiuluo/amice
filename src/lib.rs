@@ -1,6 +1,5 @@
 pub(crate) mod aotu;
 pub(crate) mod config;
-pub(crate) mod llvm_utils;
 pub(crate) mod pass_registry;
 
 use crate::config::CONFIG;

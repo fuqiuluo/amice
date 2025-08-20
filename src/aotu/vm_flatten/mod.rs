@@ -1,11 +1,7 @@
 use crate::config::Config;
-use crate::llvm_utils::basic_block::split_basic_block;
-use crate::llvm_utils::branch_inst::get_successor;
-use crate::llvm_utils::function::get_basic_block_entry;
-use crate::llvm_utils::switch_inst;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use crate::ptr_type;
-use amice_llvm::ir::function::fix_stack;
+use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -18,6 +14,9 @@ use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
+use amice_llvm::ir::basic_block::split_basic_block;
+use amice_llvm::ir::branch_inst::get_successor;
+use amice_llvm::ir::switch_inst;
 
 const MAGIC_NUMBER: u32 = 0x7788ff;
 

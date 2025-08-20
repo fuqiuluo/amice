@@ -1,10 +1,8 @@
 mod cf_flatten_basic;
+mod cf_flatten_dominator;
 
 use crate::aotu::lower_switch::demote_switch_to_if;
-use crate::config::{Config, IndirectBranchFlags};
-use crate::llvm_utils::basic_block::{get_first_insertion_pt, split_basic_block};
-use crate::llvm_utils::branch_inst;
-use crate::llvm_utils::function::get_basic_block_entry;
+use crate::config::{Config, FlattenMode, IndirectBranchFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::fix_stack;
 use amice_llvm::module_utils::{VerifyResult, verify_function, verify_function2};
@@ -18,6 +16,7 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::HashMap;
+use amice_llvm::ir::basic_block::split_basic_block;
 
 #[amice(priority = 959, name = "Flatten", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -25,6 +24,9 @@ pub struct Flatten {
     enable: bool,
     fix_stack: bool,
     demote_switch: bool,
+    mode: FlattenMode,
+    loop_count: usize,
+    skip_big_function: bool,
 }
 
 impl AmicePassLoadable for Flatten {
@@ -41,6 +43,10 @@ impl AmicePassLoadable for Flatten {
             // 给个警告，然后听天由命，这个是用户自己决定的，hhh
         }
 
+        self.mode = cfg.flatten.mode;
+        self.loop_count = cfg.flatten.loop_count;
+        self.skip_big_function = cfg.flatten.skip_big_function;
+
         self.enable
     }
 }
@@ -51,14 +57,27 @@ impl LlvmModulePass for Flatten {
             return PreservedAnalyses::All;
         }
 
-        for function in module.get_functions() {
+        'out: for function in module.get_functions() {
             if function.count_basic_blocks() <= 2 {
                 continue;
             }
 
-            if let Err(err) = cf_flatten_basic::do_handle(module, function, self.demote_switch) {
-                warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
-                continue;
+            if self.skip_big_function && function.count_basic_blocks() > 4096 {
+                continue
+            }
+
+            for _ in 0..self.loop_count {
+                if let Err(err) = match self.mode {
+                    FlattenMode::Basic => cf_flatten_basic::do_handle(module, function, self.demote_switch),
+                    FlattenMode::DominatorEnhanced => cf_flatten_dominator::do_handle(module, function, self.demote_switch),
+                } {
+                    warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
+                    continue 'out;
+                }
+
+                if self.skip_big_function && function.count_basic_blocks() > 4096 {
+                    break
+                }
             }
 
             if self.fix_stack {

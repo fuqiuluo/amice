@@ -1,5 +1,5 @@
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::values::{BasicValueEnum, InstructionOpcode, InstructionValue};
+use inkwell::basic_block::BasicBlock;
+use inkwell::values::{BasicValueEnum, InstructionOpcode, InstructionValue};
 
 pub fn get_case_num(inst: InstructionValue) -> u32 {
     assert_eq!(inst.get_opcode(), InstructionOpcode::Switch);

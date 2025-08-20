@@ -5,11 +5,11 @@ use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use log::warn;
 use rand::Rng;
+use amice_llvm::ir::basic_block::get_first_insertion_pt;
+use amice_llvm::ir::branch_inst;
+use amice_llvm::ir::function::get_basic_block_entry;
 use crate::aotu::flatten::{split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
-use crate::llvm_utils::basic_block::get_first_insertion_pt;
-use crate::llvm_utils::branch_inst;
-use crate::llvm_utils::function::get_basic_block_entry;
 
 pub(crate) fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bool) -> anyhow::Result<()> {
     let Some(entry_block) = get_basic_block_entry(function) else {

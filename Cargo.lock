@@ -41,6 +41,7 @@ name = "amice-llvm"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "inkwell",
  "lazy_static",
  "regex",
  "semver 1.0.26",

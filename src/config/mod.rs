@@ -19,6 +19,7 @@ pub use shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
 pub use split_basic_block::SplitBasicBlockConfig;
 pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use vm_flatten::VmFlattenConfig;
+pub use flatten::FlattenMode;
 
 mod bogus_control_flow;
 mod flatten;
