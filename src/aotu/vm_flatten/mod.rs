@@ -194,6 +194,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     // 计算入口块指令数（用于决定 split 位置）
     let entry_block_inst_count = entry_block.get_instructions().count();
 
+    #[allow(unused_assignments)]
     let mut first_basic_block = None;
     let Some(entry_terminator_inst) = entry_block.get_terminator() else {
         return Err(anyhow::anyhow!("expected entry block to have terminator"));

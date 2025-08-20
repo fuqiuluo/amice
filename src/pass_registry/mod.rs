@@ -16,6 +16,7 @@ pub trait AmicePass {
 }
 
 pub trait AmicePassLoadable {
+    #[allow(unused_variables)]
     fn init(&mut self, cfg: &Config, position: PassPosition) -> bool;
 }
 

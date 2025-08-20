@@ -12,6 +12,7 @@ pub(super) enum Expr {
 }
 
 impl Expr {
+    #[allow(dead_code)]
     pub(super) fn const0() -> Self {
         Expr::Const(0)
     }

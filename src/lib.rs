@@ -20,7 +20,7 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         amice_llvm::get_llvm_version_minor()
     );
 
-    builder.add_module_pipeline_parsing_callback(|name, manager| {
+    builder.add_module_pipeline_parsing_callback(|name, _manager| {
         panic!("amice plugin module pipeline parsing callback, name: {}", name);
     });
 
@@ -51,7 +51,7 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
 
     #[cfg(any(doc, feature = "llvm20-1"))]
     builder.add_optimizer_last_ep_callback(|manager, opt, phase| {
-        info!("amice plugin optimizer last callback, level: {opt:?}");
+        info!("amice plugin optimizer last callback, level: {opt:?}, phase: {phase:?}");
         let cfg = &*CONFIG;
         pass_registry::install_all(cfg, manager, PassPosition::OptimizerLast);
     });
