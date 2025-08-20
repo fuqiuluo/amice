@@ -25,6 +25,8 @@ fn link_llvm() {
         .include(includedir.trim())
         .file("cpp/ffi.cc");
 
+    build.file("cpp/dominators_ffi.cc");
+
     //build.flag("-stdlib=c++");
     //println!("cargo:rustc-link-lib=c++");
     //println!("cargo:rustc-link-search=native=/home/fuqiuluo/下载/linux-x86-refs_heads_main-clang-r522817/lib");

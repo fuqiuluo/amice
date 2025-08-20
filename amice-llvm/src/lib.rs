@@ -4,6 +4,7 @@ use std::ffi::{CStr, CString};
 mod ffi;
 pub mod module_utils;
 pub mod ir;
+pub mod analysis;
 
 pub fn get_llvm_version_major() -> i32 {
     unsafe { ffi::amiceGetLLVMVersionMajor() }
