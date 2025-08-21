@@ -12,6 +12,7 @@ use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, BasicValueEnum};
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
 use log::{debug, error, warn};
+use amice_llvm::module_utils::append_to_global_ctors;
 
 pub(crate) fn do_handle<'a>(
     pass: &StringEncryption,
@@ -308,11 +309,7 @@ fn emit_global_string_decryptor_ctor<'a>(
     builder.build_return(None)?;
 
     let priority = 0; // Default priority
-    unsafe {
-        let module_ref = module.as_mut_ptr() as *mut std::ffi::c_void;
-        let function_ref = decrypt_stub.as_value_ref() as *mut std::ffi::c_void;
-        amice_llvm::module_utils::append_to_global_ctors(module_ref, function_ref, priority);
-    }
+    append_to_global_ctors(module, decrypt_stub, priority);
 
     Ok(())
 }

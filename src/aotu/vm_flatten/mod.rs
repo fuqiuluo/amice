@@ -416,12 +416,11 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     local_opcodes_value.set_constant(false);
     local_opcodes_value.set_initializer(&opcode_array);
     local_opcodes_value.set_linkage(Linkage::Private);
-    unsafe {
-        amice_llvm::module_utils::append_to_compiler_used(
-            module.as_mut_ptr() as *mut std::ffi::c_void,
-            local_opcodes_value.as_value_ref() as *mut std::ffi::c_void,
-        )
-    };
+
+    amice_llvm::module_utils::append_to_compiler_used(
+        module,
+        local_opcodes_value
+    );
 
     let builder = ctx.create_builder();
     let vm_entry = ctx.append_basic_block(function, ".amice.vm_flatten_entry");

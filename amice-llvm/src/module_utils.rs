@@ -1,17 +1,36 @@
 use std::ffi::{c_char, CStr};
 use std::result;
+use inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
+use inkwell::module::Module;
+use inkwell::values::{AsValueRef, FunctionValue, GlobalValue};
 use crate::ffi;
 
-pub unsafe fn append_to_global_ctors(module: *mut std::ffi::c_void, function: *mut std::ffi::c_void, priority: i32) {
-    ffi::amiceAppendToGlobalCtors(module, function, priority);
+pub fn append_to_global_ctors(module: &Module, function: FunctionValue, priority: i32) {
+    unsafe {
+        ffi::amiceAppendToGlobalCtors(
+            module.as_mut_ptr() as LLVMModuleRef,
+            function.as_value_ref() as LLVMValueRef,
+            priority
+        );
+    }
 }
 
-pub unsafe fn append_to_used(module: *mut std::ffi::c_void, value: *mut std::ffi::c_void) {
-    ffi::amiceAppendToUsed(module, value);
+pub fn append_to_used(module: &Module, value: GlobalValue) {
+    unsafe {
+        ffi::amiceAppendToUsed(
+            module.as_mut_ptr() as LLVMModuleRef,
+            value.as_value_ref() as LLVMValueRef,
+        );
+    }
 }
 
-pub unsafe fn append_to_compiler_used(module: *mut std::ffi::c_void, value: *mut std::ffi::c_void) {
-    ffi::amiceAppendToCompilerUsed(module, value);
+pub fn append_to_compiler_used(module: &Module, value: GlobalValue) {
+    unsafe {
+        ffi::amiceAppendToCompilerUsed(
+            module.as_mut_ptr() as LLVMModuleRef,
+            value.as_value_ref() as LLVMValueRef,
+        );
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

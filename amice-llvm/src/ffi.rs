@@ -1,4 +1,5 @@
 use std::ffi::{CStr, c_char, c_void};
+use inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 
 #[link(name = "amice-llvm-ffi")]
 unsafe extern "C" {
@@ -13,11 +14,11 @@ unsafe extern "C" {
         feature = "llvm19-1",
         feature = "llvm20-1",
     ))]
-    pub(crate) fn amiceAppendToGlobalCtors(module: *mut c_void, function: *mut c_void, priority: i32);
+    pub(crate) fn amiceAppendToGlobalCtors(module: LLVMModuleRef, function: LLVMValueRef, priority: i32);
 
-    pub(crate) fn amiceAppendToUsed(module: *mut c_void, value: *mut c_void);
+    pub(crate) fn amiceAppendToUsed(module: LLVMModuleRef, value: LLVMValueRef);
 
-    pub(crate) fn amiceAppendToCompilerUsed(module: *mut c_void, value: *mut c_void);
+    pub(crate) fn amiceAppendToCompilerUsed(module: LLVMModuleRef, value: LLVMValueRef);
 
     pub(crate) fn amiceFixStack(function: *mut c_void, at_term: i32, max_iterations: i32);
 

@@ -82,13 +82,11 @@ impl LlvmModulePass for IndirectBranch {
         global_indirect_branch_table.set_linkage(Linkage::Internal);
         global_indirect_branch_table.set_constant(true);
 
-        unsafe {
-            amice_llvm::module_utils::append_to_compiler_used(
-                module.as_mut_ptr() as *mut std::ffi::c_void,
-                global_indirect_branch_table.as_value_ref() as *mut std::ffi::c_void,
-            );
-        }
-
+        amice_llvm::module_utils::append_to_compiler_used(
+            module,
+            global_indirect_branch_table
+        );
+        
         let encrypt_key_global = if self.flags.contains(IndirectBranchFlags::EncryptBlockIndex) {
             let xor_key = self
                 .xor_key
@@ -105,13 +103,11 @@ impl LlvmModulePass for IndirectBranch {
             table.set_linkage(Linkage::Private);
             table.set_constant(true);
 
-            unsafe {
-                amice_llvm::module_utils::append_to_compiler_used(
-                    module.as_mut_ptr() as *mut std::ffi::c_void,
-                    table.as_value_ref() as *mut std::ffi::c_void,
-                );
-            }
-
+            amice_llvm::module_utils::append_to_compiler_used(
+                module,
+                table
+            );
+            
             Some(table)
         } else {
             None
@@ -173,12 +169,12 @@ impl LlvmModulePass for IndirectBranch {
                         local_indirect_branch_table.set_initializer(&initializer);
                         local_indirect_branch_table.set_linkage(Linkage::Private);
                         local_indirect_branch_table.set_constant(true);
-                        unsafe {
-                            amice_llvm::module_utils::append_to_compiler_used(
-                                module.as_mut_ptr() as *mut std::ffi::c_void,
-                                local_indirect_branch_table.as_value_ref() as *mut std::ffi::c_void,
-                            );
-                        }
+                        
+                        amice_llvm::module_utils::append_to_compiler_used(
+                            module,
+                            local_indirect_branch_table
+                        );
+                        
                         Some(local_indirect_branch_table)
                     } else {
                         // 选择全局跳转表
