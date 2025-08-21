@@ -660,7 +660,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     }
 
     unsafe {
-        fix_stack(function.as_value_ref() as *mut std::ffi::c_void);
+        fix_stack(function);
     }
 
     for node in all_nodes {

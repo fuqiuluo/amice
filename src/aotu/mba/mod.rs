@@ -222,7 +222,7 @@ impl LlvmModulePass for Mba {
 
             if self.fix_stack {
                 unsafe {
-                    fix_stack(function.as_value_ref() as *mut std::ffi::c_void);
+                    fix_stack(function);
                 }
             }
         }
