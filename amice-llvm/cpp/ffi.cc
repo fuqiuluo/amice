@@ -48,32 +48,7 @@ using LlvmOptLevel = llvm::OptimizationLevel;
 using LlvmOptLevel = llvm::PassBuilder::OptimizationLevel;
 #endif
 
-extern "C" {
-int amiceGetLLVMVersionMajor() {
-  return LLVM_VERSION_MAJOR;
-}
-
-int amiceGetLLVMVersionMinor() {
-  return LLVM_VERSION_MINOR;
-}
-
-llvm::Constant * amiceConstantGetBitCast(llvm::Constant *C, llvm::Type *Ty) {
-    return llvm::ConstantExpr::getBitCast(C, Ty);
-}
-
-llvm::Constant * amiceConstantGetPtrToInt(llvm::Constant *C, llvm::Type *Ty) {
-    return llvm::ConstantExpr::getPtrToInt(C, Ty);
-}
-
-llvm::Constant * amiceConstantGetIntToPtr(llvm::Constant *C, llvm::Type *Ty) {
-    return llvm::ConstantExpr::getIntToPtr(C, Ty);
-}
-
-llvm::Constant * amiceConstantGetXor(llvm::Constant *C1, llvm::Constant *C2) {
-    return llvm::ConstantExpr::getXor(C1, C2);
-}
-
-bool valueEscapes(llvm::Instruction *Inst) {
+static bool valueEscapes(llvm::Instruction *Inst) {
   if (!Inst->getType()->isSized())
     return false;
 
@@ -101,7 +76,32 @@ static bool valueEscapesOfficial(const llvm::Instruction &Inst) {
   return false;
 }
 
-void amiceFixStack(llvm::Function *f, int AtTerminator, int MaxIterations) {
+extern "C" {
+int amice_get_llvm_version_major() {
+  return LLVM_VERSION_MAJOR;
+}
+
+int amice_get_llvm_version_minor() {
+  return LLVM_VERSION_MINOR;
+}
+
+llvm::Constant * amice_constant_get_bit_cast(llvm::Constant *C, llvm::Type *Ty) {
+    return llvm::ConstantExpr::getBitCast(C, Ty);
+}
+
+llvm::Constant * amice_constant_get_ptr_to_int(llvm::Constant *C, llvm::Type *Ty) {
+    return llvm::ConstantExpr::getPtrToInt(C, Ty);
+}
+
+llvm::Constant * amice_constant_get_int_to_ptr(llvm::Constant *C, llvm::Type *Ty) {
+    return llvm::ConstantExpr::getIntToPtr(C, Ty);
+}
+
+llvm::Constant * amice_constant_get_xor(llvm::Constant *C1, llvm::Constant *C2) {
+    return llvm::ConstantExpr::getXor(C1, C2);
+}
+
+void amice_fix_stack(llvm::Function *f, int AtTerminator, int MaxIterations) {
     // https://bbs.kanxue.com/thread-268789-1.htm
     std::vector<llvm::PHINode *> tmpPhi;
     std::vector<llvm::Instruction *> tmpReg;
@@ -185,7 +185,7 @@ void amiceFixStack(llvm::Function *f, int AtTerminator, int MaxIterations) {
     } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
 }
 
-int amiceFreeMsg(char* err) {
+int amice_free_msg(char* err) {
     if(err) {
         free(err);
         return 0;

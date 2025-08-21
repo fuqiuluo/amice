@@ -7,7 +7,7 @@ use crate::ffi;
 
 pub fn append_to_global_ctors(module: &Module, function: FunctionValue, priority: i32) {
     unsafe {
-        ffi::amiceAppendToGlobalCtors(
+        ffi::amice_append_to_global_ctors(
             module.as_mut_ptr() as LLVMModuleRef,
             function.as_value_ref() as LLVMValueRef,
             priority
@@ -17,7 +17,7 @@ pub fn append_to_global_ctors(module: &Module, function: FunctionValue, priority
 
 pub fn append_to_used(module: &Module, value: GlobalValue) {
     unsafe {
-        ffi::amiceAppendToUsed(
+        ffi::amice_append_to_used(
             module.as_mut_ptr() as LLVMModuleRef,
             value.as_value_ref() as LLVMValueRef,
         );
@@ -26,7 +26,7 @@ pub fn append_to_used(module: &Module, value: GlobalValue) {
 
 pub fn append_to_compiler_used(module: &Module, value: GlobalValue) {
     unsafe {
-        ffi::amiceAppendToCompilerUsed(
+        ffi::amice_append_to_compiler_used(
             module.as_mut_ptr() as LLVMModuleRef,
             value.as_value_ref() as LLVMValueRef,
         );
@@ -42,7 +42,7 @@ pub enum  VerifyResult {
 pub fn verify_function(function: FunctionValue) -> VerifyResult {
     let mut errmsg: *const c_char = std::ptr::null();
     let broken = unsafe {
-        ffi::amiceVerifyFunction(
+        ffi::amice_verify_function(
             function.as_value_ref() as LLVMValueRef,
             &mut errmsg as *mut *const c_char
         ) == 1
@@ -54,7 +54,7 @@ pub fn verify_function(function: FunctionValue) -> VerifyResult {
         VerifyResult::Ok
     };
     unsafe {
-        ffi::amiceFreeMsg(errmsg);
+        ffi::amice_free_msg(errmsg);
     }
     result
 }

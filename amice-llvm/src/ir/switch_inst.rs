@@ -29,3 +29,7 @@ pub fn get_cases(inst: InstructionValue) -> Vec<(BasicValueEnum, BasicBlock)> {
     }
     cases
 }
+
+unsafe extern "C" {
+
+}

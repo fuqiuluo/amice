@@ -34,13 +34,13 @@ pub fn cast_ptr_to_fn_ptr<'a>(addr: PointerValue<'a>, function_type: FunctionTyp
 }
 
 pub unsafe fn fix_stack(function:FunctionValue) {
-    ffi::amiceFixStack(function.as_value_ref() as LLVMValueRef, 0, 0)
+    ffi::amice_fix_stack(function.as_value_ref() as LLVMValueRef, 0, 0)
 }
 
 pub unsafe fn fix_stack_at_terminator(function: FunctionValue) {
-    ffi::amiceFixStack(function.as_value_ref() as LLVMValueRef, 1, 0)
+    ffi::amice_fix_stack(function.as_value_ref() as LLVMValueRef, 1, 0)
 }
 
 pub unsafe fn fix_stack_with_max_iterations(function: FunctionValue, max_iterations: usize) {
-    ffi::amiceFixStack(function.as_value_ref() as LLVMValueRef, 0, max_iterations as i32)
+    ffi::amice_fix_stack(function.as_value_ref() as LLVMValueRef, 0, max_iterations as i32)
 }

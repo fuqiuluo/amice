@@ -31,23 +31,23 @@
 
 extern "C" {
 
-void amiceAppendToGlobalCtors(llvm::Module &M, llvm::Function *F, int P) {
+void amice_append_to_global_ctors(llvm::Module &M, llvm::Function *F, int P) {
      llvm::appendToGlobalCtors(M, F, P);
 }
 
-void amiceAppendToUsed(llvm::Module &M, llvm::GlobalValue * V) {
+void amice_append_to_used(llvm::Module &M, llvm::GlobalValue * V) {
     llvm::appendToUsed(M, {V});
 }
 
-void amiceAppendToCompilerUsed(llvm::Module &M, llvm::GlobalValue * V) {
+void amice_append_to_compiler_used(llvm::Module &M, llvm::GlobalValue * V) {
     llvm::appendToCompilerUsed(M, {V});
 }
 
-llvm::BasicBlock * 	amiceSplitBasicBlock (llvm::BasicBlock * BB, llvm::Instruction *I, char* N, int B) {
+llvm::BasicBlock * 	amice_split_basic_block (llvm::BasicBlock * BB, llvm::Instruction *I, char* N, int B) {
     return BB->splitBasicBlock(I, N, B);
 }
 
-llvm::Instruction* amiceGetFirstInsertionPt(llvm::BasicBlock* bb) {
+llvm::Instruction* amice_get_first_insertion_pt(llvm::BasicBlock* bb) {
     return llvm::cast<llvm::Instruction>(bb->getFirstInsertionPt());
 }
 

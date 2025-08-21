@@ -31,7 +31,7 @@
 
 extern "C" {
 
-int amiceVerifyFunction(llvm::Function& F, char** errmsg) {
+int amice_verify_function(llvm::Function& F, char** errmsg) {
     std::string err;
     llvm::raw_string_ostream rso(err);
     bool broken = llvm::verifyFunction(F, &rso);

@@ -49,7 +49,7 @@ mod ffi {
         new_name: *const std::ffi::c_char,
         before: bool,
     ) -> *mut std::ffi::c_void {
-        crate::ffi::amiceSplitBasicBlock(basic_block, inst, new_name, if before { 1 } else { 0 })
+        crate::ffi::amice_split_basic_block(basic_block, inst, new_name, if before { 1 } else { 0 })
     }
 
     /// # Safety
@@ -60,6 +60,6 @@ mod ffi {
     /// - The caller must ensure the basic block remains valid for the duration of the operation
     /// - The basic block must contain at least one instruction, otherwise undefined behavior occurs
     pub unsafe fn get_first_insertion_pt(basic_block: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
-        crate::ffi::amiceGetFirstInsertionPt(basic_block)
+        crate::ffi::amice_get_first_insertion_pt(basic_block)
     }
 }
