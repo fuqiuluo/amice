@@ -10,7 +10,7 @@ use llvm_plugin::inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode,
     InstructionValue, PointerValue,
 };
-use llvm_plugin::inkwell::{builder::Builder, context::Context, Either::Left, Either::Right};
+use llvm_plugin::inkwell::{builder::Builder, context::{Context, ContextRef}, Either::Left, Either::Right};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
@@ -63,12 +63,19 @@ impl LlvmModulePass for FunctionWrapper {
 
             for bb in function.get_basic_blocks() {
                 for inst in bb.get_instructions() {
+                    debug!("(function-wrapper) examining instruction: {:?}", inst.get_opcode());
                     if matches!(inst.get_opcode(), InstructionOpcode::Call | InstructionOpcode::Invoke) {
+                        debug!("(function-wrapper) found call/invoke instruction");
                         // Apply probability check
                         if rand::thread_rng().gen_range(0..100) < self.probability {
                             if let Some(called_func) = get_called_function(&inst) {
+                                debug!("(function-wrapper) adding call to function: {:?}", called_func.get_name());
                                 call_instructions.push((inst, called_func));
+                            } else {
+                                debug!("(function-wrapper) could not get called function");
                             }
+                        } else {
+                            debug!("(function-wrapper) call skipped due to probability");
                         }
                     }
                 }
@@ -128,13 +135,30 @@ fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<
     match inst.get_opcode() {
         InstructionOpcode::Call | InstructionOpcode::Invoke => {
             let operand_num = inst.get_num_operands();
+            debug!("(function-wrapper) call instruction has {} operands", operand_num);
             if operand_num == 0 {
+                debug!("(function-wrapper) no operands found");
                 return None;
             }
 
-            let callee = inst.get_operand(operand_num - 1).unwrap().left()?;
-            let callee_ptr = callee.into_pointer_value();
-            unsafe { FunctionValue::new(callee_ptr.as_value_ref()) }
+            // The last operand of a call instruction is typically the called function
+            if let Some(operand) = inst.get_operand(operand_num - 1) {
+                if let Some(callee) = operand.left() {
+                    let callee_ptr = callee.into_pointer_value();
+                    debug!("(function-wrapper) got pointer value, trying to convert to function");
+                    if let Some(func_val) = unsafe { FunctionValue::new(callee_ptr.as_value_ref()) } {
+                        debug!("(function-wrapper) successfully got function: {:?}", func_val.get_name());
+                        return Some(func_val);
+                    } else {
+                        debug!("(function-wrapper) failed to convert to FunctionValue");
+                    }
+                } else {
+                    debug!("(function-wrapper) operand is not a basic value");
+                }
+            } else {
+                debug!("(function-wrapper) could not get operand {}", operand_num - 1);
+            }
+            None
         }
         _ => None,
     }
@@ -177,56 +201,14 @@ fn create_wrapper_function<'a>(
 ) -> anyhow::Result<Option<InstructionValue<'a>>> {
     let ctx = module.get_context();
 
-    // Build parameter types from call instruction arguments
-    let mut param_types: Vec<BasicTypeEnum> = Vec::new();
-    let num_operands = call_inst.get_num_operands();
+    // Use the called function's type directly for the wrapper
+    let called_fn_type = called_function.get_type();
     
-    // Skip the last operand which is the function being called
-    for i in 0..num_operands.saturating_sub(1) {
-        if let Some(arg) = call_inst.get_operand(i).unwrap().left() {
-            param_types.push(arg.get_type());
-        }
-    }
-
-    // Get return type from the call instruction
-    let return_type = call_inst.get_type();
-    
-    // Create function type - collect BasicMetadataTypeEnum for function signature
-    let param_meta_types: Vec<_> = param_types.iter().map(|t| (*t).into()).collect();
-    let wrapper_fn_type = if return_type.is_void_type() {
-        ctx.void_type().fn_type(&param_meta_types, false)
-    } else {
-        // Convert AnyTypeEnum to appropriate function type
-        match return_type {
-            AnyTypeEnum::IntType(int_type) => {
-                int_type.fn_type(&param_meta_types, false)
-            }
-            AnyTypeEnum::FloatType(float_type) => {
-                float_type.fn_type(&param_meta_types, false)
-            }
-            AnyTypeEnum::PointerType(ptr_type) => {
-                ptr_type.fn_type(&param_meta_types, false)
-            }
-            AnyTypeEnum::ArrayType(arr_type) => {
-                arr_type.fn_type(&param_meta_types, false)
-            }
-            AnyTypeEnum::StructType(struct_type) => {
-                struct_type.fn_type(&param_meta_types, false)
-            }
-            AnyTypeEnum::VectorType(vec_type) => {
-                vec_type.fn_type(&param_meta_types, false)
-            }
-            _ => {
-                return Err(anyhow::anyhow!("Unsupported return type for function wrapping"));
-            }
-        }
-    };
-
     // Generate random wrapper function name
     let wrapper_name = generate_wrapper_name();
     
-    // Create the wrapper function
-    let wrapper_function = module.add_function(&wrapper_name, wrapper_fn_type, Some(Linkage::Internal));
+    // Create the wrapper function with the same signature as the called function
+    let wrapper_function = module.add_function(&wrapper_name, called_fn_type, Some(Linkage::Internal));
 
     // Copy some attributes from the original function (simplified)
     copy_function_attributes(&wrapper_function, &called_function);
@@ -235,7 +217,7 @@ fn create_wrapper_function<'a>(
     append_to_compiler_used(module, wrapper_function.as_global_value());
 
     // Create the wrapper function body
-    create_wrapper_body(&ctx, &wrapper_function, &called_function)?;
+    create_wrapper_body(ctx, &wrapper_function, &called_function)?;
 
     // Replace the call instruction to use the wrapper function
     replace_call_with_wrapper(call_inst, &wrapper_function)
@@ -273,7 +255,7 @@ fn copy_function_attributes<'a>(target: &FunctionValue<'a>, _source: &FunctionVa
 
 /// Create the body of the wrapper function
 fn create_wrapper_body<'a>(
-    ctx: &Context,
+    ctx: ContextRef<'a>,
     wrapper_function: &FunctionValue<'a>,
     called_function: &FunctionValue<'a>,
 ) -> anyhow::Result<()> {
@@ -299,7 +281,8 @@ fn create_wrapper_body<'a>(
             BasicTypeEnum::PointerType(_) |
             BasicTypeEnum::ArrayType(_) |
             BasicTypeEnum::StructType(_) |
-            BasicTypeEnum::VectorType(_) => {
+            BasicTypeEnum::VectorType(_) |
+            BasicTypeEnum::ScalableVectorType(_) => {
                 match call_result.try_as_basic_value() {
                     Left(basic_value) => {
                         builder.build_return(Some(&basic_value))?;
@@ -344,14 +327,8 @@ fn replace_call_with_wrapper<'a>(
 
     // Replace all uses of the old instruction with the new call
     if !call_inst.get_type().is_void_type() {
-        match new_call.try_as_basic_value() {
-            Left(basic_value) => {
-                call_inst.replace_all_uses_with(&basic_value.as_instruction_value());
-            }
-            Right(_) => {
-                // Do nothing for non-basic values
-            }
-        }
+        let new_call_inst = unsafe { InstructionValue::new(new_call.as_value_ref()) };
+        call_inst.replace_all_uses_with(&new_call_inst);
     }
 
     // Remove the old instruction
