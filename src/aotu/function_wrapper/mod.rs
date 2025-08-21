@@ -7,15 +7,15 @@ use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::{AnyTypeEnum, BasicTypeEnum};
 use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode,
-    InstructionValue, PointerValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValue, FunctionValue, InstructionOpcode,
+    InstructionValue,
 };
-use llvm_plugin::inkwell::{builder::Builder, context::{Context, ContextRef}, Either::Left, Either::Right};
+use llvm_plugin::inkwell::{builder::Builder, context::ContextRef, Either::Left, Either::Right};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
 
-#[amice(priority = 970, name = "FunctionWrapper", position = PassPosition::PipelineStart)]
+#[amice(priority = 1010, name = "FunctionWrapper", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct FunctionWrapper {
     enable: bool,
@@ -63,19 +63,13 @@ impl LlvmModulePass for FunctionWrapper {
 
             for bb in function.get_basic_blocks() {
                 for inst in bb.get_instructions() {
-                    debug!("(function-wrapper) examining instruction: {:?}", inst.get_opcode());
                     if matches!(inst.get_opcode(), InstructionOpcode::Call | InstructionOpcode::Invoke) {
-                        debug!("(function-wrapper) found call/invoke instruction");
                         // Apply probability check
                         if rand::thread_rng().gen_range(0..100) < self.probability {
                             if let Some(called_func) = get_called_function(&inst) {
                                 debug!("(function-wrapper) adding call to function: {:?}", called_func.get_name());
                                 call_instructions.push((inst, called_func));
-                            } else {
-                                debug!("(function-wrapper) could not get called function");
                             }
-                        } else {
-                            debug!("(function-wrapper) call skipped due to probability");
                         }
                     }
                 }
@@ -135,9 +129,7 @@ fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<
     match inst.get_opcode() {
         InstructionOpcode::Call | InstructionOpcode::Invoke => {
             let operand_num = inst.get_num_operands();
-            debug!("(function-wrapper) call instruction has {} operands", operand_num);
             if operand_num == 0 {
-                debug!("(function-wrapper) no operands found");
                 return None;
             }
 
@@ -145,18 +137,10 @@ fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<
             if let Some(operand) = inst.get_operand(operand_num - 1) {
                 if let Some(callee) = operand.left() {
                     let callee_ptr = callee.into_pointer_value();
-                    debug!("(function-wrapper) got pointer value, trying to convert to function");
                     if let Some(func_val) = unsafe { FunctionValue::new(callee_ptr.as_value_ref()) } {
-                        debug!("(function-wrapper) successfully got function: {:?}", func_val.get_name());
                         return Some(func_val);
-                    } else {
-                        debug!("(function-wrapper) failed to convert to FunctionValue");
                     }
-                } else {
-                    debug!("(function-wrapper) operand is not a basic value");
                 }
-            } else {
-                debug!("(function-wrapper) could not get operand {}", operand_num - 1);
             }
             None
         }
