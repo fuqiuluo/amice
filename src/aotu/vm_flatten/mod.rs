@@ -315,12 +315,8 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                     let left = get_successor(inst, 0);
                     let right = get_successor(inst, 1);
                     let left = left
-                        .ok_or(anyhow!("expected left operand for conditional br: op_nums > 1"))?
-                        .right()
                         .ok_or(anyhow!("expected left operand for conditional br: is not a block"))?;
                     let right = right
-                        .ok_or(anyhow!("expected right operand for conditional br: op_nums > 1"))?
-                        .right()
                         .ok_or(anyhow!("expected right operand for conditional br: is not a block"))?;
 
                     node.set_left(left);

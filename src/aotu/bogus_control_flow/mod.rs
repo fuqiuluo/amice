@@ -183,7 +183,6 @@ fn apply_bogus_control_flow_to_unconditional_branch(
     }
 
     let target_bb = branch_inst::get_successor(terminator, 0)
-        .and_then(|op| op.right())
         .ok_or_else(|| anyhow::anyhow!("Cannot get branch target"))?;
 
     let context = function.get_type().get_context();

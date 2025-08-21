@@ -130,13 +130,10 @@ impl LlvmModulePass for IndirectBranch {
                 if br_inst.is_conditional() {
                     // future_branches的[1]是内存下标，get_successor(0)为真块
                     // 当为真时，把bool扩展为i32,则这个i32的值是1，直接作为下标使用即future_branches[1]应该保存真分支
-                    future_branches[1] = get_successor(br_inst, 0).unwrap().right();
-                    future_branches[0] = get_successor(br_inst, 1).unwrap().right();
+                    future_branches[1] = get_successor(br_inst, 0);
+                    future_branches[0] = get_successor(br_inst, 1);
                 } else {
-                    future_branches[0] = get_successor(br_inst, 0)
-                        //.ok_or(anyhow!("block: {}, ops = {:?}", bi, bi.get_operands().collect::<Vec<_>>()))
-                        .expect("no successor for basic block")
-                        .right(); // true分支
+                    future_branches[0] = get_successor(br_inst, 0); // true分支
                 }
 
                 // 可能要去到的分支
