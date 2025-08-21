@@ -13,6 +13,7 @@ use llvm_plugin::inkwell::{Either::Left, Either::Right, builder::Builder, contex
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
+use amice_llvm::ir::function::is_inline_marked_function;
 
 #[amice(priority = 1010, name = "FunctionWrapper", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -54,7 +55,7 @@ impl LlvmModulePass for FunctionWrapper {
 
             // Check if function should be obfuscated (using similar logic from other passes)
             let function_name = function.get_name().to_str().unwrap_or("");
-            if should_skip_function(function_name) {
+            if should_skip_function_by_name(function_name) || should_skip_function_by_inline_attribute(function) {
                 continue;
             }
 
@@ -117,13 +118,17 @@ impl LlvmModulePass for FunctionWrapper {
 }
 
 /// Check if a function should be skipped from obfuscation
-fn should_skip_function(name: &str) -> bool {
+fn should_skip_function_by_name(name: &str) -> bool {
     // Skip intrinsics, compiler-generated functions, and system functions
     name.starts_with("llvm.")
         || name.starts_with("clang.")
         || name.starts_with("__")
         || name.starts_with("@")
         || name.is_empty()
+}
+
+fn should_skip_function_by_inline_attribute(function_value: FunctionValue) -> bool {
+    is_inline_marked_function(function_value)
 }
 
 /// Extract called function from a call instruction
@@ -168,7 +173,7 @@ fn handle_call_instruction<'a>(
     }
 
     let function_name = called_function.get_name().to_str().unwrap_or("");
-    if should_skip_function(function_name) {
+    if should_skip_function_by_name(function_name) || should_skip_function_by_inline_attribute(called_function) {
         debug!("(function-wrapper) skipping function: {}", function_name);
         return Ok(None);
     }
