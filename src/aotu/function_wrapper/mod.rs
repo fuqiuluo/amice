@@ -64,7 +64,7 @@ impl LlvmModulePass for FunctionWrapper {
                 for inst in bb.get_instructions() {
                     if matches!(inst.get_opcode(), InstructionOpcode::Call | InstructionOpcode::Invoke) {
                         // Apply probability check
-                        if rand::thread_rng().gen_range(0..100) < self.probability {
+                        if rand::random_range(0..100) < self.probability {
                             if let Some(called_func) = get_called_function(&inst) {
                                 debug!(
                                     "(function-wrapper) adding call to function: {:?}",
@@ -211,32 +211,59 @@ fn create_wrapper_function<'a>(
 
 /// Generate a random name for the wrapper function
 fn generate_wrapper_name() -> String {
-    let mut rng = rand::thread_rng();
-    let length = rng.gen_range(15..25);
-    let mut name = String::with_capacity(length + 8);
-    name.push_str("Hack");
+    let mut rng = rand::rng();
+    let length = rng.random_range(15..25);
+    let mut name = String::with_capacity(length + 2);
+    let dic = [
+        "0", "O", "o", "Ο", "ο", "θ", "Θ", "О", "о", "〇", "०", "০", "۰", "°", "○",  // 0
+        "1", "l", "I", "|", "Ⅰ", "і", "Ӏ", "１", "ǀ", "Ι", "І",      // 1
+        "2", "２",
+        "3", "３",
+        "4", "４",
+        "5", "５", "Ƽ",
+        "6", "６",
+        "7", "７",
+        "8", "８",
+        "9", "９",
+        "a", "а", "α", "а", "ɑ", "ａ", "ά", "à", "á", "â", "ã", "ä", "å", "ā", "ă", "ą", "ǎ", "ǻ", "ḁ", "ạ", "ả", "ấ", "ầ", "ẩ", "ẫ", "ậ", "ắ", "ằ", "ẳ", "ẵ", "ặ",
+        "i", "і", "ì", "í", "î", "ï", "ĩ", "ī", "ĭ", "į", "ı", "ǐ", "ỉ", "ị",
+        "c", "с", "ć", "ĉ", "ċ", "č", "ç", "ḉ",
+        "s", "ѕ", "ś", "ŝ", "ş", "š", "ṡ", "ṣ", "ṥ", "ṧ", "ṩ",
+        "u", "μ", "ù", "ú", "û", "ü", "ũ", "ū", "ŭ", "ů", "ű", "ų", "ǔ", "ǖ", "ǘ", "ǚ", "ǜ", "ụ", "ủ", "ứ", "ừ", "ử", "ữ", "ự", "υ",
+        "r", "г", "ŕ", "ŗ", "ř", "ṙ", "ṛ", "ṝ", "ṟ"
+    ];
 
     for _ in 0..length {
-        let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        let idx = rng.gen_range(0..chars.len());
-        name.push(chars[idx] as char);
+        let chars = dic[rng.random_range(0..dic.len())];
+        name.push_str(chars);
     }
 
-    name.push_str("END");
+    name.push_str("$$");
     name
 }
 
 /// Copy function attributes from source to target
-fn copy_function_attributes<'a>(target: &FunctionValue<'a>, _source: &FunctionValue<'a>) {
-    // Add noinline attribute to prevent optimization from undoing our work
-    let ctx = target.get_type().get_context();
-    let noinline_kind = Attribute::get_named_enum_kind_id("noinline");
-    let noinline_attr = ctx.create_enum_attribute(noinline_kind, 0);
-    target.add_attribute(AttributeLoc::Function, noinline_attr);
+fn copy_function_attributes<'a>(target: &FunctionValue<'a>, source: &FunctionValue<'a>) {
+    let fun_attributes = source.attributes(AttributeLoc::Function);
+    let mut params_attributes = Vec::new();
+    for i in 0..source.count_params() {
+        params_attributes.push(source.attributes(AttributeLoc::Param(i)));
+    }
+    let return_attributes = source.attributes(AttributeLoc::Return);
 
-    // TODO: Copy more comprehensive attributes if needed
-    // This is a simplified version - full attribute copying would require
-    // more complex LLVM attribute manipulation
+    for x in fun_attributes {
+        target.add_attribute(AttributeLoc::Function, x);
+    }
+
+    for x in return_attributes {
+        target.add_attribute(AttributeLoc::Return, x);
+    }
+
+    for (index, attr) in params_attributes.iter().enumerate() {
+        for x in attr {
+            target.add_attribute(AttributeLoc::Param(index as u32), *x);
+        }
+    }
 }
 
 /// Create the body of the wrapper function
