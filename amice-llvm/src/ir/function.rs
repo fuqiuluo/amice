@@ -33,6 +33,12 @@ pub fn cast_ptr_to_fn_ptr<'a>(addr: PointerValue<'a>, function_type: FunctionTyp
     }
 }
 
+pub fn is_inline_marked_function(function: FunctionValue) -> bool {
+    unsafe {
+        ffi::amice_is_inline_marked_function(function.as_value_ref() as LLVMValueRef)
+    }
+}
+
 pub unsafe fn fix_stack(function:FunctionValue) {
     ffi::amice_fix_stack(function.as_value_ref() as LLVMValueRef, 0, 0)
 }

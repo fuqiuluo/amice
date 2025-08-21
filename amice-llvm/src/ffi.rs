@@ -58,6 +58,8 @@ unsafe extern "C" {
 
     pub(crate) fn amice_switch_find_case_dest(inst: LLVMValueRef, b: LLVMBasicBlockRef) -> LLVMValueRef;
 
+    pub(crate) fn amice_is_inline_marked_function(function: LLVMValueRef) -> bool;
+
     pub(crate) fn amice_get_llvm_version_major() -> i32;
 
     pub(crate) fn amice_get_llvm_version_minor() -> i32;

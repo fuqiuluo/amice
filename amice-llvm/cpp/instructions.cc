@@ -9,6 +9,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/AbstractCallSite.h"
 #include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Attributes.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Pass.h"
@@ -33,6 +34,18 @@ extern "C" {
 
 llvm::ConstantInt* amice_switch_find_case_dest(llvm::SwitchInst* S, llvm::BasicBlock* B) {
     return S->findCaseDest (B);
+}
+
+bool amice_is_inline_marked_function(llvm::Function &F) {
+    if (F.hasFnAttribute(llvm::Attribute::AlwaysInline)) {
+        return true;
+    }
+
+    if (F.hasFnAttribute(llvm::Attribute::InlineHint)) {
+        return true;
+    }
+
+    return false;
 }
 
 }
