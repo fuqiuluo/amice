@@ -55,4 +55,13 @@ void amice_basic_block_remove_predecessor(llvm::BasicBlock* B, llvm::BasicBlock*
     B->removePredecessor(P);
 }
 
+void amice_phi_node_remove_incoming_value(llvm::PHINode* PHI, llvm::BasicBlock* P) {
+    PHI->removeIncomingValue(P);
+}
+
+void amice_phi_node_replace_incoming_block_with(llvm::PHINode* PHI, llvm::BasicBlock* O, llvm::BasicBlock* N) {
+    PHI->replaceIncomingBlockWith(O, N);
+}
+
+
 }

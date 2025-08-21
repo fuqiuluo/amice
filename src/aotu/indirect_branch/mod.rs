@@ -16,6 +16,7 @@ use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
+use amice_llvm::ir::phi_inst::{update_phi_nodes, update_phi_nodes_safe};
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 
@@ -274,7 +275,7 @@ impl LlvmModulePass for IndirectBranch {
 
                     let mut cur_dummy_block = goal_dummy_block;
                     for _ in 0..chain_nums - 1 {
-                        let dummy_block = context.append_basic_block(function, "");
+                        let dummy_block = context.append_basic_block(function, "dummy_block");
                         builder.position_at_end(dummy_block);
                         let target = unsafe { cur_dummy_block.get_address().unwrap().as_basic_value_enum() };
 
@@ -292,7 +293,6 @@ impl LlvmModulePass for IndirectBranch {
                     for &target_block in &successors {
                         if let Some(pb) = br_inst.get_parent() {
                             update_phi_nodes(
-                                context,
                                 pb,               // 原始前驱块
                                 goal_dummy_block, // 新前驱块
                                 target_block,     // 目标块
@@ -324,48 +324,6 @@ impl LlvmModulePass for IndirectBranch {
         }
 
         PreservedAnalyses::None
-    }
-}
-
-fn update_phi_nodes<'ctx>(
-    _ctx: ContextRef,
-    old_pred: BasicBlock<'ctx>,
-    new_pred: BasicBlock<'ctx>,
-    target_block: BasicBlock<'ctx>,
-) {
-    for phi in target_block.get_first_instruction().iter() {
-        if phi.get_opcode() != InstructionOpcode::Phi {
-            break;
-        }
-
-        // %25 = phi i32 [ 1, %21 ], [ %23, %22 ]
-        let phi = unsafe { PhiValue::new(phi.as_value_ref()) };
-        let incoming_vec = phi
-            .get_incomings()
-            .filter_map(|(value, pred)| {
-                if pred == old_pred {
-                    (value, new_pred).into()
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let (mut values, mut basic_blocks): (Vec<LLVMValueRef>, Vec<LLVMBasicBlockRef>) = {
-            incoming_vec
-                .iter()
-                .map(|&(v, bb)| (v.as_value_ref(), bb.as_mut_ptr()))
-                .unzip()
-        };
-
-        unsafe {
-            LLVMAddIncoming(
-                phi.as_value_ref(),
-                values.as_mut_ptr(),
-                basic_blocks.as_mut_ptr(),
-                incoming_vec.len() as u32,
-            );
-        }
     }
 }
 

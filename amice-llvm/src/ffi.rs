@@ -62,6 +62,10 @@ unsafe extern "C" {
 
     pub(crate) fn amice_basic_block_remove_predecessor(basic_block: LLVMBasicBlockRef, predecessor: LLVMBasicBlockRef);
 
+    pub(crate) fn amice_phi_node_remove_incoming_value(phi_node: LLVMValueRef, incoming: LLVMBasicBlockRef);
+
+    pub(crate) fn amice_phi_node_replace_incoming_block_with(phi_node: LLVMValueRef, incoming: LLVMBasicBlockRef, new_block: LLVMBasicBlockRef);
+
     pub(crate) fn amice_get_llvm_version_major() -> i32;
 
     pub(crate) fn amice_get_llvm_version_minor() -> i32;

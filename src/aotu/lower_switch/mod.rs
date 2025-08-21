@@ -15,6 +15,7 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
+use amice_llvm::ir::phi_inst::update_phi_nodes;
 
 #[amice(priority = 961, name = "LowerSwitch", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -161,40 +162,4 @@ pub(crate) fn demote_switch_to_if(
     inst.erase_from_basic_block();
 
     Ok(())
-}
-
-fn update_phi_nodes<'ctx>(old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>, target_block: BasicBlock<'ctx>) {
-    for phi in target_block.get_first_instruction().iter() {
-        if phi.get_opcode() != InstructionOpcode::Phi {
-            break;
-        }
-
-        let phi = unsafe { PhiValue::new(phi.as_value_ref()) };
-        let incoming_vec = phi
-            .get_incomings()
-            .filter_map(|(value, pred)| {
-                if pred == old_pred {
-                    (value, new_pred).into()
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let (mut values, mut basic_blocks): (Vec<LLVMValueRef>, Vec<LLVMBasicBlockRef>) = {
-            incoming_vec
-                .iter()
-                .map(|&(v, bb)| (v.as_value_ref(), bb.as_mut_ptr()))
-                .unzip()
-        };
-
-        unsafe {
-            LLVMAddIncoming(
-                phi.as_value_ref(),
-                values.as_mut_ptr(),
-                basic_blocks.as_mut_ptr(),
-                incoming_vec.len() as u32,
-            );
-        }
-    }
 }
