@@ -2,7 +2,7 @@ use crate::config::{Config, IndirectBranchFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::{get_basic_block_entry, get_basic_block_entry_ref};
-use amice_llvm::ir::phi_inst::{update_phi_nodes};
+use amice_llvm::ir::phi_inst::update_phi_nodes;
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
