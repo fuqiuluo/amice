@@ -1,6 +1,7 @@
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMUseRef, LLVMValueRef};
 use inkwell::values::{AsValueRef, FunctionValue};
+use crate::ffi::{llvm_dominator_tree_create, llvm_dominator_tree_create_from_function, llvm_dominator_tree_destroy, llvm_dominator_tree_dominate_BU, llvm_dominator_tree_view_graph};
 
 #[repr(C)]
 pub struct LLVMDominatorTree {
@@ -8,15 +9,6 @@ pub struct LLVMDominatorTree {
 }
 
 pub type LLVMDominatorTreeRef = *mut LLVMDominatorTree;
-
-unsafe extern "C" {
-    // Lifecycle management
-    fn llvm_dominator_tree_create() -> LLVMDominatorTreeRef;
-    fn llvm_dominator_tree_create_from_function(func: LLVMValueRef) -> LLVMDominatorTreeRef;
-    fn llvm_dominator_tree_destroy(dt: LLVMDominatorTreeRef);
-    fn llvm_dominator_tree_view_graph(dt: LLVMDominatorTreeRef);
-    fn llvm_dominator_tree_dominate_BU(dt: LLVMDominatorTreeRef, b: LLVMBasicBlockRef, u: LLVMUseRef) -> bool;
-}
 
 /// Safe Rust wrapper for LLVM DominatorTree
 pub struct DominatorTree {

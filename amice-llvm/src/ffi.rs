@@ -1,5 +1,6 @@
 use std::ffi::{CStr, c_char, c_void};
-use inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
+use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMUseRef, LLVMValueRef};
+use crate::analysis::dominators::LLVMDominatorTreeRef;
 
 #[link(name = "amice-llvm-ffi")]
 unsafe extern "C" {
@@ -42,6 +43,16 @@ unsafe extern "C" {
     ) -> *mut c_void;
 
     pub(crate) fn amice_get_first_insertion_pt(block: *mut c_void) -> *mut c_void;
+
+    pub(crate) fn llvm_dominator_tree_create() -> LLVMDominatorTreeRef;
+
+    pub(crate) fn llvm_dominator_tree_create_from_function(func: LLVMValueRef) -> LLVMDominatorTreeRef;
+
+    pub(crate) fn llvm_dominator_tree_destroy(dt: LLVMDominatorTreeRef);
+
+    pub(crate) fn llvm_dominator_tree_view_graph(dt: LLVMDominatorTreeRef);
+
+    pub(crate) fn llvm_dominator_tree_dominate_BU(dt: LLVMDominatorTreeRef, b: LLVMBasicBlockRef, u: LLVMUseRef) -> bool;
 
     pub(crate) fn amice_get_llvm_version_major() -> i32;
 
