@@ -31,6 +31,15 @@ pub fn get_first_insertion_pt(
     unsafe { InstructionValue::new(c_ref as LLVMValueRef) }
 }
 
+pub fn remove_predecessor(block: BasicBlock, pred: BasicBlock) {
+    unsafe {
+        crate::ffi::amice_basic_block_remove_predecessor(
+            block.as_mut_ptr() as LLVMBasicBlockRef,
+            block.as_mut_ptr() as LLVMBasicBlockRef
+        )
+    }
+}
+
 mod ffi {
     /// # Safety
     ///

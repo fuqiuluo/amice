@@ -51,4 +51,8 @@ llvm::Instruction* amice_get_first_insertion_pt(llvm::BasicBlock* bb) {
     return llvm::cast<llvm::Instruction>(bb->getFirstInsertionPt());
 }
 
+void amice_basic_block_remove_predecessor(llvm::BasicBlock* B, llvm::BasicBlock* P) {
+    B->removePredecessor(P);
+}
+
 }
