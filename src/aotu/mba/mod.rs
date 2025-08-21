@@ -216,7 +216,7 @@ impl LlvmModulePass for Mba {
                 }
             }
 
-            if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(function) {
                 warn!("(mba) function {:?} is not verified", function.get_name());
             }
 

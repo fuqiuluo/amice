@@ -57,38 +57,12 @@ impl LlvmModulePass for Flatten {
             return PreservedAnalyses::All;
         }
 
-        'out: for function in module.get_functions() {
-            if function.count_basic_blocks() <= 2 {
-                continue;
-            }
-
-            if self.skip_big_function && function.count_basic_blocks() > 4096 {
-                continue
-            }
-
-            for _ in 0..self.loop_count {
-                if let Err(err) = match self.mode {
-                    FlattenMode::Basic => cf_flatten_basic::do_handle(module, function, self.demote_switch),
-                    FlattenMode::DominatorEnhanced => cf_flatten_dominator::do_handle(module, function, self.demote_switch),
-                } {
-                    warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
-                    continue 'out;
-                }
-
-                if self.skip_big_function && function.count_basic_blocks() > 4096 {
-                    break
-                }
-            }
-
-            if self.fix_stack {
-                unsafe {
-                    fix_stack(function.as_value_ref() as *mut std::ffi::c_void);
-                }
-            }
-
-            if let VerifyResult::Broken(e) = verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
-                warn!("(flatten) function {:?} verify failed: {}", function.get_name(), e);
-            }
+        if let Err(err) = match self.mode {
+            FlattenMode::Basic => cf_flatten_basic::run(self, module),
+            FlattenMode::DominatorEnhanced => cf_flatten_dominator::run(self, module),
+        } {
+            error!("(flatten) run pass failed: {}", err);
+            return PreservedAnalyses::All;
         }
 
         PreservedAnalyses::None

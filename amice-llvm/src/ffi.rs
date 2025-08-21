@@ -22,7 +22,7 @@ unsafe extern "C" {
 
     pub(crate) fn amiceFixStack(function: *mut c_void, at_term: i32, max_iterations: i32);
 
-    pub(crate) fn amiceVerifyFunction(function: *mut c_void, errmsg: *mut *const c_char) -> i32;
+    pub(crate) fn amiceVerifyFunction(function: LLVMValueRef, errmsg: *mut *const c_char) -> i32;
 
     pub(crate) fn amiceFreeMsg(errmsg: *const c_char) -> i32;
 

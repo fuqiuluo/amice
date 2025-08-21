@@ -101,7 +101,7 @@ fn handle_function(function: FunctionValue<'_>, flags: ShuffleBlocksFlags) -> an
         }
     }
 
-    if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
+    if verify_function2(function) {
         warn!("(shuffle-blocks) function {:?} is not verified", function.get_name());
     }
 

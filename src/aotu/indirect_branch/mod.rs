@@ -86,7 +86,7 @@ impl LlvmModulePass for IndirectBranch {
             module,
             global_indirect_branch_table
         );
-        
+
         let encrypt_key_global = if self.flags.contains(IndirectBranchFlags::EncryptBlockIndex) {
             let xor_key = self
                 .xor_key
@@ -107,7 +107,7 @@ impl LlvmModulePass for IndirectBranch {
                 module,
                 table
             );
-            
+
             Some(table)
         } else {
             None
@@ -169,12 +169,12 @@ impl LlvmModulePass for IndirectBranch {
                         local_indirect_branch_table.set_initializer(&initializer);
                         local_indirect_branch_table.set_linkage(Linkage::Private);
                         local_indirect_branch_table.set_constant(true);
-                        
+
                         amice_llvm::module_utils::append_to_compiler_used(
                             module,
                             local_indirect_branch_table
                         );
-                        
+
                         Some(local_indirect_branch_table)
                     } else {
                         // 选择全局跳转表
@@ -330,7 +330,7 @@ impl LlvmModulePass for IndirectBranch {
                 br_inst.erase_from_basic_block();
             }
 
-            if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(function) {
                 warn!("(indirect-branch) function {:?} verify failed", function.get_name());
             }
         }

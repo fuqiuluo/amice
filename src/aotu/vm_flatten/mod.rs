@@ -655,7 +655,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         builder.build_unconditional_branch(vm_entry)?;
     }
 
-    if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
+    if verify_function2(function) {
         warn!("(vm_flatten) function {:?} verify failed", function.get_name());
     }
 

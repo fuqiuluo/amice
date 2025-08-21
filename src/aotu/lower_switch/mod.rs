@@ -45,7 +45,7 @@ impl LlvmModulePass for LowerSwitch {
         }
 
         for f in module.get_functions() {
-            if verify_function2(f.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(f) {
                 warn!("(lower-switch) function {:?} is not verified", f.get_name());
             }
         }

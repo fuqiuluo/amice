@@ -39,10 +39,13 @@ pub enum  VerifyResult {
     Ok,
 }
 
-pub fn verify_function(function: *mut std::ffi::c_void) -> VerifyResult {
+pub fn verify_function(function: FunctionValue) -> VerifyResult {
     let mut errmsg: *const c_char = std::ptr::null();
     let broken = unsafe {
-        ffi::amiceVerifyFunction(function, &mut errmsg as *mut *const c_char) == 1
+        ffi::amiceVerifyFunction(
+            function.as_value_ref() as LLVMValueRef,
+            &mut errmsg as *mut *const c_char
+        ) == 1
     };
     let result = if !errmsg.is_null() && broken {
         let c_errmsg = unsafe { CStr::from_ptr(errmsg) };
@@ -56,7 +59,7 @@ pub fn verify_function(function: *mut std::ffi::c_void) -> VerifyResult {
     result
 }
 
-pub fn verify_function2(function: *mut std::ffi::c_void) -> bool {
+pub fn verify_function2(function: FunctionValue) -> bool {
     match verify_function(function) {
         VerifyResult::Broken(_) => true,
         VerifyResult::Ok => false

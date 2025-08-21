@@ -69,7 +69,7 @@ impl LlvmModulePass for BogusControlFlow {
             }
 
             // Verify function after transformation
-            if let VerifyResult::Broken(msg) = verify_function(function.as_value_ref() as *mut std::ffi::c_void) {
+            if let VerifyResult::Broken(msg) = verify_function(function) {
                 warn!(
                     "(bogus-control-flow) function {:?} verify failed: {}",
                     function.get_name(),
