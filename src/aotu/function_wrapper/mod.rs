@@ -7,10 +7,9 @@ use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::{AnyTypeEnum, BasicTypeEnum};
 use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, FunctionValue, InstructionOpcode,
-    InstructionValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValue, FunctionValue, InstructionOpcode, InstructionValue,
 };
-use llvm_plugin::inkwell::{builder::Builder, context::ContextRef, Either::Left, Either::Right};
+use llvm_plugin::inkwell::{Either::Left, Either::Right, builder::Builder, context::ContextRef};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
@@ -67,7 +66,10 @@ impl LlvmModulePass for FunctionWrapper {
                         // Apply probability check
                         if rand::thread_rng().gen_range(0..100) < self.probability {
                             if let Some(called_func) = get_called_function(&inst) {
-                                debug!("(function-wrapper) adding call to function: {:?}", called_func.get_name());
+                                debug!(
+                                    "(function-wrapper) adding call to function: {:?}",
+                                    called_func.get_name()
+                                );
                                 call_instructions.push((inst, called_func));
                             }
                         }
@@ -97,13 +99,13 @@ impl LlvmModulePass for FunctionWrapper {
                         if let Some(new_called_func) = get_called_function(&new_inst) {
                             next_call_instructions.push((new_inst, new_called_func));
                         }
-                    }
+                    },
                     Ok(None) => {
                         debug!("(function-wrapper) call instruction was not wrapped (filtered out)");
-                    }
+                    },
                     Err(e) => {
                         error!("(function-wrapper) failed to handle call instruction: {}", e);
-                    }
+                    },
                 }
             }
             current_call_instructions = next_call_instructions;
@@ -143,7 +145,7 @@ fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<
                 }
             }
             None
-        }
+        },
         _ => None,
     }
 }
@@ -187,10 +189,10 @@ fn create_wrapper_function<'a>(
 
     // Use the called function's type directly for the wrapper
     let called_fn_type = called_function.get_type();
-    
+
     // Generate random wrapper function name
     let wrapper_name = generate_wrapper_name();
-    
+
     // Create the wrapper function with the same signature as the called function
     let wrapper_function = module.add_function(&wrapper_name, called_fn_type, Some(Linkage::Internal));
 
@@ -213,13 +215,13 @@ fn generate_wrapper_name() -> String {
     let length = rng.gen_range(15..25);
     let mut name = String::with_capacity(length + 8);
     name.push_str("Hack");
-    
+
     for _ in 0..length {
         let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let idx = rng.gen_range(0..chars.len());
         name.push(chars[idx] as char);
     }
-    
+
     name.push_str("END");
     name
 }
@@ -231,7 +233,7 @@ fn copy_function_attributes<'a>(target: &FunctionValue<'a>, _source: &FunctionVa
     let noinline_kind = Attribute::get_named_enum_kind_id("noinline");
     let noinline_attr = ctx.create_enum_attribute(noinline_kind, 0);
     target.add_attribute(AttributeLoc::Function, noinline_attr);
-    
+
     // TODO: Copy more comprehensive attributes if needed
     // This is a simplified version - full attribute copying would require
     // more complex LLVM attribute manipulation
@@ -248,10 +250,7 @@ fn create_wrapper_body<'a>(
     builder.position_at_end(entry_bb);
 
     // Collect wrapper function parameters
-    let args: Vec<BasicMetadataValueEnum> = wrapper_function
-        .get_param_iter()
-        .map(|param| param.into())
-        .collect();
+    let args: Vec<BasicMetadataValueEnum> = wrapper_function.get_param_iter().map(|param| param.into()).collect();
 
     // Create call to the original function
     let call_result = builder.build_call(*called_function, &args, "wrapped_call")?;
@@ -260,22 +259,20 @@ fn create_wrapper_body<'a>(
     let return_type = wrapper_function.get_type().get_return_type();
     if let Some(ret_type) = return_type {
         match ret_type {
-            BasicTypeEnum::IntType(_) |
-            BasicTypeEnum::FloatType(_) |
-            BasicTypeEnum::PointerType(_) |
-            BasicTypeEnum::ArrayType(_) |
-            BasicTypeEnum::StructType(_) |
-            BasicTypeEnum::VectorType(_) |
-            BasicTypeEnum::ScalableVectorType(_) => {
-                match call_result.try_as_basic_value() {
-                    Left(basic_value) => {
-                        builder.build_return(Some(&basic_value))?;
-                    }
-                    Right(_) => {
-                        builder.build_return(None)?;
-                    }
-                }
-            }
+            BasicTypeEnum::IntType(_)
+            | BasicTypeEnum::FloatType(_)
+            | BasicTypeEnum::PointerType(_)
+            | BasicTypeEnum::ArrayType(_)
+            | BasicTypeEnum::StructType(_)
+            | BasicTypeEnum::VectorType(_)
+            | BasicTypeEnum::ScalableVectorType(_) => match call_result.try_as_basic_value() {
+                Left(basic_value) => {
+                    builder.build_return(Some(&basic_value))?;
+                },
+                Right(_) => {
+                    builder.build_return(None)?;
+                },
+            },
         }
     } else {
         builder.build_return(None)?;
@@ -291,14 +288,14 @@ fn replace_call_with_wrapper<'a>(
 ) -> anyhow::Result<Option<InstructionValue<'a>>> {
     let ctx = wrapper_function.get_type().get_context();
     let builder = ctx.create_builder();
-    
+
     // Position builder before the original call
     builder.position_before(call_inst);
 
     // Collect arguments from the original call instruction
     let num_operands = call_inst.get_num_operands();
     let mut args: Vec<BasicMetadataValueEnum> = Vec::new();
-    
+
     // Skip the last operand which is the function being called
     for i in 0..num_operands.saturating_sub(1) {
         if let Some(arg) = call_inst.get_operand(i).unwrap().left() {
