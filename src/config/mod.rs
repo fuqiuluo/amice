@@ -11,6 +11,7 @@ use std::path::Path;
 
 pub use bogus_control_flow::BogusControlFlowConfig;
 pub use flatten::FlattenMode;
+pub use function_wrapper::FunctionWrapperConfig;
 pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
 pub use indirect_call::IndirectCallConfig;
 pub use lower_switch::LowerSwitchConfig;
@@ -23,6 +24,7 @@ pub use vm_flatten::VmFlattenConfig;
 
 mod bogus_control_flow;
 mod flatten;
+mod function_wrapper;
 mod indirect_branch;
 mod indirect_call;
 mod lower_switch;
@@ -49,6 +51,7 @@ pub struct Config {
     pub string_encryption: StringEncryptionConfig,
     pub indirect_call: IndirectCallConfig,
     pub indirect_branch: IndirectBranchConfig,
+    pub function_wrapper: FunctionWrapperConfig,
     pub split_basic_block: SplitBasicBlockConfig,
     pub vm_flatten: VmFlattenConfig,
     pub shuffle_blocks: ShuffleBlocksConfig,
