@@ -57,18 +57,6 @@ int amiceGetLLVMVersionMinor() {
   return LLVM_VERSION_MINOR;
 }
 
-void amiceAppendToGlobalCtors(llvm::Module &M, llvm::Function *F, int P) {
-     llvm::appendToGlobalCtors(M, F, P);
-}
-
-void amiceAppendToUsed(llvm::Module &M, llvm::GlobalValue * V) {
-    llvm::appendToUsed(M, {V});
-}
-
-void amiceAppendToCompilerUsed(llvm::Module &M, llvm::GlobalValue * V) {
-    llvm::appendToCompilerUsed(M, {V});
-}
-
 llvm::Constant * amiceConstantGetBitCast(llvm::Constant *C, llvm::Type *Ty) {
     return llvm::ConstantExpr::getBitCast(C, Ty);
 }
@@ -83,10 +71,6 @@ llvm::Constant * amiceConstantGetIntToPtr(llvm::Constant *C, llvm::Type *Ty) {
 
 llvm::Constant * amiceConstantGetXor(llvm::Constant *C1, llvm::Constant *C2) {
     return llvm::ConstantExpr::getXor(C1, C2);
-}
-
-llvm::BasicBlock * 	amiceSplitBasicBlock (llvm::BasicBlock * BB, llvm::Instruction *I, char* N, int B) {
-    return BB->splitBasicBlock(I, N, B);
 }
 
 bool valueEscapes(llvm::Instruction *Inst) {
@@ -199,24 +183,6 @@ void amiceFixStack(llvm::Function *f, int AtTerminator, int MaxIterations) {
             break;
          }
     } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
-}
-
-int amiceVerifyFunction(llvm::Function& F, char** errmsg) {
-    std::string err;
-    llvm::raw_string_ostream rso(err);
-    bool broken = llvm::verifyFunction(F, &rso);
-    rso.flush();
-    if (broken) {
-        size_t n = err.length() + 1;
-        char* p = (char*)malloc(n);
-        if (p) memcpy(p, err.c_str(), n);
-        *errmsg = p;
-    }
-   return broken;
-}
-
-llvm::Instruction* amiceGetFirstInsertionPt(llvm::BasicBlock* bb) {
-    return llvm::cast<llvm::Instruction>(bb->getFirstInsertionPt());
 }
 
 int amiceFreeMsg(char* err) {
