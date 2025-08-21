@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::function::is_inline_marked_function;
 use amice_llvm::module_utils::append_to_compiler_used;
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
@@ -13,7 +14,6 @@ use llvm_plugin::inkwell::{Either::Left, Either::Right, builder::Builder, contex
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
-use amice_llvm::ir::function::is_inline_marked_function;
 
 #[amice(priority = 1010, name = "FunctionWrapper", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -220,22 +220,14 @@ fn generate_wrapper_name() -> String {
     let length = rng.random_range(15..25);
     let mut name = String::with_capacity(length + 2);
     let dic = [
-        "0", "O", "o", "Ο", "ο", "θ", "Θ", "О", "о", "〇", "०", "০", "۰", "°", "○",  // 0
-        "1", "l", "I", "|", "Ⅰ", "і", "Ӏ", "１", "ǀ", "Ι", "І",      // 1
-        "2", "２",
-        "3", "３",
-        "4", "４",
-        "5", "５", "Ƽ",
-        "6", "６",
-        "7", "７",
-        "8", "８",
-        "9", "９",
-        "a", "а", "α", "а", "ɑ", "ａ", "ά", "à", "á", "â", "ã", "ä", "å", "ā", "ă", "ą", "ǎ", "ǻ", "ḁ", "ạ", "ả", "ấ", "ầ", "ẩ", "ẫ", "ậ", "ắ", "ằ", "ẳ", "ẵ", "ặ",
-        "i", "і", "ì", "í", "î", "ï", "ĩ", "ī", "ĭ", "į", "ı", "ǐ", "ỉ", "ị",
-        "c", "с", "ć", "ĉ", "ċ", "č", "ç", "ḉ",
-        "s", "ѕ", "ś", "ŝ", "ş", "š", "ṡ", "ṣ", "ṥ", "ṧ", "ṩ",
-        "u", "μ", "ù", "ú", "û", "ü", "ũ", "ū", "ŭ", "ů", "ű", "ų", "ǔ", "ǖ", "ǘ", "ǚ", "ǜ", "ụ", "ủ", "ứ", "ừ", "ử", "ữ", "ự", "υ",
-        "r", "г", "ŕ", "ŗ", "ř", "ṙ", "ṛ", "ṝ", "ṟ"
+        "0", "O", "o", "Ο", "ο", "θ", "Θ", "О", "о", "〇", "०", "০", "۰", "°", "○", // 0
+        "1", "l", "I", "|", "Ⅰ", "і", "Ӏ", "１", "ǀ", "Ι", "І", // 1
+        "2", "２", "3", "３", "4", "４", "5", "５", "Ƽ", "6", "６", "7", "７", "8", "８", "9", "９", "a", "а", "α",
+        "а", "ɑ", "ａ", "ά", "à", "á", "â", "ã", "ä", "å", "ā", "ă", "ą", "ǎ", "ǻ", "ḁ", "ạ", "ả", "ấ", "ầ", "ẩ", "ẫ",
+        "ậ", "ắ", "ằ", "ẳ", "ẵ", "ặ", "i", "і", "ì", "í", "î", "ï", "ĩ", "ī", "ĭ", "į", "ı", "ǐ", "ỉ", "ị", "c", "с",
+        "ć", "ĉ", "ċ", "č", "ç", "ḉ", "s", "ѕ", "ś", "ŝ", "ş", "š", "ṡ", "ṣ", "ṥ", "ṧ", "ṩ", "u", "μ", "ù", "ú", "û",
+        "ü", "ũ", "ū", "ŭ", "ů", "ű", "ų", "ǔ", "ǖ", "ǘ", "ǚ", "ǜ", "ụ", "ủ", "ứ", "ừ", "ử", "ữ", "ự", "υ", "r", "г",
+        "ŕ", "ŗ", "ř", "ṙ", "ṛ", "ṝ", "ṟ",
     ];
 
     for _ in 0..length {
