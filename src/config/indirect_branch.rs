@@ -7,18 +7,25 @@ use serde::{Deserialize, Serialize};
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct IndirectBranchFlags: u32 {
+        /// Enable basic indirect branch obfuscation
         const Basic =             0b00000001;
+        /// Insert dummy blocks to complicate control flow analysis
         const DummyBlock =        0b00000010;
+        /// Chain multiple dummy blocks together (includes DummyBlock)
         const ChainedDummyBlock = 0b00000110; // note: includes DummyBlock
+        /// Encrypt the block index to obscure the jump target
         const EncryptBlockIndex = 0b00001000;
-        const DummyJunk =         0b00010000; // 在 dummy block 中插入干扰性指令
+        /// Insert junk instructions in dummy blocks
+        const DummyJunk =         0b00010000;
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IndirectBranchConfig {
+    /// Whether to enable indirect branch obfuscation
     pub enable: bool,
+    /// Configuration flags for different indirect branch techniques
     #[serde(deserialize_with = "deserialize_indirect_branch_flags")]
     pub flags: IndirectBranchFlags,
 }

@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 #[derive(Default)]
 pub struct LowerSwitchConfig {
+    /// Whether to enable switch statement lowering to if-else chains
     pub enable: bool,
+    /// Append dummy code to obfuscate the lowered if-else structure
     pub append_dummy_code: bool,
 }
 

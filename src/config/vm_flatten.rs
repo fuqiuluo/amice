@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VmFlattenConfig {
+    /// Whether to enable virtual machine based control flow flattening
     pub enable: bool,
 }
 
