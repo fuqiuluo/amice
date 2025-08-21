@@ -7,9 +7,9 @@ use std::collections::HashMap;
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PassOrderConfig {
-    /// 显式安装顺序；若为 None，则按优先级排序
+    /// Explicit pass execution order; if None, sort by priority
     pub order: Option<Vec<String>>,
-    /// 覆盖各 Pass 的优先级（越大越靠前）
+    /// Override priorities for specific passes (higher values run first)
     pub priority_override: Option<HashMap<String, i32>>,
 }
 

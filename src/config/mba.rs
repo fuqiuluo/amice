@@ -5,14 +5,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MbaConfig {
+    /// Whether to enable Mixed Boolean Arithmetic (MBA) obfuscation
     pub enable: bool,
+    /// Number of auxiliary parameters to use in MBA expressions
     pub aux_count: u32,
+    /// Number of operations to rewrite with MBA expressions
     pub rewrite_ops: u32,
+    /// Maximum depth of MBA expression rewriting
     pub rewrite_depth: u32,
-    // mba pass注册的位置不正确会被llvm优化掉
-    // 这里设置为true，会在表达式里面插入一个全局变量
-    // 以保证至少不被那么完全地优化
+    /// Allocate auxiliary parameters in global variables to prevent optimization
+    /// When true, inserts global variables in expressions to resist LLVM optimizations
     pub alloc_aux_params_in_global: bool,
+    /// Enable stack fixing to prevent crashes during MBA transformation
     pub fix_stack: bool,
 }
 

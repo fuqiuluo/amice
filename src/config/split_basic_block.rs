@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SplitBasicBlockConfig {
+    /// Whether to enable basic block splitting obfuscation
     pub enable: bool,
+    /// Number of splits to perform on each basic block
     pub num: u32,
 }
 

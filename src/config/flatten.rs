@@ -7,19 +7,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FlattenConfig {
-    /// 是否开启
+    /// Whether to enable control flow flattening obfuscation
     pub enable: bool,
-    /// 关掉，打概率会崩溃的哇！
+    /// Enable stack fixing to prevent crashes during obfuscation
     pub fix_stack: bool,
-    /// 自动降级switch，毕竟switch太难处理了喵
+    /// Automatically lower switch statements to if-else chains for easier processing
     pub lower_switch: bool,
-    /// 混淆模式
+    /// Control flow flattening mode (basic or dominator-enhanced)
     pub mode: FlattenMode,
-    /// 循环次数
+    /// Number of times to run the flattening pass on each function
     pub loop_count: usize,
-    /// 跳过块太多的方法
+    /// Skip functions with too many basic blocks to avoid performance issues
     pub skip_big_function: bool,
-    /// 是否把`dominator`模式的更新`key_array`的函数给inline了
+    /// Always inline the key array update function in dominator mode
     pub always_inline: bool,
 }
 
