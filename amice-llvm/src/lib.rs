@@ -7,11 +7,11 @@ pub mod ir;
 pub mod analysis;
 
 pub fn get_llvm_version_major() -> i32 {
-    unsafe { ffi::amiceGetLLVMVersionMajor() }
+    unsafe { ffi::amice_get_llvm_version_major() }
 }
 
 pub fn get_llvm_version_minor() -> i32 {
-    unsafe { ffi::amiceGetLLVMVersionMinor() }
+    unsafe { ffi::amice_get_llvm_version_minor() }
 }
 
 pub fn to_c_str(mut s: &str) -> Cow<'_, CStr> {

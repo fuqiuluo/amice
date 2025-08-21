@@ -27,6 +27,7 @@ pub struct Flatten {
     mode: FlattenMode,
     loop_count: usize,
     skip_big_function: bool,
+    inline_fn: bool
 }
 
 impl AmicePassLoadable for Flatten {
@@ -46,6 +47,7 @@ impl AmicePassLoadable for Flatten {
         self.mode = cfg.flatten.mode;
         self.loop_count = cfg.flatten.loop_count;
         self.skip_big_function = cfg.flatten.skip_big_function;
+        self.inline_fn = cfg.flatten.always_inline;
 
         self.enable
     }

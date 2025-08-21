@@ -2,16 +2,55 @@ use std::collections::HashMap;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
+use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode};
 use log::warn;
 use rand::Rng;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::branch_inst;
-use amice_llvm::ir::function::get_basic_block_entry;
-use crate::aotu::flatten::{split_entry_block_for_flatten};
+use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
+use amice_llvm::module_utils::{verify_function, VerifyResult};
+use crate::aotu::flatten::{cf_flatten_basic, cf_flatten_dominator, split_entry_block_for_flatten, Flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 
-pub(crate) fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bool) -> anyhow::Result<()> {
+pub(crate) fn run(
+    pass: &Flatten,
+    module: &mut Module<'_>,
+) -> anyhow::Result<()> {
+    'out: for function in module.get_functions() {
+        if function.count_basic_blocks() <= 2 {
+            continue;
+        }
+
+        if pass.skip_big_function && function.count_basic_blocks() > 4096 {
+            continue
+        }
+
+        for _ in 0..pass.loop_count {
+            if let Err(err) = do_handle(module, function, pass.demote_switch) {
+                warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
+                continue 'out;
+            }
+
+            if pass.skip_big_function && function.count_basic_blocks() > 4096 {
+                break
+            }
+        }
+
+        if pass.fix_stack {
+            unsafe {
+                fix_stack(function);
+            }
+        }
+
+        if let VerifyResult::Broken(e) = verify_function(function) {
+            warn!("(flatten) function {:?} verify failed: {}", function.get_name(), e);
+        }
+    }
+
+    Ok(())
+}
+
+fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bool) -> anyhow::Result<()> {
     let Some(entry_block) = get_basic_block_entry(function) else {
         return Err(anyhow::anyhow!(
             "(flatten) function {:?} has no entry block",
@@ -128,7 +167,7 @@ pub(crate) fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote
     }
 
     for terminator in unconditional_br {
-        let successor_block = branch_inst::get_successor(terminator, 0).unwrap().right().unwrap();
+        let successor_block = branch_inst::get_successor(terminator, 0).unwrap();
         let dispatch_id = basic_block_mapping[&successor_block.as_mut_ptr()];
         let dispatch_id = i32_ty.const_int(dispatch_id as u64, false);
         builder.position_before(&terminator);
@@ -138,8 +177,8 @@ pub(crate) fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote
     }
 
     for terminator in conditional_br {
-        let successor_true = branch_inst::get_successor(terminator, 0).unwrap().right().unwrap();
-        let successor_false = branch_inst::get_successor(terminator, 1).unwrap().right().unwrap();
+        let successor_true = branch_inst::get_successor(terminator, 0).unwrap();
+        let successor_false = branch_inst::get_successor(terminator, 1).unwrap();
         let dispatch_id_true = basic_block_mapping[&successor_true.as_mut_ptr()];
         let dispatch_id_false = basic_block_mapping[&successor_false.as_mut_ptr()];
         let dispatch_id_true = i32_ty.const_int(dispatch_id_true as u64, false);
