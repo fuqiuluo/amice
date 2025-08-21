@@ -1,5 +1,7 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::function::get_basic_block_entry;
+use amice_llvm::ir::switch_inst;
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
@@ -13,8 +15,6 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
-use amice_llvm::ir::function::get_basic_block_entry;
-use amice_llvm::ir::switch_inst;
 
 #[amice(priority = 961, name = "LowerSwitch", position = PassPosition::PipelineStart)]
 #[derive(Default)]

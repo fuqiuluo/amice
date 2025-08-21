@@ -1,5 +1,7 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::branch_inst;
+use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::module_utils::{VerifyResult, verify_function};
 use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
@@ -15,8 +17,6 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
-use amice_llvm::ir::branch_inst;
-use amice_llvm::ir::function::get_basic_block_entry;
 
 #[amice(priority = 950, name = "BogusControlFlow", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -182,8 +182,8 @@ fn apply_bogus_control_flow_to_unconditional_branch(
         return Ok(()); // Skip if not a branch instruction
     }
 
-    let target_bb = branch_inst::get_successor(terminator, 0)
-        .ok_or_else(|| anyhow::anyhow!("Cannot get branch target"))?;
+    let target_bb =
+        branch_inst::get_successor(terminator, 0).ok_or_else(|| anyhow::anyhow!("Cannot get branch target"))?;
 
     let context = function.get_type().get_context();
     let i32_type = context.i32_type();

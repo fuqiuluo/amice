@@ -1,28 +1,25 @@
-use std::collections::HashMap;
+use crate::aotu::flatten::{Flatten, cf_flatten_basic, cf_flatten_dominator, split_entry_block_for_flatten};
+use crate::aotu::lower_switch::demote_switch_to_if;
+use amice_llvm::ir::basic_block::get_first_insertion_pt;
+use amice_llvm::ir::branch_inst;
+use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
+use amice_llvm::module_utils::{VerifyResult, verify_function};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode};
 use log::warn;
 use rand::Rng;
-use amice_llvm::ir::basic_block::get_first_insertion_pt;
-use amice_llvm::ir::branch_inst;
-use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
-use amice_llvm::module_utils::{verify_function, VerifyResult};
-use crate::aotu::flatten::{cf_flatten_basic, cf_flatten_dominator, split_entry_block_for_flatten, Flatten};
-use crate::aotu::lower_switch::demote_switch_to_if;
+use std::collections::HashMap;
 
-pub(crate) fn run(
-    pass: &Flatten,
-    module: &mut Module<'_>,
-) -> anyhow::Result<()> {
+pub(crate) fn run(pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
     'out: for function in module.get_functions() {
         if function.count_basic_blocks() <= 2 {
             continue;
         }
 
         if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-            continue
+            continue;
         }
 
         for _ in 0..pass.loop_count {
@@ -32,7 +29,7 @@ pub(crate) fn run(
             }
 
             if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-                break
+                break;
             }
         }
 

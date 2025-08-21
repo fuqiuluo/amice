@@ -4,6 +4,7 @@ mod cf_flatten_dominator;
 use crate::aotu::lower_switch::demote_switch_to_if;
 use crate::config::{Config, FlattenMode, IndirectBranchFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::basic_block::split_basic_block;
 use amice_llvm::ir::function::fix_stack;
 use amice_llvm::module_utils::{VerifyResult, verify_function, verify_function2};
 use amice_macro::amice;
@@ -16,7 +17,6 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::HashMap;
-use amice_llvm::ir::basic_block::split_basic_block;
 
 #[amice(priority = 959, name = "Flatten", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -27,7 +27,7 @@ pub struct Flatten {
     mode: FlattenMode,
     loop_count: usize,
     skip_big_function: bool,
-    inline_fn: bool
+    inline_fn: bool,
 }
 
 impl AmicePassLoadable for Flatten {
@@ -70,7 +70,6 @@ impl LlvmModulePass for Flatten {
         PreservedAnalyses::None
     }
 }
-
 
 fn split_entry_block_for_flatten<'a>(
     function: FunctionValue<'a>,

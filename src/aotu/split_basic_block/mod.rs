@@ -1,5 +1,7 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::basic_block::split_basic_block;
+use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -9,8 +11,6 @@ use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode}
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
-use amice_llvm::ir::basic_block::split_basic_block;
-use amice_llvm::ir::function::get_basic_block_entry;
 
 #[amice(priority = 980, name = "SplitBasicBlock", position = PassPosition::PipelineStart)]
 #[derive(Default)]

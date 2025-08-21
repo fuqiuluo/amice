@@ -100,10 +100,7 @@ impl LlvmModulePass for IndirectCall {
         global_fun_table.set_linkage(Linkage::Private);
         global_fun_table.set_initializer(&initializer);
 
-        amice_llvm::module_utils::append_to_compiler_used(
-            module,
-            global_fun_table
-        );
+        amice_llvm::module_utils::append_to_compiler_used(module, global_fun_table);
 
         let xor_key_global = if self.xor_key != 0 {
             let g = module.add_global(i32_type, None, ".amice_xor_key");

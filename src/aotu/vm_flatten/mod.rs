@@ -1,7 +1,10 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use crate::ptr_type;
+use amice_llvm::ir::basic_block::split_basic_block;
+use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
+use amice_llvm::ir::switch_inst;
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -14,9 +17,6 @@ use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
-use amice_llvm::ir::basic_block::split_basic_block;
-use amice_llvm::ir::branch_inst::get_successor;
-use amice_llvm::ir::switch_inst;
 
 const MAGIC_NUMBER: u32 = 0x7788ff;
 
@@ -314,10 +314,8 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                 if inst.is_conditional() || inst.get_num_operands() > 1 {
                     let left = get_successor(inst, 0);
                     let right = get_successor(inst, 1);
-                    let left = left
-                        .ok_or(anyhow!("expected left operand for conditional br: is not a block"))?;
-                    let right = right
-                        .ok_or(anyhow!("expected right operand for conditional br: is not a block"))?;
+                    let left = left.ok_or(anyhow!("expected left operand for conditional br: is not a block"))?;
+                    let right = right.ok_or(anyhow!("expected right operand for conditional br: is not a block"))?;
 
                     node.set_left(left);
                     node.set_right(right);
@@ -413,10 +411,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     local_opcodes_value.set_initializer(&opcode_array);
     local_opcodes_value.set_linkage(Linkage::Private);
 
-    amice_llvm::module_utils::append_to_compiler_used(
-        module,
-        local_opcodes_value
-    );
+    amice_llvm::module_utils::append_to_compiler_used(module, local_opcodes_value);
 
     let builder = ctx.create_builder();
     let vm_entry = ctx.append_basic_block(function, ".amice.vm_flatten_entry");

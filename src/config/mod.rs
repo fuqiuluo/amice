@@ -10,6 +10,7 @@ use std::fs;
 use std::path::Path;
 
 pub use bogus_control_flow::BogusControlFlowConfig;
+pub use flatten::FlattenMode;
 pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
 pub use indirect_call::IndirectCallConfig;
 pub use lower_switch::LowerSwitchConfig;
@@ -19,7 +20,6 @@ pub use shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
 pub use split_basic_block::SplitBasicBlockConfig;
 pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use vm_flatten::VmFlattenConfig;
-pub use flatten::FlattenMode;
 
 mod bogus_control_flow;
 mod flatten;

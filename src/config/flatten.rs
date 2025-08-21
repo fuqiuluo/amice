@@ -1,7 +1,7 @@
-use log::error;
-use crate::config::{bool_var, IndirectBranchFlags};
 use crate::config::indirect_branch::parse_indirect_branch_flags;
+use crate::config::{IndirectBranchFlags, bool_var};
 use crate::pass_registry::EnvOverlay;
+use log::error;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +29,7 @@ pub enum FlattenMode {
     #[default]
     Basic,
     #[serde(rename = "dominator")]
-    DominatorEnhanced
+    DominatorEnhanced,
 }
 
 impl Default for FlattenConfig {
@@ -51,7 +51,7 @@ fn parse_flatten_mode(s: &str) -> Result<FlattenMode, String> {
     match s.as_str() {
         "basic" | "v1" => Ok(FlattenMode::Basic),
         "dominator" | "dominator_enhanced" | "v2" => Ok(FlattenMode::DominatorEnhanced),
-        _ => Err(format!("unknown flatten mode: {}", s))
+        _ => Err(format!("unknown flatten mode: {}", s)),
     }
 }
 

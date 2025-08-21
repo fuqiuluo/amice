@@ -1,5 +1,7 @@
 use crate::config::{Config, IndirectBranchFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::branch_inst::get_successor;
+use amice_llvm::ir::function::get_basic_block_entry_ref;
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -14,8 +16,6 @@ use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
-use amice_llvm::ir::branch_inst::get_successor;
-use amice_llvm::ir::function::get_basic_block_entry_ref;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 
@@ -82,10 +82,7 @@ impl LlvmModulePass for IndirectBranch {
         global_indirect_branch_table.set_linkage(Linkage::Internal);
         global_indirect_branch_table.set_constant(true);
 
-        amice_llvm::module_utils::append_to_compiler_used(
-            module,
-            global_indirect_branch_table
-        );
+        amice_llvm::module_utils::append_to_compiler_used(module, global_indirect_branch_table);
 
         let encrypt_key_global = if self.flags.contains(IndirectBranchFlags::EncryptBlockIndex) {
             let xor_key = self
@@ -103,10 +100,7 @@ impl LlvmModulePass for IndirectBranch {
             table.set_linkage(Linkage::Private);
             table.set_constant(true);
 
-            amice_llvm::module_utils::append_to_compiler_used(
-                module,
-                table
-            );
+            amice_llvm::module_utils::append_to_compiler_used(module, table);
 
             Some(table)
         } else {
@@ -167,10 +161,7 @@ impl LlvmModulePass for IndirectBranch {
                         local_indirect_branch_table.set_linkage(Linkage::Private);
                         local_indirect_branch_table.set_constant(true);
 
-                        amice_llvm::module_utils::append_to_compiler_used(
-                            module,
-                            local_indirect_branch_table
-                        );
+                        amice_llvm::module_utils::append_to_compiler_used(module, local_indirect_branch_table);
 
                         Some(local_indirect_branch_table)
                     } else {

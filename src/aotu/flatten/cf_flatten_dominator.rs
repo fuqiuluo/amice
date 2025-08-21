@@ -8,6 +8,7 @@ use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_llvm::ir::switch_inst::find_case_dest;
 use amice_llvm::module_utils::{VerifyResult, append_to_compiler_used, verify_function};
 use anyhow::anyhow;
+use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::BasicType;
@@ -17,7 +18,6 @@ use log::{info, warn};
 use rand::Rng;
 use rand::prelude::SliceRandom;
 use std::collections::HashMap;
-use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 
 pub(crate) fn run(pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
     let update_key_fn = build_update_key_function(module, pass.inline_fn)?;
@@ -333,8 +333,14 @@ fn do_handle(
                     true_successor
                 ));
             };
-            let true_dispatch_id_val = true_dispatch_id_val.into_int_value().get_zero_extended_constant().unwrap();
-            let false_dispatch_id_val = false_dispatch_id_val.into_int_value().get_zero_extended_constant().unwrap();
+            let true_dispatch_id_val = true_dispatch_id_val
+                .into_int_value()
+                .get_zero_extended_constant()
+                .unwrap();
+            let false_dispatch_id_val = false_dispatch_id_val
+                .into_int_value()
+                .get_zero_extended_constant()
+                .unwrap();
             let encrypted_true_dispatch_id = true_dispatch_id_val ^ block_valid_key_map[&bb];
             let encrypted_false_dispatch_id = false_dispatch_id_val ^ block_valid_key_map[&bb];
             let encrypted_true_dispatch_id = i64_type.const_int(encrypted_true_dispatch_id, fix_stack);
@@ -349,7 +355,13 @@ fn do_handle(
             }?;
             let key = builder.build_load(i64_type, key_gep, "")?.into_int_value();
             let cond = terminator.get_operand(0).unwrap().left().unwrap().into_int_value();
-            let dest_dispatch_id = builder.build_select(cond, encrypted_true_dispatch_id, encrypted_false_dispatch_id, "dispatch_id")?
+            let dest_dispatch_id = builder
+                .build_select(
+                    cond,
+                    encrypted_true_dispatch_id,
+                    encrypted_false_dispatch_id,
+                    "dispatch_id",
+                )?
                 .into_int_value();
             let dispatch_id_val = builder.build_xor(key, dest_dispatch_id, "dispatch_id")?;
             builder.build_store(dispatch_id, dispatch_id_val)?;
@@ -362,7 +374,9 @@ fn do_handle(
     builder.build_unconditional_branch(bb_dispatcher)?;
 
     if fix_stack {
-        unsafe { amice_llvm::ir::function::fix_stack(function); }
+        unsafe {
+            amice_llvm::ir::function::fix_stack(function);
+        }
     }
 
     Ok(())
@@ -403,7 +417,6 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
         let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
         update_fn.add_attribute(AttributeLoc::Function, inlinehint_attr);
     }
-
 
     let bb_update_key_arr_entry = ctx.append_basic_block(update_fn, "update_fn.entry");
     let bb_update_key_arr_cond = ctx.append_basic_block(update_fn, "update_fn.for.cond");
