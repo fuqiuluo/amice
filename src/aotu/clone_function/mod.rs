@@ -18,6 +18,7 @@ use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::{BTreeSet, HashMap};
 use std::result;
+use llvm_plugin::inkwell::llvm_sys::core::LLVMIsAIntrinsicInst;
 
 #[amice(priority = 1111, name = "CloneFunction", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -206,7 +207,10 @@ fn should_skip_function_by_inline_attribute(function_value: FunctionValue) -> bo
 }
 
 fn should_skip_function_by_defined_state(function_value: FunctionValue) -> bool {
-    function_value.is_null() || function_value.is_undef() || function_value.count_basic_blocks() <= 0
+    function_value.is_null()
+        || function_value.is_undef()
+        || function_value.count_basic_blocks() <= 0
+        || function_value.get_intrinsic_id() != 0
 }
 
 fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<'a>> {
