@@ -1,3 +1,8 @@
+#include <functional>
+#include <memory>
+#include <vector>
+#include <map>
+
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Module.h>
@@ -28,6 +33,11 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/InlineCost.h"
+#include "llvm/IR/ValueHandle.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
 
 extern "C" {
 
@@ -63,5 +73,83 @@ void amice_phi_node_replace_incoming_block_with(llvm::PHINode* PHI, llvm::BasicB
     PHI->replaceIncomingBlockWith(O, N);
 }
 
+llvm::Function * amice_clone_function(llvm::Function* F) {
+  llvm::ValueToValueMapTy Mappings;
+  llvm::Function *Clone = CloneFunction(F, Mappings);
+  Clone->setName(F->getName() + ".specialized.amice");
+  return Clone;
+}
+
+typedef struct {
+    unsigned int index;
+    void* constant;
+} ArgReplacement;
+
+llvm::Function* amice_specialize_function(
+    llvm::Function* originalFunc,
+    llvm::Module* mod,
+    const ArgReplacement* replacements,
+    unsigned int replacement_count) {
+
+    if (!originalFunc || !mod) {
+        return nullptr;
+    }
+
+    std::map<unsigned, llvm::Constant*> replacementMap;
+    for (unsigned i = 0; i < replacement_count; i++) {
+        if (replacements[i].index >= originalFunc->arg_size()) {
+            return nullptr; // 无效索引
+        }
+        replacementMap[replacements[i].index] =
+            static_cast<llvm::Constant*>(replacements[i].constant);
+    }
+
+    llvm::ValueToValueMapTy VMap;
+    std::vector<llvm::Type*> newArgTypes;
+
+    unsigned argIdx = 0;
+    for (const llvm::Argument& arg : originalFunc->args()) {
+        if (replacementMap.count(argIdx)) {
+            VMap[&arg] = replacementMap[argIdx];
+        } else {
+            newArgTypes.push_back(arg.getType());
+        }
+        argIdx++;
+    }
+
+    llvm::FunctionType* newFuncType = llvm::FunctionType::get(
+        originalFunc->getFunctionType()->getReturnType(),
+        newArgTypes,
+        false
+    );
+
+    llvm::Function* specializedFunc = llvm::Function::Create(
+        newFuncType,
+        originalFunc->getLinkage(),
+        originalFunc->getAddressSpace(),
+        originalFunc->getName() + ".specialized.amice",
+        mod
+    );
+
+    auto newArgIt = specializedFunc->arg_begin();
+    argIdx = 0;
+    for (const llvm::Argument& arg : originalFunc->args()) {
+        if (!replacementMap.count(argIdx)) {
+            VMap[&arg] = &*newArgIt;
+            newArgIt->setName(arg.getName());
+            ++newArgIt;
+        }
+        argIdx++;
+    }
+
+    llvm::SmallVector<llvm::ReturnInst*, 8> returns;
+    llvm::CloneFunctionInto(specializedFunc, originalFunc, VMap,
+                     llvm::CloneFunctionChangeType::LocalChangesOnly,
+                     returns, "", nullptr);
+
+    specializedFunc->copyAttributesFrom(originalFunc);
+
+    return specializedFunc;
+}
 
 }

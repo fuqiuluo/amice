@@ -66,7 +66,22 @@ unsafe extern "C" {
 
     pub(crate) fn amice_phi_node_replace_incoming_block_with(phi_node: LLVMValueRef, incoming: LLVMBasicBlockRef, new_block: LLVMBasicBlockRef);
 
+    pub(crate) fn amice_clone_function(function: LLVMValueRef) -> LLVMValueRef;
+
+    pub(crate) fn amice_specialize_function(
+        original_func: LLVMValueRef,
+        module: LLVMModuleRef,
+        replacements: *const ArgReplacement,
+        replacement_count: u32,
+    ) -> LLVMValueRef;
+
     pub(crate) fn amice_get_llvm_version_major() -> i32;
 
     pub(crate) fn amice_get_llvm_version_minor() -> i32;
+}
+
+#[repr(C)]
+pub(crate) struct ArgReplacement {
+    pub index: u32,
+    pub constant: LLVMValueRef,
 }

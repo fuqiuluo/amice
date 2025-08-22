@@ -29,10 +29,10 @@ impl AmicePassLoadable for FunctionWrapper {
         self.probability = cfg.function_wrapper.probability.min(100);
         self.times = cfg.function_wrapper.times.max(1);
 
-        debug!(
-            "(function-wrapper) initialized with enable={}, probability={}%, times={}",
-            self.enable, self.probability, self.times
-        );
+        // debug!(
+        //     "(function-wrapper) initialized with enable={}, probability={}%, times={}",
+        //     self.enable, self.probability, self.times
+        // );
 
         self.enable
     }
