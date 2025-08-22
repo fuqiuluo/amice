@@ -10,6 +10,7 @@ use std::fs;
 use std::path::Path;
 
 pub use bogus_control_flow::BogusControlFlowConfig;
+use clone_function::CloneFunctionConfig;
 pub use flatten::FlattenMode;
 pub use function_wrapper::FunctionWrapperConfig;
 pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
@@ -60,6 +61,7 @@ pub struct Config {
     pub flatten: FlattenConfig,
     pub mba: MbaConfig,
     pub bogus_control_flow: BogusControlFlowConfig,
+    pub clone_function: CloneFunctionConfig,
 }
 
 fn is_truthy(value: &str) -> bool {
