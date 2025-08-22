@@ -7,9 +7,7 @@ use amice_llvm::module_utils::verify_function2;
 use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{
-    FunctionValue, InstructionOpcode, InstructionValue,
-};
+use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
 
