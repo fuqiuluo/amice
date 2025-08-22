@@ -15,7 +15,7 @@ pub struct FunctionWrapperConfig {
 impl Default for FunctionWrapperConfig {
     fn default() -> Self {
         Self {
-            enable: true,
+            enable: false,
             probability: 70,
             times: 3,
         }
