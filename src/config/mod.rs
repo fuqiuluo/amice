@@ -34,6 +34,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
+mod clone_function;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
