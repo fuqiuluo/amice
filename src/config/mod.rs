@@ -11,6 +11,7 @@ use std::path::Path;
 
 pub use bogus_control_flow::BogusControlFlowConfig;
 use clone_function::CloneFunctionConfig;
+use code_extractor::CodeExtractorConfig;
 pub use flatten::FlattenMode;
 pub use function_wrapper::FunctionWrapperConfig;
 pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
@@ -36,6 +37,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
+mod code_extractor;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
@@ -62,6 +64,7 @@ pub struct Config {
     pub mba: MbaConfig,
     pub bogus_control_flow: BogusControlFlowConfig,
     pub clone_function: CloneFunctionConfig,
+    pub code_extractor: CodeExtractorConfig,
 }
 
 fn is_truthy(value: &str) -> bool {
