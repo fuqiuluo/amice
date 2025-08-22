@@ -7,6 +7,7 @@ use amice_llvm::module_utils::{VerifyResult, verify_function, verify_function2};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
+use llvm_plugin::inkwell::llvm_sys::core::LLVMIsAIntrinsicInst;
 use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{
@@ -18,7 +19,6 @@ use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::collections::{BTreeSet, HashMap};
 use std::result;
-use llvm_plugin::inkwell::llvm_sys::core::LLVMIsAIntrinsicInst;
 
 #[amice(priority = 1111, name = "CloneFunction", position = PassPosition::PipelineStart)]
 #[derive(Default)]
