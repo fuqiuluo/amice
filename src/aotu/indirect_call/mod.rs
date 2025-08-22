@@ -99,12 +99,8 @@ impl LlvmModulePass for IndirectCall {
         let global_fun_table = module.add_global(array_type, None, ".amice_indirect_call_table");
         global_fun_table.set_linkage(Linkage::Private);
         global_fun_table.set_initializer(&initializer);
-        unsafe {
-            amice_llvm::module_utils::append_to_compiler_used(
-                module.as_mut_ptr() as *mut std::ffi::c_void,
-                global_fun_table.as_value_ref() as *mut std::ffi::c_void,
-            );
-        }
+
+        amice_llvm::module_utils::append_to_compiler_used(module, global_fun_table);
 
         let xor_key_global = if self.xor_key != 0 {
             let g = module.add_global(i32_type, None, ".amice_xor_key");
@@ -128,7 +124,7 @@ impl LlvmModulePass for IndirectCall {
         }
 
         for f in module.get_functions() {
-            if verify_function2(f.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(f) {
                 warn!("(indirect_call) function {:?} is not verified", f.get_name());
             }
         }

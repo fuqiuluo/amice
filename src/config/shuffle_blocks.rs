@@ -6,16 +6,21 @@ use serde::{Deserialize, Serialize};
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct ShuffleBlocksFlags: u32 {
-        const Reverse          = 0b0000_0001; // 反转顺序
-        const Random           = 0b0000_0010; // 随机打乱
-        const Rotate           = 0b0000_0100; // 循环位移（左移1）
+        /// Reverse the order of basic blocks
+        const Reverse          = 0b0000_0001;
+        /// Randomly shuffle the order of basic blocks
+        const Random           = 0b0000_0010;
+        /// Rotate basic blocks (left rotate by 1)
+        const Rotate           = 0b0000_0100;
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShuffleBlocksConfig {
+    /// Whether to enable basic block shuffling obfuscation
     pub enable: bool,
+    /// Configuration flags for different shuffling techniques
     #[serde(deserialize_with = "deserialize_shuffle_blocks_flags")]
     pub flags: ShuffleBlocksFlags,
 }

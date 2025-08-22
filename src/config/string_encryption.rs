@@ -5,28 +5,28 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StringEncryptionConfig {
-    /// 是否启用字符串加密
+    /// Whether to enable string encryption obfuscation
     #[serde(alias = "enable")]
     pub enable: bool,
 
-    /// 加密/解密算法
+    /// Encryption/decryption algorithm to use
     pub algorithm: StringAlgorithm,
 
-    /// 解密时机
+    /// When to decrypt strings during execution
     pub timing: StringDecryptTiming,
 
-    /// 是否开启栈栈上解密
+    /// Whether to enable stack-based decryption
     pub stack_alloc: bool,
 
-    /// 是否将解密函数标记为 inline
+    /// Whether to mark decryption functions as inline
     #[serde(alias = "inline_decrypt_fn")]
     pub inline_decrypt: bool,
 
-    /// 仅处理 `.str` 段中的字符串
+    /// Only process strings from the `.str` section
     pub only_dot_str: bool,
 
-    /// 是否允许在非入口块也进行栈上解密临时分配
-    /// false 时将把相关栈分配限制在入口块，便于优化与栈生存期分析
+    /// Allow stack allocation for decryption in non-entry blocks
+    /// When false, limits stack allocations to entry blocks for better optimization
     pub allow_non_entry_stack_alloc: bool,
 }
 
@@ -39,8 +39,8 @@ pub enum StringAlgorithm {
 }
 
 impl StringAlgorithm {
-    /// 等级 0~7, 数字越大可能越安全，但是开销更大！
-    /// 如果是负数代表可能并不稳定！
+    /// Security level 0-7: higher numbers may be more secure but with greater overhead
+    /// Negative numbers indicate potentially unstable implementations
     #[allow(dead_code)]
     pub fn level(&self) -> i32 {
         match self {

@@ -5,23 +5,27 @@ edition = "2024"
 
 [features]
 default = ["llvm20-1"]
-llvm11-0 = []
-llvm12-0 = []
-llvm13-0 = []
-llvm14-0 = []
-llvm15-0 = []
-llvm16-0 = []
-llvm17-0 = []
-llvm18-1 = []
-llvm19-1 = []
-llvm20-1 = []
+llvm11-0 = ["inkwell/llvm11-0-no-llvm-linking"]
+llvm12-0 = ["inkwell/llvm12-0-no-llvm-linking"]
+llvm13-0 = ["inkwell/llvm13-0-no-llvm-linking"]
+llvm14-0 = ["inkwell/llvm14-0-no-llvm-linking"]
+llvm15-0 = ["inkwell/llvm15-0-no-llvm-linking"]
+llvm16-0 = ["inkwell/llvm16-0-no-llvm-linking"]
+llvm17-0 = ["inkwell/llvm17-0-no-llvm-linking"]
+llvm18-1 = ["inkwell/llvm18-1-no-llvm-linking"]
+llvm19-1 = ["inkwell/llvm19-1-no-llvm-linking"]
+llvm20-1 = ["inkwell/llvm20-1-no-llvm-linking"]
 
 [dependencies]
 lazy_static = "1.5.0"
 dobby-sys = "0.1.0"
+inkwell = { version = "0.6.0", default-features = false }
 
 [build-dependencies]
 cc = "1"
 lazy_static = "1"
 regex = "1"
 semver = "1"
+
+[patch.crates-io]
+inkwell = { git = "https://github.com/fuqiuluo/inkwell", rev = "a30816bd721e24a0882e3fe994125c2829d9021a" }

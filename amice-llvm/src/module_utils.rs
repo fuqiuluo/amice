@@ -1,17 +1,36 @@
 use std::ffi::{c_char, CStr};
 use std::result;
+use inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
+use inkwell::module::Module;
+use inkwell::values::{AsValueRef, FunctionValue, GlobalValue};
 use crate::ffi;
 
-pub unsafe fn append_to_global_ctors(module: *mut std::ffi::c_void, function: *mut std::ffi::c_void, priority: i32) {
-    ffi::amiceAppendToGlobalCtors(module, function, priority);
+pub fn append_to_global_ctors(module: &Module, function: FunctionValue, priority: i32) {
+    unsafe {
+        ffi::amice_append_to_global_ctors(
+            module.as_mut_ptr() as LLVMModuleRef,
+            function.as_value_ref() as LLVMValueRef,
+            priority
+        );
+    }
 }
 
-pub unsafe fn append_to_used(module: *mut std::ffi::c_void, value: *mut std::ffi::c_void) {
-    ffi::amiceAppendToUsed(module, value);
+pub fn append_to_used(module: &Module, value: GlobalValue) {
+    unsafe {
+        ffi::amice_append_to_used(
+            module.as_mut_ptr() as LLVMModuleRef,
+            value.as_value_ref() as LLVMValueRef,
+        );
+    }
 }
 
-pub unsafe fn append_to_compiler_used(module: *mut std::ffi::c_void, value: *mut std::ffi::c_void) {
-    ffi::amiceAppendToCompilerUsed(module, value);
+pub fn append_to_compiler_used(module: &Module, value: GlobalValue) {
+    unsafe {
+        ffi::amice_append_to_compiler_used(
+            module.as_mut_ptr() as LLVMModuleRef,
+            value.as_value_ref() as LLVMValueRef,
+        );
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -20,10 +39,13 @@ pub enum  VerifyResult {
     Ok,
 }
 
-pub fn verify_function(function: *mut std::ffi::c_void) -> VerifyResult {
+pub fn verify_function(function: FunctionValue) -> VerifyResult {
     let mut errmsg: *const c_char = std::ptr::null();
     let broken = unsafe {
-        ffi::amiceVerifyFunction(function, &mut errmsg as *mut *const c_char) == 1
+        ffi::amice_verify_function(
+            function.as_value_ref() as LLVMValueRef,
+            &mut errmsg as *mut *const c_char
+        ) == 1
     };
     let result = if !errmsg.is_null() && broken {
         let c_errmsg = unsafe { CStr::from_ptr(errmsg) };
@@ -32,11 +54,14 @@ pub fn verify_function(function: *mut std::ffi::c_void) -> VerifyResult {
         VerifyResult::Ok
     };
     unsafe {
-        ffi::amiceFreeMsg(errmsg);
+        ffi::amice_free_msg(errmsg);
     }
     result
 }
 
-pub fn verify_function2(function: *mut std::ffi::c_void) -> bool {
-    verify_function(function) == VerifyResult::Ok
+pub fn verify_function2(function: FunctionValue) -> bool {
+    match verify_function(function) {
+        VerifyResult::Broken(_) => true,
+        VerifyResult::Ok => false
+    }
 }

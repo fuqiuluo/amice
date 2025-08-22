@@ -1,6 +1,6 @@
 use crate::config::{Config, ShuffleBlocksFlags};
-use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use llvm_plugin::inkwell::module::Module;
@@ -101,7 +101,7 @@ fn handle_function(function: FunctionValue<'_>, flags: ShuffleBlocksFlags) -> an
         }
     }
 
-    if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
+    if verify_function2(function) {
         warn!("(shuffle-blocks) function {:?} is not verified", function.get_name());
     }
 

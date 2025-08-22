@@ -4,6 +4,7 @@ use crate::aotu::string_encryption::{
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
 use crate::ptr_type;
+use amice_llvm::module_utils::append_to_global_ctors;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -319,11 +320,7 @@ fn emit_global_string_decryptor_ctor<'a>(
     builder.build_return(None)?;
 
     let priority = 0; // Default priority
-    unsafe {
-        let module_ref = module.as_mut_ptr() as *mut std::ffi::c_void;
-        let function_ref = decrypt_stub.as_value_ref() as *mut std::ffi::c_void;
-        amice_llvm::module_utils::append_to_global_ctors(module_ref, function_ref, priority);
-    }
+    append_to_global_ctors(module, decrypt_stub, priority);
 
     Ok(())
 }

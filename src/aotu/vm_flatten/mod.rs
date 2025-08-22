@@ -1,11 +1,10 @@
 use crate::config::Config;
-use crate::llvm_utils::basic_block::split_basic_block;
-use crate::llvm_utils::branch_inst::get_successor;
-use crate::llvm_utils::function::get_basic_block_entry;
-use crate::llvm_utils::switch_inst;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use crate::ptr_type;
-use amice_llvm::ir::function::fix_stack;
+use amice_llvm::ir::basic_block::split_basic_block;
+use amice_llvm::ir::branch_inst::get_successor;
+use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
+use amice_llvm::ir::switch_inst;
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -165,7 +164,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     'outer: for bb in function.get_basic_blocks() {
         for inst in bb.get_instructions() {
             match inst.get_opcode() {
-                InstructionOpcode::Invoke // TODO: support it!
+                InstructionOpcode::Invoke
                 | InstructionOpcode::LandingPad
                 | InstructionOpcode::CatchSwitch
                 | InstructionOpcode::CatchPad
@@ -195,6 +194,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     // 计算入口块指令数（用于决定 split 位置）
     let entry_block_inst_count = entry_block.get_instructions().count();
 
+    #[allow(unused_assignments)]
     let mut first_basic_block = None;
     let Some(entry_terminator_inst) = entry_block.get_terminator() else {
         return Err(anyhow::anyhow!("expected entry block to have terminator"));
@@ -314,14 +314,8 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                 if inst.is_conditional() || inst.get_num_operands() > 1 {
                     let left = get_successor(inst, 0);
                     let right = get_successor(inst, 1);
-                    let left = left
-                        .ok_or(anyhow!("expected left operand for conditional br: op_nums > 1"))?
-                        .right()
-                        .ok_or(anyhow!("expected left operand for conditional br: is not a block"))?;
-                    let right = right
-                        .ok_or(anyhow!("expected right operand for conditional br: op_nums > 1"))?
-                        .right()
-                        .ok_or(anyhow!("expected right operand for conditional br: is not a block"))?;
+                    let left = left.ok_or(anyhow!("expected left operand for conditional br: is not a block"))?;
+                    let right = right.ok_or(anyhow!("expected right operand for conditional br: is not a block"))?;
 
                     node.set_left(left);
                     node.set_right(right);
@@ -416,12 +410,8 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     local_opcodes_value.set_constant(false);
     local_opcodes_value.set_initializer(&opcode_array);
     local_opcodes_value.set_linkage(Linkage::Private);
-    unsafe {
-        amice_llvm::module_utils::append_to_compiler_used(
-            module.as_mut_ptr() as *mut std::ffi::c_void,
-            local_opcodes_value.as_value_ref() as *mut std::ffi::c_void,
-        )
-    };
+
+    amice_llvm::module_utils::append_to_compiler_used(module, local_opcodes_value);
 
     let builder = ctx.create_builder();
     let vm_entry = ctx.append_basic_block(function, ".amice.vm_flatten_entry");
@@ -656,12 +646,12 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         builder.build_unconditional_branch(vm_entry)?;
     }
 
-    if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
+    if verify_function2(function) {
         warn!("(vm_flatten) function {:?} verify failed", function.get_name());
     }
 
     unsafe {
-        fix_stack(function.as_value_ref() as *mut std::ffi::c_void);
+        fix_stack(function);
     }
 
     for node in all_nodes {

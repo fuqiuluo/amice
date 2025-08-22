@@ -2,8 +2,8 @@ mod simd_xor;
 mod xor;
 
 use crate::config::{Config, StringAlgorithm, StringDecryptTiming};
-use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::function::get_basic_block_entry;
 use amice_macro::amice;
 use ascon_hash::Digest;
 use inkwell::llvm_sys::core::LLVMGetAsString;

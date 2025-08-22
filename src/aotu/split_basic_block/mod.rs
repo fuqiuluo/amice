@@ -1,7 +1,7 @@
 use crate::config::Config;
-use crate::llvm_utils::basic_block::split_basic_block;
-use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::basic_block::split_basic_block;
+use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -45,7 +45,7 @@ impl LlvmModulePass for SplitBasicBlock {
         }
 
         for f in module.get_functions() {
-            if verify_function2(f.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(f) {
                 warn!("(split-basic-block) function {:?} is not verified", f.get_name());
             }
         }

@@ -42,6 +42,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "dobby-sys",
+ "inkwell",
  "lazy_static",
  "regex",
  "semver 1.0.26",

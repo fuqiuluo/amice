@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IndirectCallConfig {
+    /// Whether to enable indirect call obfuscation
     pub enable: bool,
+    /// Optional XOR key for encrypting function pointers (None for random key)
     pub xor_key: Option<u32>,
 }
 

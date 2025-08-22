@@ -218,6 +218,7 @@ pub(super) struct CPrinter {
     pub(crate) number_type: NumberType,
 }
 
+#[allow(dead_code)]
 impl CPrinter {
     fn c_ty(&self) -> &'static str {
         self.width.c_type(self.number_type)

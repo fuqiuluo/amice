@@ -1,5 +1,7 @@
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::values::{BasicValueEnum, InstructionOpcode, InstructionValue};
+use inkwell::basic_block::BasicBlock;
+use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
+use inkwell::values::{AsValueRef, BasicValueEnum, InstructionOpcode, InstructionValue};
+use crate::ffi;
 
 pub fn get_case_num(inst: InstructionValue) -> u32 {
     assert_eq!(inst.get_opcode(), InstructionOpcode::Switch);
@@ -28,4 +30,18 @@ pub fn get_cases(inst: InstructionValue) -> Vec<(BasicValueEnum, BasicBlock)> {
         ));
     }
     cases
+}
+
+pub fn find_case_dest<'a>(inst: InstructionValue<'a>, basic_block: BasicBlock) -> Option<BasicValueEnum<'a>> {
+    let value_ref = unsafe {
+        ffi::amice_switch_find_case_dest(
+            inst.as_value_ref() as LLVMValueRef,
+            basic_block.as_mut_ptr() as LLVMBasicBlockRef
+        )
+    };
+    if value_ref.is_null() {
+        None
+    } else {
+        unsafe { Some(BasicValueEnum::new(value_ref)) }
+    }
 }

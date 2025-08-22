@@ -48,48 +48,7 @@ using LlvmOptLevel = llvm::OptimizationLevel;
 using LlvmOptLevel = llvm::PassBuilder::OptimizationLevel;
 #endif
 
-extern "C" {
-int amiceGetLLVMVersionMajor() {
-  return LLVM_VERSION_MAJOR;
-}
-
-int amiceGetLLVMVersionMinor() {
-  return LLVM_VERSION_MINOR;
-}
-
-void amiceAppendToGlobalCtors(llvm::Module &M, llvm::Function *F, int P) {
-     llvm::appendToGlobalCtors(M, F, P);
-}
-
-void amiceAppendToUsed(llvm::Module &M, llvm::GlobalValue * V) {
-    llvm::appendToUsed(M, {V});
-}
-
-void amiceAppendToCompilerUsed(llvm::Module &M, llvm::GlobalValue * V) {
-    llvm::appendToCompilerUsed(M, {V});
-}
-
-llvm::Constant * amiceConstantGetBitCast(llvm::Constant *C, llvm::Type *Ty) {
-    return llvm::ConstantExpr::getBitCast(C, Ty);
-}
-
-llvm::Constant * amiceConstantGetPtrToInt(llvm::Constant *C, llvm::Type *Ty) {
-    return llvm::ConstantExpr::getPtrToInt(C, Ty);
-}
-
-llvm::Constant * amiceConstantGetIntToPtr(llvm::Constant *C, llvm::Type *Ty) {
-    return llvm::ConstantExpr::getIntToPtr(C, Ty);
-}
-
-llvm::Constant * amiceConstantGetXor(llvm::Constant *C1, llvm::Constant *C2) {
-    return llvm::ConstantExpr::getXor(C1, C2);
-}
-
-llvm::BasicBlock * 	amiceSplitBasicBlock (llvm::BasicBlock * BB, llvm::Instruction *I, char* N, int B) {
-    return BB->splitBasicBlock(I, N, B);
-}
-
-bool valueEscapes(llvm::Instruction *Inst) {
+static bool valueEscapes(llvm::Instruction *Inst) {
   if (!Inst->getType()->isSized())
     return false;
 
@@ -117,7 +76,32 @@ static bool valueEscapesOfficial(const llvm::Instruction &Inst) {
   return false;
 }
 
-void amiceFixStack(llvm::Function *f, int AtTerminator, int MaxIterations) {
+extern "C" {
+int amice_get_llvm_version_major() {
+  return LLVM_VERSION_MAJOR;
+}
+
+int amice_get_llvm_version_minor() {
+  return LLVM_VERSION_MINOR;
+}
+
+llvm::Constant * amice_constant_get_bit_cast(llvm::Constant *C, llvm::Type *Ty) {
+    return llvm::ConstantExpr::getBitCast(C, Ty);
+}
+
+llvm::Constant * amice_constant_get_ptr_to_int(llvm::Constant *C, llvm::Type *Ty) {
+    return llvm::ConstantExpr::getPtrToInt(C, Ty);
+}
+
+llvm::Constant * amice_constant_get_int_to_ptr(llvm::Constant *C, llvm::Type *Ty) {
+    return llvm::ConstantExpr::getIntToPtr(C, Ty);
+}
+
+llvm::Constant * amice_constant_get_xor(llvm::Constant *C1, llvm::Constant *C2) {
+    return llvm::ConstantExpr::getXor(C1, C2);
+}
+
+void amice_fix_stack(llvm::Function *f, int AtTerminator, int MaxIterations) {
     // https://bbs.kanxue.com/thread-268789-1.htm
     std::vector<llvm::PHINode *> tmpPhi;
     std::vector<llvm::Instruction *> tmpReg;
@@ -201,21 +185,7 @@ void amiceFixStack(llvm::Function *f, int AtTerminator, int MaxIterations) {
     } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
 }
 
-int amiceVerifyFunction(llvm::Function& F, char** errmsg) {
-    std::string err;
-    llvm::raw_string_ostream rso(err);
-    bool broken = llvm::verifyFunction(F, &rso);
-    rso.flush();
-    if (broken) {
-        size_t n = err.length() + 1;
-        char* p = (char*)malloc(n);
-        if (p) memcpy(p, err.c_str(), n);
-        *errmsg = p;
-    }
-   return broken;
-}
-
-int amiceFreeMsg(char* err) {
+int amice_free_msg(char* err) {
     if(err) {
         free(err);
         return 0;

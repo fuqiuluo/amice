@@ -16,6 +16,7 @@ pub(super) enum NumberType {
     Signed,
 }
 
+#[allow(dead_code)]
 impl BitWidth {
     pub fn from_bits(bits: u32) -> Option<Self> {
         match bits {
@@ -120,6 +121,7 @@ pub(super) struct ConstantMbaConfig {
     pub(crate) func_name: String,
 }
 
+#[allow(dead_code)]
 impl ConstantMbaConfig {
     pub fn new(
         width: BitWidth,

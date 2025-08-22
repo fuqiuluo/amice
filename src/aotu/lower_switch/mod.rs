@@ -1,7 +1,8 @@
 use crate::config::Config;
-use crate::llvm_utils::function::get_basic_block_entry;
-use crate::llvm_utils::switch_inst;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::function::get_basic_block_entry;
+use amice_llvm::ir::phi_inst::update_phi_nodes;
+use amice_llvm::ir::switch_inst;
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
@@ -45,7 +46,7 @@ impl LlvmModulePass for LowerSwitch {
         }
 
         for f in module.get_functions() {
-            if verify_function2(f.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(f) {
                 warn!("(lower-switch) function {:?} is not verified", f.get_name());
             }
         }
@@ -161,40 +162,4 @@ pub(crate) fn demote_switch_to_if(
     inst.erase_from_basic_block();
 
     Ok(())
-}
-
-fn update_phi_nodes<'ctx>(old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>, target_block: BasicBlock<'ctx>) {
-    for phi in target_block.get_first_instruction().iter() {
-        if phi.get_opcode() != InstructionOpcode::Phi {
-            break;
-        }
-
-        let phi = unsafe { PhiValue::new(phi.as_value_ref()) };
-        let incoming_vec = phi
-            .get_incomings()
-            .filter_map(|(value, pred)| {
-                if pred == old_pred {
-                    (value, new_pred).into()
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let (mut values, mut basic_blocks): (Vec<LLVMValueRef>, Vec<LLVMBasicBlockRef>) = {
-            incoming_vec
-                .iter()
-                .map(|&(v, bb)| (v.as_value_ref(), bb.as_mut_ptr()))
-                .unzip()
-        };
-
-        unsafe {
-            LLVMAddIncoming(
-                phi.as_value_ref(),
-                values.as_mut_ptr(),
-                basic_blocks.as_mut_ptr(),
-                incoming_vec.len() as u32,
-            );
-        }
-    }
 }

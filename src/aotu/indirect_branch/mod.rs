@@ -1,7 +1,8 @@
 use crate::config::{Config, IndirectBranchFlags};
-use crate::llvm_utils::branch_inst::get_successor;
-use crate::llvm_utils::function::get_basic_block_entry_ref;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::ir::branch_inst::get_successor;
+use amice_llvm::ir::function::{get_basic_block_entry, get_basic_block_entry_ref};
+use amice_llvm::ir::phi_inst::update_phi_nodes;
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -82,12 +83,7 @@ impl LlvmModulePass for IndirectBranch {
         global_indirect_branch_table.set_linkage(Linkage::Internal);
         global_indirect_branch_table.set_constant(true);
 
-        unsafe {
-            amice_llvm::module_utils::append_to_compiler_used(
-                module.as_mut_ptr() as *mut std::ffi::c_void,
-                global_indirect_branch_table.as_value_ref() as *mut std::ffi::c_void,
-            );
-        }
+        amice_llvm::module_utils::append_to_compiler_used(module, global_indirect_branch_table);
 
         let encrypt_key_global = if self.flags.contains(IndirectBranchFlags::EncryptBlockIndex) {
             let xor_key = self
@@ -105,12 +101,7 @@ impl LlvmModulePass for IndirectBranch {
             table.set_linkage(Linkage::Private);
             table.set_constant(true);
 
-            unsafe {
-                amice_llvm::module_utils::append_to_compiler_used(
-                    module.as_mut_ptr() as *mut std::ffi::c_void,
-                    table.as_value_ref() as *mut std::ffi::c_void,
-                );
-            }
+            amice_llvm::module_utils::append_to_compiler_used(module, table);
 
             Some(table)
         } else {
@@ -134,13 +125,10 @@ impl LlvmModulePass for IndirectBranch {
                 if br_inst.is_conditional() {
                     // future_branches的[1]是内存下标，get_successor(0)为真块
                     // 当为真时，把bool扩展为i32,则这个i32的值是1，直接作为下标使用即future_branches[1]应该保存真分支
-                    future_branches[1] = get_successor(br_inst, 0).unwrap().right();
-                    future_branches[0] = get_successor(br_inst, 1).unwrap().right();
+                    future_branches[1] = get_successor(br_inst, 0);
+                    future_branches[0] = get_successor(br_inst, 1);
                 } else {
-                    future_branches[0] = get_successor(br_inst, 0)
-                        //.ok_or(anyhow!("block: {}, ops = {:?}", bi, bi.get_operands().collect::<Vec<_>>()))
-                        .expect("no successor for basic block")
-                        .right(); // true分支
+                    future_branches[0] = get_successor(br_inst, 0); // true分支
                 }
 
                 // 可能要去到的分支
@@ -173,12 +161,9 @@ impl LlvmModulePass for IndirectBranch {
                         local_indirect_branch_table.set_initializer(&initializer);
                         local_indirect_branch_table.set_linkage(Linkage::Private);
                         local_indirect_branch_table.set_constant(true);
-                        unsafe {
-                            amice_llvm::module_utils::append_to_compiler_used(
-                                module.as_mut_ptr() as *mut std::ffi::c_void,
-                                local_indirect_branch_table.as_value_ref() as *mut std::ffi::c_void,
-                            );
-                        }
+
+                        amice_llvm::module_utils::append_to_compiler_used(module, local_indirect_branch_table);
+
                         Some(local_indirect_branch_table)
                     } else {
                         // 选择全局跳转表
@@ -290,7 +275,7 @@ impl LlvmModulePass for IndirectBranch {
 
                     let mut cur_dummy_block = goal_dummy_block;
                     for _ in 0..chain_nums - 1 {
-                        let dummy_block = context.append_basic_block(function, "");
+                        let dummy_block = context.append_basic_block(function, "dummy_block");
                         builder.position_at_end(dummy_block);
                         let target = unsafe { cur_dummy_block.get_address().unwrap().as_basic_value_enum() };
 
@@ -308,7 +293,6 @@ impl LlvmModulePass for IndirectBranch {
                     for &target_block in &successors {
                         if let Some(pb) = br_inst.get_parent() {
                             update_phi_nodes(
-                                context,
                                 pb,               // 原始前驱块
                                 goal_dummy_block, // 新前驱块
                                 target_block,     // 目标块
@@ -334,54 +318,12 @@ impl LlvmModulePass for IndirectBranch {
                 br_inst.erase_from_basic_block();
             }
 
-            if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(function) {
                 warn!("(indirect-branch) function {:?} verify failed", function.get_name());
             }
         }
 
         PreservedAnalyses::None
-    }
-}
-
-fn update_phi_nodes<'ctx>(
-    _ctx: ContextRef,
-    old_pred: BasicBlock<'ctx>,
-    new_pred: BasicBlock<'ctx>,
-    target_block: BasicBlock<'ctx>,
-) {
-    for phi in target_block.get_first_instruction().iter() {
-        if phi.get_opcode() != InstructionOpcode::Phi {
-            break;
-        }
-
-        // %25 = phi i32 [ 1, %21 ], [ %23, %22 ]
-        let phi = unsafe { PhiValue::new(phi.as_value_ref()) };
-        let incoming_vec = phi
-            .get_incomings()
-            .filter_map(|(value, pred)| {
-                if pred == old_pred {
-                    (value, new_pred).into()
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let (mut values, mut basic_blocks): (Vec<LLVMValueRef>, Vec<LLVMBasicBlockRef>) = {
-            incoming_vec
-                .iter()
-                .map(|&(v, bb)| (v.as_value_ref(), bb.as_mut_ptr()))
-                .unzip()
-        };
-
-        unsafe {
-            LLVMAddIncoming(
-                phi.as_value_ref(),
-                values.as_mut_ptr(),
-                basic_blocks.as_mut_ptr(),
-                incoming_vec.len() as u32,
-            );
-        }
     }
 }
 
@@ -408,9 +350,11 @@ fn emit_dummy_junk<'ctx>(builder: &Builder<'ctx>, i32_ty: IntType<'ctx>) {
 fn collect_basic_block<'a>(module: &Module<'a>) -> Vec<BasicBlock<'a>> {
     let mut basic_blocks = Vec::new();
     for fun in module.get_functions() {
-        let entry_block = get_basic_block_entry_ref(&fun);
+        let Some(entry_block) = get_basic_block_entry(fun) else {
+            continue;
+        };
         for bb in fun.get_basic_blocks() {
-            if bb.as_mut_ptr() == entry_block {
+            if bb == entry_block {
                 continue;
             }
             basic_blocks.push(bb);

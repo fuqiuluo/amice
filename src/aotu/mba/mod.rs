@@ -9,9 +9,8 @@ use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType};
 use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
 use crate::aotu::mba::expr::Expr;
 use crate::aotu::mba::generator::generate_constant_mba_function;
-use crate::llvm_utils::function::get_basic_block_entry;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::function::fix_stack;
+use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_llvm::module_utils::{verify_function, verify_function2};
 use amice_macro::amice;
 use llvm_plugin::inkwell::llvm_sys;
@@ -217,13 +216,13 @@ impl LlvmModulePass for Mba {
                 }
             }
 
-            if verify_function2(function.as_value_ref() as *mut std::ffi::c_void) {
+            if verify_function2(function) {
                 warn!("(mba) function {:?} is not verified", function.get_name());
             }
 
             if self.fix_stack {
                 unsafe {
-                    fix_stack(function.as_value_ref() as *mut std::ffi::c_void);
+                    fix_stack(function);
                 }
             }
         }
