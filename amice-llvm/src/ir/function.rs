@@ -1,9 +1,10 @@
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::core::{LLVMGetEntryBasicBlock, LLVMGetValueKind, LLVMIsABasicBlock};
-use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
+use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMValueRef};
 use inkwell::types::{AsTypeRef, FunctionType};
 use inkwell::values::{AsValueRef, FunctionValue, PointerValue};
 use crate::ffi;
+use crate::ffi::ArgReplacement;
 use crate::ir::constants::get_bitcast_constant;
 
 pub fn get_basic_block_entry_ref(fun: &FunctionValue) -> LLVMBasicBlockRef {
@@ -43,9 +44,42 @@ pub fn clone_function(function_value: FunctionValue) -> Option<FunctionValue> {
     let clone = unsafe {
         ffi::amice_clone_function(function_value.as_value_ref() as LLVMValueRef)
     };
-    
+
     unsafe {
         FunctionValue::new(clone)
+    }
+}
+
+pub unsafe fn function_specialize_partial(
+    module: LLVMModuleRef,
+    original_func: LLVMValueRef,
+    replacements: &[(u32, LLVMValueRef)],
+) -> Result<LLVMValueRef, &'static str> {
+    if original_func.is_null() {
+        return Err("Null pointer");
+    }
+
+    let arg_replacements: Vec<ArgReplacement> = replacements
+        .iter()
+        .map(|(index, constant)| ArgReplacement {
+            index: *index,
+            constant: *constant,
+        })
+        .collect();
+
+    let result = unsafe {
+        ffi::amice_specialize_function(
+            original_func,
+            module,
+            arg_replacements.as_ptr(),
+            arg_replacements.len() as u32,
+        )
+    };
+
+    if result.is_null() {
+        Err("Specialization failed")
+    } else {
+        Ok(result)
     }
 }
 
