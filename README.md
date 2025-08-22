@@ -98,6 +98,7 @@ cargo build --release
 - [Project: jamesmth/llvm-plugin-rs](https://github.com/jamesmth/llvm-plugin-rs/tree/feat/llvm-20#)
 - [Project: stevefan1999-personal/llvm-plugin-rs](https://github.com/stevefan1999-personal/llvm-plugin-rs)
 - [Project: SsagePass](https://github.com/SsageParuders/SsagePass)
+- [Project: Polaris-Obfuscator](https://github.com/za233/Polaris-Obfuscator)
 - [Article: MBA](https://plzin.github.io/posts/mba)
 - [Article: llvm PassManager的变更及动态注册Pass的加载过程](https://bbs.kanxue.com/thread-272801.htm)
 - [Person: Ylarod](https://github.com/Ylarod)

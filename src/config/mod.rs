@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-
+pub use alias_access::AliasAccessConfig;
 pub use bogus_control_flow::BogusControlFlowConfig;
-use clone_function::CloneFunctionConfig;
+pub use clone_function::CloneFunctionConfig;
 pub use flatten::FlattenMode;
 pub use function_wrapper::FunctionWrapperConfig;
 pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
@@ -36,6 +36,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
+mod alias_access;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
@@ -62,6 +63,7 @@ pub struct Config {
     pub mba: MbaConfig,
     pub bogus_control_flow: BogusControlFlowConfig,
     pub clone_function: CloneFunctionConfig,
+    pub alias_access: AliasAccessConfig,
 }
 
 fn is_truthy(value: &str) -> bool {
