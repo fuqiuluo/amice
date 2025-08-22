@@ -1,3 +1,7 @@
+#include <functional>
+#include <memory>
+#include <vector>
+
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Module.h>
@@ -28,6 +32,11 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/InlineCost.h"
+#include "llvm/IR/ValueHandle.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
 
 extern "C" {
 
@@ -61,6 +70,13 @@ void amice_phi_node_remove_incoming_value(llvm::PHINode* PHI, llvm::BasicBlock* 
 
 void amice_phi_node_replace_incoming_block_with(llvm::PHINode* PHI, llvm::BasicBlock* O, llvm::BasicBlock* N) {
     PHI->replaceIncomingBlockWith(O, N);
+}
+
+llvm::Function * amice_clone_function(llvm::Function* F) {
+  llvm::ValueToValueMapTy Mappings;
+  llvm::Function *Clone = CloneFunction(F, Mappings);
+  Clone->setName(F->getName() + ".specialized.amice");
+  return Clone;
 }
 
 

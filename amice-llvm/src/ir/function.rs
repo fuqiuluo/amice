@@ -39,6 +39,16 @@ pub fn is_inline_marked_function(function: FunctionValue) -> bool {
     }
 }
 
+pub fn clone_function(function_value: FunctionValue) -> Option<FunctionValue> {
+    let clone = unsafe {
+        ffi::amice_clone_function(function_value.as_value_ref() as LLVMValueRef)
+    };
+    
+    unsafe {
+        FunctionValue::new(clone)
+    }
+}
+
 pub unsafe fn fix_stack(function:FunctionValue) {
     ffi::amice_fix_stack(function.as_value_ref() as LLVMValueRef, 0, 0)
 }
