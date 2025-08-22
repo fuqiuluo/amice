@@ -122,3 +122,27 @@ int main() {
 
     return 0;
 }
+
+//=== CloneFunction Test Case ===
+//
+//Test 1 - compute_value specialization:
+//compute_value(5, 10, 3) = 52
+//compute_value(8, 10, 3) = 81
+//compute_value(12, 15, 7) = 193
+//compute_value(3, 10, 3) = 33
+//
+//Test 2 - calculate_score specialization:
+//calculate_score(100.0, 1, 150.0) = 150.00
+//calculate_score(80.0, 1, 150.0) = 120.00
+//calculate_score(200.0, 2, 100.0) = 369.00
+//calculate_score(90.0, 2, 100.0) = 171.00
+//
+//Test 3 - process_data specialization:
+//process_data(data1, 5, 0, 1) = 15
+//process_data(data2, 3, 1, 2) = 120
+//process_data(data1, 5, 1, 2) = 30
+//process_data(data3, 4, 2, 1) = 120
+//
+//Test 4 - Mixed parameters:
+//compute_value(base_var=10, multiplier_var=5, 2) = 50
+//compute_value(15, multiplier_var=5, 4) = 76
