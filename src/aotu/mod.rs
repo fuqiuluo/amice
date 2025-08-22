@@ -1,3 +1,4 @@
+pub mod alias_access;
 pub mod bogus_control_flow;
 pub mod clone_function;
 pub mod flatten;
@@ -10,7 +11,6 @@ pub mod shuffle_blocks;
 pub mod split_basic_block;
 pub mod string_encryption;
 pub mod vm_flatten;
-pub mod alias_access;
 
 #[cfg(any(feature = "llvm15-0", feature = "llvm16-0",))]
 #[macro_export]

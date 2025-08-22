@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 use std::ffi::{CStr, CString};
 
-mod ffi;
-pub mod module_utils;
-pub mod ir;
 pub mod analysis;
+mod ffi;
+pub mod ir;
+pub mod module_utils;
 
 pub fn get_llvm_version_major() -> i32 {
     unsafe { ffi::amice_get_llvm_version_major() }

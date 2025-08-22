@@ -4,8 +4,6 @@ pub(crate) mod pass_registry;
 
 use crate::config::CONFIG;
 use crate::pass_registry::PassPosition;
-use env_logger::builder;
-use llvm_plugin::PipelineParsing;
 use log::info;
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1.2")]

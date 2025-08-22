@@ -1,8 +1,8 @@
-use std::ffi::{CStr, c_char, c_void};
+use crate::analysis::dominators::LLVMDominatorTreeRef;
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMUseRef, LLVMValueRef};
 use inkwell::values::InstructionValue;
-use crate::analysis::dominators::LLVMDominatorTreeRef;
+use std::ffi::{CStr, c_char, c_void};
 
 #[link(name = "amice-llvm-ffi")]
 unsafe extern "C" {
@@ -54,7 +54,11 @@ unsafe extern "C" {
 
     pub(crate) fn llvm_dominator_tree_view_graph(dt: LLVMDominatorTreeRef);
 
-    pub(crate) fn llvm_dominator_tree_dominate_BU(dt: LLVMDominatorTreeRef, b: LLVMBasicBlockRef, u: LLVMUseRef) -> bool;
+    pub(crate) fn llvm_dominator_tree_dominate_BU(
+        dt: LLVMDominatorTreeRef,
+        b: LLVMBasicBlockRef,
+        u: LLVMUseRef,
+    ) -> bool;
 
     pub(crate) fn amice_switch_find_case_dest(inst: LLVMValueRef, b: LLVMBasicBlockRef) -> LLVMValueRef;
 
@@ -64,7 +68,11 @@ unsafe extern "C" {
 
     pub(crate) fn amice_phi_node_remove_incoming_value(phi_node: LLVMValueRef, incoming: LLVMBasicBlockRef);
 
-    pub(crate) fn amice_phi_node_replace_incoming_block_with(phi_node: LLVMValueRef, incoming: LLVMBasicBlockRef, new_block: LLVMBasicBlockRef);
+    pub(crate) fn amice_phi_node_replace_incoming_block_with(
+        phi_node: LLVMValueRef,
+        incoming: LLVMBasicBlockRef,
+        new_block: LLVMBasicBlockRef,
+    );
 
     pub(crate) fn amice_clone_function(function: LLVMValueRef) -> LLVMValueRef;
 

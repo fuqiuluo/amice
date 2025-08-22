@@ -1,5 +1,4 @@
-use crate::config::indirect_branch::parse_indirect_branch_flags;
-use crate::config::{IndirectBranchFlags, bool_var};
+use crate::config::bool_var;
 use crate::pass_registry::EnvOverlay;
 use log::error;
 use serde::{Deserialize, Serialize};

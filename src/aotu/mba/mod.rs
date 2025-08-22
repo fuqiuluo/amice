@@ -8,18 +8,16 @@ use crate::aotu::mba::binary_expr_mba::{BinOp, mba_binop};
 use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType};
 use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
 use crate::aotu::mba::expr::Expr;
-use crate::aotu::mba::generator::generate_constant_mba_function;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
-use amice_llvm::module_utils::{verify_function, verify_function2};
+use amice_llvm::module_utils::verify_function2;
 use amice_macro::amice;
-use llvm_plugin::inkwell::llvm_sys;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue,
+    BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use std::cmp::max;
 use std::collections::HashMap;
 

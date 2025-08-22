@@ -4,10 +4,6 @@ use amice_macro::amice_config_manager;
 use lazy_static::lazy_static;
 use log::warn;
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 pub use alias_access::AliasAccessConfig;
 pub use bogus_control_flow::BogusControlFlowConfig;
 pub use clone_function::CloneFunctionConfig;
@@ -18,11 +14,16 @@ pub use indirect_call::IndirectCallConfig;
 pub use lower_switch::LowerSwitchConfig;
 pub use mba::MbaConfig;
 pub use pass_order::PassOrderConfig;
+use serde::{Deserialize, Serialize};
 pub use shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
 pub use split_basic_block::SplitBasicBlockConfig;
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use vm_flatten::VmFlattenConfig;
 
+mod alias_access;
 mod bogus_control_flow;
 mod clone_function;
 mod flatten;
@@ -36,7 +37,6 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
-mod alias_access;
 
 lazy_static! {
     pub static ref CONFIG: Config = {

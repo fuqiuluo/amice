@@ -1,7 +1,10 @@
+use crate::ffi::{
+    llvm_dominator_tree_create, llvm_dominator_tree_create_from_function, llvm_dominator_tree_destroy,
+    llvm_dominator_tree_dominate_BU, llvm_dominator_tree_view_graph,
+};
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMUseRef, LLVMValueRef};
 use inkwell::values::{AsValueRef, FunctionValue};
-use crate::ffi::{llvm_dominator_tree_create, llvm_dominator_tree_create_from_function, llvm_dominator_tree_destroy, llvm_dominator_tree_dominate_BU, llvm_dominator_tree_view_graph};
 
 #[repr(C)]
 pub struct LLVMDominatorTree {
@@ -52,24 +55,28 @@ impl DominatorTree {
             Ok(DominatorTree { ptr })
         }
     }
-    
+
     pub fn view_graph(&self) {
         if self.ptr.is_null() {
             panic!("Cannot view graph of a null DominatorTree");
         }
         unsafe { llvm_dominator_tree_view_graph(self.ptr) }
     }
-    
+
     pub fn dominate(&self, b: BasicBlock, u: BasicBlock) -> bool {
         if self.ptr.is_null() {
             panic!("Cannot dominate of a null DominatorTree");
         }
-        
+
         unsafe {
-            llvm_dominator_tree_dominate_BU(self.ptr, b.as_mut_ptr() as LLVMBasicBlockRef, u.as_mut_ptr() as LLVMUseRef)
+            llvm_dominator_tree_dominate_BU(
+                self.ptr,
+                b.as_mut_ptr() as LLVMBasicBlockRef,
+                u.as_mut_ptr() as LLVMUseRef,
+            )
         }
     }
-    
+
     pub fn as_ptr(&self) -> LLVMDominatorTreeRef {
         self.ptr
     }
