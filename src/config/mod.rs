@@ -24,6 +24,7 @@ pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncrypti
 pub use vm_flatten::VmFlattenConfig;
 
 mod bogus_control_flow;
+mod clone_function;
 mod flatten;
 mod function_wrapper;
 mod indirect_branch;
@@ -35,7 +36,6 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
-mod clone_function;
 
 lazy_static! {
     pub static ref CONFIG: Config = {

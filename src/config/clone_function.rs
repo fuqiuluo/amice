@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use crate::config::{bool_var};
+use crate::config::bool_var;
 use crate::pass_registry::EnvOverlay;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -10,9 +10,7 @@ pub struct CloneFunctionConfig {
 
 impl Default for CloneFunctionConfig {
     fn default() -> Self {
-        Self {
-            enable: false,
-        }
+        Self { enable: false }
     }
 }
 
