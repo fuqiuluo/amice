@@ -333,21 +333,15 @@ pub(crate) fn do_alias_access(pass: &AliasAccess, module: &Module<'_>, function:
                         // child pointer 还是 void*；把它转回“通用指针类型”以继续链（这里我们统一用 void*，直到最后再按需 cast）
                         cur_ptr = next_ptr;
                         // 跟踪图下标
-                        cur_idx = graph[cur_idx].edges.as_ref()
-                            .ok_or(anyhow!("edges is None"))?[&pick];
+                        cur_idx = graph[cur_idx].edges.as_ref().ok_or(anyhow!("edges is None"))?[&pick];
                     }
 
                     // 到达 RawBox：GEP 到字段
-                    let ep = &graph[cur_idx].raw_insts.as_ref()
-                        .ok_or(anyhow!("raw_insts is None"))?[&op_ptr];
+                    let ep = &graph[cur_idx].raw_insts.as_ref().ok_or(anyhow!("raw_insts is None"))?[&op_ptr];
 
                     // 当前 cur_ptr 是 RawBox* 的“真实类型”吗？我们一路保持 void*，需要 cast 回 RawBox*
                     let st_ptr_ty = ep.st.ptr_type(AddressSpace::default());
-                    let raw_ptr = builder.build_pointer_cast(
-                        cur_ptr,
-                        st_ptr_ty,
-                        "as_raw_st",
-                    )?;
+                    let raw_ptr = builder.build_pointer_cast(cur_ptr, st_ptr_ty, "as_raw_st")?;
                     let field_addr = builder
                         .build_struct_gep(ep.st, raw_ptr, ep.index, "field")
                         .expect("field gep");
