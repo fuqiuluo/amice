@@ -1,5 +1,6 @@
 use crate::pass_registry::EnvOverlay;
 use serde::{Deserialize, Serialize};
+use crate::config::bool_var;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -16,5 +17,9 @@ impl Default for CustomCallingConvConfig {
 }
 
 impl EnvOverlay for CustomCallingConvConfig {
-    fn overlay_env(&mut self) {}
+    fn overlay_env(&mut self) {
+        if std::env::var("AMICE_CUSTOM_CALLING_CONV").is_ok() {
+            self.enable = bool_var("AMICE_CUSTOM_CALLING_CONV", self.enable);
+        }
+    }
 }
