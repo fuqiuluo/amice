@@ -37,7 +37,11 @@ impl LlvmModulePass for AliasAccess {
 
         for function in module.get_functions() {
             if let Err(e) = pointer_chain::do_alias_access(self, module, function) {
-                error!("(alias-access) failed to process function {:?}: {}", function.get_name(), e);
+                error!(
+                    "(alias-access) failed to process function {:?}: {}",
+                    function.get_name(),
+                    e
+                );
                 continue;
             }
 
