@@ -22,8 +22,8 @@ impl AmicePassLoadable for AliasAccess {
     fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
         self.enable = cfg.alias_access.enable;
 
-        self.shuffle_raw_box = false; // todo: 暂时先关着
-        self.loose_raw_box = false;
+        self.shuffle_raw_box = cfg.alias_access.shuffle_raw_box;
+        self.loose_raw_box = cfg.alias_access.loose_raw_box;
 
         self.enable
     }
