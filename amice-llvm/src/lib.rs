@@ -5,6 +5,7 @@ pub mod analysis;
 mod ffi;
 pub mod ir;
 pub mod module_utils;
+pub mod annotate;
 
 pub fn get_llvm_version_major() -> i32 {
     unsafe { ffi::amice_get_llvm_version_major() }

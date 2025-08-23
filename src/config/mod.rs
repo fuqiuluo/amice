@@ -20,6 +20,7 @@ pub use split_basic_block::SplitBasicBlockConfig;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use custom_calling_conv::CustomCallingConvConfig;
 pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use vm_flatten::VmFlattenConfig;
 
@@ -37,6 +38,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
+mod custom_calling_conv;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
@@ -64,6 +66,7 @@ pub struct Config {
     pub bogus_control_flow: BogusControlFlowConfig,
     pub clone_function: CloneFunctionConfig,
     pub alias_access: AliasAccessConfig,
+    pub custom_calling_conv: CustomCallingConvConfig,
 }
 
 fn is_truthy(value: &str) -> bool {
