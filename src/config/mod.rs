@@ -7,6 +7,7 @@ use log::warn;
 pub use alias_access::AliasAccessConfig;
 pub use bogus_control_flow::BogusControlFlowConfig;
 pub use clone_function::CloneFunctionConfig;
+use custom_calling_conv::CustomCallingConvConfig;
 pub use flatten::FlattenMode;
 pub use function_wrapper::FunctionWrapperConfig;
 pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
@@ -20,13 +21,13 @@ pub use split_basic_block::SplitBasicBlockConfig;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use custom_calling_conv::CustomCallingConvConfig;
 pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use vm_flatten::VmFlattenConfig;
 
 mod alias_access;
 mod bogus_control_flow;
 mod clone_function;
+mod custom_calling_conv;
 mod flatten;
 mod function_wrapper;
 mod indirect_branch;
@@ -38,7 +39,6 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
-mod custom_calling_conv;
 
 lazy_static! {
     pub static ref CONFIG: Config = {

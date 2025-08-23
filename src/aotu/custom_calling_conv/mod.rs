@@ -49,9 +49,7 @@ fn do_random_calling_conv<'a>(module: &mut Module<'a>, function: FunctionValue<'
     let annotates = read_annotate(module, function).map_err(|e| anyhow::anyhow!("failed to read annotate: {}", e))?;
 
     if !annotates.iter().any(|annotate| {
-        annotate == "random_calling_conv"
-            || annotate == "custom_calling_conv"
-            || annotate.contains("customcc")
+        annotate == "random_calling_conv" || annotate == "custom_calling_conv" || annotate.contains("customcc")
     }) {
         return Ok(());
     }
