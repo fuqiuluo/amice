@@ -64,14 +64,14 @@ fn build_getter_function<'ctx>(
 
     let arg0 = func.get_nth_param(0).unwrap().into_pointer_value();
 
-    // cast i8* -> MetaBox*
+    // cast void* -> MetaBox*
     let trans_ptr = builder.build_pointer_cast(arg0, st.ptr_type(AddressSpace::default()), "cast_trans")?;
 
     // &p->slot[idx]
     let slot_addr = builder
         .build_struct_gep(st, trans_ptr, idx, "slot_addr")
         .expect("GEP slot");
-    // 为隐藏类型信息，返回 i8*
+    // 为隐藏类型信息，返回 void*
     let ret = builder.build_pointer_cast(slot_addr, ptr_ty, "as_ptr")?;
     builder.build_return(Some(&ret))?;
 
