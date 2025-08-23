@@ -6,10 +6,9 @@ use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::types::{BasicType, BasicTypeEnum, StructType};
+use llvm_plugin::inkwell::types::{BasicType, StructType};
 use llvm_plugin::inkwell::values::{AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
 use log::{debug, warn};
-use rand::Rng;
 use std::collections::HashMap;
 
 const META_BOX_COUNT: usize = 6;
