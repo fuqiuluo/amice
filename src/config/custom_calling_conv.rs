@@ -1,6 +1,6 @@
+use crate::config::bool_var;
 use crate::pass_registry::EnvOverlay;
 use serde::{Deserialize, Serialize};
-use crate::config::bool_var;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -10,9 +10,7 @@ pub struct CustomCallingConvConfig {
 
 impl Default for CustomCallingConvConfig {
     fn default() -> Self {
-        Self {
-            enable: true
-        }
+        Self { enable: true }
     }
 }
 
