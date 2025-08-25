@@ -5,7 +5,7 @@ use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_llvm::ir::switch_inst;
 use amice_llvm::module_utils::verify_function2;
-use amice_llvm::{build_load, ptr_type};
+use amice_llvm::{build_in_bounds_gep, build_load, ptr_type};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -447,42 +447,39 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     let opcode = build_load!(
         builder,
         i32_type,
-        unsafe {
-            builder.build_in_bounds_gep(
-                opcode_array_type,
-                local_opcodes_value.as_pointer_value(),
-                &[i32_zero, pc_value],
-                "",
-            )
-        }?,
+        build_in_bounds_gep!(
+            builder,
+            opcode_array_type,
+            local_opcodes_value.as_pointer_value(),
+            &[i32_zero, pc_value],
+            ""
+        )?,
         "__op__"
     )?
     .into_int_value();
     let left = build_load!(
         builder,
         i32_type,
-        unsafe {
-            builder.build_in_bounds_gep(
-                opcode_array_type,
-                local_opcodes_value.as_pointer_value(),
-                &[i32_zero, pc_plus_one],
-                "",
-            )
-        }?,
+        build_in_bounds_gep!(
+            builder,
+            opcode_array_type,
+            local_opcodes_value.as_pointer_value(),
+            &[i32_zero, pc_plus_one],
+            ""
+        )?,
         "__left__"
     )?
     .into_int_value();
     let right = build_load!(
         builder,
         i32_type,
-        unsafe {
-            builder.build_in_bounds_gep(
-                opcode_array_type,
-                local_opcodes_value.as_pointer_value(),
-                &[i32_zero, pc_plus_two],
-                "",
-            )
-        }?,
+        build_in_bounds_gep!(
+            builder,
+            opcode_array_type,
+            local_opcodes_value.as_pointer_value(),
+            &[i32_zero, pc_plus_two],
+            ""
+        )?,
         "__right__"
     )?
     .into_int_value();
@@ -604,14 +601,13 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         let offset = builder.build_int_sub(label_size, flag_value, "offset")?;
         let curr_pc = build_load!(builder, i32_type, pc, "__pc__")?.into_int_value();
         let new_pc_offset = builder.build_int_sub(curr_pc, offset, "pc_with_offset")?;
-        let new_pc_gep = unsafe {
-            builder.build_in_bounds_gep(
-                opcode_array_type,
-                local_opcodes_value.as_pointer_value(),
-                &[i32_zero, new_pc_offset],
-                "",
-            )
-        }?;
+        let new_pc_gep = build_in_bounds_gep!(
+            builder,
+            opcode_array_type,
+            local_opcodes_value.as_pointer_value(),
+            &[i32_zero, new_pc_offset],
+            ""
+        )?;
         let new_pc = build_load!(builder, i32_type, new_pc_gep, "__value__")?.into_int_value();
         builder.build_store(pc, new_pc)?;
         builder.build_unconditional_branch(vm_entry)?;

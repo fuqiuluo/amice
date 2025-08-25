@@ -1,10 +1,10 @@
 use crate::config::{Config, IndirectBranchFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::build_load;
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
 use amice_llvm::module_utils::verify_function2;
+use amice_llvm::{build_in_bounds_gep, build_load};
 use amice_macro::amice;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
@@ -207,14 +207,13 @@ impl LlvmModulePass for IndirectBranch {
                         let key_index = index % xor_key.len();
                         index ^= xor_key[key_index] as usize;
                         let enc_index = i32_type.const_int(index as u64, false);
-                        let key_gep = unsafe {
-                            builder.build_in_bounds_gep(
-                                xor_key_table.get_value_type().into_array_type(),
-                                xor_key_table.as_pointer_value(),
-                                &[const_zero, i32_type.const_int(key_index as u64, false)],
-                                "",
-                            )
-                        }
+                        let key_gep = build_in_bounds_gep!(
+                            builder,
+                            xor_key_table.get_value_type().into_array_type(),
+                            xor_key_table.as_pointer_value(),
+                            &[const_zero, i32_type.const_int(key_index as u64, false)],
+                            ""
+                        )
                         .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}"))
                         .expect("build gep_index failed");
 
@@ -236,16 +235,14 @@ impl LlvmModulePass for IndirectBranch {
                     warn!("(indirect-branch) index is None, skipping this branch, branch: {br_inst:?}");
                     continue;
                 };
-                let Ok(gep) = (unsafe {
-                    builder
-                        .build_in_bounds_gep(
-                            indirect_branch_table.get_value_type().into_array_type(),
-                            indirect_branch_table.as_pointer_value(),
-                            &[const_zero, index],
-                            "",
-                        )
-                        .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}"))
-                }) else {
+                let Ok(gep) = build_in_bounds_gep!(
+                    builder,
+                    indirect_branch_table.get_value_type().into_array_type(),
+                    indirect_branch_table.as_pointer_value(),
+                    &[const_zero, index],
+                    ""
+                )
+                .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}")) else {
                     panic!("(indirect-branch) build gep_index failed, this should never happen");
                 };
                 let Ok(loaded_address) = build_load!(builder, ptr_type, gep, "IndirectBranchingTargetAddress")

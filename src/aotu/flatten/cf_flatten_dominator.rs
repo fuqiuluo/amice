@@ -6,7 +6,7 @@ use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::switch_inst::find_case_dest;
 use amice_llvm::module_utils::{VerifyResult, verify_function};
-use amice_llvm::{build_load, ptr_type};
+use amice_llvm::{build_in_bounds_gep, build_load, ptr_type};
 use anyhow::anyhow;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -227,8 +227,7 @@ fn do_handle(
             .map(|arg| arg.into());
             builder.build_call(update_key_fn, &args, "")?;
         } else {
-            let visited_gep =
-                unsafe { builder.build_in_bounds_gep(i8_type, visited_array, &[current_block_index], "") }?;
+            let visited_gep = build_in_bounds_gep!(builder, i8_type, visited_array, &[current_block_index], "")?;
             builder.build_store(visited_gep, i8_one)?;
         }
     }
@@ -291,14 +290,13 @@ fn do_handle(
             let dispatch_id_val = dispatch_id_val.into_int_value().get_zero_extended_constant().unwrap();
             let encrypted_dispatch_id = dispatch_id_val ^ block_valid_key_map[&bb];
             let encrypted_dispatch_id = i64_type.const_int(encrypted_dispatch_id, fix_stack);
-            let key_gep = unsafe {
-                builder.build_in_bounds_gep(
-                    i64_type,
-                    key_array,
-                    &[i32_type.const_int(basic_block_index_map[&bb] as u64, false)],
-                    "",
-                )
-            }?;
+            let key_gep = build_in_bounds_gep!(
+                builder,
+                i64_type,
+                key_array,
+                &[i32_type.const_int(basic_block_index_map[&bb] as u64, false)],
+                ""
+            )?;
             let key = build_load!(builder, i64_type, key_gep, "")?.into_int_value();
             let dispatch_id_val = builder.build_xor(key, encrypted_dispatch_id, "dispatch_id")?;
             builder.build_store(dispatch_id, dispatch_id_val)?;
@@ -339,14 +337,13 @@ fn do_handle(
             let encrypted_false_dispatch_id = false_dispatch_id_val ^ block_valid_key_map[&bb];
             let encrypted_true_dispatch_id = i64_type.const_int(encrypted_true_dispatch_id, fix_stack);
             let encrypted_false_dispatch_id = i64_type.const_int(encrypted_false_dispatch_id, fix_stack);
-            let key_gep = unsafe {
-                builder.build_in_bounds_gep(
-                    i64_type,
-                    key_array,
-                    &[i32_type.const_int(basic_block_index_map[&bb] as u64, false)],
-                    "",
-                )
-            }?;
+            let key_gep = build_in_bounds_gep!(
+                builder,
+                i64_type,
+                key_array,
+                &[i32_type.const_int(basic_block_index_map[&bb] as u64, false)],
+                ""
+            )?;
             let key = build_load!(builder, i64_type, key_gep, "")?.into_int_value();
             let cond = terminator.get_operand(0).unwrap().left().unwrap().into_int_value();
             let dest_dispatch_id = builder
@@ -445,7 +442,7 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
         .ok_or_else(|| anyhow!("Failed to get current_block_index parameter"))?;
 
     builder.position_at_end(bb_update_key_arr_entry);
-    let visited_gep = unsafe { builder.build_in_bounds_gep(i8_type, visited_array, &[current_block_index], "") }?;
+    let visited_gep = build_in_bounds_gep!(builder, i8_type, visited_array, &[current_block_index], "")?;
     let visited = build_load!(builder, i8_type, visited_gep, "visited")?.into_int_value();
     let index = builder.build_alloca(i32_type, "index")?;
     builder.build_store(index, i32_zero)?;
@@ -459,9 +456,9 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
 
     builder.position_at_end(bb_update_key_arr_body);
     let index_val = build_load!(builder, i32_type, index, "loop_i")?.into_int_value();
-    let dom_index_gep_ptr = unsafe { builder.build_in_bounds_gep(i32_type, dom_index_arr, &[index_val], "") }?;
+    let dom_index_gep_ptr = build_in_bounds_gep!(builder, i32_type, dom_index_arr, &[index_val], "")?;
     let dom_block_index = build_load!(builder, i32_type, dom_index_gep_ptr, "dom_block_index")?.into_int_value();
-    let dom_key_gep_ptr = unsafe { builder.build_in_bounds_gep(i64_type, key_array, &[dom_block_index], "") }?;
+    let dom_key_gep_ptr = build_in_bounds_gep!(builder, i64_type, key_array, &[dom_block_index], "")?;
     let dom_key_val = build_load!(builder, i64_type, dom_key_gep_ptr, "dom_key_val")?.into_int_value();
     let updated_key = builder.build_xor(dom_key_val, block_key, "updated_key")?; // new_key = dom_key ^ current_key
     builder.build_store(dom_key_gep_ptr, updated_key)?; // key_array[i] = new_key
@@ -474,7 +471,7 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
     builder.build_unconditional_branch(bb_update_key_arr_cond)?;
 
     builder.position_at_end(bb_update_key_arr_end);
-    let visited_gep = unsafe { builder.build_in_bounds_gep(i8_type, visited_array, &[current_block_index], "") }?;
+    let visited_gep = build_in_bounds_gep!(builder, i8_type, visited_array, &[current_block_index], "")?;
     builder.build_store(visited_gep, i8_one)?;
     builder.build_unconditional_branch(bb_update_key_arr_ret)?;
 
