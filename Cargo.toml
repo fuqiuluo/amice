@@ -11,6 +11,11 @@ crate-type = ["cdylib"]
 [features]
 default = ["llvm20-1"]
 
+# On Windows, llvm plugins require linking with either opt.lib,
+# or lld.lib.
+win-link-opt = []
+win-link-lld = []
+
 llvm11-0 = ["llvm-plugin/llvm11-0", "amice-llvm/llvm11-0"]
 llvm12-0 = ["llvm-plugin/llvm12-0", "amice-llvm/llvm12-0"]
 llvm13-0 = ["llvm-plugin/llvm13-0", "amice-llvm/llvm13-0"]
