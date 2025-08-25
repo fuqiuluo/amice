@@ -6,11 +6,11 @@ use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::module::{Linkage, Module};
+use llvm_plugin::inkwell::support::get_llvm_version;
 use llvm_plugin::inkwell::values::{
     AsValueRef, BasicValue, CallSiteValue, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use llvm_plugin::inkwell::support::get_llvm_version;
 use log::{debug, error, warn};
 
 #[amice(priority = 990, name = "IndirectCall", position = PassPosition::PipelineStart)]
@@ -139,7 +139,10 @@ impl LlvmModulePass for IndirectCall {
             feature = "llvm16-0",
             feature = "llvm15-0",
         )))]
-        error!("(indirect_call) LLVM version is not supported: {:?}", get_llvm_version());
+        error!(
+            "(indirect_call) LLVM version is not supported: {:?}",
+            get_llvm_version()
+        );
 
         for f in module.get_functions() {
             if verify_function2(f) {
