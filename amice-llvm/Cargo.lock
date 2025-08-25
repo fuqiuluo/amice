@@ -16,6 +16,7 @@ name = "amice-llvm"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "dobby-sys",
  "inkwell",
  "lazy_static",
  "regex",
@@ -36,6 +37,12 @@ checksum = "c3a42d84bb6b69d3a8b3eaacf0d88f179e1929695e1ad012b6cf64d9caaa5fd2"
 dependencies = [
  "shlex",
 ]
+
+[[package]]
+name = "dobby-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cdffdeaa52be950db80677f22f549050675f226b77e97fdbe10bb2dd846ac7b"
 
 [[package]]
 name = "either"
