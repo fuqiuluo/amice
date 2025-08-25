@@ -10,6 +10,7 @@ use llvm_plugin::inkwell::values::{
     AsValueRef, BasicValue, CallSiteValue, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use llvm_plugin::inkwell::support::get_llvm_version;
 use log::{debug, error, warn};
 
 #[amice(priority = 990, name = "IndirectCall", position = PassPosition::PipelineStart)]
@@ -111,6 +112,14 @@ impl LlvmModulePass for IndirectCall {
             None
         };
 
+        #[cfg(any(
+            feature = "llvm20-1",
+            feature = "llvm19-1",
+            feature = "llvm18-1",
+            feature = "llvm17-0",
+            feature = "llvm16-0",
+            feature = "llvm15-0",
+        ))]
         if let Err(e) = do_handle(
             self,
             module,
@@ -121,6 +130,16 @@ impl LlvmModulePass for IndirectCall {
         ) {
             error!("(indirect_call) failed to handle: {e}");
         }
+
+        #[cfg(not(any(
+            feature = "llvm20-1",
+            feature = "llvm19-1",
+            feature = "llvm18-1",
+            feature = "llvm17-0",
+            feature = "llvm16-0",
+            feature = "llvm15-0",
+        )))]
+        error!("(indirect_call) LLVM version is not supported: {:?}", get_llvm_version());
 
         for f in module.get_functions() {
             if verify_function2(f) {
@@ -133,6 +152,14 @@ impl LlvmModulePass for IndirectCall {
 }
 
 // Only handle type 1 and 3
+#[cfg(any(
+    feature = "llvm20-1",
+    feature = "llvm19-1",
+    feature = "llvm18-1",
+    feature = "llvm17-0",
+    feature = "llvm16-0",
+    feature = "llvm15-0",
+))]
 fn do_handle<'a>(
     pass: &IndirectCall,
     module: &mut Module<'_>,
