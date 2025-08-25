@@ -25,19 +25,19 @@ const STACK_ALLOC_THRESHOLD: u32 = 4096; // 4KB
 /// Returns (number_of_layers, algorithms_for_each_layer)
 pub(crate) fn generate_encryption_layers(max_layers: u8, preferred_algorithm: StringAlgorithm) -> (u8, Vec<StringAlgorithm>) {
     let mut rng = rand::rng();
-    let num_layers = rng.gen_range(1..=max_layers);
+    let num_layers = rng.random_range(1..=max_layers);
     
     let mut algorithms = Vec::with_capacity(num_layers as usize);
     
     for _ in 0..num_layers {
         // For the first layer, sometimes use the preferred algorithm
         // For subsequent layers, randomly choose between available algorithms
-        let algorithm = if algorithms.is_empty() && rng.gen_bool(0.6) {
-            // 60% chance to use preferred algorithm for first layer
+        let algorithm = if algorithms.is_empty() && rng.random::<bool>() {
+            // 50% chance to use preferred algorithm for first layer (changed from gen_bool)
             preferred_algorithm
         } else {
             // Randomly choose algorithm
-            match rng.gen_range(0..2) {
+            match rng.random_range(0..2) {
                 0 => StringAlgorithm::Xor,
                 1 => StringAlgorithm::SimdXor,
                 _ => StringAlgorithm::Xor, // fallback
