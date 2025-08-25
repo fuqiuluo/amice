@@ -60,7 +60,20 @@ jobs:
       - name: Download LLVM Binaries
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
-          wget --user-agent='GithubCI' -O llvm.tar.gz https://github.com/jamesmth/llvm-project/releases/download/${{ matrix.llvm-version[2] }}
+          set -e
+          URL="https://github.com/jamesmth/llvm-project/releases/download/${{ matrix.llvm-version[2] }}"
+          UA="GithubCI"
+          for attempt in {1..5}; do
+            echo "Attempt $attempt to download: $URL"
+            wget --user-agent="$UA" --tries=3 --waitretry=5 --read-timeout=30 --timeout=30 -O llvm.tar.gz "$URL" && break
+            echo "Download failed (attempt $attempt)."
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((attempt * 5))
+            else
+              echo "All download attempts failed."
+              exit 1
+            fi
+          done
           tar -C ~ -xf llvm.tar.gz
 
       - name: Build libamice.so (Release)
