@@ -17,7 +17,7 @@ env:
 jobs:
   macos-build:
     name: "LLVM/OPT ${{ matrix.llvm-version[0] }} MacOS"
-     runs-on: ${{ matrix.llvm-version[3] }}
+    runs-on: ${{ matrix.llvm-version[3] }}
     env:
       LLVM_INSTALL_PATH: ~/llvm
       BUILD_OUTPUT_PATH: target/release
