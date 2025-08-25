@@ -16,6 +16,8 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkw
 use log::{debug, error};
 use std::ptr::NonNull;
 use rand::Rng;
+use amice_llvm::module_utils::verify_function;
+use amice_llvm::module_utils::VerifyResult::Broken;
 
 /// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled
@@ -31,7 +33,7 @@ pub struct StringEncryption {
     inline_decrypt: bool,
     only_dot_string: bool,
     allow_non_entry_stack_alloc: bool,
-    max_encryption_count: u8,
+    max_encryption_count: u32,
 }
 
 impl AmicePassLoadable for StringEncryption {
@@ -72,6 +74,12 @@ impl LlvmModulePass for StringEncryption {
             StringAlgorithm::SimdXor => simd_xor::do_handle(self, module, manager),
         } {
             error!("(strenc) failed to handle string encryption: {e}");
+        }
+
+        for x in module.get_functions() {
+            if let Broken(err) = verify_function(x) {
+                error!("(strenc) function {:?} verify failed: {}", x.get_name(), err);
+            }
         }
 
         PreservedAnalyses::None

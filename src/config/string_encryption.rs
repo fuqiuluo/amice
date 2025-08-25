@@ -29,7 +29,7 @@ pub struct StringEncryptionConfig {
     /// When false, limits stack allocations to entry blocks for better optimization
     pub allow_non_entry_stack_alloc: bool,
 
-    pub max_encryption_count: u8,
+    pub max_encryption_count: u32,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,9 +126,12 @@ impl EnvOverlay for StringEncryptionConfig {
                 self.allow_non_entry_stack_alloc,
             );
         }
-        if let Ok(v) = std::env::var("AMICE_STRING_MAX_ENCRYPTION_COUNT") {
-            if let Ok(count) = v.parse::<u8>() {
-                self.max_encryption_count = count.clamp(1, 5);
+
+        if self.timing != StringDecryptTiming::Global
+            && let Ok(v) = std::env::var("AMICE_STRING_MAX_ENCRYPTION_COUNT")
+        {
+            if let Ok(count) = v.parse::<u32>() {
+                self.max_encryption_count = count.clamp(1, 100000);
             } else {
                 error!("(strenc) invalid max encryption count value, using default");
             }

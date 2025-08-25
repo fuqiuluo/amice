@@ -18,7 +18,7 @@ use rand::Rng;
 pub(crate) fn do_handle<'a>(
     pass: &StringEncryption,
     module: &mut Module<'a>,
-    manager: &ModuleAnalysisManager,
+    _manager: &ModuleAnalysisManager,
 ) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
@@ -61,14 +61,14 @@ pub(crate) fn do_handle<'a>(
             for byte in encoded_str.iter_mut() {
                 *byte ^= 0xAA;
             }
-            
+
             let unique_name = global
                 .get_name()
                 .to_str()
                 .map_or_else(|_| rand::random::<u32>().to_string(), |s| s.to_string());
             Some((unique_name, global, stru, encoded_str))
         })
-        .map(|(unique_name, global, stru, encoded_str)| {
+        .map(|(unique_name, global, stru, mut encoded_str)| {
             let string_len = encoded_str.len() as u32;
             let mut should_use_stack = pass.stack_alloc && string_len <= STACK_ALLOC_THRESHOLD;
 
@@ -78,17 +78,6 @@ pub(crate) fn do_handle<'a>(
                     "(strenc) string '{}' ({}B) exceeds 4KB limit for stack allocation, using global timing instead",
                     unique_name, string_len
                 );
-            }
-
-            if let Some(stru) = stru {
-                // Rust-like strings
-                let new_const = ctx.const_string(&encoded_str, false);
-                stru.set_field_at_index(0, new_const);
-                global.set_initializer(&stru);
-            } else {
-                // C-like strings
-                let new_const = ctx.const_string(&encoded_str, false);
-                global.set_initializer(&new_const);
             }
 
             let mut users = Vec::new();
@@ -143,6 +132,17 @@ pub(crate) fn do_handle<'a>(
             } else {
                 None
             };
+
+            if let Some(stru) = stru {
+                // Rust-like strings
+                let new_const = ctx.const_string(&encoded_str, false);
+                stru.set_field_at_index(0, new_const);
+                global.set_initializer(&stru);
+            } else {
+                // C-like strings
+                let new_const = ctx.const_string(&encoded_str, false);
+                global.set_initializer(&new_const);
+            }
 
             // 如果有flag的话 ===> 回写模式，字符串不能是一个常量
             if !flag.is_none() || is_global_mode {
