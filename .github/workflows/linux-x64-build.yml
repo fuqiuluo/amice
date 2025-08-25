@@ -25,7 +25,6 @@ jobs:
       fail-fast: false
       matrix:
         llvm-version:
-          - ["11", "11-0", "v11.0.1-rust-1.51/llvm-lld-11.0.1-rust-1.51-linux-x86_64.tar.gz", "libLLVM-11.so"]
           - ["12", "12-0", "v12.0.1-rust-1.55/llvm-lld-12.0.1-rust-1.55-linux-x86_64.tar.gz", "libLLVM-12.so"]
           - ["13", "13-0", "v13.0.0-rust-1.59/llvm-lld-13.0.0-rust-1.59-linux-x86_64.tar.gz", "libLLVM-13.so"]
           - ["14", "14-0", "v14.0.6-rust-1.64/llvm-lld-14.0.6-rust-1.64-linux-x86_64.tar.gz", "libLLVM-14.so"]
