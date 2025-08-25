@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::verify_function2;
+use amice_llvm::{build_load, ptr_type};
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
@@ -10,7 +11,6 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
-use amice_llvm::{build_load, ptr_type};
 
 #[amice(priority = 990, name = "IndirectCall", position = PassPosition::PipelineStart)]
 #[derive(Default)]

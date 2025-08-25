@@ -3,8 +3,8 @@ use crate::aotu::string_encryption::{
     collect_insert_points,
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
-use amice_llvm::{build_load, ptr_type};
 use amice_llvm::module_utils::append_to_global_ctors;
+use amice_llvm::{build_load, ptr_type};
 use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -426,7 +426,8 @@ fn add_decrypt_function<'a>(
     builder.build_unconditional_branch(main_loop)?;
 
     // 检查是否还有完整的32字节块
-    builder.position_at_end(main_loop);();
+    builder.position_at_end(main_loop);
+    ();
     let index = build_load!(builder, i32_ty, idx, "cur_idx")?.into_int_value();
     let tmp = builder.build_int_add(index, ctx.i32_type().const_int(31, false), "tmp")?;
     let cond = builder.build_int_compare(inkwell::IntPredicate::ULT, tmp, len, "cond")?;

@@ -1,6 +1,7 @@
 use crate::aotu::alias_access::AliasAccess;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::function::get_basic_block_entry;
+use amice_llvm::{build_load, ptr_type};
 use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
@@ -9,7 +10,6 @@ use llvm_plugin::inkwell::types::{BasicType, StructType};
 use llvm_plugin::inkwell::values::{AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
 use log::{debug, warn};
 use std::collections::HashMap;
-use amice_llvm::{build_load, ptr_type};
 
 const META_BOX_COUNT: usize = 6;
 
@@ -67,12 +67,20 @@ fn build_getter_function<'ctx>(
     let trans_ptr = builder.build_pointer_cast(arg0, st.ptr_type(AddressSpace::default()), "cast_trans")?;
 
     // &p->slot[idx]
-    #[cfg(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0"))]
-    let slot_addr = builder
-        .build_struct_gep(trans_ptr, idx, "slot_addr")
-        .expect("GEP slot");
+    #[cfg(any(
+        feature = "llvm11-0",
+        feature = "llvm12-0",
+        feature = "llvm13-0",
+        feature = "llvm14-0"
+    ))]
+    let slot_addr = builder.build_struct_gep(trans_ptr, idx, "slot_addr").expect("GEP slot");
 
-    #[cfg(not(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0")))]
+    #[cfg(not(any(
+        feature = "llvm11-0",
+        feature = "llvm12-0",
+        feature = "llvm13-0",
+        feature = "llvm14-0"
+    )))]
     let slot_addr = builder
         .build_struct_gep(st, trans_ptr, idx, "slot_addr")
         .expect("GEP slot");
@@ -224,12 +232,22 @@ pub(crate) fn do_alias_access(pass: &AliasAccess, module: &Module<'_>, function:
             let child_id = rand::random_range(0..graph.len());
             let child = &graph[child_id];
 
-            #[cfg(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0"))]
+            #[cfg(any(
+                feature = "llvm11-0",
+                feature = "llvm12-0",
+                feature = "llvm13-0",
+                feature = "llvm14-0"
+            ))]
             let slot_addr = builder
                 .build_struct_gep(meta_box_alloca, idx as u32, "slot")
                 .expect("router gep");
 
-            #[cfg(not(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0")))]
+            #[cfg(not(any(
+                feature = "llvm11-0",
+                feature = "llvm12-0",
+                feature = "llvm13-0",
+                feature = "llvm14-0"
+            )))]
             let slot_addr = builder
                 .build_struct_gep(meta_box_ty, meta_box_alloca, idx as u32, "slot")
                 .expect("router gep");
@@ -339,8 +357,8 @@ pub(crate) fn do_alias_access(pass: &AliasAccess, module: &Module<'_>, function:
                             ptr_ty.ptr_type(AddressSpace::default()),
                             "as_ptr_ptr",
                         )?;
-                        let next_ptr = build_load!(builder, ptr_ty, slot_addr_base_box_ptr, "ld_next")?
-                            .into_pointer_value();
+                        let next_ptr =
+                            build_load!(builder, ptr_ty, slot_addr_base_box_ptr, "ld_next")?.into_pointer_value();
 
                         // child pointer 还是 void*；把它转回“通用指针类型”以继续链（这里我们统一用 void*，直到最后再按需 cast）
                         cur_ptr = next_ptr;
@@ -355,13 +373,20 @@ pub(crate) fn do_alias_access(pass: &AliasAccess, module: &Module<'_>, function:
                     let st_ptr_ty = ep.st.ptr_type(AddressSpace::default());
                     let raw_ptr = builder.build_pointer_cast(cur_ptr, st_ptr_ty, "as_raw_st")?;
 
+                    #[cfg(any(
+                        feature = "llvm11-0",
+                        feature = "llvm12-0",
+                        feature = "llvm13-0",
+                        feature = "llvm14-0"
+                    ))]
+                    let field_addr = builder.build_struct_gep(raw_ptr, ep.index, "field").expect("field gep");
 
-                    #[cfg(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0"))]
-                    let field_addr = builder
-                        .build_struct_gep(raw_ptr, ep.index, "field")
-                        .expect("field gep");
-
-                    #[cfg(not(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0")))]
+                    #[cfg(not(any(
+                        feature = "llvm11-0",
+                        feature = "llvm12-0",
+                        feature = "llvm13-0",
+                        feature = "llvm14-0"
+                    )))]
                     let field_addr = builder
                         .build_struct_gep(ep.st, raw_ptr, ep.index, "field")
                         .expect("field gep");

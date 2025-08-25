@@ -3,8 +3,8 @@ use crate::aotu::string_encryption::{
     collect_insert_points,
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
-use amice_llvm::{build_load, ptr_type};
 use amice_llvm::module_utils::append_to_global_ctors;
+use amice_llvm::{build_load, ptr_type};
 use inkwell::module::Module;
 use inkwell::values::FunctionValue;
 use llvm_plugin::inkwell::AddressSpace;

@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::build_load;
 use amice_llvm::ir::branch_inst;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
@@ -13,7 +14,6 @@ use llvm_plugin::inkwell::values::{FunctionValue, GlobalValue, InstructionOpcode
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
-use amice_llvm::build_load;
 
 #[amice(priority = 950, name = "BogusControlFlow", position = PassPosition::PipelineStart)]
 #[derive(Default)]

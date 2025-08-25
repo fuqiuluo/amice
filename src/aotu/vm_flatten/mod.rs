@@ -444,19 +444,20 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     let pc_plus_two = builder.build_int_add(pc_value, i32_two, "pc_plus_2")?;
     let pc_plus_three = builder.build_int_add(pc_value, i32_three, "pc_plus_3")?;
 
-    let opcode = build_load!(builder,
-            i32_type,
-            unsafe {
-                builder.build_in_bounds_gep(
-                    opcode_array_type,
-                    local_opcodes_value.as_pointer_value(),
-                    &[i32_zero, pc_value],
-                    "",
-                )
-            }?,
-            "__op__"
-        )?
-        .into_int_value();
+    let opcode = build_load!(
+        builder,
+        i32_type,
+        unsafe {
+            builder.build_in_bounds_gep(
+                opcode_array_type,
+                local_opcodes_value.as_pointer_value(),
+                &[i32_zero, pc_value],
+                "",
+            )
+        }?,
+        "__op__"
+    )?
+    .into_int_value();
     let left = build_load!(
         builder,
         i32_type,
@@ -598,8 +599,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         builder.position_at_end(vm_switch);
         let label_size = left; // 有多少个label，这里的大小是case数量 + 1
         //let default_label_value = right;
-        let flag_value = build_load!(builder, i32_type, vm_flag, "__vm_br_flag__")?
-            .into_int_value();
+        let flag_value = build_load!(builder, i32_type, vm_flag, "__vm_br_flag__")?.into_int_value();
         //let cases_num = builder.build_int_sub(label_size, i32_one, "cases_num")?;
         let offset = builder.build_int_sub(label_size, flag_value, "offset")?;
         let curr_pc = build_load!(builder, i32_type, pc, "__pc__")?.into_int_value();
@@ -625,8 +625,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
 
     {
         builder.position_at_end(vm_jmp_if);
-        let flag_value = build_load!(builder, i32_type, vm_flag, "__vm_br_flag__")?
-            .into_int_value();
+        let flag_value = build_load!(builder, i32_type, vm_flag, "__vm_br_flag__")?.into_int_value();
 
         let jump_true = ctx.append_basic_block(function, ".amice.jump_true");
         let jump_false = ctx.append_basic_block(function, ".amice.jump_false");

@@ -1,12 +1,12 @@
 use crate::aotu::flatten::{Flatten, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
-use amice_llvm::{build_load, ptr_type};
 use amice_llvm::analysis::dominators::DominatorTree;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::switch_inst::find_case_dest;
 use amice_llvm::module_utils::{VerifyResult, verify_function};
+use amice_llvm::{build_load, ptr_type};
 use anyhow::anyhow;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -264,8 +264,7 @@ fn do_handle(
         .iter()
         .map(|(bb, magic)| (i64_type.const_int(*magic, false), *bb))
         .collect::<Vec<_>>();
-    let dispatch_id_val = build_load!(builder, i64_type, dispatch_id, "dispatch_id")?
-        .into_int_value();
+    let dispatch_id_val = build_load!(builder, i64_type, dispatch_id, "dispatch_id")?.into_int_value();
     let switch = builder.build_switch(dispatch_id_val, bb_dispatcher_default, &cases)?;
 
     for bb in basic_blocks {
@@ -461,11 +460,9 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
     builder.position_at_end(bb_update_key_arr_body);
     let index_val = build_load!(builder, i32_type, index, "loop_i")?.into_int_value();
     let dom_index_gep_ptr = unsafe { builder.build_in_bounds_gep(i32_type, dom_index_arr, &[index_val], "") }?;
-    let dom_block_index =build_load!(builder, i32_type, dom_index_gep_ptr, "dom_block_index")?
-        .into_int_value();
+    let dom_block_index = build_load!(builder, i32_type, dom_index_gep_ptr, "dom_block_index")?.into_int_value();
     let dom_key_gep_ptr = unsafe { builder.build_in_bounds_gep(i64_type, key_array, &[dom_block_index], "") }?;
-    let dom_key_val = build_load!(builder, i64_type, dom_key_gep_ptr, "dom_key_val")?
-        .into_int_value();
+    let dom_key_val = build_load!(builder, i64_type, dom_key_gep_ptr, "dom_key_val")?.into_int_value();
     let updated_key = builder.build_xor(dom_key_val, block_key, "updated_key")?; // new_key = dom_key ^ current_key
     builder.build_store(dom_key_gep_ptr, updated_key)?; // key_array[i] = new_key
     builder.build_unconditional_branch(bb_update_key_arr_inc)?;
