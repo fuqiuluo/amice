@@ -65,7 +65,7 @@ jobs:
 
       - name: Build amice.dll (Release)
         run: |
-          cargo b --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+          cargo b --release --no-default-features --features llvm${{ matrix.llvm-version[1] }},win-link-opt
 
       - name: Upload amice.dll
         uses: actions/upload-artifact@v4
