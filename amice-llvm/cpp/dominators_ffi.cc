@@ -40,7 +40,7 @@ bool llvm_dominator_tree_dominate_BU(llvm::DominatorTree* dt, llvm::BasicBlock* 
     if (!NA || !NB) return false;
 
     return NA->dominates(NB);
-##endif
+#endif
 }
 
 } // extern "C"
