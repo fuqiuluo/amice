@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::verify_function2;
-use amice_llvm::{build_load, ptr_type};
+use amice_llvm::{build_gep, build_load, ptr_type};
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
@@ -164,7 +164,7 @@ fn do_handle<'a>(
         } else {
             index_value
         };
-        let gep = unsafe { builder.build_gep(pty_type, global_fun_table.as_pointer_value(), &[index_value], "")? };
+        let gep = build_gep!(builder, pty_type, global_fun_table.as_pointer_value(), &[index_value], "")?;
         let addr = build_load!(builder, pty_type, gep, "")?.into_pointer_value();
 
         let call_site = unsafe { CallSiteValue::new(inst.as_value_ref()) };

@@ -4,7 +4,7 @@ use crate::aotu::string_encryption::{
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
 use amice_llvm::module_utils::append_to_global_ctors;
-use amice_llvm::{build_load, ptr_type};
+use amice_llvm::{build_gep, build_load, ptr_type};
 use inkwell::module::Module;
 use inkwell::values::FunctionValue;
 use llvm_plugin::inkwell::AddressSpace;
@@ -418,13 +418,13 @@ fn add_decrypt_function<'a>(
     builder.position_at_end(next);
 
     // 从源地址读取
-    let src_gep = unsafe { builder.build_gep(i8_ty, ptr, &[index], "src_gep") }?;
+    let src_gep = build_gep!(builder, i8_ty, ptr, &[index], "src_gep")?;
     let ch = build_load!(builder, i8_ty, src_gep, "cur")?.into_int_value();
     // 解密
     let xor_ch = i8_ty.const_int(0xAA, false);
     let xored = builder.build_xor(ch, xor_ch, "new")?;
     // 写入目标地址（栈上）
-    let dst_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "dst_gep") }?;
+    let dst_gep = build_gep!(builder, i8_ty, dst_ptr, &[index], "dst_gep")?;
     builder.build_store(dst_gep, xored)?;
 
     let next_index = builder.build_int_add(index, ctx.i32_type().const_int(1, false), "")?;
@@ -433,7 +433,7 @@ fn add_decrypt_function<'a>(
 
     builder.position_at_end(exit);
     let index = builder.build_int_sub(len, i32_one, "")?;
-    let null_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "null_gep") }?;
+    let null_gep = build_gep!(builder, i8_ty, dst_ptr, &[index], "null_gep")?;
     builder.build_store(null_gep, i8_ty.const_zero())?;
     builder.build_return(None)?;
 

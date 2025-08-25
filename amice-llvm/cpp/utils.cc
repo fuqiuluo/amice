@@ -143,9 +143,23 @@ llvm::Function* amice_specialize_function(
     }
 
     llvm::SmallVector<llvm::ReturnInst*, 8> returns;
+// llvm 12
+//    void llvm::CloneAndPruneFunctionInto(Function *NewFunc, const Function *OldFunc,
+//                                         ValueToValueMapTy &VMap,
+//                                         bool ModuleLevelChanges,
+//                                         SmallVectorImpl<ReturnInst*> &Returns,
+//                                         const char *NameSuffix,
+//                                         ClonedCodeInfo *CodeInfo,
+//                                         Instruction *TheCall)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 13)
     llvm::CloneFunctionInto(specializedFunc, originalFunc, VMap,
-                     llvm::CloneFunctionChangeType::LocalChangesOnly,
-                     returns, "", nullptr);
+        llvm::CloneFunctionChangeType::LocalChangesOnly,
+        returns, "", nullptr);
+#else
+    llvm::CloneFunctionInto(specializedFunc, originalFunc, VMap,
+        false,
+        returns, "", nullptr);
+#endif
 
     specializedFunc->copyAttributesFrom(originalFunc);
 

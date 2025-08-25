@@ -4,7 +4,7 @@ use crate::aotu::string_encryption::{
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
 use amice_llvm::module_utils::append_to_global_ctors;
-use amice_llvm::{build_load, ptr_type};
+use amice_llvm::{build_gep, build_load, ptr_type};
 use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -434,7 +434,7 @@ fn add_decrypt_function<'a>(
     builder.build_conditional_branch(cond, next, check_rest)?;
 
     builder.position_at_end(next);
-    let src_gep = unsafe { builder.build_gep(i8_ty, src_ptr, &[index], "src_gep") }?;
+    let src_gep = build_gep!(builder, i8_ty, src_ptr, &[index], "src_gep")?;
     let src_load_inst = build_load!(builder, vector_256, src_gep, "src_vec")?;
     if let Some(load_inst) = src_load_inst.as_instruction_value() {
         load_inst
@@ -443,7 +443,7 @@ fn add_decrypt_function<'a>(
     }
     let src_vec = src_load_inst.into_vector_value();
     let xored_vec = builder.build_xor(src_vec, key_vec, "xored_vec")?;
-    let dst_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "dst_gep") }?;
+    let dst_gep = build_gep!(builder, i8_ty, dst_ptr, &[index], "dst_gep")?;
     let store_inst = builder.build_store(dst_gep, xored_vec)?;
     store_inst
         .set_alignment(1)
@@ -463,13 +463,13 @@ fn add_decrypt_function<'a>(
     // 处理剩余的字节
     // for(;i<len;i++) output[i] = input[i] ^ key[i % 32];
 
-    let src_gep = unsafe { builder.build_gep(i8_ty, src_ptr, &[index], "src_rest_gep") }?;
+    let src_gep = build_gep!(builder, i8_ty, src_ptr, &[index], "src_rest_gep")?;
     let ch = build_load!(builder, i8_ty, src_gep, "cur")?.into_int_value();
     let key_index = builder.build_int_signed_rem(index, ctx.i32_type().const_int(32, false), "key_index")?;
-    let key_gep = unsafe { builder.build_gep(i8_ty, key_ptr, &[key_index], "key_rest_gep") }?;
+    let key_gep = build_gep!(builder, i8_ty, key_ptr, &[key_index], "key_rest_gep")?;
     let key_ch = build_load!(builder, i8_ty, key_gep, "key_cur")?.into_int_value();
     let xored = builder.build_xor(ch, key_ch, "xored_rest")?;
-    let dst_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "dst_rest_gep") }?;
+    let dst_gep = build_gep!(builder, i8_ty, dst_ptr, &[index], "dst_rest_gep")?;
     builder.build_store(dst_gep, xored)?;
 
     let next_index = builder.build_int_add(index, ctx.i32_type().const_int(1, false), "next_index_rest")?;
@@ -478,7 +478,7 @@ fn add_decrypt_function<'a>(
 
     builder.position_at_end(exit);
     let index = builder.build_int_sub(len, i32_one, "")?;
-    let null_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "null_gep") }?;
+    let null_gep = build_gep!(builder, i8_ty, dst_ptr, &[index], "null_gep")?;
     builder.build_store(null_gep, i8_ty.const_zero())?;
     builder.build_return(Some(&dst_ptr))?;
 

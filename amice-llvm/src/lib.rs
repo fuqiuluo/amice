@@ -113,3 +113,33 @@ macro_rules! build_in_bounds_gep {
         unsafe { $bd.build_in_bounds_gep($ty, $addr, $idxs, $name) }
     };
 }
+
+#[cfg(not(any(
+    feature = "llvm15-0",
+    feature = "llvm16-0",
+    feature = "llvm17-0",
+    feature = "llvm18-1",
+    feature = "llvm19-1",
+    feature = "llvm20-1",
+)))]
+#[macro_export]
+macro_rules! build_gep {
+    ($bd:ident, $ty:expr, $addr:expr, $idxs:expr, $name:expr) => {
+        unsafe { $bd.build_gep($addr, $idxs, $name) }
+    };
+}
+
+#[cfg(any(
+    feature = "llvm15-0",
+    feature = "llvm16-0",
+    feature = "llvm17-0",
+    feature = "llvm18-1",
+    feature = "llvm19-1",
+    feature = "llvm20-1",
+))]
+#[macro_export]
+macro_rules! build_gep {
+    ($bd:ident, $ty:expr, $addr:expr, $idxs:expr, $name:expr) => {
+        unsafe { $bd.build_gep($ty, $addr, $idxs, $name) }
+    };
+}
