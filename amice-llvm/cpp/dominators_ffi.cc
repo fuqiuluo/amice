@@ -36,10 +36,10 @@ bool llvm_dominator_tree_dominate_BU(llvm::DominatorTree* dt, llvm::BasicBlock* 
     return dt->dominates(B, U);
 #else
     const llvm::DomTreeNodeBase<llvm::BasicBlock> *NA = dt->getNode(B);
-    const llvm::DomTreeNodeBase<llvm::BasicBlock> *NB = dt->getNode(const_cast<BasicBlock*>(U));
+    const llvm::DomTreeNodeBase<llvm::BasicBlock> *NB = dt->getNode(const_cast<llvm::BasicBlock*>(U));
     if (!NA || !NB) return false;
 
-    return NA->dominates(NB);
+    return NA->DominatedBy(NB);
 #endif
 }
 
