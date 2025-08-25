@@ -1,0 +1,87 @@
+name: MacOS Arm64 Build
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos-build:
+    name: "LLVM/OPT ${{ matrix.llvm-version[0] }} MacOS"
+     runs-on: ${{ matrix.llvm-version[3] }}
+    env:
+      LLVM_INSTALL_PATH: ~/llvm
+      BUILD_OUTPUT_PATH: target/release
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version:
+          - ["12", "12-0", "v12.0.1-rust-1.55/llvm-lld-12.0.1-rust-1.55-macos-x86_64.tar.gz", "macos-13"]
+          - ["13", "13-0", "v13.0.0-rust-1.59/llvm-lld-13.0.0-rust-1.59-macos-x86_64.tar.gz", "macos-13"]
+          - ["14", "14-0", "v14.0.6-rust-1.64/llvm-lld-14.0.6-rust-1.64-macos-x86_64.tar.gz", "macos-13"]
+          - ["15", "15-0", "v15.0.0-rust-1.65/llvm-lld-15.0.0-rust-1.65-macos-x86_64.tar.gz", "macos-13"]
+          - ["16", "16-0", "v16.0.2-rust-1.71/llvm-lld-16.0.2-rust-1.71-macos-x86_64.tar.gz", "macos-13"]
+          - ["17", "17-0", "v17.0.6-rust-1.75/llvm-lld-17.0.6-rust-1.75-macos-x86_64.tar.gz", "macos-13"]
+          - ["18", "18-1", "v18.1.2-rust-1.78/llvm-lld-18.1.2-rust-1.78-macos-arm64.tar.gz", "macos-latest"]
+          - ["19", "19-1", "v19.1.5-rust-1.84/llvm-lld-19.1.5-rust-1.84-macos-arm64.tar.gz", "macos-latest"]
+          - ["20", "20-1", "v20.1.1-rust-1.87/llvm-lld-20.1.1-rust-1.87-macos-arm64.tar.gz", "macos-latest"]
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+
+      - name: Setup LLVM Installation Path
+        run: |
+          mkdir ${{ env.LLVM_INSTALL_PATH }}
+          echo "$HOME/llvm/bin" >> $GITHUB_PATH
+
+      - name: Check LLVM Artifacts In Cache
+        id: cache-llvm
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ env.LLVM_INSTALL_PATH }}/bin/llvm-config
+            ${{ env.LLVM_INSTALL_PATH }}/bin/opt
+            ${{ env.LLVM_INSTALL_PATH }}/lib/libLLVM.dylib
+            ${{ env.LLVM_INSTALL_PATH }}/lib/libLLVM-C.dylib
+            ${{ env.LLVM_INSTALL_PATH }}/include
+          key: ${{ runner.os }}-llvm-${{ matrix.llvm-version[0] }
+
+      - name: Download LLVM Binaries
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          URL="https://github.com/jamesmth/llvm-project/releases/download/${{ matrix.llvm-version[2] }}"
+          UA="GithubCI"
+          for attempt in {1..5}; do
+            echo "Attempt $attempt to download: $URL"
+            wget --user-agent="$UA" --tries=3 --waitretry=5 --read-timeout=30 --timeout=30 -O llvm.tar.gz "$URL" && break
+            echo "Download failed (attempt $attempt)."
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((attempt * 5))
+            else
+              echo "All download attempts failed."
+              exit 1
+            fi
+          done
+          tar -C ~ -xf llvm.tar.gz
+
+      - name: Build libamice.so (Release)
+        run: |
+          cargo b --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+
+      - name: Upload libamice.dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: libamice-llvm${{ matrix.llvm-version[0] }}-macos
+          path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.dylib
+          retention-days: 30
