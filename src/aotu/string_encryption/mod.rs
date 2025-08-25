@@ -4,6 +4,8 @@ mod xor;
 use crate::config::{Config, StringAlgorithm, StringDecryptTiming};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::get_basic_block_entry;
+use amice_llvm::module_utils::VerifyResult::Broken;
+use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use ascon_hash::Digest;
 use inkwell::llvm_sys::core::LLVMGetAsString;
@@ -14,10 +16,8 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::{debug, error};
-use std::ptr::NonNull;
 use rand::Rng;
-use amice_llvm::module_utils::verify_function;
-use amice_llvm::module_utils::VerifyResult::Broken;
+use std::ptr::NonNull;
 
 /// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled
