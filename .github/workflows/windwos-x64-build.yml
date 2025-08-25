@@ -1,0 +1,75 @@
+name: Windows X64 Build
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-build:
+    name: "LLVM/OPT ${{ matrix.llvm-version[0] }} Windows"
+    runs-on: windows-latest
+    env:
+      LLVM_INSTALL_PATH: C:\LLVM
+      BUILD_OUTPUT_PATH: target\release
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version:
+          - ["12", "12-0", "v12.0.1-rust-1.55/llvm-lld-12.0.1-rust-1.55-windows-x86_64.7z"]
+          - ["13", "13-0", "v13.0.0-rust-1.59/llvm-lld-13.0.0-rust-1.59-windows-x86_64.7z"]
+          - ["14", "14-0", "v14.0.6-rust-1.64/llvm-lld-14.0.6-rust-1.64-windows-x86_64.7z"]
+          - ["15", "15-0", "v15.0.0-rust-1.65/llvm-lld-15.0.0-rust-1.65-windows-x86_64.7z"]
+          - ["16", "16-0", "v16.0.2-rust-1.71/llvm-lld-16.0.2-rust-1.71-windows-x86_64.7z"]
+          - ["17", "17-0", "v17.0.6-rust-1.75/llvm-lld-17.0.6-rust-1.75-windows-x86_64.7z"]
+          - ["18", "18-1", "v18.1.2-rust-1.78/llvm-lld-18.1.2-rust-1.78-windows-x86_64.7z"]
+          - ["19", "19-1", "v19.1.5-rust-1.84/llvm-lld-19.1.5-rust-1.84-windows-x86_64.7z"]
+          - ["20", "20-1", "v20.1.1-rust-1.87/llvm-lld-20.1.1-rust-1.87-windows-x86_64.7z"]
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+
+      - name: Setup LLVM Installation Path
+        run: |
+          mkdir ${{ env.LLVM_INSTALL_PATH }}
+          echo ${{ env.LLVM_INSTALL_PATH }}\bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Check LLVM Artifacts In Cache
+        id: cache-llvm
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ env.LLVM_INSTALL_PATH }}\bin\llvm-config.exe
+            ${{ env.LLVM_INSTALL_PATH }}\bin\opt.exe
+            ${{ env.LLVM_INSTALL_PATH }}\bin\LLVM-C.dll
+            ${{ env.LLVM_INSTALL_PATH }}\lib\opt.lib
+            ${{ env.LLVM_INSTALL_PATH }}\lib\LLVM-C.lib
+            ${{ env.LLVM_INSTALL_PATH }}\include
+          key: ${{ runner.os }}-llvm-${{ matrix.llvm-version[0] }}-opt
+
+      - name: Download LLVM Binaries
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          Invoke-WebRequest -UserAgent 'GithubCI' -outfile llvm.7z https://github.com/jamesmth/llvm-project/releases/download/${{ matrix.llvm-version[2] }}
+          7z x -oC: llvm.7z
+
+      - name: Build amice.dll (Release)
+        run: |
+          cargo b --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+
+      - name: Upload amice.dll
+        uses: actions/upload-artifact@v4
+        with:
+          name: libamice-llvm${{ matrix.llvm-version[0] }}-windows
+          path: ${{ env.BUILD_OUTPUT_PATH }}/amice.dll
+          retention-days: 30
