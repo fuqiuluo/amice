@@ -13,8 +13,8 @@ default = ["llvm20-1"]
 
 # On Windows, llvm plugins require linking with either opt.lib,
 # or lld.lib.
-win-link-opt = []
-win-link-lld = []
+win-link-opt = ["llvm-plugin/win-link-opt"]
+win-link-lld = ["llvm-plugin/win-link-lld"]
 
 llvm11-0 = ["llvm-plugin/llvm11-0", "amice-llvm/llvm11-0"]
 llvm12-0 = ["llvm-plugin/llvm12-0", "amice-llvm/llvm12-0"]
