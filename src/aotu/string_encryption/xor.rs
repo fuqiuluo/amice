@@ -1,6 +1,6 @@
 use crate::aotu::string_encryption::{
     EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, alloc_stack_string, array_as_const_string,
-    collect_insert_points,
+    collect_insert_points, generate_encryption_layers,
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
 use crate::ptr_type;
@@ -143,7 +143,15 @@ pub(crate) fn do_handle<'a>(
                 global.set_constant(false);
             }
 
-            EncryptedGlobalValue::new(global, string_len, flag, should_use_stack, users)
+            // 生成加密层配置
+            let (encryption_layers, layer_algorithms) = if pass.max_encryption_layers > 1 {
+                generate_encryption_layers(pass.max_encryption_layers, pass.encryption_type)
+            } else {
+                // 保持向下兼容：使用单层加密
+                (1, vec![pass.encryption_type])
+            };
+
+            EncryptedGlobalValue::new(global, string_len, flag, should_use_stack, users, encryption_layers, layer_algorithms)
         })
         .collect();
 
