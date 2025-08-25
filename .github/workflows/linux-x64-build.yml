@@ -1,8 +1,14 @@
 name: Linux X64 Build
 
-on: 
+on:
   push:
-    branches: [ main ]
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
   workflow_dispatch:
 
 env:
@@ -10,15 +16,17 @@ env:
 
 jobs:
   linux-build:
-    name: "Build LLVM ${{ matrix.llvm-version[0] }} Linux"
+    name: "LLVM/OPT ${{ matrix.llvm-version[0] }} Linux"
     runs-on: ubuntu-latest
     env:
-      LLVM_INSTALL_PATH: ${{ github.workspace }}/llvm
+      LLVM_INSTALL_PATH: ~/llvm
       BUILD_OUTPUT_PATH: target/release
     strategy:
-      fail-fast: false
       matrix:
         llvm-version:
+          - ["11", "11-0", "v11.0.1-rust-1.51/llvm-lld-11.0.1-rust-1.51-linux-x86_64.tar.gz", "libLLVM-11.so"]
+          - ["12", "12-0", "v12.0.1-rust-1.55/llvm-lld-12.0.1-rust-1.55-linux-x86_64.tar.gz", "libLLVM-12.so"]
+          - ["13", "13-0", "v13.0.0-rust-1.59/llvm-lld-13.0.0-rust-1.59-linux-x86_64.tar.gz", "libLLVM-13.so"]
           - ["14", "14-0", "v14.0.6-rust-1.64/llvm-lld-14.0.6-rust-1.64-linux-x86_64.tar.gz", "libLLVM-14.so"]
           - ["15", "15-0", "v15.0.0-rust-1.65/llvm-lld-15.0.0-rust-1.65-linux-x86_64.tar.gz", "libLLVM-15.so"]
           - ["16", "16-0", "v16.0.2-rust-1.71/llvm-lld-16.0.2-rust-1.71-linux-x86_64.tar.gz", "libLLVM-16.so"]
@@ -26,171 +34,41 @@ jobs:
           - ["18", "18-1", "v18.1.2-rust-1.78/llvm-lld-18.1.2-rust-1.78-linux-x86_64.tar.gz", "libLLVM.so.18.1"]
           - ["19", "19-1", "v19.1.5-rust-1.84/llvm-lld-19.1.5-rust-1.84-linux-x86_64.tar.gz", "libLLVM.so.19.1"]
           - ["20", "20-1", "v20.1.1-rust-1.87/llvm-lld-20.1.1-rust-1.87-linux-x86_64.tar.gz", "libLLVM.so.20.1"]
-          
+
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v2
 
       - name: Setup LLVM Installation Path
         run: |
-          set -euxo pipefail
-          mkdir -p "${{ env.LLVM_INSTALL_PATH }}"
-          echo "${{ env.LLVM_INSTALL_PATH }}/bin" >> "$GITHUB_PATH"
-
-      - name: Derive variables
-        id: vars
-        run: |
-          set -euxo pipefail
-          ASSET='${{ matrix.llvm-version[2] }}'
-          echo "asset_tag=${ASSET//\//_}" >> "$GITHUB_OUTPUT"
-          
-          VER='${{ matrix.llvm-version[1] }}'
-          ENV_NAME="LLVM_SYS_${VER//-/_}_PREFIX"
-          echo "llvm_sys_env_name=${ENV_NAME}" >> "$GITHUB_OUTPUT"
-          echo "${ENV_NAME}=${{ env.LLVM_INSTALL_PATH }}" >> "$GITHUB_ENV"
+          mkdir ${{ env.LLVM_INSTALL_PATH }}
+          echo "$HOME/llvm/bin" >> $GITHUB_PATH
 
       - name: Check LLVM Artifacts In Cache
         id: cache-llvm
-        uses: actions/cache@v4
+        uses: actions/cache@v3
         with:
-          path: ${{ env.LLVM_INSTALL_PATH }}
-          key: ${{ runner.os }}-llvm-${{ matrix.llvm-version[0] }}-${{ steps.vars.outputs.asset_tag }}-v1
+          path: |
+            ${{ env.LLVM_INSTALL_PATH }}/bin/llvm-config
+            ${{ env.LLVM_INSTALL_PATH }}/bin/opt
+            ${{ env.LLVM_INSTALL_PATH }}/lib/${{ matrix.llvm-version[3] }}
+            ${{ env.LLVM_INSTALL_PATH }}/lib/libLLVM.so
+            ${{ env.LLVM_INSTALL_PATH }}/include
+          key: ${{ runner.os }}-llvm-${{ matrix.llvm-version[0] }}-opt-build
 
       - name: Download LLVM Binaries
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
-          set -euxo pipefail
-          wget --user-agent='GithubCI' -O llvm.tar.gz "https://github.com/jamesmth/llvm-project/releases/download/${{ matrix.llvm-version[2] }}"
-          # Ensure contents land under LLVM_INSTALL_PATH (drop top-level dir)
-          tar -C "${{ env.LLVM_INSTALL_PATH }}" --strip-components=1 -xf llvm.tar.gz
-          ls -la "${{ env.LLVM_INSTALL_PATH }}"
-          ls -la "${{ env.LLVM_INSTALL_PATH }}/bin" || true
-          ls -la "${{ env.LLVM_INSTALL_PATH }}/lib" || true
+          wget --user-agent='GithubCI' -O llvm.tar.gz https://github.com/jamesmth/llvm-project/releases/download/${{ matrix.llvm-version[2] }}
+          tar -C ~ -xf llvm.tar.gz
 
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
-
-      - name: Cache Cargo dependencies  
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-
-            ${{ runner.os }}-cargo-
-
-      - name: Setup LLVM environment
+      - name: Build libamice.so (Release)
         run: |
-          set -euxo pipefail
-          echo "LD_LIBRARY_PATH=${{ env.LLVM_INSTALL_PATH }}/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          cargo b --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
 
-      - name: Verify LLVM installation
-        run: |
-          set -euxo pipefail
-          which llvm-config || true
-          llvm-config --version
-          llvm-config --libdir
-          ls -la "${{ env.LLVM_INSTALL_PATH }}/lib/"
-
-      - name: Check code formatting
-        run: cargo fmt -- --check
-
-      - name: Run clippy
-        run: cargo clippy --no-default-features --features llvm${{ matrix.llvm-version[1] }} -- -D warnings
-
-      - name: Build Amice Plugin (Release)
-        run: |
-          cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
-
-      - name: Verify build output
-        run: |
-          set -euxo pipefail
-          ls -la "${{ env.BUILD_OUTPUT_PATH }}/"
-          file "${{ env.BUILD_OUTPUT_PATH }}/libamice.so"
-          echo "=== Library Info ==="
-          ldd "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" || echo "Static linking or missing dependencies"
-          echo "=== Size Info ==="
-          du -h "${{ env.BUILD_OUTPUT_PATH }}/libamice.so"
-
-      - name: Prepare artifact
-        run: |
-          set -euxo pipefail
-          mkdir -p artifacts
-          cp "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" "artifacts/libamice-linux-llvm${{ matrix.llvm-version[0] }}.so"
-          {
-            echo "LLVM Version: ${{ matrix.llvm-version[0] }}"
-            echo "Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo "Git Commit: ${{ github.sha }}"
-          } > "artifacts/VERSION-llvm${{ matrix.llvm-version[0] }}.txt"
-          ls -la artifacts/
-
-      - name: Upload build artifact
+      - name: Upload libamice.so
         uses: actions/upload-artifact@v4
         with:
-          name: libamice-linux-llvm${{ matrix.llvm-version[0] }}
-          path: artifacts/
+          name: libamice-llvm${{ matrix.llvm-version[0] }}-linux
+          path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.so
           retention-days: 30
-
-  collect-artifacts:
-    name: "Collect All Linux Builds"
-    needs: linux-build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: collected-artifacts
-
-      - name: Create combined archive
-        run: |
-          set -euxo pipefail
-          cd collected-artifacts
-          ls -la || true
-          
-          DATE=$(date -u +%Y%m%d-%H%M%S)
-          OUT="amice-linux-${DATE}"
-          mkdir -p "${OUT}"
-        
-          find . -name "*.so" -exec cp {} "${OUT}/" \;
-          find . -name "VERSION-*.txt" -exec cp {} "${OUT}/" \;
-          
-          pushd "${OUT}" >/dev/null
-          cat > README.md << 'EOF'
-          # Amice Linux Build
-
-          ## Available LLVM Versions
-          EOF
-          ls *.so | sed 's/libamice-linux-llvm/- LLVM /g' | sed 's/\.so//g' >> README.md
-          cat >> README.md << 'EOF'
-
-          ## Usage
-          ```bash
-          clang -fpass-plugin=libamice-linux-llvm<version>.so your_source.c -o output
-          ```
-
-          ## Build Information
-          - Git Commit: GIT_COMMIT_PLACEHOLDER
-          - Build Date: DATE_PLACEHOLDER
-          - Platform: Linux x86_64
-          EOF
-          sed -i "s/GIT_COMMIT_PLACEHOLDER/${{ github.sha }}/" README.md
-          sed -i "s/DATE_PLACEHOLDER/${DATE}/" README.md
-          popd >/dev/null
-          
-          tar -czf "${OUT}.tar.gz" "${OUT}/"
-          ls -la
-
-      - name: Upload combined artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: amice-linux-all-versions
-          path: collected-artifacts/amice-linux-*.tar.gz
-          retention-days: 90
