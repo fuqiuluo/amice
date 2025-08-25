@@ -4,7 +4,7 @@ use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
 use amice_llvm::module_utils::verify_function2;
-use amice_llvm::{build_in_bounds_gep, build_load};
+use amice_llvm::{build_in_bounds_gep, build_load, ptr_type};
 use amice_macro::amice;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
@@ -54,10 +54,10 @@ impl LlvmModulePass for IndirectBranch {
             return PreservedAnalyses::All;
         }
 
-        let context = module.get_context();
-        let i32_type = context.i32_type();
+        let ctx = module.get_context();
+        let i32_type = ctx.i32_type();
         let const_zero = i32_type.const_zero();
-        let ptr_type = context.ptr_type(AddressSpace::default());
+        let ptr_type = ptr_type!(ctx, i8_type);
 
         let non_entry_basic_blocks = collect_basic_block(module);
         if non_entry_basic_blocks.is_empty() {
@@ -173,11 +173,11 @@ impl LlvmModulePass for IndirectBranch {
                     continue;
                 };
 
-                let builder = context.create_builder();
+                let builder = ctx.create_builder();
                 // 如果是 DummyBlock，则创建一个空的基本块作为目标,
                 // 先跳进链式混淆块最后再进真正的块执行代码
                 let goal_dummy_block = if self.flags.contains(IndirectBranchFlags::DummyBlock) {
-                    let block = context.append_basic_block(function, "");
+                    let block = ctx.append_basic_block(function, "");
                     builder.position_at_end(block);
                     Some(block)
                 } else {
@@ -269,7 +269,7 @@ impl LlvmModulePass for IndirectBranch {
 
                     let mut cur_dummy_block = goal_dummy_block;
                     for _ in 0..chain_nums - 1 {
-                        let dummy_block = context.append_basic_block(function, "dummy_block");
+                        let dummy_block = ctx.append_basic_block(function, "dummy_block");
                         builder.position_at_end(dummy_block);
                         let target = unsafe { cur_dummy_block.get_address().unwrap().as_basic_value_enum() };
 
