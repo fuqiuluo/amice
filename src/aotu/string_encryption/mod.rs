@@ -24,7 +24,7 @@ const STACK_ALLOC_THRESHOLD: u32 = 4096; // 4KB
 /// Generate random encryption layers for a string
 /// Returns (number_of_layers, algorithms_for_each_layer)
 pub(crate) fn generate_encryption_layers(max_layers: u8, preferred_algorithm: StringAlgorithm) -> (u8, Vec<StringAlgorithm>) {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let num_layers = rng.gen_range(1..=max_layers);
     
     let mut algorithms = Vec::with_capacity(num_layers as usize);

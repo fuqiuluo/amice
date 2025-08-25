@@ -145,7 +145,9 @@ pub(crate) fn do_handle<'a>(
 
             // 生成加密层配置
             let (encryption_layers, layer_algorithms) = if pass.max_encryption_layers > 1 {
-                generate_encryption_layers(pass.max_encryption_layers, pass.encryption_type)
+                let config = generate_encryption_layers(pass.max_encryption_layers, pass.encryption_type);
+                debug!("(strenc-xor) Generated {} layers for string: {:?}", config.0, config.1);
+                config
             } else {
                 // 保持向下兼容：使用单层加密
                 (1, vec![pass.encryption_type])
