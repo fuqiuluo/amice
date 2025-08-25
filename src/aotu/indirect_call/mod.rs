@@ -138,7 +138,11 @@ impl LlvmModulePass for IndirectCall {
             feature = "llvm16-0",
             feature = "llvm15-0",
         )))]
-        error!("(indirect_call) LLVM version is not supported: llvm-{}.{}", get_llvm_version_major(), get_llvm_version_minor());
+        error!(
+            "(indirect_call) LLVM version is not supported: llvm-{}.{}",
+            get_llvm_version_major(),
+            get_llvm_version_minor()
+        );
 
         for f in module.get_functions() {
             if verify_function2(f) {
