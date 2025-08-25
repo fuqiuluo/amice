@@ -190,8 +190,11 @@ fn do_handle<'a>(
 
         let new_call_site = builder.build_indirect_call(function.get_type(), addr, &args, "")?;
         new_call_site.set_call_convention(call_site.get_call_convention());
-        new_call_site.set_tail_call(call_site.is_tail_call());
-        new_call_site.set_tail_call_kind(call_site.get_tail_call_kind());
+        #[cfg(any(feature = "llvm20-1", feature = "llvm19-1", feature = "llvm18-1"))]
+        {
+            new_call_site.set_tail_call(call_site.is_tail_call());
+            new_call_site.set_tail_call_kind(call_site.get_tail_call_kind());
+        }
         for x in fun_attributes {
             new_call_site.add_attribute(AttributeLoc::Function, x);
         }
