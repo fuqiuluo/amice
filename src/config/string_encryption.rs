@@ -29,10 +29,7 @@ pub struct StringEncryptionConfig {
     /// When false, limits stack allocations to entry blocks for better optimization
     pub allow_non_entry_stack_alloc: bool,
 
-    /// Maximum number of encryption layers to apply (1-5)
-    /// Each string will get a random number of layers from 1 to this value
-    /// Higher values provide better security but increase binary size and runtime overhead
-    pub max_encryption_layers: u8,
+    pub max_encryption_count: u8,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +70,7 @@ impl Default for StringEncryptionConfig {
             inline_decrypt: false,
             only_dot_str: true,
             allow_non_entry_stack_alloc: false,
-            max_encryption_layers: 1,
+            max_encryption_count: 1,
         }
     }
 }
@@ -129,12 +126,11 @@ impl EnvOverlay for StringEncryptionConfig {
                 self.allow_non_entry_stack_alloc,
             );
         }
-        if let Ok(v) = std::env::var("AMICE_STRING_MAX_ENCRYPTION_LAYERS") {
-            if let Ok(layers) = v.parse::<u8>() {
-                // Clamp to reasonable range (1-5)
-                self.max_encryption_layers = layers.clamp(1, 5);
+        if let Ok(v) = std::env::var("AMICE_STRING_MAX_ENCRYPTION_COUNT") {
+            if let Ok(count) = v.parse::<u8>() {
+                self.max_encryption_count = count.clamp(1, 5);
             } else {
-                error!("(strenc) invalid max encryption layers value, using default");
+                error!("(strenc) invalid max encryption count value, using default");
             }
         }
     }

@@ -21,34 +21,6 @@ use rand::Rng;
 /// even when stack allocation is enabled
 const STACK_ALLOC_THRESHOLD: u32 = 4096; // 4KB
 
-/// Generate random encryption layers for a string
-/// Returns (number_of_layers, algorithms_for_each_layer)
-pub(crate) fn generate_encryption_layers(max_layers: u8, preferred_algorithm: StringAlgorithm) -> (u8, Vec<StringAlgorithm>) {
-    let mut rng = rand::rng();
-    let num_layers = rng.random_range(1..=max_layers);
-    
-    let mut algorithms = Vec::with_capacity(num_layers as usize);
-    
-    for _ in 0..num_layers {
-        // For the first layer, sometimes use the preferred algorithm
-        // For subsequent layers, randomly choose between available algorithms
-        let algorithm = if algorithms.is_empty() && rng.random::<bool>() {
-            // 50% chance to use preferred algorithm for first layer (changed from gen_bool)
-            preferred_algorithm
-        } else {
-            // Randomly choose algorithm
-            match rng.random_range(0..2) {
-                0 => StringAlgorithm::Xor,
-                1 => StringAlgorithm::SimdXor,
-                _ => StringAlgorithm::Xor, // fallback
-            }
-        };
-        algorithms.push(algorithm);
-    }
-    
-    (num_layers, algorithms)
-}
-
 #[amice(priority = 1000, name = "StringEncryption", position = PassPosition::PipelineStart)]
 #[derive(Default)]
 pub struct StringEncryption {
@@ -59,7 +31,7 @@ pub struct StringEncryption {
     inline_decrypt: bool,
     only_dot_string: bool,
     allow_non_entry_stack_alloc: bool,
-    max_encryption_layers: u8,
+    max_encryption_count: u8,
 }
 
 impl AmicePassLoadable for StringEncryption {
@@ -83,7 +55,7 @@ impl AmicePassLoadable for StringEncryption {
         self.inline_decrypt = inline_decrypt;
         self.only_dot_string = only_llvm_string;
         self.allow_non_entry_stack_alloc = cfg.string_encryption.allow_non_entry_stack_alloc;
-        self.max_encryption_layers = cfg.string_encryption.max_encryption_layers;
+        self.max_encryption_count = cfg.string_encryption.max_encryption_count;
 
         self.enable
     }
@@ -95,39 +67,14 @@ impl LlvmModulePass for StringEncryption {
             return PreservedAnalyses::All;
         }
 
-        // Apply multi-layer encryption
-        if let Err(e) = self.apply_multi_layer_encryption(module, manager) {
-            error!("(strenc) failed to handle multi-layer string encryption: {e}");
+        if let Err(e) = match self.encryption_type {
+            StringAlgorithm::Xor => xor::do_handle(self, module, manager),
+            StringAlgorithm::SimdXor => simd_xor::do_handle(self, module, manager),
+        } {
+            error!("(strenc) failed to handle string encryption: {e}");
         }
 
         PreservedAnalyses::None
-    }
-}
-
-impl StringEncryption {
-    fn apply_multi_layer_encryption<'a>(&self, module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> anyhow::Result<()> {
-        // For backward compatibility, if max_encryption_layers is 1, use the original single-layer approach
-        if self.max_encryption_layers == 1 {
-            return match self.encryption_type {
-                StringAlgorithm::Xor => xor::do_handle(self, module, manager),
-                StringAlgorithm::SimdXor => simd_xor::do_handle(self, module, manager),
-            };
-        }
-
-        // Multi-layer encryption approach
-        debug!("(strenc) applying multi-layer encryption with max {} layers", self.max_encryption_layers);
-        
-        // For now, let's implement this step by step
-        // Step 1: Apply the first layer using existing logic
-        match self.encryption_type {
-            StringAlgorithm::Xor => xor::do_handle(self, module, manager),
-            StringAlgorithm::SimdXor => simd_xor::do_handle(self, module, manager),
-        }?;
-
-        // Step 2: TODO - Apply additional layers if max_encryption_layers > 1
-        // This will require more sophisticated implementation
-
-        Ok(())
     }
 }
 
@@ -142,10 +89,6 @@ struct EncryptedGlobalValue<'a> {
     /// This can be false even when overall stack_alloc is true, for strings > 4KB
     use_stack_alloc: bool,
     users: NonNull<Vec<(InstructionValue<'a>, u32)>>,
-    /// Number of encryption layers applied to this string (1 to max_encryption_layers)
-    encryption_layers: u8,
-    /// The algorithms used for each layer (in application order)
-    layer_algorithms: NonNull<Vec<StringAlgorithm>>,
 }
 
 impl<'a> EncryptedGlobalValue<'a> {
@@ -155,15 +98,12 @@ impl<'a> EncryptedGlobalValue<'a> {
         flag: Option<GlobalValue<'a>>,
         use_stack_alloc: bool,
         user: Vec<(LLVMValueRef, u32)>,
-        encryption_layers: u8,
-        layer_algorithms: Vec<StringAlgorithm>,
     ) -> Self {
         let user = Box::new(
             user.iter()
                 .map(|(value_ref, op_num)| unsafe { (InstructionValue::new(*value_ref), *op_num) })
                 .collect::<Vec<_>>(),
         );
-        let algorithms = Box::new(layer_algorithms);
         EncryptedGlobalValue {
             global,
             str_len: len,
@@ -171,8 +111,6 @@ impl<'a> EncryptedGlobalValue<'a> {
             oneshot: false,
             use_stack_alloc,
             users: NonNull::new(Box::leak(user)).unwrap(),
-            encryption_layers,
-            layer_algorithms: NonNull::new(Box::leak(algorithms)).unwrap(),
         }
     }
 
@@ -187,10 +125,6 @@ impl<'a> EncryptedGlobalValue<'a> {
         unsafe { (*self.users.as_ptr()).as_slice() }
     }
 
-    pub fn layer_algorithms(&self) -> &[StringAlgorithm] {
-        unsafe { (*self.layer_algorithms.as_ptr()).as_slice() }
-    }
-
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         unsafe { (*self.users.as_ptr()).len() }
@@ -199,7 +133,6 @@ impl<'a> EncryptedGlobalValue<'a> {
     pub fn free(&self) {
         unsafe {
             let _ = Box::from_raw(self.users.as_ptr());
-            let _ = Box::from_raw(self.layer_algorithms.as_ptr());
         }
     }
 }

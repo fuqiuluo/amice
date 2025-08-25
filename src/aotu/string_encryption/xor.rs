@@ -1,6 +1,6 @@
 use crate::aotu::string_encryption::{
     EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, alloc_stack_string, array_as_const_string,
-    collect_insert_points, generate_encryption_layers,
+    collect_insert_points,
 };
 use crate::config::{StringAlgorithm, StringDecryptTiming as DecryptTiming};
 use crate::ptr_type;
@@ -14,45 +14,6 @@ use llvm_plugin::inkwell::values::{BasicValue, BasicValueEnum};
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
 use log::{debug, error, warn};
 use rand::Rng;
-
-/// Apply XOR encryption to a byte array
-fn apply_xor_encryption(data: &mut [u8]) {
-    let mut rng = rand::rng();
-    let key: u8 = rng.random();
-    for byte in data.iter_mut() {
-        *byte ^= key;
-    }
-}
-
-/// Apply SIMD XOR encryption to a byte array (simplified version)
-fn apply_simd_xor_encryption(data: &mut [u8]) {
-    let mut rng = rand::rng();
-    // For SIMD XOR, we use a 32-byte key pattern
-    let mut key = [0u8; 32];
-    rng.fill(&mut key);
-    
-    for (i, byte) in data.iter_mut().enumerate() {
-        *byte ^= key[i % 32];
-    }
-}
-
-/// Apply multiple encryption layers to string data
-fn apply_encryption_layers(data: &mut [u8], layer_algorithms: &[StringAlgorithm]) {
-    debug!("(strenc-xor) Applying {} encryption layers to {} bytes", layer_algorithms.len(), data.len());
-    
-    for (layer_idx, algorithm) in layer_algorithms.iter().enumerate() {
-        match algorithm {
-            StringAlgorithm::Xor => {
-                debug!("(strenc-xor) Applying XOR encryption at layer {}", layer_idx);
-                apply_xor_encryption(data);
-            }
-            StringAlgorithm::SimdXor => {
-                debug!("(strenc-xor) Applying SIMD XOR encryption at layer {}", layer_idx);
-                apply_simd_xor_encryption(data);
-            }
-        }
-    }
-}
 
 pub(crate) fn do_handle<'a>(
     pass: &StringEncryption,
@@ -95,60 +56,19 @@ pub(crate) fn do_handle<'a>(
         .filter_map(|(global, stru, arr)| {
             // we ignore non-UTF8 strings, since they are probably not human-readable
             let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
-            
-            // Generate layer configuration early so we can use it for encryption
-            let (encryption_layers, layer_algorithms) = if pass.max_encryption_layers > 1 {
-                let config = generate_encryption_layers(pass.max_encryption_layers, pass.encryption_type);
-                debug!("(strenc-xor) Generated {} layers for string '{}': {:?}", config.0, 
-                       global.get_name().to_str().unwrap_or("unknown"), config.1);
-                config
-            } else {
-                // 保持向下兼容：使用单层加密
-                (1, vec![pass.encryption_type])
-            };
-            
-            // Apply multi-layer encryption to the string
+
             let mut encoded_str = s.bytes().collect::<Vec<_>>();
-            if encryption_layers == 1 {
-                // Backward compatibility: use simple XOR for single layer
-                for byte in encoded_str.iter_mut() {
-                    *byte ^= 0xAA;
-                }
-            } else {
-                // For multi-layer strings, apply different transformations but keep final decryption simple
-                // Each layer uses different transformation to make static analysis harder
-                for (layer_idx, algorithm) in layer_algorithms.iter().enumerate() {
-                    let layer_modifier = (layer_idx as u8).wrapping_mul(0x13);
-                    for (byte_idx, byte) in encoded_str.iter_mut().enumerate() {
-                        let position_modifier = (byte_idx as u8).wrapping_mul(0x07);
-                        match algorithm {
-                            StringAlgorithm::Xor => {
-                                *byte ^= 0x5A ^ layer_modifier ^ position_modifier;
-                            },
-                            StringAlgorithm::SimdXor => {
-                                *byte = byte.wrapping_add(0x3C ^ layer_modifier);
-                                *byte ^= position_modifier;
-                            },
-                        }
-                    }
-                }
-                
-                // Final XOR that runtime can undo (always use 0xAA for compatibility)
-                for byte in encoded_str.iter_mut() {
-                    *byte ^= 0xAA;
-                }
-                
-                debug!("(strenc-xor) Applied {} layer transformations + final XOR to string '{}'", 
-                       encryption_layers, global.get_name().to_str().unwrap_or("unknown"));
+            for byte in encoded_str.iter_mut() {
+                *byte ^= 0xAA;
             }
             
             let unique_name = global
                 .get_name()
                 .to_str()
                 .map_or_else(|_| rand::random::<u32>().to_string(), |s| s.to_string());
-            Some((unique_name, global, stru, encoded_str, encryption_layers, layer_algorithms))
+            Some((unique_name, global, stru, encoded_str))
         })
-        .map(|(unique_name, global, stru, encoded_str, encryption_layers, layer_algorithms)| {
+        .map(|(unique_name, global, stru, encoded_str)| {
             let string_len = encoded_str.len() as u32;
             let mut should_use_stack = pass.stack_alloc && string_len <= STACK_ALLOC_THRESHOLD;
 
@@ -229,8 +149,7 @@ pub(crate) fn do_handle<'a>(
                 global.set_constant(false);
             }
 
-            // Use the layer configuration we already generated during encryption
-            EncryptedGlobalValue::new(global, string_len, flag, should_use_stack, users, encryption_layers, layer_algorithms)
+            EncryptedGlobalValue::new(global, string_len, flag, should_use_stack, users)
         })
         .collect();
 
