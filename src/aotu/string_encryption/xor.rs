@@ -2,7 +2,7 @@ use crate::aotu::string_encryption::{
     EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, alloc_stack_string, array_as_const_string,
     collect_insert_points,
 };
-use crate::config::StringDecryptTiming as DecryptTiming;
+use crate::config::{StringAlgorithm, StringDecryptTiming as DecryptTiming};
 use crate::ptr_type;
 use amice_llvm::module_utils::append_to_global_ctors;
 use inkwell::module::Module;
@@ -13,11 +13,12 @@ use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{BasicValue, BasicValueEnum};
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
 use log::{debug, error, warn};
+use rand::Rng;
 
 pub(crate) fn do_handle<'a>(
     pass: &StringEncryption,
     module: &mut Module<'a>,
-    manager: &ModuleAnalysisManager,
+    _manager: &ModuleAnalysisManager,
 ) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
@@ -55,14 +56,19 @@ pub(crate) fn do_handle<'a>(
         .filter_map(|(global, stru, arr)| {
             // we ignore non-UTF8 strings, since they are probably not human-readable
             let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
-            let encoded_str = s.bytes().map(|c| c ^ 0xAA).collect::<Vec<_>>();
+
+            let mut encoded_str = s.bytes().collect::<Vec<_>>();
+            for byte in encoded_str.iter_mut() {
+                *byte ^= 0xAA;
+            }
+
             let unique_name = global
                 .get_name()
                 .to_str()
                 .map_or_else(|_| rand::random::<u32>().to_string(), |s| s.to_string());
             Some((unique_name, global, stru, encoded_str))
         })
-        .map(|(unique_name, global, stru, encoded_str)| {
+        .map(|(unique_name, global, stru, mut encoded_str)| {
             let string_len = encoded_str.len() as u32;
             let mut should_use_stack = pass.stack_alloc && string_len <= STACK_ALLOC_THRESHOLD;
 
@@ -72,17 +78,6 @@ pub(crate) fn do_handle<'a>(
                     "(strenc) string '{}' ({}B) exceeds 4KB limit for stack allocation, using global timing instead",
                     unique_name, string_len
                 );
-            }
-
-            if let Some(stru) = stru {
-                // Rust-like strings
-                let new_const = ctx.const_string(&encoded_str, false);
-                stru.set_field_at_index(0, new_const);
-                global.set_initializer(&stru);
-            } else {
-                // C-like strings
-                let new_const = ctx.const_string(&encoded_str, false);
-                global.set_initializer(&new_const);
             }
 
             let mut users = Vec::new();
@@ -137,6 +132,17 @@ pub(crate) fn do_handle<'a>(
             } else {
                 None
             };
+
+            if let Some(stru) = stru {
+                // Rust-like strings
+                let new_const = ctx.const_string(&encoded_str, false);
+                stru.set_field_at_index(0, new_const);
+                global.set_initializer(&stru);
+            } else {
+                // C-like strings
+                let new_const = ctx.const_string(&encoded_str, false);
+                global.set_initializer(&new_const);
+            }
 
             // 如果有flag的话 ===> 回写模式，字符串不能是一个常量
             if !flag.is_none() || is_global_mode {

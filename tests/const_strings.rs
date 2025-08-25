@@ -76,6 +76,26 @@ mod tests {
     }
 
     #[test]
+    fn test_const_strings_lazy_xor_stack_multi() {
+        build_amice();
+
+        let output = Command::new("clang")
+            .env("AMICE_STRING_STACK_ALLOC", "true")
+            .env("AMICE_STRING_ALGORITHM", "xor")
+            .env("AMICE_STRING_DECRYPT_TIMING", "lazy")
+            .env("AMICE_STRING_MAX_ENCRYPTION_COUNT", "2")
+            .arg("-fpass-plugin=target/release/libamice.so")
+            .arg("tests/const_strings.c")
+            .arg("-o")
+            .arg("target/const_strings_(lazy+xor+stack+multi)")
+            .output()
+            .expect("Failed to execute clang command");
+        assert!(output.status.success(), "Clang command failed");
+
+        check_output("(lazy+xor+stack)");
+    }
+
+    #[test]
     fn test_const_strings_lazy_xor_stack() {
         build_amice();
 
