@@ -3,17 +3,11 @@ use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
 use amice_llvm::ir::switch_inst;
-use amice_llvm::module_utils::{verify_function, verify_function2};
+use amice_llvm::module_utils::verify_function2;
 use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::context::ContextRef;
-use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
-use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicValue, FunctionValue, InstructionOpcode, InstructionValue, PhiValue,
-};
+use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
 

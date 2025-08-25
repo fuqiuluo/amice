@@ -1,4 +1,4 @@
-use crate::aotu::flatten::{Flatten, cf_flatten_basic, cf_flatten_dominator, split_entry_block_for_flatten};
+use crate::aotu::flatten::{Flatten, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::branch_inst;
@@ -7,7 +7,7 @@ use amice_llvm::module_utils::{VerifyResult, verify_function};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode};
+use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use log::warn;
 use rand::Rng;
 use std::collections::HashMap;

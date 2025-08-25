@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::module_utils::{verify_function, verify_function2};
+use amice_llvm::module_utils::verify_function2;
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;

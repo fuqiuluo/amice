@@ -21,9 +21,6 @@ pub unsafe fn get_int_to_ptr_constant(
     ffi::amice_constant_get_int_to_ptr(value, target_type)
 }
 
-pub unsafe fn get_xor_constant(
-    value1: *mut std::ffi::c_void,
-    value2: *mut std::ffi::c_void,
-) -> *mut std::ffi::c_void {
+pub unsafe fn get_xor_constant(value1: *mut std::ffi::c_void, value2: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
     ffi::amice_constant_get_xor(value1, value2)
 }

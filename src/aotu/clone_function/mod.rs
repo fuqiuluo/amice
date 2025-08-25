@@ -1,24 +1,16 @@
-use crate::aotu::lower_switch::demote_switch_to_if;
-use crate::config::{Config, FlattenMode, IndirectBranchFlags};
+use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::basic_block::split_basic_block;
-use amice_llvm::ir::function::{fix_stack, function_specialize_partial, is_inline_marked_function};
-use amice_llvm::module_utils::{VerifyResult, verify_function, verify_function2};
+use amice_llvm::ir::function::{function_specialize_partial, is_inline_marked_function};
 use amice_macro::amice;
 use anyhow::anyhow;
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::llvm_sys::core::LLVMIsAIntrinsicInst;
-use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMValueRef};
+use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
-    IntValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{Level, debug, error, log_enabled, warn};
-use rand::Rng;
-use std::collections::{BTreeSet, HashMap};
-use std::result;
+use log::error;
+use std::collections::BTreeSet;
 
 #[amice(priority = 1111, name = "CloneFunction", position = PassPosition::PipelineStart)]
 #[derive(Default)]

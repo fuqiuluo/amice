@@ -8,15 +8,10 @@ use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
-use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
-use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::types::BasicType;
-use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicValue, FunctionValue, GlobalValue, InstructionOpcode, IntValue, PhiValue, PointerValue,
-};
+use llvm_plugin::inkwell::values::{FunctionValue, GlobalValue, InstructionOpcode, IntValue, PointerValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{Level, debug, error, log_enabled, warn};
+use log::{debug, error, warn};
 use rand::Rng;
 
 #[amice(priority = 950, name = "BogusControlFlow", position = PassPosition::PipelineStart)]
@@ -273,7 +268,6 @@ fn create_simple_opaque_predicate<'a>(
 ) -> anyhow::Result<(bool, IntValue<'a>)> {
     let context = builder.get_insert_block().unwrap().get_context();
     let i32_type = context.i32_type();
-    let i32_zero = i32_type.const_int(0, false);
 
     let mut bits = [false; 2];
     rand::fill(&mut bits);

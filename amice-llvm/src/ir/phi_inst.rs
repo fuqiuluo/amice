@@ -1,9 +1,9 @@
+use crate::ffi;
+use crate::ffi::amice_phi_node_replace_incoming_block_with;
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::core::LLVMAddIncoming;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use inkwell::values::{AsValueRef, InstructionOpcode, PhiValue};
-use crate::ffi;
-use crate::ffi::amice_phi_node_replace_incoming_block_with;
 
 pub fn update_phi_nodes<'ctx>(old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>, target_block: BasicBlock<'ctx>) {
     for phi in target_block.get_first_instruction().iter() {

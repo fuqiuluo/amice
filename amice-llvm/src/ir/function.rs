@@ -1,11 +1,11 @@
+use crate::ffi;
+use crate::ffi::ArgReplacement;
+use crate::ir::constants::get_bitcast_constant;
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::core::{LLVMGetEntryBasicBlock, LLVMGetValueKind, LLVMIsABasicBlock};
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMValueRef};
 use inkwell::types::{AsTypeRef, FunctionType};
 use inkwell::values::{AsValueRef, FunctionValue, PointerValue};
-use crate::ffi;
-use crate::ffi::ArgReplacement;
-use crate::ir::constants::get_bitcast_constant;
 
 pub fn get_basic_block_entry_ref(fun: &FunctionValue) -> LLVMBasicBlockRef {
     unsafe { LLVMGetEntryBasicBlock(fun.as_value_ref()) }
@@ -35,19 +35,13 @@ pub fn cast_ptr_to_fn_ptr<'a>(addr: PointerValue<'a>, function_type: FunctionTyp
 }
 
 pub fn is_inline_marked_function(function: FunctionValue) -> bool {
-    unsafe {
-        ffi::amice_is_inline_marked_function(function.as_value_ref() as LLVMValueRef)
-    }
+    unsafe { ffi::amice_is_inline_marked_function(function.as_value_ref() as LLVMValueRef) }
 }
 
 pub fn clone_function(function_value: FunctionValue) -> Option<FunctionValue> {
-    let clone = unsafe {
-        ffi::amice_clone_function(function_value.as_value_ref() as LLVMValueRef)
-    };
+    let clone = unsafe { ffi::amice_clone_function(function_value.as_value_ref() as LLVMValueRef) };
 
-    unsafe {
-        FunctionValue::new(clone)
-    }
+    unsafe { FunctionValue::new(clone) }
 }
 
 pub unsafe fn function_specialize_partial(
@@ -83,7 +77,7 @@ pub unsafe fn function_specialize_partial(
     }
 }
 
-pub unsafe fn fix_stack(function:FunctionValue) {
+pub unsafe fn fix_stack(function: FunctionValue) {
     ffi::amice_fix_stack(function.as_value_ref() as LLVMValueRef, 0, 0)
 }
 

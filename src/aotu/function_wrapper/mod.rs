@@ -3,16 +3,15 @@ use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::is_inline_marked_function;
 use amice_llvm::module_utils::append_to_compiler_used;
 use amice_macro::amice;
-use llvm_plugin::inkwell::AddressSpace;
-use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
+use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::types::{AnyTypeEnum, BasicTypeEnum};
+use llvm_plugin::inkwell::types::BasicTypeEnum;
 use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, FunctionValue, InstructionOpcode, InstructionValue,
+    AsValueRef, BasicMetadataValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
 };
-use llvm_plugin::inkwell::{Either::Left, Either::Right, builder::Builder, context::ContextRef};
+use llvm_plugin::inkwell::{Either::Left, Either::Right, context::ContextRef};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, warn};
+use log::{debug, error};
 use rand::Rng;
 
 #[amice(priority = 1010, name = "FunctionWrapper", position = PassPosition::PipelineStart)]

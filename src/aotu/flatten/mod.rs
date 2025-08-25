@@ -1,22 +1,16 @@
 mod cf_flatten_basic;
 mod cf_flatten_dominator;
 
-use crate::aotu::lower_switch::demote_switch_to_if;
-use crate::config::{Config, FlattenMode, IndirectBranchFlags};
+use crate::config::{Config, FlattenMode};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::basic_block::split_basic_block;
-use amice_llvm::ir::function::fix_stack;
-use amice_llvm::module_utils::{VerifyResult, verify_function, verify_function2};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue};
+use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{Level, debug, error, log_enabled, warn};
-use rand::Rng;
-use std::collections::HashMap;
+use log::error;
 
 #[amice(priority = 959, name = "Flatten", position = PassPosition::PipelineStart)]
 #[derive(Default)]

@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse::Parse, parse::ParseStream, parse_macro_input, Expr, Fields, Ident, ItemStruct, Lit, Result, Token};
 use syn::punctuated::Punctuated;
+use syn::{Expr, Fields, Ident, ItemStruct, Lit, Result, Token, parse::Parse, parse::ParseStream, parse_macro_input};
 
 struct Kv {
     key: Ident,
@@ -59,7 +59,7 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
                 } else {
                     panic!("#[amice] priority 必须是整数字面量");
                 }
-            }
+            },
             "name" => {
                 if let Expr::Lit(expr_lit) = &kv.value {
                     if let Lit::Str(ls) = &expr_lit.lit {
@@ -70,7 +70,7 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
                 } else {
                     panic!("#[amice] name 必须是字符串字面量");
                 }
-            }
+            },
             "description" => {
                 if let Expr::Lit(expr_lit) = &kv.value {
                     if let Lit::Str(ls) = &expr_lit.lit {
@@ -81,22 +81,24 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
                 } else {
                     panic!("#[amice] description 必须是字符串字面量");
                 }
-            }
+            },
             "position" => {
                 // `PassPosition::PipelineStart | PassPosition::OptimizerLast` 的表达式
                 match &kv.value {
                     Expr::Path(_) | Expr::Binary(_) | Expr::Group(_) | Expr::Paren(_) => {
                         let v = &kv.value;
                         position_ts = Some(quote! { #v });
-                    }
+                    },
                     _ => {
-                        panic!("#[amice] position 必须是 PassPosition 表达式，例如 `PassPosition::PipelineStart` 或用 `|` 组合");
-                    }
+                        panic!(
+                            "#[amice] position 必须是 PassPosition 表达式，例如 `PassPosition::PipelineStart` 或用 `|` 组合"
+                        );
+                    },
                 }
-            }
+            },
             other => {
                 panic!("#[amice] 未知参数: {}", other);
-            }
+            },
         }
     }
 
@@ -162,13 +164,13 @@ pub fn amice_config_manager(_args: TokenStream, input: TokenStream) -> TokenStre
                 quote! { self.#ident.overlay_env(); }
             });
             quote! { #(#calls)* }
-        }
+        },
         Fields::Unnamed(fields_unnamed) => {
             let calls = (0..fields_unnamed.unnamed.len())
                 .map(syn::Index::from)
                 .map(|idx| quote! { self.#idx.overlay_env(); });
             quote! { #(#calls)* }
-        }
+        },
         Fields::Unit => quote! {},
     };
 

@@ -4,7 +4,7 @@ use crate::aotu::mba::expr::Expr;
 use llvm_plugin::inkwell::builder::Builder;
 use llvm_plugin::inkwell::context::ContextRef;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::types::{BasicTypeEnum, IntType};
+use llvm_plugin::inkwell::types::IntType;
 use llvm_plugin::inkwell::values::{FunctionValue, IntValue};
 use rand::SeedableRng;
 use rand::prelude::StdRng;

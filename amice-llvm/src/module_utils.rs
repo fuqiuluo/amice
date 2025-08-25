@@ -1,16 +1,16 @@
-use std::ffi::{c_char, CStr};
-use std::result;
+use crate::ffi;
 use inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 use inkwell::module::Module;
 use inkwell::values::{AsValueRef, FunctionValue, GlobalValue};
-use crate::ffi;
+use std::ffi::{CStr, c_char};
+use std::result;
 
 pub fn append_to_global_ctors(module: &Module, function: FunctionValue, priority: i32) {
     unsafe {
         ffi::amice_append_to_global_ctors(
             module.as_mut_ptr() as LLVMModuleRef,
             function.as_value_ref() as LLVMValueRef,
-            priority
+            priority,
         );
     }
 }
@@ -34,7 +34,7 @@ pub fn append_to_compiler_used(module: &Module, value: GlobalValue) {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum  VerifyResult {
+pub enum VerifyResult {
     Broken(String),
     Ok,
 }
@@ -44,7 +44,7 @@ pub fn verify_function(function: FunctionValue) -> VerifyResult {
     let broken = unsafe {
         ffi::amice_verify_function(
             function.as_value_ref() as LLVMValueRef,
-            &mut errmsg as *mut *const c_char
+            &mut errmsg as *mut *const c_char,
         ) == 1
     };
     let result = if !errmsg.is_null() && broken {
@@ -62,6 +62,6 @@ pub fn verify_function(function: FunctionValue) -> VerifyResult {
 pub fn verify_function2(function: FunctionValue) -> bool {
     match verify_function(function) {
         VerifyResult::Broken(_) => true,
-        VerifyResult::Ok => false
+        VerifyResult::Ok => false,
     }
 }

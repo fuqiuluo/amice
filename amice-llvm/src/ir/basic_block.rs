@@ -1,7 +1,7 @@
+use crate::to_c_str;
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use inkwell::values::{AsValueRef, InstructionValue};
-use crate::to_c_str;
 
 pub fn split_basic_block<'a>(
     block: BasicBlock<'a>,
@@ -22,12 +22,8 @@ pub fn split_basic_block<'a>(
     unsafe { BasicBlock::new(value) }
 }
 
-pub fn get_first_insertion_pt(
-    block: BasicBlock,
-) -> InstructionValue {
-    let c_ref = unsafe {
-        ffi::get_first_insertion_pt(block.as_mut_ptr() as *mut std::ffi::c_void)
-    };
+pub fn get_first_insertion_pt(block: BasicBlock) -> InstructionValue {
+    let c_ref = unsafe { ffi::get_first_insertion_pt(block.as_mut_ptr() as *mut std::ffi::c_void) };
     unsafe { InstructionValue::new(c_ref as LLVMValueRef) }
 }
 
@@ -35,7 +31,7 @@ pub fn remove_predecessor(block: BasicBlock, pred: BasicBlock) {
     unsafe {
         crate::ffi::amice_basic_block_remove_predecessor(
             block.as_mut_ptr() as LLVMBasicBlockRef,
-            block.as_mut_ptr() as LLVMBasicBlockRef
+            block.as_mut_ptr() as LLVMBasicBlockRef,
         )
     }
 }

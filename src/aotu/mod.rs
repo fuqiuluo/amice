@@ -1,5 +1,7 @@
+pub mod alias_access;
 pub mod bogus_control_flow;
 pub mod clone_function;
+mod custom_calling_conv;
 pub mod flatten;
 pub mod function_wrapper;
 pub mod indirect_branch;
