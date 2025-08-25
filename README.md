@@ -50,8 +50,7 @@ Amice 是一个基于 **llvm-plugin-rs** 构建的 LLVM Pass 插件项目，可�
   ```
 
 如使用自编译或自解压版本，请手动配置路径：
-```
-bash
+```bash
 # 假设 LLVM 安装在 ~/llvm
 export PATH="$PATH:$HOME/llvm/bin"
 # 或者
@@ -61,8 +60,7 @@ export LLVM_SYS_140_PREFIX="$HOME/llvm"
 
 官方预编译的 LLVM 无法启用动态插件，需**自行编译**或使用社区版本：  
 <https://github.com/jamesmth/llvm-project/releases>
-```
-powershell
+```powershell
 # 假设 LLVM 安装在 C:\llvm
 setx PATH "%PATH%;C:\llvm\bin"
 rem 或者
@@ -72,8 +70,7 @@ setx LLVM_SYS_140_PREFIX "C:\llvm"
 
 Android 自带 clang 支持动态加载 Pass，但缺少 `opt`。可采用“未精简版 clang”方案，参考：  
 [Ylarod：NDK 加载 LLVM Pass](https://xtuly.cn/article/ndk-load-llvm-pass-plugin)
-```
-bash
+```bash
 # 以下示例基于 r522817 (NDK 25c)
 export CXX="/path/to/unstripped-clang/bin/clang++"
 export CXXFLAGS="-stdlib=libc++ -I/path/to/unstripped-clang/include/c++/v1"
