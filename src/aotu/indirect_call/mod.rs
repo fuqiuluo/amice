@@ -191,7 +191,13 @@ fn do_handle<'a>(
         } else {
             index_value
         };
-        let gep = build_gep!(builder, pty_type, global_fun_table.as_pointer_value(), &[index_value], "")?;
+        let gep = build_gep!(
+            builder,
+            pty_type,
+            global_fun_table.as_pointer_value(),
+            &[index_value],
+            ""
+        )?;
         let addr = build_load!(builder, pty_type, gep, "")?.into_pointer_value();
 
         let call_site = unsafe { CallSiteValue::new(inst.as_value_ref()) };
