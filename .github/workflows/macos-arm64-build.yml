@@ -54,7 +54,7 @@ jobs:
             ${{ env.LLVM_INSTALL_PATH }}/lib/libLLVM.dylib
             ${{ env.LLVM_INSTALL_PATH }}/lib/libLLVM-C.dylib
             ${{ env.LLVM_INSTALL_PATH }}/include
-          key: ${{ runner.os }}-llvm-${{ matrix.llvm-version[0] }
+          key: ${{ runner.os }}-llvm-${{ matrix.llvm-version[0] }}
 
       - name: Download LLVM Binaries
         if: steps.cache-llvm.outputs.cache-hit != 'true'
