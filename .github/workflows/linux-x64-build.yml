@@ -22,6 +22,7 @@ jobs:
       LLVM_INSTALL_PATH: ~/llvm
       BUILD_OUTPUT_PATH: target/release
     strategy:
+      fail-fast: false
       matrix:
         llvm-version:
           - ["11", "11-0", "v11.0.1-rust-1.51/llvm-lld-11.0.1-rust-1.51-linux-x86_64.tar.gz", "libLLVM-11.so"]
