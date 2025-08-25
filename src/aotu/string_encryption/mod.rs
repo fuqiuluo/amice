@@ -16,7 +16,6 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::{debug, error};
-use rand::Rng;
 use std::ptr::NonNull;
 
 /// Stack allocation threshold: strings larger than this will use global timing

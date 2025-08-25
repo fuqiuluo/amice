@@ -10,6 +10,7 @@ use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
+use amice_llvm::build_load;
 
 #[amice(priority = 961, name = "LowerSwitch", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -125,7 +126,7 @@ pub(crate) fn demote_switch_to_if(
         builder.build_store(tmp, i32_zero)?;
 
         builder.position_before(&inst);
-        let dummy_value = builder.build_load(i32_ty, tmp, "")?;
+        let dummy_value = build_load!(builder, i32_ty, tmp, "")?;
         let cond = builder.build_int_compare(IntPredicate::EQ, dummy_value.into_int_value(), i32_zero, "")?;
         builder.build_conditional_branch(cond, lower_branches[0], unreachable_block)?;
         dummy_value_ptr = Some(tmp);
@@ -143,7 +144,7 @@ pub(crate) fn demote_switch_to_if(
         let phi = builder.build_phi(i32_ty, "lower_switch_phi")?;
         phi.add_incoming(&[(&i32_zero, *case_last), (&i32_one, switch_block)]);
         builder.build_store(dummy_value_ptr, phi.as_basic_value())?;
-        let dummy_value = builder.build_load(i32_ty, dummy_value_ptr, "")?;
+        let dummy_value = build_load!(builder, i32_ty, dummy_value_ptr, "")?;
         let cond =
             builder.build_int_compare(IntPredicate::EQ, dummy_value.into_int_value(), i32_zero, "switch_cond")?;
         builder.build_conditional_branch(cond, default, unreachable_block)?;

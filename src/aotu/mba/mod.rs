@@ -20,6 +20,7 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use std::cmp::max;
 use std::collections::HashMap;
+use amice_llvm::build_load;
 
 #[amice(
     priority = 955,
@@ -302,15 +303,14 @@ fn rewrite_binop_with_mba<'a>(
             && let Some(global_aux_params) = global_aux.get(&mba_int_width)
         {
             let global_aux = global_aux_params[i];
-            let int = builder
-                .build_load(value_type, global_aux.as_pointer_value(), "")?
+            let int = build_load!(builder, value_type, global_aux.as_pointer_value(), "")?
                 .into_int_value();
             aux_params.push(int);
         } else if let Some(stack_aux) = stack_aux_params
             && let Some(stack_aux_params) = stack_aux.get(&mba_int_width)
         {
             let stack_aux = stack_aux_params[i];
-            let int = builder.build_load(value_type, stack_aux, "")?.into_int_value();
+            let int = build_load!(builder, value_type, stack_aux, "")?.into_int_value();
             aux_params.push(int);
         } else {
             let rand = match mba_int_width {
@@ -376,15 +376,14 @@ fn rewrite_constant_inst_with_mba<'a>(
                 && let Some(global_aux_params) = global_aux.get(&mba_int_width)
             {
                 let global_aux = global_aux_params[i];
-                let int = builder
-                    .build_load(value_type, global_aux.as_pointer_value(), "")?
+                let int = build_load!(builder, value_type, global_aux.as_pointer_value(), "")?
                     .into_int_value();
                 aux_params.push(int);
             } else if let Some(stack_aux) = stack_aux_params
                 && let Some(stack_aux_params) = stack_aux.get(&mba_int_width)
             {
                 let stack_aux = stack_aux_params[i];
-                let int = builder.build_load(value_type, stack_aux, "")?.into_int_value();
+                let int = build_load!(builder, value_type, stack_aux, "")?.into_int_value();
                 aux_params.push(int);
             } else {
                 let rand = match mba_int_width {

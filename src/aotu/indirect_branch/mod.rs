@@ -14,6 +14,7 @@ use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
+use amice_llvm::build_load;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 
@@ -216,8 +217,8 @@ impl LlvmModulePass for IndirectBranch {
                         }
                         .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}"))
                         .expect("build gep_index failed");
-                        let key_val = builder
-                            .build_load(i32_type, key_gep, "IndirectBranchingKey")
+
+                        let key_val = build_load!(builder, i32_type, key_gep, "IndirectBranchingKey")
                             .map_err(|e| error!("(indirect-branch) build load failed: {e}"))
                             .expect("build load failed")
                             .into_int_value();
@@ -247,8 +248,7 @@ impl LlvmModulePass for IndirectBranch {
                 }) else {
                     panic!("(indirect-branch) build gep_index failed, this should never happen");
                 };
-                let Ok(loaded_address) = builder
-                    .build_load(ptr_type, gep, "IndirectBranchingTargetAddress")
+                let Ok(loaded_address) = build_load!(builder, ptr_type, gep, "IndirectBranchingTargetAddress")
                     .map_err(|e| error!("(indirect-branch) build load failed: {e}"))
                 else {
                     panic!("(indirect-branch) build load failed, this should never happen");

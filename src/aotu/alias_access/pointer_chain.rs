@@ -1,5 +1,4 @@
 use crate::aotu::alias_access::AliasAccess;
-use crate::ptr_type;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::function::get_basic_block_entry;
 use anyhow::anyhow;
@@ -10,6 +9,7 @@ use llvm_plugin::inkwell::types::{BasicType, StructType};
 use llvm_plugin::inkwell::values::{AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
 use log::{debug, warn};
 use std::collections::HashMap;
+use amice_llvm::{build_load, ptr_type};
 
 const META_BOX_COUNT: usize = 6;
 
@@ -52,7 +52,7 @@ fn build_getter_function<'ctx>(
     idx: u32,
 ) -> anyhow::Result<FunctionValue<'ctx>> {
     let ctx = module.get_context();
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let ptr_ty = ptr_type!(ctx, i8_type);
     let fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
 
     let func = module.add_function("", fn_ty, None);
@@ -67,9 +67,16 @@ fn build_getter_function<'ctx>(
     let trans_ptr = builder.build_pointer_cast(arg0, st.ptr_type(AddressSpace::default()), "cast_trans")?;
 
     // &p->slot[idx]
+    #[cfg(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0"))]
+    let slot_addr = builder
+        .build_struct_gep(trans_ptr, idx, "slot_addr")
+        .expect("GEP slot");
+
+    #[cfg(not(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0")))]
     let slot_addr = builder
         .build_struct_gep(st, trans_ptr, idx, "slot_addr")
         .expect("GEP slot");
+
     // 为隐藏类型信息，返回 void*
     let ret = builder.build_pointer_cast(slot_addr, ptr_ty, "as_ptr")?;
     builder.build_return(Some(&ret))?;
@@ -82,7 +89,7 @@ pub(crate) fn do_alias_access(pass: &AliasAccess, module: &Module<'_>, function:
     let i8_ty = ctx.i8_type();
     let i8_ptr = ptr_type!(ctx, i8_type);
     let i32_ty = ctx.i32_type();
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let ptr_ty = ptr_type!(ctx, i8_type);
 
     let mut allocas = Vec::new();
     for bb in function.get_basic_blocks() {
@@ -217,9 +224,16 @@ pub(crate) fn do_alias_access(pass: &AliasAccess, module: &Module<'_>, function:
             let child_id = rand::random_range(0..graph.len());
             let child = &graph[child_id];
 
+            #[cfg(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0"))]
+            let slot_addr = builder
+                .build_struct_gep(meta_box_alloca, idx as u32, "slot")
+                .expect("router gep");
+
+            #[cfg(not(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0")))]
             let slot_addr = builder
                 .build_struct_gep(meta_box_ty, meta_box_alloca, idx as u32, "slot")
                 .expect("router gep");
+
             builder.build_store(slot_addr, child.alloca)?;
 
             if child.is_raw {
@@ -325,8 +339,7 @@ pub(crate) fn do_alias_access(pass: &AliasAccess, module: &Module<'_>, function:
                             ptr_ty.ptr_type(AddressSpace::default()),
                             "as_ptr_ptr",
                         )?;
-                        let next_ptr = builder
-                            .build_load(ptr_ty, slot_addr_base_box_ptr, "ld_next")?
+                        let next_ptr = build_load!(builder, ptr_ty, slot_addr_base_box_ptr, "ld_next")?
                             .into_pointer_value();
 
                         // child pointer 还是 void*；把它转回“通用指针类型”以继续链（这里我们统一用 void*，直到最后再按需 cast）
@@ -341,6 +354,14 @@ pub(crate) fn do_alias_access(pass: &AliasAccess, module: &Module<'_>, function:
                     // 当前 cur_ptr 是 RawBox* 的“真实类型”吗？我们一路保持 void*，需要 cast 回 RawBox*
                     let st_ptr_ty = ep.st.ptr_type(AddressSpace::default());
                     let raw_ptr = builder.build_pointer_cast(cur_ptr, st_ptr_ty, "as_raw_st")?;
+
+
+                    #[cfg(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0"))]
+                    let field_addr = builder
+                        .build_struct_gep(raw_ptr, ep.index, "field")
+                        .expect("field gep");
+
+                    #[cfg(not(any(feature = "llvm11-0", feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0")))]
                     let field_addr = builder
                         .build_struct_gep(ep.st, raw_ptr, ep.index, "field")
                         .expect("field gep");

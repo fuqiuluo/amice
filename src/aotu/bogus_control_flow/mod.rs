@@ -13,6 +13,7 @@ use llvm_plugin::inkwell::values::{FunctionValue, GlobalValue, InstructionOpcode
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
+use amice_llvm::build_load;
 
 #[amice(priority = 950, name = "BogusControlFlow", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -217,15 +218,15 @@ fn apply_bogus_control_flow_to_unconditional_branch(
     // Add some junk instructions
     match rand::random_range(0..=10) {
         0..3 => {
-            let junk1 = builder.build_load(i32_type, globals.x.as_pointer_value(), "junk1")?;
-            let junk2 = builder.build_load(i32_type, globals.y.as_pointer_value(), "junk2")?;
+            let junk1 = build_load!(builder, i32_type, globals.x.as_pointer_value(), "junk1")?;
+            let junk2 = build_load!(builder, i32_type, globals.y.as_pointer_value(), "junk2")?;
             builder.build_store(stack.0, junk1)?;
             builder.build_store(stack.1, junk2)?;
             builder.build_unconditional_branch(fake_block)?;
         },
         3..7 => {
-            let junk1 = builder.build_load(i32_type, stack.0, "junk1")?;
-            let junk2 = builder.build_load(i32_type, stack.1, "junk2")?;
+            let junk1 = build_load!(builder, i32_type, stack.0, "junk1")?;
+            let junk2 = build_load!(builder, i32_type, stack.1, "junk2")?;
             builder.build_store(globals.y.as_pointer_value(), junk1)?;
             builder.build_store(globals.x.as_pointer_value(), junk2)?;
             builder.build_unconditional_branch(then_block)?;
@@ -273,8 +274,8 @@ fn create_simple_opaque_predicate<'a>(
     rand::fill(&mut bits);
 
     // Load global variables
-    let x_val = builder.build_load(i32_type, x, "x_val")?.into_int_value();
-    let y_val = builder.build_load(i32_type, y, "y_val")?.into_int_value();
+    let x_val = build_load!(builder, i32_type, x, "x_val")?.into_int_value();
+    let y_val = build_load!(builder, i32_type, y, "y_val")?.into_int_value();
 
     let (opaque_val, val) = if bits[0] {
         (x_val, pass.x) // Use x if first bit is true

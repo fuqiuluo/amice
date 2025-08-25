@@ -1,11 +1,11 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use crate::ptr_type;
 use amice_llvm::ir::basic_block::split_basic_block;
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_llvm::ir::switch_inst;
 use amice_llvm::module_utils::verify_function2;
+use amice_llvm::{build_load, ptr_type};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -439,13 +439,12 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
 
     builder.position_at_end(vm_entry);
 
-    let pc_value = builder.build_load(i32_type, pc, "__pc__")?.into_int_value();
+    let pc_value = build_load!(builder, i32_type, pc, "__pc__")?.into_int_value();
     let pc_plus_one = builder.build_int_add(pc_value, i32_one, "pc_plus_1")?;
     let pc_plus_two = builder.build_int_add(pc_value, i32_two, "pc_plus_2")?;
     let pc_plus_three = builder.build_int_add(pc_value, i32_three, "pc_plus_3")?;
 
-    let opcode = builder
-        .build_load(
+    let opcode = build_load!(builder,
             i32_type,
             unsafe {
                 builder.build_in_bounds_gep(
@@ -455,37 +454,37 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                     "",
                 )
             }?,
-            "__op__",
+            "__op__"
         )?
         .into_int_value();
-    let left = builder
-        .build_load(
-            i32_type,
-            unsafe {
-                builder.build_in_bounds_gep(
-                    opcode_array_type,
-                    local_opcodes_value.as_pointer_value(),
-                    &[i32_zero, pc_plus_one],
-                    "",
-                )
-            }?,
-            "__left__",
-        )?
-        .into_int_value();
-    let right = builder
-        .build_load(
-            i32_type,
-            unsafe {
-                builder.build_in_bounds_gep(
-                    opcode_array_type,
-                    local_opcodes_value.as_pointer_value(),
-                    &[i32_zero, pc_plus_two],
-                    "",
-                )
-            }?,
-            "__right__",
-        )?
-        .into_int_value();
+    let left = build_load!(
+        builder,
+        i32_type,
+        unsafe {
+            builder.build_in_bounds_gep(
+                opcode_array_type,
+                local_opcodes_value.as_pointer_value(),
+                &[i32_zero, pc_plus_one],
+                "",
+            )
+        }?,
+        "__left__"
+    )?
+    .into_int_value();
+    let right = build_load!(
+        builder,
+        i32_type,
+        unsafe {
+            builder.build_in_bounds_gep(
+                opcode_array_type,
+                local_opcodes_value.as_pointer_value(),
+                &[i32_zero, pc_plus_two],
+                "",
+            )
+        }?,
+        "__right__"
+    )?
+    .into_int_value();
     let cond_is_switch = builder.build_int_compare(IntPredicate::EQ, opcode, i32_switch, "cond_is_switch")?;
     let plus_value = builder.build_select(
         cond_is_switch,
@@ -599,12 +598,11 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         builder.position_at_end(vm_switch);
         let label_size = left; // 有多少个label，这里的大小是case数量 + 1
         //let default_label_value = right;
-        let flag_value = builder
-            .build_load(i32_type, vm_flag, "__vm_br_flag__")?
+        let flag_value = build_load!(builder, i32_type, vm_flag, "__vm_br_flag__")?
             .into_int_value();
         //let cases_num = builder.build_int_sub(label_size, i32_one, "cases_num")?;
         let offset = builder.build_int_sub(label_size, flag_value, "offset")?;
-        let curr_pc = builder.build_load(i32_type, pc, "__pc__")?.into_int_value();
+        let curr_pc = build_load!(builder, i32_type, pc, "__pc__")?.into_int_value();
         let new_pc_offset = builder.build_int_sub(curr_pc, offset, "pc_with_offset")?;
         let new_pc_gep = unsafe {
             builder.build_in_bounds_gep(
@@ -614,7 +612,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                 "",
             )
         }?;
-        let new_pc = builder.build_load(i32_type, new_pc_gep, "__value__")?.into_int_value();
+        let new_pc = build_load!(builder, i32_type, new_pc_gep, "__value__")?.into_int_value();
         builder.build_store(pc, new_pc)?;
         builder.build_unconditional_branch(vm_entry)?;
     }
@@ -627,8 +625,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
 
     {
         builder.position_at_end(vm_jmp_if);
-        let flag_value = builder
-            .build_load(i32_type, vm_flag, "__vm_br_flag__")?
+        let flag_value = build_load!(builder, i32_type, vm_flag, "__vm_br_flag__")?
             .into_int_value();
 
         let jump_true = ctx.append_basic_block(function, ".amice.jump_true");

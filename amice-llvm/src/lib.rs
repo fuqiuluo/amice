@@ -27,3 +27,59 @@ pub fn to_c_str(mut s: &str) -> Cow<'_, CStr> {
 
     unsafe { Cow::from(CStr::from_ptr(s.as_ptr() as *const _)) }
 }
+
+#[cfg(not(any(
+    feature = "llvm17-0",
+    feature = "llvm18-1",
+    feature = "llvm19-1",
+    feature = "llvm20-1"
+)))]
+#[macro_export]
+macro_rules! ptr_type {
+    ($cx:ident, $ty:ident) => {
+        $cx.$ty().ptr_type(AddressSpace::default())
+    };
+}
+
+#[cfg(any(
+    feature = "llvm17-0",
+    feature = "llvm18-1",
+    feature = "llvm19-1",
+    feature = "llvm20-1"
+))]
+#[macro_export]
+macro_rules! ptr_type {
+    ($cx:ident, $ty:ident) => {
+        $cx.ptr_type(AddressSpace::default())
+    };
+}
+
+#[cfg(not(any(
+    feature = "llvm15-0",
+    feature = "llvm16-0",
+    feature = "llvm17-0",
+    feature = "llvm18-1",
+    feature = "llvm19-1",
+    feature = "llvm20-1"
+)))]
+#[macro_export]
+macro_rules! build_load {
+    ($bd:ident, $ty:expr, $addr:expr, $name:expr) => {
+        $bd.build_load($addr, $name)
+    };
+}
+
+#[cfg(any(
+    feature = "llvm15-0",
+    feature = "llvm16-0",
+    feature = "llvm17-0",
+    feature = "llvm18-1",
+    feature = "llvm19-1",
+    feature = "llvm20-1",
+))]
+#[macro_export]
+macro_rules! build_load {
+    ($bd:ident, $ty:expr, $addr:expr, $name:expr) => {
+        $bd.build_load($ty, $addr, $name)
+    };
+}

@@ -10,6 +10,7 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
+use amice_llvm::{build_load, ptr_type};
 
 #[amice(priority = 990, name = "IndirectCall", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -84,9 +85,7 @@ impl LlvmModulePass for IndirectCall {
 
         let ctx = module.get_context();
         let i32_type = ctx.i32_type();
-        let i8_type = ctx.i8_type();
-        let ptr_type = ctx.ptr_type(AddressSpace::default());
-        let int64_type = ctx.i64_type();
+        let ptr_type = ptr_type!(ctx, i8_type);
 
         let likely_functions_values = likely_functions
             .iter()
@@ -144,8 +143,7 @@ fn do_handle<'a>(
 ) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_type = ctx.i32_type();
-    let pty_type = ctx.ptr_type(AddressSpace::default());
-    let int64_type = ctx.i64_type();
+    let pty_type = ptr_type!(ctx, i8_type);
 
     for (inst, function) in call_instructions {
         let index = likely_functions
@@ -161,13 +159,13 @@ fn do_handle<'a>(
         let builder = ctx.create_builder();
         builder.position_before(inst);
         let index_value = if xor_key_global.is_some() {
-            let xor_key_value = builder.build_load(i32_type, xor_key_global.unwrap().as_pointer_value(), "")?;
+            let xor_key_value = build_load!(builder, i32_type, xor_key_global.unwrap().as_pointer_value(), "")?;
             builder.build_xor(index_value, xor_key_value.into_int_value(), "")?
         } else {
             index_value
         };
         let gep = unsafe { builder.build_gep(pty_type, global_fun_table.as_pointer_value(), &[index_value], "")? };
-        let addr = builder.build_load(pty_type, gep, "")?.into_pointer_value();
+        let addr = build_load!(builder, pty_type, gep, "")?.into_pointer_value();
 
         let call_site = unsafe { CallSiteValue::new(inst.as_value_ref()) };
         let mut args = Vec::new();
