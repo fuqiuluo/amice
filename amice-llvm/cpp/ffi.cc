@@ -147,7 +147,7 @@ void amice_fix_stack(llvm::Function *f, int AtTerminator, int MaxIterations) {
                 }
             }
         }
-#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 20)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 19)
         for (unsigned int i = 0; i < tmpReg.size(); i++){
             if(AtTerminator) {
                 llvm::DemoteRegToStack(*tmpReg.at(i), false, std::optional<llvm::BasicBlock::iterator>{bbEntry->getTerminator()});
