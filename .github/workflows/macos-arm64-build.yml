@@ -1,14 +1,6 @@
 name: MacOS Arm64 Build
 
 on:
-  push:
-    branches: [ master ]
-    paths:
-      - '**/*.rs'
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - '**/build.rs'
-      - 'rust-toolchain*'
   workflow_dispatch:
 
 env:
