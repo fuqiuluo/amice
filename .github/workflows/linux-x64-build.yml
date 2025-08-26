@@ -73,19 +73,15 @@ jobs:
           # Update package list
           sudo apt-get update
           
-          # Install prerequisites
-          sudo apt-get install -y wget software-properties-common gnupg
-          
-          # Add LLVM repository
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          
+          sudo apt-get install -y curl ca-certificates gnupg lsb-release
+          distro="$(lsb_release -cs)"
+
           # Get distribution codename
           distro=$(lsb_release -cs)
           echo "Distribution: $distro"
           
-          # Add repository
-          echo "deb http://apt.llvm.org/$distro/ llvm-toolchain-$distro-${{ matrix.llvm-version[0] }} main" | \
-            sudo tee /etc/apt/sources.list.d/llvm.list
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/${distro}/ llvm-toolchain-${distro}-${{ matrix.llvm-version[0] }} main" | sudo tee /etc/apt/sources.list.d/llvm.list
           
           sudo apt-get update
 
@@ -94,6 +90,8 @@ jobs:
           set -euxo pipefail
           ver=${{ matrix.llvm-version[0] }}
           sudo apt-get install -y "llvm-${ver}" "clang-${ver}" "lld-${ver}"
+          sudo apt-get install -y "llvm-${ver}" "llvm-${ver}-dev" "clang-${ver}" "lld-${ver}" libffi-dev pkg-config zlib1g-dev
+          
           prefix="/usr/lib/llvm-${ver}"
           echo "Using LLVM prefix: ${prefix}"
 
@@ -103,6 +101,15 @@ jobs:
           echo "PATH=${prefix}/bin:$PATH" >> "$GITHUB_ENV"
           echo "CC=clang" >> "$GITHUB_ENV"
           echo "CXX=clang++" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=\"-Clinker=clang -Clink-arg=-Wl,-rpath,${prefix}/lib\"" >> "$GITHUB_ENV"
+
+          if [ ! -e "${prefix}/lib/libLLVM.so" ]; then
+            if [ -e "${prefix}/lib/libLLVM-${ver}.so" ]; then
+              sudo ln -s "libLLVM-${ver}.so" "${prefix}/lib/libLLVM.so"
+            elif [ -e "/usr/lib/x86_64-linux-gnu/libLLVM-${ver}.so.1" ]; then
+              sudo ln -s "../../x86_64-linux-gnu/libLLVM-${ver}.so.1" "${prefix}/lib/libLLVM.so"
+            fi
+          fi
 
           "${prefix}/bin/llvm-config" --version
           "${prefix}/bin/clang" --version
