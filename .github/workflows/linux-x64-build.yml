@@ -109,6 +109,8 @@ jobs:
               sudo ln -s "../../x86_64-linux-gnu/libLLVM-${ver}.so.1" "${prefix}/lib/libLLVM.so"
             fi
           fi
+          
+          ls -l "${prefix}/lib/libLLVM*.so* 2>/dev/null || true
 
       - name: Build libamice.so (Release)
         run: |
