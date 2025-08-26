@@ -25,7 +25,7 @@ env:
 jobs:
   linux-build:
     name: "LLVM/OPT ${{ matrix.llvm-version[0] }} Linux"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       BUILD_OUTPUT_PATH: target/release
     strategy:
@@ -60,17 +60,19 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Setup Rust Toolchain
-        uses: moonrepo/setup-rust@v1
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
 
-      - name: Setup Environment Variables
+      - name: Install Dependencies
         run: |
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
+          sudo apt update && sudo apt install -y libtinfo5
 
       - name: Install LLVM and Clang (LLVM >= 19.1)
         if: ${{ matrix.llvm-version[0] >= 19 }}
         run: |
-          sudo apt update && sudo apt install -y libtinfo5
           sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
