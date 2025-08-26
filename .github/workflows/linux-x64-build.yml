@@ -33,15 +33,15 @@ jobs:
       matrix:
         # [<major>, <feature-suffix>, <llvm-sys env suffix>]
         llvm-version:
-          - ["12", "12-0", "120"]
-          - ["13", "13-0", "130"]
-          - ["14", "14-0", "140"]
-          - ["15", "15-0", "150"]
-          - ["16", "16-0", "160"]
-          - ["17", "17-0", "170"]
-          - ["18", "18-1", "181"]
-          - ["19", "19-1", "191"]
-          - ["20", "20-1", "201"]
+          - ["12", "12-0", "120", "12.0"]
+          - ["13", "13-0", "130", "13.0"]
+          - ["14", "14-0", "140", "14.0"]
+          - ["15", "15-0", "150", "15.0"]
+          - ["16", "16-0", "160", "16.0"]
+          - ["17", "17-0", "170", "17.0"]
+          - ["18", "18-1", "181", "18.1"]
+          - ["19", "19-1", "191", "19.1"]
+          - ["20", "20-1", "201", "20.1"]
 
     steps:
       - name: Checkout Repo
@@ -65,32 +65,37 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
-      - name: Add LLVM APT Repository
+      - name: Setup Environment Variables
         run: |
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
-          
-          # Update package list
-          sudo apt-get update
-          
-          sudo apt-get install -y curl ca-certificates gnupg lsb-release
-          distro="$(lsb_release -cs)"
 
-          # Get distribution codename
-          distro=$(lsb_release -cs)
-          echo "Distribution: $distro"
-          
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/${distro}/ llvm-toolchain-${distro}-${{ matrix.llvm-version[0] }} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          
+      - name: Install LLVM and Clang (LLVM >= 19.1)
+        if: ${{ matrix.llvm-version[0] >= 19 }}
+        run: |
           sudo apt-get update
+          sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh ${{ matrix.llvm-version[0] }}
+          sudo apt-get update
+          sudo apt install --no-install-recommends -y libllvm${{ matrix.llvm-version[0] }} \
+                                                      llvm-${{ matrix.llvm-version[0] }} \
+                                                      llvm-${{ matrix.llvm-version[0] }}-dev \
+                                                      llvm-${{ matrix.llvm-version[0] }}-runtime \
+                                                      libpolly-${{ matrix.llvm-version[0] }}-dev
+          sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-${{ matrix.llvm-version[0] }} 10
 
-      - name: Install LLVM/Clang ${{ matrix.llvm-version[0] }}
+      - name: Install LLVM and Clang (7.1 <= LLVM <= 19)
+        uses: KyleMayes/install-llvm-action@v2
+        if: ${{ matrix.llvm-version[0] > 7 && matrix.llvm-version[0] <= 19 }}
+        with:
+          version: ${{ matrix.llvm-version[0] }}
+
+      - name: Setup LLVM/Clang ${{ matrix.llvm-version[0] }}
         run: |
           set -euxo pipefail
           ver=${{ matrix.llvm-version[0] }}
-          sudo apt-get install -y "llvm-${ver}" "clang-${ver}" "lld-${ver}"
-          sudo apt-get install -y "llvm-${ver}" "llvm-${ver}-dev" "clang-${ver}" "lld-${ver}" libffi-dev pkg-config zlib1g-dev
           
           prefix="/usr/lib/llvm-${ver}"
           echo "Using LLVM prefix: ${prefix}"
