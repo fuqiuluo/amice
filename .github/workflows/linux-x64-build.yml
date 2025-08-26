@@ -33,10 +33,10 @@ jobs:
       matrix:
         # [<major>, <feature-suffix>, <llvm-sys env suffix>]
         llvm-version:
-#          - ["12", "12-0", "120", "12.0"]
-#          - ["13", "13-0", "130", "13.0"]
-#          - ["14", "14-0", "140", "14.0"]
-#          - ["15", "15-0", "150", "15.0"]
+          - ["12", "12-0", "120", "v12.0.1-rust-1.55/llvm-lld-12.0.1-rust-1.55-linux-x86_64.tar.gz"]
+          - ["13", "13-0", "130", "v13.0.0-rust-1.59/llvm-lld-13.0.0-rust-1.59-linux-x86_64.tar.gz"]
+          - ["14", "14-0", "140", "v14.0.6-rust-1.64/llvm-lld-14.0.6-rust-1.64-linux-x86_64.tar.gz"]
+          - ["15", "15-0", "150", "v15.0.0-rust-1.65/llvm-lld-15.0.0-rust-1.65-linux-x86_64.tar.gz"]
           - ["16", "16-0", "160", "16.0"]
           - ["17", "17-0", "170", "17.0"]
           - ["18", "18-1", "181", "18.1"]
@@ -85,28 +85,24 @@ jobs:
                                                       libpolly-${{ matrix.llvm-version[0] }}-dev
           sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-${{ matrix.llvm-version[0] }} 10
 
-      - name: Install LLVM and Clang (7.1 <= LLVM <= 19)
+      - name: Install LLVM and Clang (15 <= LLVM <= 19)
         uses: KyleMayes/install-llvm-action@v2
-        if: ${{ matrix.llvm-version[0] > 7 && matrix.llvm-version[0] <= 19 }}
+        if: ${{ matrix.llvm-version[0] > 15 && matrix.llvm-version[0] <= 19 }}
         with:
           version: ${{ matrix.llvm-version[0] }}
 
-      - name: Symlink libLLVM.so (Linux)
-        if: ${{ matrix.llvm-version[0] > 7 && matrix.llvm-version[0] <= 15 }}
+      - name: Install LLVM and Clang (12 <= LLVM <= 15)
+        if: ${{ matrix.llvm-version[0] >= 12 && matrix.llvm-version[0] <= 15 }}
         working-directory: ${{ env.LLVM_PATH }}/lib
         run: |
           set -euxo pipefail
           ver=${{ matrix.llvm-version[0] }}
           
-          ls
-          if [ ! -e "libLLVM.so" ]; then
-            if [ -e "libLLVM-${ver}.so" ]; then
-              sudo ln -s "libLLVM-${ver}.so" "libLLVM.so"
-            elif [ -e "libLLVM-${ver}.so.1" ]; then
-              sudo ln -s "libLLVM-${ver}.so.1" "libLLVM.so"
-            fi
-          fi
-          sudo ln -s libLLVM.so /lib/x86_64-linux-gnu/libLLVM.so
+          mkdir ~/llvm
+          echo "$HOME/llvm/bin" >> $GITHUB_PATH
+          
+          wget --user-agent='GithubCI' -O llvm.tar.gz https://github.com/jamesmth/llvm-project/releases/download/${{ matrix.llvm-version[3] }}
+          tar -C ~ -xf llvm.tar.gz
 
       - name: Symlink libLLVM.so (LLVM >= 16) (Linux)
         if: ${{ matrix.llvm-version[0] >= 16 }}
