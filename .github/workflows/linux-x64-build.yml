@@ -93,7 +93,7 @@ jobs:
         run: |
           set -euxo pipefail
           ver=${{ matrix.llvm-version[0] }}
-          apt-get install -y "llvm-${ver}" "clang-${ver}" "lld-${ver}"
+          sudo apt-get install -y "llvm-${ver}" "clang-${ver}" "lld-${ver}"
           prefix="/usr/lib/llvm-${ver}"
           echo "Using LLVM prefix: ${prefix}"
 
