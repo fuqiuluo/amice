@@ -103,11 +103,6 @@ jobs:
           env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
           echo "${env_name}=${prefix}" >> "$GITHUB_ENV"
 
-          echo "PATH=${prefix}/bin:$PATH" >> "$GITHUB_ENV"
-          echo "CC=clang" >> "$GITHUB_ENV"
-          echo "CXX=clang++" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=\"-Clinker=clang -Clink-arg=-Wl,-rpath,${prefix}/lib\"" >> "$GITHUB_ENV"
-
           if [ ! -e "${prefix}/lib/libLLVM.so" ]; then
             if [ -e "${prefix}/lib/libLLVM-${ver}.so" ]; then
               sudo ln -s "libLLVM-${ver}.so" "${prefix}/lib/libLLVM.so"
