@@ -85,15 +85,14 @@ jobs:
                                                       libpolly-${{ matrix.llvm-version[0] }}-dev
           sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-${{ matrix.llvm-version[0] }} 10
 
-      - name: Install LLVM and Clang (15 <= LLVM <= 19)
+      - name: Install LLVM and Clang (15 < LLVM <= 19)
         uses: KyleMayes/install-llvm-action@v2
-        if: ${{ matrix.llvm-version[0] > 15 && matrix.llvm-version[0] <= 19 }}
+        if: ${{ matrix.llvm-version[0] > 15 && matrix.llvm-version[0] < 19 }}
         with:
           version: ${{ matrix.llvm-version[0] }}
 
       - name: Install LLVM and Clang (12 <= LLVM <= 15)
         if: ${{ matrix.llvm-version[0] >= 12 && matrix.llvm-version[0] <= 15 }}
-        working-directory: ${{ env.LLVM_PATH }}/lib
         run: |
           set -euxo pipefail
           ver=${{ matrix.llvm-version[0] }}
