@@ -111,9 +111,6 @@ jobs:
             fi
           fi
 
-          "${prefix}/bin/llvm-config" --version
-          "${prefix}/bin/clang" --version
-
       - name: Build libamice.so (Release)
         run: |
           set -euxo pipefail
