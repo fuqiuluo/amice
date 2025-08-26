@@ -60,10 +60,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Setup Rust Toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+        uses: moonrepo/setup-rust@v1
 
       - name: Setup Environment Variables
         run: |
@@ -73,7 +70,7 @@ jobs:
       - name: Install LLVM and Clang (LLVM >= 19.1)
         if: ${{ matrix.llvm-version[0] >= 19 }}
         run: |
-          sudo apt-get update
+          sudo apt update && sudo apt install -y libtinfo5
           sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
