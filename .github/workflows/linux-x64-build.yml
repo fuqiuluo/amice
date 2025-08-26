@@ -110,7 +110,12 @@ jobs:
             fi
           fi
           
-          ls -l "${prefix}/lib/libLLVM*.so*" 2>/dev/null || true
+          if ldconfig -p | grep -q 'libLLVM\.so'; then
+            ldconfig -p | grep 'libLLVM\.so' || true
+          else
+            echo "libLLVM.so NOT found in ldconfig cache."
+            ls -l "${prefix}/lib/libLLVM*.so*"
+          fi
 
       - name: Build libamice.so (Release)
         run: |
