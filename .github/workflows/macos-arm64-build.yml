@@ -9,57 +9,51 @@ env:
 jobs:
   macos-build:
     name: "LLVM/OPT ${{ matrix.llvm-version[0] }} MacOS"
-    runs-on: ${{ matrix.llvm-version[3] }}
+    runs-on: macos-latest
     env:
-      LLVM_INSTALL_PATH: ~/llvm
       BUILD_OUTPUT_PATH: target/release
     strategy:
       fail-fast: false
       matrix:
         llvm-version:
-          - ["18", "18-1", "v18.1.2-rust-1.78/llvm-lld-18.1.2-rust-1.78-macos-arm64.tar.gz", "macos-latest"]
-          - ["19", "19-1", "v19.1.5-rust-1.84/llvm-lld-19.1.5-rust-1.84-macos-arm64.tar.gz", "macos-latest"]
-          - ["20", "20-1", "v20.1.1-rust-1.87/llvm-lld-20.1.1-rust-1.87-macos-arm64.tar.gz", "macos-latest"]
+          - ["18", "18-1", "181"]
+          - ["19", "19-1", "191"]
+          - ["20", "20-1", "201"]
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v2
 
-      - name: Setup LLVM Installation Path
-        run: |
-          mkdir ${{ env.LLVM_INSTALL_PATH }}
-          echo "$HOME/llvm/bin" >> $GITHUB_PATH
-
-      - name: Check LLVM Artifacts In Cache
-        id: cache-llvm
-        uses: actions/cache@v3
+      - name: Cache Homebrew downloads & Cellar
+        uses: actions/cache@v4
         with:
           path: |
-            ${{ env.LLVM_INSTALL_PATH }}/bin/llvm-config
-            ${{ env.LLVM_INSTALL_PATH }}/bin/opt
-            ${{ env.LLVM_INSTALL_PATH }}/lib/libLLVM.dylib
-            ${{ env.LLVM_INSTALL_PATH }}/lib/libLLVM-C.dylib
-            ${{ env.LLVM_INSTALL_PATH }}/include
-          key: ${{ runner.os }}-llvm-${{ matrix.llvm-version[0] }}
+            /Users/runner/Library/Caches/Homebrew
+            /opt/homebrew/Library/Caches/Homebrew
+            /opt/homebrew/Cellar
+          key: ${{ runner.os }}-homebrew-llvm-${{ matrix.llvm-version[0] }}
+          restore-keys: |
+            ${{ runner.os }}-homebrew-llvm-${{ matrix.llvm-version[0] }}
 
-      - name: Download LLVM Binaries
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+      - name: Install Homebrew LLVM (clang) and set env dynamically
         run: |
-          set -e
-          URL="https://github.com/jamesmth/llvm-project/releases/download/${{ matrix.llvm-version[2] }}"
-          UA="GithubCI"
-          for attempt in {1..5}; do
-            echo "Attempt $attempt to download: $URL"
-            wget --user-agent="$UA" --tries=3 --waitretry=5 --read-timeout=30 --timeout=30 -O llvm.tar.gz "$URL" && break
-            echo "Download failed (attempt $attempt)."
-            if [ "$attempt" -lt 5 ]; then
-              sleep $((attempt * 5))
-            else
-              echo "All download attempts failed."
-              exit 1
-            fi
-          done
-          tar -C ~ -xf llvm.tar.gz
+          set -euo pipefail
+          major=${{ matrix.llvm-version[0] }}
+          suffix=${{ matrix.llvm-version[2] }}
+          echo "Installing llvm@${major} via Homebrew"
+          brew update
+          # Prefer bottled binaries to avoid building from source; fall back to normal install if bottles not available
+          if ! brew install --force-bottle "llvm@${major}"; then
+            brew install "llvm@${major}"
+          fi
+          # Get the Homebrew prefix for the installed llvm formula (usually /opt/homebrew/opt/llvm@<major>)
+          prefix=$(brew --prefix "llvm@${major}")
+          echo "Found llvm prefix: ${prefix}"
+          # Use suffix from matrix for the llvm-sys env var name (e.g. 201)
+          env_name="LLVM_SYS_${suffix}_PREFIX"
+          echo "${env_name}=${prefix}" >> $GITHUB_ENV
+          # Ensure brewed clang is on PATH for subsequent steps
+          echo "PATH=${prefix}/bin:$PATH" >> $GITHUB_ENV
 
       - name: Build libamice.dylib (Release)
         run: |
