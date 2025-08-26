@@ -91,26 +91,27 @@ jobs:
         with:
           version: ${{ matrix.llvm-version[0] }}
 
-      - name: Setup LLVM/Clang ${{ matrix.llvm-version[0] }}
+      - name: Symlink libLLVM.so (Linux)
+        if: ${{ matrix.llvm-version[0] > 7 && matrix.llvm-version[0] <= 15 }}
+        working-directory: ${{ env.LLVM_PATH }}/lib
         run: |
           set -euxo pipefail
           ver=${{ matrix.llvm-version[0] }}
           
-          prefix="/usr/lib/llvm-${ver}"
-          echo "Using LLVM prefix: ${prefix}"
-
-          env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
-          echo "${env_name}=${prefix}" >> "$GITHUB_ENV"
-
-          if [ ! -e "${prefix}/lib/libLLVM.so" ]; then
-            if [ -e "${prefix}/lib/libLLVM-${ver}.so" ]; then
-              sudo ln -s "libLLVM-${ver}.so" "${prefix}/lib/libLLVM.so"
-            elif [ -e "/usr/lib/x86_64-linux-gnu/libLLVM-${ver}.so.1" ]; then
-              sudo ln -s "../../x86_64-linux-gnu/libLLVM-${ver}.so.1" "${prefix}/lib/libLLVM.so"
+          if [ ! -e "libLLVM.so" ]; then
+            if [ -e "libLLVM-${ver}.so" ]; then
+              sudo ln -s "libLLVM-${ver}.so" "libLLVM.so"
+            elif [ -e "libLLVM-${ver}.so.1" ]; then
+              sudo ln -s "libLLVM-${ver}.so.1" "libLLVM.so"
             fi
           fi
+          sudo ln -s libLLVM.so /lib/x86_64-linux-gnu/libLLVM.so
+
+      - name: Check LLVM/Clang ${{ matrix.llvm-version[0] }}
+        run: |
+          set -euxo pipefail
+          ver=${{ matrix.llvm-version[0] }}
           
-          ls -l "${prefix}/lib/libLLVM*.so*"
           if ldconfig -p | grep -q 'libLLVM\.so'; then
             ldconfig -p | grep 'libLLVM\.so' || true
           else
