@@ -9,6 +9,14 @@ on:
       - '**/Cargo.lock'
       - '**/build.rs'
       - 'rust-toolchain*'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
   workflow_dispatch:
 
 env:
@@ -24,7 +32,6 @@ jobs:
       fail-fast: false
       matrix:
         # [<major>, <feature-suffix>, <llvm-sys env suffix>]
-        # 例如: LLVM_SYS_201_PREFIX 对应 20.1.x
         llvm-version:
           - ["12", "12-0", "120"]
           - ["13", "13-0", "130"]
@@ -38,25 +45,51 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
-      - name: Add apt.llvm.org repository
-        run: |
-          set -euxo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update
-          apt-get install -y curl ca-certificates gnupg lsb-release
-          distro="$(lsb_release -cs)"
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/${distro}/ llvm-toolchain-${distro}-${{ matrix.llvm-version[0] }} main" | tee /etc/apt/sources.list.d/llvm.list
-          apt-get update
+      - name: Cache Rust Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-
+            ${{ runner.os }}-cargo-
 
       - name: Setup Rust Toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          components: rustfmt, clippy
 
-      - name: Install LLVM/Clang ${{ matrix.llvm-version[0] }} and set env
+      - name: Add LLVM APT Repository
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          
+          # Update package list
+          sudo apt-get update
+          
+          # Install prerequisites
+          sudo apt-get install -y wget software-properties-common gnupg
+          
+          # Add LLVM repository
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          
+          # Get distribution codename
+          distro=$(lsb_release -cs)
+          echo "Distribution: $distro"
+          
+          # Add repository
+          echo "deb http://apt.llvm.org/$distro/ llvm-toolchain-$distro-${{ matrix.llvm-version[0] }} main" | \
+            sudo tee /etc/apt/sources.list.d/llvm.list
+          
+          sudo apt-get update
+
+      - name: Install LLVM/Clang ${{ matrix.llvm-version[0] }}
         run: |
           set -euxo pipefail
           ver=${{ matrix.llvm-version[0] }}
@@ -70,18 +103,30 @@ jobs:
           echo "PATH=${prefix}/bin:$PATH" >> "$GITHUB_ENV"
           echo "CC=clang" >> "$GITHUB_ENV"
           echo "CXX=clang++" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=-Clinker=clang" >> "$GITHUB_ENV"
 
           "${prefix}/bin/llvm-config" --version
           "${prefix}/bin/clang" --version
 
       - name: Build libamice.so (Release)
         run: |
-          cargo b --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+          set -euxo pipefail
+          cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+          
+          # Verify the built library exists
+          if [ ! -f "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" ]; then
+            echo "Error: libamice.so not found in expected location"
+            ls -la ${{ env.BUILD_OUTPUT_PATH }}/
+            exit 1
+          fi
+          
+          # Show library info
+          file "${{ env.BUILD_OUTPUT_PATH }}/libamice.so"
+          ldd "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" || true
 
-      - name: Upload libamice.so
+      - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: libamice-llvm${{ matrix.llvm-version[0] }}-linux
+          name: libamice-llvm${{ matrix.llvm-version[0] }}-linux-x64
           path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.so
           retention-days: 30
+          if-no-files-found: error
