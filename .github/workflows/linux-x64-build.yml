@@ -110,7 +110,7 @@ jobs:
             fi
           fi
           
-          ls -l "${prefix}/lib/libLLVM*.so* 2>/dev/null || true
+          ls -l "${prefix}/lib/libLLVM*.so*" 2>/dev/null || true
 
       - name: Build libamice.so (Release)
         run: |
