@@ -1,3 +1,0 @@
-# rust-toolchain.toml
-[toolchain]
-channel = "1.89.0"
