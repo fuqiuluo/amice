@@ -1,4 +1,5 @@
-use crate::config::bool_var;
+use log::error;
+use crate::config::{bool_var};
 use crate::pass_registry::EnvOverlay;
 use serde::{Deserialize, Serialize};
 
@@ -6,8 +7,31 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct AliasAccessConfig {
     pub enable: bool,
+    pub mode: AliasAccessMode,
+
+    /// Shuffle the RawBox order
+    ///
+    /// Parameters available only in `PointerChain` mode
     pub shuffle_raw_box: bool,
+    /// Loose RawBox, the gap will fill the garbage
+    ///
+    /// Parameters available only in `PointerChain` mode
     pub loose_raw_box: bool,
+}
+
+#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum AliasAccessMode {
+    #[serde(rename = "pointer_chain")]
+    #[default]
+    PointerChain,
+}
+
+fn parse_alias_access_mode(s: &str) -> Result<AliasAccessMode, String> {
+    let s = s.to_lowercase();
+    match s.as_str() {
+        "pointer_chain" | "basic" | "v1" => Ok(AliasAccessMode::PointerChain),
+        _ => Err(format!("unknown alias access mode: {}", s)),
+    }
 }
 
 impl EnvOverlay for AliasAccessConfig {
@@ -22,6 +46,13 @@ impl EnvOverlay for AliasAccessConfig {
 
         if std::env::var("AMICE_ALIAS_ACCESS_LOOSE_RAW_BOX").is_ok() {
             self.loose_raw_box = bool_var("AMICE_ALIAS_ACCESS_LOOSE_RAW_BOX", self.loose_raw_box);
+        }
+
+        if let Ok(mode) = std::env::var("AMICE_ALIAS_ACCESS_MODE") {
+            self.mode = parse_alias_access_mode(&mode).unwrap_or_else(|e| {
+                error!("parse alias access mode failed: {}", e);
+                AliasAccessMode::default()
+            })
         }
     }
 }

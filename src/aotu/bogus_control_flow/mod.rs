@@ -1,3 +1,5 @@
+mod basic;
+
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::inkwell2::AdvancedInkwellBuilder;

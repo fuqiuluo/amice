@@ -1,4 +1,4 @@
-use crate::aotu::alias_access::AliasAccess;
+use crate::aotu::alias_access::{AliasAccess, AliasAccessAlgo};
 use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::function::get_basic_block_entry;
@@ -93,7 +93,24 @@ fn build_getter_function<'ctx>(
     Ok(func)
 }
 
-pub(crate) fn do_alias_access(pass: &AliasAccess, module: &Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
+#[derive(Default)]
+pub(super) struct PointerChainAlgo;
+
+impl AliasAccessAlgo for PointerChainAlgo {
+    fn initialize(&mut self, _pass: &AliasAccess) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn do_alias_access(&mut self, pass: &AliasAccess, module: &Module<'_>) -> anyhow::Result<()> {
+        for function in module.get_functions() {
+            do_alias_access_pointer_chain(pass, module, function)?;
+        }
+
+        Ok(())
+    }
+}
+
+fn do_alias_access_pointer_chain(pass: &AliasAccess, module: &Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i8_ty = ctx.i8_type();
     let i8_ptr = ptr_type!(ctx, i8_type);

@@ -1,6 +1,7 @@
 mod pointer_chain;
 
-use crate::config::Config;
+use crate::aotu::alias_access::pointer_chain::PointerChainAlgo;
+use crate::config::{AliasAccessMode, Config};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::{VerifyResult, verify_function};
 use amice_macro::amice;
@@ -12,14 +13,13 @@ use log::{error, warn};
 #[derive(Default)]
 pub struct AliasAccess {
     enable: bool,
-    /// 打乱RawBox顺序
+    mode: AliasAccessMode,
     shuffle_raw_box: bool,
-    /// 宽松的RawBox，填充垃圾
     loose_raw_box: bool,
 }
 
 impl AmicePassLoadable for AliasAccess {
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
+    fn init(&mut self, cfg: &Config, _position: PassPosition) -> bool {
         self.enable = cfg.alias_access.enable;
 
         self.shuffle_raw_box = cfg.alias_access.shuffle_raw_box;
@@ -30,21 +30,26 @@ impl AmicePassLoadable for AliasAccess {
 }
 
 impl LlvmModulePass for AliasAccess {
-    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }
 
-        for function in module.get_functions() {
-            if let Err(e) = pointer_chain::do_alias_access(self, module, function) {
-                error!(
-                    "(alias-access) failed to process function {:?}: {}",
-                    function.get_name(),
-                    e
-                );
-                continue;
-            }
+        let mut algo: Box<dyn AliasAccessAlgo> = Box::new(match self.mode {
+            AliasAccessMode::PointerChain => PointerChainAlgo::default(),
+        });
 
+        if let Err(e) = algo.initialize(self) {
+            error!("(alias-access) failed to initialize: {}", e);
+            return PreservedAnalyses::All;
+        }
+
+        if let Err(e) = algo.do_alias_access(self, module) {
+            error!("(alias-access) failed to do alias access: {}", e);
+            return PreservedAnalyses::All;
+        }
+
+        for function in module.get_functions() {
             if let VerifyResult::Broken(e) = verify_function(function) {
                 warn!("(alias-access) function {:?} verify failed: {}", function.get_name(), e);
             }
@@ -52,4 +57,10 @@ impl LlvmModulePass for AliasAccess {
 
         PreservedAnalyses::None
     }
+}
+
+pub(crate) trait AliasAccessAlgo {
+    fn initialize(&mut self, pass: &AliasAccess) -> anyhow::Result<()>;
+
+    fn do_alias_access(&mut self, pass: &AliasAccess, module: &Module<'_>) -> anyhow::Result<()>;
 }

@@ -4,7 +4,7 @@ use amice_macro::amice_config_manager;
 use lazy_static::lazy_static;
 use log::warn;
 
-pub use alias_access::AliasAccessConfig;
+pub use alias_access::{AliasAccessConfig, AliasAccessMode};
 pub use bogus_control_flow::BogusControlFlowConfig;
 pub use clone_function::CloneFunctionConfig;
 use custom_calling_conv::CustomCallingConvConfig;
