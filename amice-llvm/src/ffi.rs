@@ -40,7 +40,7 @@ unsafe extern "C" {
     pub(crate) fn amice_split_basic_block(
         block: *mut c_void,
         inst: *mut c_void,
-        name: *const i8,
+        name: *const c_char,
         before: i32,
     ) -> *mut c_void;
 
