@@ -62,6 +62,7 @@ jobs:
           if ! brew install --force-bottle "llvm@${major}"; then
             brew install "llvm@${major}"
           fi
+          brew link "llvm@${major}"
           # Get the Homebrew prefix for the installed llvm formula (usually /opt/homebrew/opt/llvm@<major>)
           prefix=$(brew --prefix "llvm@${major}")
           echo "Found llvm prefix: ${prefix}"
