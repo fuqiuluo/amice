@@ -1,6 +1,6 @@
 use crate::aotu::string_encryption::{
-    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, alloc_stack_string, array_as_const_string,
-    collect_insert_points,
+    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo, alloc_stack_string,
+    array_as_const_string, collect_insert_points,
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
 use amice_llvm::inkwell2::AdvancedInkwellBuilder;
@@ -11,15 +11,27 @@ use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue};
-use llvm_plugin::{ModuleAnalysisManager, inkwell};
+use llvm_plugin::{inkwell};
 use log::{error, warn};
 use rand::Rng;
 
-pub(crate) fn do_handle<'a>(
-    pass: &StringEncryption,
-    module: &mut Module<'a>,
-    manager: &ModuleAnalysisManager,
-) -> anyhow::Result<()> {
+#[derive(Default)]
+pub(super) struct SimdXorAlgo {
+    pub(super) key: [u8; 32],
+}
+
+impl StringEncryptionAlgo for SimdXorAlgo {
+    fn initialize(&mut self, _pass: &StringEncryption, _module: &mut Module<'_>) -> anyhow::Result<()> {
+        rand::rng().fill(&mut self.key);
+        Ok(())
+    }
+
+    fn do_string_encrypt(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()> {
+        do_handle(pass, module, &self.key)
+    }
+}
+
+fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, key: &[u8; 32]) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
     let i8_ty = ctx.i8_type();
@@ -27,9 +39,6 @@ pub(crate) fn do_handle<'a>(
 
     let is_lazy_mode = matches!(pass.timing, DecryptTiming::Lazy);
     let is_global_mode = matches!(pass.timing, DecryptTiming::Global);
-
-    let mut key = [0u8; 32];
-    rand::rng().fill(&mut key);
 
     let global_key = module.add_global(vector256, Some(AddressSpace::default()), "");
     let array_values = key

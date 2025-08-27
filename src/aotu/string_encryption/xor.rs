@@ -1,6 +1,6 @@
 use crate::aotu::string_encryption::{
-    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, alloc_stack_string, array_as_const_string,
-    collect_insert_points,
+    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo, alloc_stack_string,
+    array_as_const_string, collect_insert_points,
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
 use amice_llvm::inkwell2::AdvancedInkwellBuilder;
@@ -12,14 +12,23 @@ use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{BasicValue, BasicValueEnum};
-use llvm_plugin::{ModuleAnalysisManager, inkwell};
+use llvm_plugin::{inkwell};
 use log::{debug, error, warn};
 
-pub(crate) fn do_handle<'a>(
-    pass: &StringEncryption,
-    module: &mut Module<'a>,
-    _manager: &ModuleAnalysisManager,
-) -> anyhow::Result<()> {
+#[derive(Default)]
+pub(super) struct XorAlgo;
+
+impl StringEncryptionAlgo for XorAlgo {
+    fn initialize(&mut self, _pass: &StringEncryption, _module: &mut Module<'_>) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn do_string_encrypt(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()> {
+        do_handle(pass, module)
+    }
+}
+
+fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
 

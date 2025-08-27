@@ -7,7 +7,6 @@ use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::module_utils::VerifyResult::Broken;
 use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
-use ascon_hash::Digest;
 use inkwell::llvm_sys::core::LLVMGetAsString;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::Module;
@@ -17,6 +16,8 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::{debug, error};
 use std::ptr::NonNull;
+use crate::aotu::string_encryption::simd_xor::SimdXorAlgo;
+use crate::aotu::string_encryption::xor::XorAlgo;
 
 /// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled
@@ -63,16 +64,24 @@ impl AmicePassLoadable for StringEncryption {
 }
 
 impl LlvmModulePass for StringEncryption {
-    fn run_pass<'a>(&self, module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+    fn run_pass<'a>(&self, module: &mut Module<'a>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }
 
-        if let Err(e) = match self.encryption_type {
-            StringAlgorithm::Xor => xor::do_handle(self, module, manager),
-            StringAlgorithm::SimdXor => simd_xor::do_handle(self, module, manager),
-        } {
-            error!("(strenc) failed to handle string encryption: {e}");
+        let mut algo: Box<dyn StringEncryptionAlgo> = match self.encryption_type {
+            StringAlgorithm::Xor => Box::new(XorAlgo::default()),
+            StringAlgorithm::SimdXor => Box::new(SimdXorAlgo::default()),
+        };
+
+        if let Err(err) = algo.initialize(self, module) {
+            error!("(strenc) initialize failed: {}", err);
+            return PreservedAnalyses::All;
+        }
+
+        if let Err(err) = algo.do_string_encrypt(self, module) {
+            error!("(strenc) do_string_encrypt failed: {}", err);
+            return PreservedAnalyses::All;
         }
 
         for x in module.get_functions() {
@@ -83,6 +92,12 @@ impl LlvmModulePass for StringEncryption {
 
         PreservedAnalyses::None
     }
+}
+
+pub(super) trait StringEncryptionAlgo {
+    fn initialize(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()>;
+
+    fn do_string_encrypt(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()>;
 }
 
 #[derive(Copy, Clone)]
