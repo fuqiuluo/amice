@@ -35,9 +35,9 @@ impl LlvmModulePass for AliasAccess {
             return PreservedAnalyses::All;
         }
 
-        let mut algo: Box<dyn AliasAccessAlgo> = Box::new(match self.mode {
-            AliasAccessMode::PointerChain => PointerChainAlgo::default(),
-        });
+        let mut algo: Box<dyn AliasAccessAlgo> = match self.mode {
+            AliasAccessMode::PointerChain => Box::new(PointerChainAlgo::default()),
+        };
 
         if let Err(e) = algo.initialize(self) {
             error!("(alias-access) failed to initialize: {}", e);

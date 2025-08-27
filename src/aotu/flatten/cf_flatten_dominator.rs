@@ -1,4 +1,4 @@
-use crate::aotu::flatten::{Flatten, split_entry_block_for_flatten};
+use crate::aotu::flatten::{Flatten, split_entry_block_for_flatten, FlattenAlgo};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use amice_llvm::analysis::dominators::DominatorTree;
 use amice_llvm::inkwell2::AdvancedInkwellBuilder;
@@ -12,50 +12,59 @@ use anyhow::anyhow;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{BasicValue, FunctionValue, InstructionOpcode};
+use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, FunctionValue, InstructionOpcode};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use log::warn;
 use rand::Rng;
 use rand::prelude::SliceRandom;
 use std::collections::HashMap;
+use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 
-pub(crate) fn run(pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
-    let update_key_fn = build_update_key_function(module, pass.inline_fn)?;
+#[derive(Default)]
+pub(super) struct FlattenDominator {
+    update_key_fn: LLVMValueRef
+}
 
-    'out: for function in module.get_functions() {
-        if function.count_basic_blocks() <= 2 {
-            continue;
-        }
+impl FlattenAlgo for FlattenDominator {
+    fn initialize(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
+        let update_key_fn = build_update_key_function(module, pass.inline_fn)?;
 
-        if function == update_key_fn {
-            continue;
-        }
+        self.update_key_fn = update_key_fn.as_value_ref() as LLVMValueRef;
 
-        if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-            continue;
-        }
+        Ok(())
+    }
 
-        for _ in 0..pass.loop_count {
-            if let Err(err) = do_handle(module, function, update_key_fn, pass.fix_stack) {
-                warn!("(flatten-enhanced) function {:?} failed: {}", function.get_name(), err);
-                continue 'out;
+    fn do_flatten(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
+        let update_key_fn = unsafe { FunctionValue::new(self.update_key_fn) }
+            .ok_or_else(|| anyhow!("failed to get update key function"))?;
+        
+        'out: for function in module.get_functions() {
+            if function.count_basic_blocks() <= 2 {
+                continue;
+            }
+
+            if function == update_key_fn {
+                continue;
             }
 
             if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-                break;
+                continue;
+            }
+
+            for _ in 0..pass.loop_count {
+                if let Err(err) = do_handle(module, function, update_key_fn, pass.fix_stack) {
+                    warn!("(flatten-enhanced) function {:?} failed: {}", function.get_name(), err);
+                    continue 'out;
+                }
+
+                if pass.skip_big_function && function.count_basic_blocks() > 4096 {
+                    break;
+                }
             }
         }
 
-        if let VerifyResult::Broken(e) = verify_function(function) {
-            warn!(
-                "(flatten-enhanced) function {:?} verify failed: {}",
-                function.get_name(),
-                e
-            );
-        }
+        Ok(())
     }
-
-    Ok(())
 }
 
 fn do_handle(

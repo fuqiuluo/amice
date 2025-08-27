@@ -1,10 +1,9 @@
-use crate::aotu::flatten::{Flatten, split_entry_block_for_flatten};
+use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::branch_inst;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
-use amice_llvm::module_utils::{VerifyResult, verify_function};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
@@ -13,39 +12,44 @@ use log::warn;
 use rand::Rng;
 use std::collections::HashMap;
 
-pub(crate) fn run(pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
-    'out: for function in module.get_functions() {
-        if function.count_basic_blocks() <= 2 {
-            continue;
-        }
+#[derive(Default)]
+pub(super) struct FlattenBasic;
 
-        if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-            continue;
-        }
+impl FlattenAlgo for FlattenBasic {
+    fn initialize(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
+        Ok(())
+    }
 
-        for _ in 0..pass.loop_count {
-            if let Err(err) = do_handle(module, function, pass.demote_switch) {
-                warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
-                continue 'out;
+    fn do_flatten(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
+        'out: for function in module.get_functions() {
+            if function.count_basic_blocks() <= 2 {
+                continue;
             }
 
             if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-                break;
+                continue;
+            }
+
+            for _ in 0..pass.loop_count {
+                if let Err(err) = do_handle(module, function, pass.demote_switch) {
+                    warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
+                    continue 'out;
+                }
+
+                if pass.skip_big_function && function.count_basic_blocks() > 4096 {
+                    break;
+                }
+            }
+
+            if pass.fix_stack {
+                unsafe {
+                    fix_stack(function);
+                }
             }
         }
 
-        if pass.fix_stack {
-            unsafe {
-                fix_stack(function);
-            }
-        }
-
-        if let VerifyResult::Broken(e) = verify_function(function) {
-            warn!("(flatten) function {:?} verify failed: {}", function.get_name(), e);
-        }
+        Ok(())
     }
-
-    Ok(())
 }
 
 fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bool) -> anyhow::Result<()> {
