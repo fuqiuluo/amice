@@ -79,7 +79,9 @@ export LDFLAGS="-stdlib=libc++ -L/path/to/unstripped-clang/lib"
 # llvm-plugin-rs 18.1，对应 NDK clang 18.0
 export LLVM_SYS_181_PREFIX=/path/to/unstripped-clang
 
-cargo build --release
+# cargo build --release 
+# ndk 25c is llvm-18-1
+cargo b --release --no-default-features --features llvm-18-1
 
 # 如遇找不到 libLLVM.so，可指定 LD_LIBRARY_PATH
 export LD_LIBRARY_PATH=/path/to/unstripped-clang/lib
@@ -89,6 +91,9 @@ export LD_LIBRARY_PATH=/path/to/unstripped-clang/lib
   -Xclang -load -Xclang ../target/release/libamice.so \
   luo.c -o luo
 ```
+
+Download: [android-ndk-r25c Linux X64](https://github.com/fuqiuluo/amice/releases/tag/android-ndk-r25c)
+
 ---
 
 ## TODO
