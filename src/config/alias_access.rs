@@ -1,6 +1,6 @@
-use log::error;
-use crate::config::{bool_var};
+use crate::config::bool_var;
 use crate::pass_registry::EnvOverlay;
+use log::error;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

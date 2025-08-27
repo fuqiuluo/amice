@@ -96,7 +96,11 @@ impl AliasAccessAlgo for PointerChainAlgo {
     }
 }
 
-fn do_alias_access_pointer_chain(pass: &AliasAccess, module: &Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
+fn do_alias_access_pointer_chain(
+    pass: &AliasAccess,
+    module: &Module<'_>,
+    function: FunctionValue,
+) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i8_ty = ctx.i8_type();
     let i8_ptr = ptr_type!(ctx, i8_type);
