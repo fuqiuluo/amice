@@ -1,4 +1,4 @@
-use crate::aotu::flatten::{Flatten, split_entry_block_for_flatten, FlattenAlgo};
+use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use amice_llvm::analysis::dominators::DominatorTree;
 use amice_llvm::inkwell2::AdvancedInkwellBuilder;
@@ -11,6 +11,7 @@ use amice_llvm::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
+use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, FunctionValue, InstructionOpcode};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
@@ -18,11 +19,10 @@ use log::warn;
 use rand::Rng;
 use rand::prelude::SliceRandom;
 use std::collections::HashMap;
-use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 
 #[derive(Default)]
 pub(super) struct FlattenDominator {
-    update_key_fn: LLVMValueRef
+    update_key_fn: LLVMValueRef,
 }
 
 impl FlattenAlgo for FlattenDominator {
@@ -37,7 +37,7 @@ impl FlattenAlgo for FlattenDominator {
     fn do_flatten(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
         let update_key_fn = unsafe { FunctionValue::new(self.update_key_fn) }
             .ok_or_else(|| anyhow!("failed to get update key function"))?;
-        
+
         'out: for function in module.get_functions() {
             if function.count_basic_blocks() <= 2 {
                 continue;
