@@ -1,7 +1,7 @@
 use crate::aotu::alias_access::AliasAccess;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::function::get_basic_block_entry;
-use amice_llvm::{build_load, ptr_type};
+use amice_llvm::{ptr_type};
 use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
@@ -10,6 +10,7 @@ use llvm_plugin::inkwell::types::{BasicType, StructType};
 use llvm_plugin::inkwell::values::{AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
 use log::{debug, warn};
 use std::collections::HashMap;
+use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 
 const META_BOX_COUNT: usize = 6;
 
@@ -358,7 +359,7 @@ pub(crate) fn do_alias_access(pass: &AliasAccess, module: &Module<'_>, function:
                             "as_ptr_ptr",
                         )?;
                         let next_ptr =
-                            build_load!(builder, ptr_ty, slot_addr_base_box_ptr, "ld_next")?.into_pointer_value();
+                            builder.build_load2(ptr_ty, slot_addr_base_box_ptr, "ld_next")?.into_pointer_value();
 
                         // child pointer 还是 void*；把它转回“通用指针类型”以继续链（这里我们统一用 void*，直到最后再按需 cast）
                         cur_ptr = next_ptr;

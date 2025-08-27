@@ -6,6 +6,7 @@ mod ffi;
 pub mod ir;
 pub mod module_utils;
 pub mod annotate;
+pub mod inkwell2;
 
 pub fn get_llvm_version_major() -> i32 {
     unsafe { ffi::amice_get_llvm_version_major() }
@@ -51,95 +52,5 @@ macro_rules! ptr_type {
 macro_rules! ptr_type {
     ($cx:ident, $ty:ident) => {
         $cx.ptr_type(AddressSpace::default())
-    };
-}
-
-#[cfg(not(any(
-    feature = "llvm15-0",
-    feature = "llvm16-0",
-    feature = "llvm17-0",
-    feature = "llvm18-1",
-    feature = "llvm19-1",
-    feature = "llvm20-1"
-)))]
-#[macro_export]
-macro_rules! build_load {
-    ($bd:ident, $ty:expr, $addr:expr, $name:expr) => {
-        $bd.build_load($addr, $name)
-    };
-}
-
-#[cfg(any(
-    feature = "llvm15-0",
-    feature = "llvm16-0",
-    feature = "llvm17-0",
-    feature = "llvm18-1",
-    feature = "llvm19-1",
-    feature = "llvm20-1",
-))]
-#[macro_export]
-macro_rules! build_load {
-    ($bd:ident, $ty:expr, $addr:expr, $name:expr) => {
-        $bd.build_load($ty, $addr, $name)
-    };
-}
-
-#[cfg(not(any(
-    feature = "llvm15-0",
-    feature = "llvm16-0",
-    feature = "llvm17-0",
-    feature = "llvm18-1",
-    feature = "llvm19-1",
-    feature = "llvm20-1",
-)))]
-#[macro_export]
-macro_rules! build_in_bounds_gep {
-    ($bd:ident, $ty:expr, $addr:expr, $idxs:expr, $name:expr) => {
-        unsafe { $bd.build_in_bounds_gep($addr, $idxs, $name) }
-    };
-}
-
-#[cfg(any(
-    feature = "llvm15-0",
-    feature = "llvm16-0",
-    feature = "llvm17-0",
-    feature = "llvm18-1",
-    feature = "llvm19-1",
-    feature = "llvm20-1",
-))]
-#[macro_export]
-macro_rules! build_in_bounds_gep {
-    ($bd:ident, $ty:expr, $addr:expr, $idxs:expr, $name:expr) => {
-        unsafe { $bd.build_in_bounds_gep($ty, $addr, $idxs, $name) }
-    };
-}
-
-#[cfg(not(any(
-    feature = "llvm15-0",
-    feature = "llvm16-0",
-    feature = "llvm17-0",
-    feature = "llvm18-1",
-    feature = "llvm19-1",
-    feature = "llvm20-1",
-)))]
-#[macro_export]
-macro_rules! build_gep {
-    ($bd:ident, $ty:expr, $addr:expr, $idxs:expr, $name:expr) => {
-        unsafe { $bd.build_gep($addr, $idxs, $name) }
-    };
-}
-
-#[cfg(any(
-    feature = "llvm15-0",
-    feature = "llvm16-0",
-    feature = "llvm17-0",
-    feature = "llvm18-1",
-    feature = "llvm19-1",
-    feature = "llvm20-1",
-))]
-#[macro_export]
-macro_rules! build_gep {
-    ($bd:ident, $ty:expr, $addr:expr, $idxs:expr, $name:expr) => {
-        unsafe { $bd.build_gep($ty, $addr, $idxs, $name) }
     };
 }

@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::verify_function2;
-use amice_llvm::{build_gep, build_load, get_llvm_version_major, get_llvm_version_minor, ptr_type};
+use amice_llvm::{ptr_type};
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
@@ -11,6 +11,7 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
+use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 
 #[amice(priority = 990, name = "IndirectCall", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -189,19 +190,18 @@ fn do_handle<'a>(
         let builder = ctx.create_builder();
         builder.position_before(inst);
         let index_value = if xor_key_global.is_some() {
-            let xor_key_value = build_load!(builder, i32_type, xor_key_global.unwrap().as_pointer_value(), "")?;
+            let xor_key_value = builder.build_load2(i32_type, xor_key_global.unwrap().as_pointer_value(), "")?;
             builder.build_xor(index_value, xor_key_value.into_int_value(), "")?
         } else {
             index_value
         };
-        let gep = build_gep!(
-            builder,
+        let gep = builder.build_gep2(
             pty_type,
             global_fun_table.as_pointer_value(),
             &[index_value],
             ""
         )?;
-        let addr = build_load!(builder, pty_type, gep, "")?.into_pointer_value();
+        let addr = builder.build_load2(pty_type, gep, "")?.into_pointer_value();
 
         let call_site = unsafe { CallSiteValue::new(inst.as_value_ref()) };
         let mut args = Vec::new();

@@ -1,6 +1,5 @@
 use crate::aotu::flatten::{Flatten, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
-use amice_llvm::build_load;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::branch_inst;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
@@ -12,6 +11,7 @@ use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use log::warn;
 use rand::Rng;
 use std::collections::HashMap;
+use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 
 pub(crate) fn run(pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
     'out: for function in module.get_functions() {
@@ -132,7 +132,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     entry_terminator.erase_from_basic_block();
 
     builder.position_at_end(dispatcher);
-    let dispatch_id = build_load!(builder, i32_ty, dispatch_id_ptr, "")?;
+    let dispatch_id = builder.build_load2(i32_ty, dispatch_id_ptr, "")?;
     builder.build_switch(dispatch_id.into_int_value(), default, &dispatch_cases)?;
 
     builder.position_at_end(default);

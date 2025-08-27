@@ -4,7 +4,7 @@ use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
 use amice_llvm::module_utils::verify_function2;
-use amice_llvm::{build_in_bounds_gep, build_load, ptr_type};
+use amice_llvm::{ptr_type};
 use amice_macro::amice;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
@@ -15,6 +15,7 @@ use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use rand::Rng;
+use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
 
@@ -207,8 +208,7 @@ impl LlvmModulePass for IndirectBranch {
                         let key_index = index % xor_key.len();
                         index ^= xor_key[key_index] as usize;
                         let enc_index = i32_type.const_int(index as u64, false);
-                        let key_gep = build_in_bounds_gep!(
-                            builder,
+                        let key_gep = builder.build_in_bounds_gep2(
                             xor_key_table.get_value_type().into_array_type(),
                             xor_key_table.as_pointer_value(),
                             &[const_zero, i32_type.const_int(key_index as u64, false)],
@@ -217,7 +217,7 @@ impl LlvmModulePass for IndirectBranch {
                         .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}"))
                         .expect("build gep_index failed");
 
-                        let key_val = build_load!(builder, i32_type, key_gep, "IndirectBranchingKey")
+                        let key_val = builder.build_load2(i32_type, key_gep, "IndirectBranchingKey")
                             .map_err(|e| error!("(indirect-branch) build load failed: {e}"))
                             .expect("build load failed")
                             .into_int_value();
@@ -235,8 +235,7 @@ impl LlvmModulePass for IndirectBranch {
                     warn!("(indirect-branch) index is None, skipping this branch, branch: {br_inst:?}");
                     continue;
                 };
-                let Ok(gep) = build_in_bounds_gep!(
-                    builder,
+                let Ok(gep) = builder.build_in_bounds_gep2(
                     indirect_branch_table.get_value_type().into_array_type(),
                     indirect_branch_table.as_pointer_value(),
                     &[const_zero, index],
@@ -245,7 +244,7 @@ impl LlvmModulePass for IndirectBranch {
                 .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}")) else {
                     panic!("(indirect-branch) build gep_index failed, this should never happen");
                 };
-                let Ok(loaded_address) = build_load!(builder, ptr_type, gep, "IndirectBranchingTargetAddress")
+                let Ok(loaded_address) = builder.build_load2(ptr_type, gep, "IndirectBranchingTargetAddress")
                     .map_err(|e| error!("(indirect-branch) build load failed: {e}"))
                 else {
                     panic!("(indirect-branch) build load failed, this should never happen");
