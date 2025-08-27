@@ -81,18 +81,18 @@ fn do_handle(
 
     let mut has_eh_or_invoke_in_entry = false;
     for inst in entry_block.get_instructions() {
-        match inst.get_opcode() {
+        if matches!(
+            inst.get_opcode(),
             InstructionOpcode::Invoke
-            | InstructionOpcode::LandingPad
-            | InstructionOpcode::CatchSwitch
-            | InstructionOpcode::CatchPad
-            | InstructionOpcode::CatchRet
-            | InstructionOpcode::CleanupPad
-            | InstructionOpcode::CallBr => {
-                has_eh_or_invoke_in_entry = true;
-                break;
-            },
-            _ => {},
+                | InstructionOpcode::LandingPad
+                | InstructionOpcode::CatchSwitch
+                | InstructionOpcode::CatchPad
+                | InstructionOpcode::CatchRet
+                | InstructionOpcode::CleanupPad
+                | InstructionOpcode::CallBr
+        ) {
+            has_eh_or_invoke_in_entry = true;
+            break;
         }
     }
     if has_eh_or_invoke_in_entry {
