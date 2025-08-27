@@ -3,8 +3,9 @@ use crate::aotu::string_encryption::{
     collect_insert_points,
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
+use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 use amice_llvm::module_utils::append_to_global_ctors;
-use amice_llvm::{ptr_type};
+use amice_llvm::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -13,7 +14,6 @@ use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, BasicValu
 use llvm_plugin::{ModuleAnalysisManager, inkwell};
 use log::{error, warn};
 use rand::Rng;
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 
 pub(crate) fn do_handle<'a>(
     pass: &StringEncryption,
