@@ -24,12 +24,11 @@ pub enum BogusControlFlowMode {
 
 fn parse_alias_access_mode(s: &str) -> Result<BogusControlFlowMode, String> {
     let s = s.to_lowercase();
-    match s.as_str() { 
+    match s.as_str() {
         "basic" | "v1" => Ok(BogusControlFlowMode::Basic),
         _ => Err(format!("unknown alias access mode: {}", s)),
     }
 }
-
 
 impl Default for BogusControlFlowConfig {
     fn default() -> Self {
@@ -73,7 +72,7 @@ impl EnvOverlay for BogusControlFlowConfig {
                 warn!("Invalid AMICE_BOGUS_CONTROL_FLOW_LOOPS value: {}, using default", loops);
             }
         }
-        
+
         if let Ok(mode) = std::env::var("AMICE_BOGUS_CONTROL_FLOW_MODE") {
             if let Ok(val) = parse_alias_access_mode(&mode) {
                 self.mode = val;

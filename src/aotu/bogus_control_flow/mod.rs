@@ -1,5 +1,6 @@
 mod basic;
 
+use crate::aotu::bogus_control_flow::basic::BogusControlFlowBasic;
 use crate::config::{BogusControlFlowMode, Config};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::module_utils::{VerifyResult, verify_function};
@@ -7,7 +8,6 @@ use amice_macro::amice;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error};
-use crate::aotu::bogus_control_flow::basic::BogusControlFlowBasic;
 
 #[amice(priority = 950, name = "BogusControlFlow", position = PassPosition::PipelineStart)]
 #[derive(Default)]

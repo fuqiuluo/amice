@@ -1,16 +1,16 @@
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::builder::Builder;
-use llvm_plugin::inkwell::IntPredicate;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{FunctionValue, GlobalValue, InstructionOpcode, IntValue, PointerValue};
-use log::{error, warn};
-use rand::Rng;
+use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
 use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 use amice_llvm::ir::branch_inst;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
-use amice_llvm::module_utils::{verify_function, VerifyResult};
-use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
+use amice_llvm::module_utils::{VerifyResult, verify_function};
+use llvm_plugin::inkwell::IntPredicate;
+use llvm_plugin::inkwell::basic_block::BasicBlock;
+use llvm_plugin::inkwell::builder::Builder;
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::inkwell::values::{FunctionValue, GlobalValue, InstructionOpcode, IntValue, PointerValue};
+use log::{error, warn};
+use rand::Rng;
 
 #[derive(Default)]
 pub struct BogusControlFlowBasic {
@@ -22,7 +22,7 @@ impl BogusControlFlowAlgo for BogusControlFlowBasic {
     fn initialize(&mut self, pass: &BogusControlFlow, module: &mut Module<'_>) -> anyhow::Result<()> {
         self.x = rand::random_range(0..2782812982);
         self.y = rand::random_range(0..459846238);
-        
+
         Ok(())
     }
 
@@ -41,13 +41,16 @@ impl BogusControlFlowAlgo for BogusControlFlowBasic {
                 }
             }
         }
-        
+
         Ok(())
     }
 }
 
 /// Create global variables used for opaque predicates
-fn create_opaque_predicate_globals<'a>(algo: &BogusControlFlowBasic, module: &mut Module<'a>) -> OpaquePredicateGlobals<'a> {
+fn create_opaque_predicate_globals<'a>(
+    algo: &BogusControlFlowBasic,
+    module: &mut Module<'a>,
+) -> OpaquePredicateGlobals<'a> {
     let context = module.get_context();
     let i32_type = context.i32_type();
 
