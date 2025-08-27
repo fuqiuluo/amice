@@ -1,7 +1,6 @@
 name: Linux X64 Build For Android NDK
 
 on:
-  push:
   workflow_dispatch:
 
 env:
