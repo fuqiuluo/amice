@@ -25,6 +25,14 @@ pub trait AdvancedInkwellBuilder<'ctx> {
         ordered_indexes: &[IntValue<'ctx>],
         name: &str,
     ) -> Result<PointerValue<'ctx>, BuilderError>;
+
+    fn build_struct_gep2<T: BasicType<'ctx>>(
+        &self,
+        pointee_ty: T,
+        ptr: PointerValue<'ctx>,
+        index: u32,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, BuilderError>;
 }
 
 impl<'ctx> AdvancedInkwellBuilder<'ctx> for Builder<'ctx> {
@@ -113,6 +121,32 @@ impl<'ctx> AdvancedInkwellBuilder<'ctx> for Builder<'ctx> {
             feature = "llvm20-1",
         ))]
         return unsafe { self.build_in_bounds_gep(pointee_ty, ptr, ordered_indexes, name) };
+
+        panic!("Unsupported LLVM version");
+    }
+
+    fn build_struct_gep2<T: BasicType<'ctx>>(
+        &self,
+        pointee_ty: T,
+        ptr: PointerValue<'ctx>,
+        index: u32,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, BuilderError> {
+        #[cfg(any(
+            feature = "llvm11-0",
+            feature = "llvm12-0",
+            feature = "llvm13-0",
+            feature = "llvm14-0"
+        ))]
+        return self.build_struct_gep(ptr, index, name);
+
+        #[cfg(not(any(
+            feature = "llvm11-0",
+            feature = "llvm12-0",
+            feature = "llvm13-0",
+            feature = "llvm14-0"
+        )))]
+        return self.build_struct_gep(pointee_ty, ptr, index, name);
 
         panic!("Unsupported LLVM version");
     }

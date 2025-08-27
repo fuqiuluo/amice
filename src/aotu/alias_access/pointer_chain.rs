@@ -68,22 +68,8 @@ fn build_getter_function<'ctx>(
     let trans_ptr = builder.build_pointer_cast(arg0, st.ptr_type(AddressSpace::default()), "cast_trans")?;
 
     // &p->slot[idx]
-    #[cfg(any(
-        feature = "llvm11-0",
-        feature = "llvm12-0",
-        feature = "llvm13-0",
-        feature = "llvm14-0"
-    ))]
-    let slot_addr = builder.build_struct_gep(trans_ptr, idx, "slot_addr").expect("GEP slot");
-
-    #[cfg(not(any(
-        feature = "llvm11-0",
-        feature = "llvm12-0",
-        feature = "llvm13-0",
-        feature = "llvm14-0"
-    )))]
     let slot_addr = builder
-        .build_struct_gep(st, trans_ptr, idx, "slot_addr")
+        .build_struct_gep2(st, trans_ptr, idx, "slot_addr")
         .expect("GEP slot");
 
     // 为隐藏类型信息，返回 void*
@@ -250,24 +236,8 @@ fn do_alias_access_pointer_chain(pass: &AliasAccess, module: &Module<'_>, functi
             let child_id = rand::random_range(0..graph.len());
             let child = &graph[child_id];
 
-            #[cfg(any(
-                feature = "llvm11-0",
-                feature = "llvm12-0",
-                feature = "llvm13-0",
-                feature = "llvm14-0"
-            ))]
             let slot_addr = builder
-                .build_struct_gep(meta_box_alloca, idx as u32, "slot")
-                .expect("router gep");
-
-            #[cfg(not(any(
-                feature = "llvm11-0",
-                feature = "llvm12-0",
-                feature = "llvm13-0",
-                feature = "llvm14-0"
-            )))]
-            let slot_addr = builder
-                .build_struct_gep(meta_box_ty, meta_box_alloca, idx as u32, "slot")
+                .build_struct_gep2(meta_box_ty, meta_box_alloca, idx as u32, "slot")
                 .expect("router gep");
 
             builder.build_store(slot_addr, child.alloca)?;
@@ -392,22 +362,8 @@ fn do_alias_access_pointer_chain(pass: &AliasAccess, module: &Module<'_>, functi
                     let st_ptr_ty = ep.st.ptr_type(AddressSpace::default());
                     let raw_ptr = builder.build_pointer_cast(cur_ptr, st_ptr_ty, "as_raw_st")?;
 
-                    #[cfg(any(
-                        feature = "llvm11-0",
-                        feature = "llvm12-0",
-                        feature = "llvm13-0",
-                        feature = "llvm14-0"
-                    ))]
-                    let field_addr = builder.build_struct_gep(raw_ptr, ep.index, "field").expect("field gep");
-
-                    #[cfg(not(any(
-                        feature = "llvm11-0",
-                        feature = "llvm12-0",
-                        feature = "llvm13-0",
-                        feature = "llvm14-0"
-                    )))]
                     let field_addr = builder
-                        .build_struct_gep(ep.st, raw_ptr, ep.index, "field")
+                        .build_struct_gep2(ep.st, raw_ptr, ep.index, "field")
                         .expect("field gep");
 
                     // 用这个地址替换当前指令的第 i 个操作数
