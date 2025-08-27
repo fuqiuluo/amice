@@ -55,9 +55,7 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-
-            ${{ runner.os }}-cargo-
+          restore-keys: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
