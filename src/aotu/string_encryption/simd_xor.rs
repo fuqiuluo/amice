@@ -343,7 +343,7 @@ fn add_decrypt_function<'a>(
     let vector_ptr_type = vector_256.ptr_type(AddressSpace::default());
     let i32_one = i32_ty.const_int(1, false);
 
-    let fn_ty = i8_ty.fn_type(
+    let fn_ty = i8_ptr.fn_type(
         &[
             i8_ptr.into(),
             i8_ptr.into(),
