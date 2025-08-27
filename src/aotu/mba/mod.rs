@@ -9,6 +9,7 @@ use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType};
 use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
 use crate::aotu::mba::expr::Expr;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_llvm::module_utils::verify_function2;
 use amice_macro::amice;
@@ -20,7 +21,6 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use std::cmp::max;
 use std::collections::HashMap;
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 
 #[amice(
     priority = 955,
@@ -303,7 +303,9 @@ fn rewrite_binop_with_mba<'a>(
             && let Some(global_aux_params) = global_aux.get(&mba_int_width)
         {
             let global_aux = global_aux_params[i];
-            let int = builder.build_load2(value_type, global_aux.as_pointer_value(), "")?.into_int_value();
+            let int = builder
+                .build_load2(value_type, global_aux.as_pointer_value(), "")?
+                .into_int_value();
             aux_params.push(int);
         } else if let Some(stack_aux) = stack_aux_params
             && let Some(stack_aux_params) = stack_aux.get(&mba_int_width)
@@ -375,7 +377,9 @@ fn rewrite_constant_inst_with_mba<'a>(
                 && let Some(global_aux_params) = global_aux.get(&mba_int_width)
             {
                 let global_aux = global_aux_params[i];
-                let int = builder.build_load2(value_type, global_aux.as_pointer_value(), "")?.into_int_value();
+                let int = builder
+                    .build_load2(value_type, global_aux.as_pointer_value(), "")?
+                    .into_int_value();
                 aux_params.push(int);
             } else if let Some(stack_aux) = stack_aux_params
                 && let Some(stack_aux_params) = stack_aux.get(&mba_int_width)
