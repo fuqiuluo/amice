@@ -5,7 +5,7 @@ use lazy_static::lazy_static;
 use log::warn;
 
 pub use alias_access::{AliasAccessConfig, AliasAccessMode};
-pub use bogus_control_flow::BogusControlFlowConfig;
+pub use bogus_control_flow::{BogusControlFlowConfig, BogusControlFlowMode};
 pub use clone_function::CloneFunctionConfig;
 use custom_calling_conv::CustomCallingConvConfig;
 pub use flatten::FlattenMode;
