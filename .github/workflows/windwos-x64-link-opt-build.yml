@@ -1,14 +1,6 @@
 name: Windows X64 Build (opt-link)
 
 on:
-  push:
-    branches: [ master ]
-    paths:
-      - '**/*.rs'
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - '**/build.rs'
-      - 'rust-toolchain*'
   workflow_dispatch:
 
 env:
