@@ -8,11 +8,11 @@ use amice_llvm::module_utils::append_to_global_ctors;
 use amice_llvm::ptr_type;
 use inkwell::module::Module;
 use inkwell::values::FunctionValue;
+use llvm_plugin::inkwell;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{BasicValue, BasicValueEnum};
-use llvm_plugin::{inkwell};
 use log::{debug, error, warn};
 
 #[derive(Default)]

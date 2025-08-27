@@ -1,6 +1,8 @@
 mod simd_xor;
 mod xor;
 
+use crate::aotu::string_encryption::simd_xor::SimdXorAlgo;
+use crate::aotu::string_encryption::xor::XorAlgo;
 use crate::config::{Config, StringAlgorithm, StringDecryptTiming};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::get_basic_block_entry;
@@ -16,8 +18,6 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::{debug, error};
 use std::ptr::NonNull;
-use crate::aotu::string_encryption::simd_xor::SimdXorAlgo;
-use crate::aotu::string_encryption::xor::XorAlgo;
 
 /// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled

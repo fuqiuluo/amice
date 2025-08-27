@@ -7,11 +7,11 @@ use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 use amice_llvm::module_utils::append_to_global_ctors;
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
+use llvm_plugin::inkwell;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue};
-use llvm_plugin::{inkwell};
 use log::{error, warn};
 use rand::Rng;
 
