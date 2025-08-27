@@ -5,6 +5,14 @@ edition = "2024"
 
 [features]
 default = ["llvm20-1"]
+
+android-ndk = []
+
+# On Windows, llvm plugins require linking with either opt.lib,
+# or lld.lib.
+win-link-opt = []
+win-link-lld = []
+
 llvm11-0 = ["inkwell/llvm11-0-no-llvm-linking"]
 llvm12-0 = ["inkwell/llvm12-0-no-llvm-linking"]
 llvm13-0 = ["inkwell/llvm13-0-no-llvm-linking"]

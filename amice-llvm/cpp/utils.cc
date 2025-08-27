@@ -36,7 +36,6 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/InlineCost.h"
-#include "llvm/IR/ValueHandle.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
 
 extern "C" {
@@ -74,10 +73,14 @@ void amice_phi_node_replace_incoming_block_with(llvm::PHINode* PHI, llvm::BasicB
 }
 
 llvm::Function * amice_clone_function(llvm::Function* F) {
+#if !defined(AMICE_ENABLE_CLONE_FUNCTION)
   llvm::ValueToValueMapTy Mappings;
   llvm::Function *Clone = CloneFunction(F, Mappings);
   Clone->setName(F->getName() + ".specialized.amice");
   return Clone;
+#else
+  return nullptr;
+#endif
 }
 
 typedef struct {
@@ -90,7 +93,7 @@ llvm::Function* amice_specialize_function(
     llvm::Module* mod,
     const ArgReplacement* replacements,
     unsigned int replacement_count) {
-
+#if !defined(AMICE_ENABLE_CLONE_FUNCTION)
     if (!originalFunc || !mod) {
         return nullptr;
     }
@@ -164,6 +167,9 @@ llvm::Function* amice_specialize_function(
     specializedFunc->copyAttributesFrom(originalFunc);
 
     return specializedFunc;
+#else
+    return nullptr;
+#endif
 }
 
 }

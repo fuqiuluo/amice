@@ -32,79 +32,82 @@ impl LlvmModulePass for CloneFunction {
             return PreservedAnalyses::All;
         }
 
-        let mut call_instructions = Vec::new();
-        for function in module.get_functions() {
-            if function.count_basic_blocks() == 0 {
-                continue;
-            }
+        #[cfg(not(feature = "android-ndk"))]
+        {
+            let mut call_instructions = Vec::new();
+            for function in module.get_functions() {
+                if function.count_basic_blocks() == 0 {
+                    continue;
+                }
 
-            // Check if function should be obfuscated (using similar logic from other passes)
-            let function_name = function.get_name().to_str().unwrap_or("");
-            if should_skip_function_by_name(function_name) || should_skip_function_by_inline_attribute(function) {
-                continue;
-            }
+                // Check if function should be obfuscated (using similar logic from other passes)
+                let function_name = function.get_name().to_str().unwrap_or("");
+                if should_skip_function_by_name(function_name) || should_skip_function_by_inline_attribute(function) {
+                    continue;
+                }
 
-            for bb in function.get_basic_blocks() {
-                for inst in bb.get_instructions() {
-                    if matches!(inst.get_opcode(), InstructionOpcode::Call) {
-                        if let Some(called_func) = get_called_function(&inst) {
-                            let function_name = called_func.get_name().to_str().unwrap_or("");
-                            if should_skip_function_by_name(function_name)
-                                || should_skip_function_by_inline_attribute(called_func)
-                                || should_skip_function_by_defined_state(called_func)
-                            {
-                                continue;
+                for bb in function.get_basic_blocks() {
+                    for inst in bb.get_instructions() {
+                        if matches!(inst.get_opcode(), InstructionOpcode::Call) {
+                            if let Some(called_func) = get_called_function(&inst) {
+                                let function_name = called_func.get_name().to_str().unwrap_or("");
+                                if should_skip_function_by_name(function_name)
+                                    || should_skip_function_by_inline_attribute(called_func)
+                                    || should_skip_function_by_defined_state(called_func)
+                                {
+                                    continue;
+                                }
+
+                                //debug!("(clone-function) adding call to function: {:?}",called_func.get_name());
+                                call_instructions.push((inst, called_func));
                             }
-
-                            //debug!("(clone-function) adding call to function: {:?}",called_func.get_name());
-                            call_instructions.push((inst, called_func));
                         }
                     }
                 }
             }
-        }
 
-        let mut call_instructions_with_constant_args = Vec::new();
-        for (call, call_func) in call_instructions {
-            let mut args = Vec::new();
-            for i in 0..call.get_num_operands() {
-                let operand = call.get_operand(i);
-                if let Some(operand) = operand
-                    && let Some(operand_value) = operand.left()
-                    && (operand_value.is_int_value() || operand_value.is_float_value())
-                {
-                    let is_const = match operand_value {
-                        BasicValueEnum::IntValue(iv) => iv.is_const(),
-                        BasicValueEnum::FloatValue(fv) => fv.is_const(),
-                        _ => false,
-                    };
-                    if is_const {
-                        args.push((i as u32, operand_value));
+            let mut call_instructions_with_constant_args = Vec::new();
+            for (call, call_func) in call_instructions {
+                let mut args = Vec::new();
+                for i in 0..call.get_num_operands() {
+                    let operand = call.get_operand(i);
+                    if let Some(operand) = operand
+                        && let Some(operand_value) = operand.left()
+                        && (operand_value.is_int_value() || operand_value.is_float_value())
+                    {
+                        let is_const = match operand_value {
+                            BasicValueEnum::IntValue(iv) => iv.is_const(),
+                            BasicValueEnum::FloatValue(fv) => fv.is_const(),
+                            _ => false,
+                        };
+                        if is_const {
+                            args.push((i as u32, operand_value));
+                        }
                     }
                 }
+                if args.len() > 0 {
+                    //debug!("(clone-function) adding call to function: {:?}",call_func.get_name());
+                    call_instructions_with_constant_args.push((call, call_func, args));
+                }
             }
-            if args.len() > 0 {
-                //debug!("(clone-function) adding call to function: {:?}",call_func.get_name());
-                call_instructions_with_constant_args.push((call, call_func, args));
+
+            if call_instructions_with_constant_args.is_empty() {
+                return PreservedAnalyses::All;
+            }
+
+            for (inst, call_func, args) in call_instructions_with_constant_args {
+                if let Err(e) = do_replace_call_with_call_to_specialized_function(module, inst, call_func, args) {
+                    error!(
+                        "(clone-function) failed to replace call with specialized function: {}",
+                        e
+                    );
+                }
             }
         }
 
-        if call_instructions_with_constant_args.is_empty() {
-            return PreservedAnalyses::All;
-        }
-
-        // pub unsafe fn function_specialize_partial(
-        //     module: LLVMModuleRef,
-        //     original_func: LLVMValueRef,
-        //     replacements: &[(u32, LLVMValueRef)],
-        // ) -> Result<LLVMValueRef, &'static str>
-        for (inst, call_func, args) in call_instructions_with_constant_args {
-            if let Err(e) = do_replace_call_with_call_to_specialized_function(module, inst, call_func, args) {
-                error!(
-                    "(clone-function) failed to replace call with specialized function: {}",
-                    e
-                );
-            }
+        #[cfg(feature = "android-ndk")]
+        {
+            error!("(clone-function) not support android-ndk");
         }
 
         PreservedAnalyses::None

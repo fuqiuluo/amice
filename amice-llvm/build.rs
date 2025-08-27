@@ -23,12 +23,12 @@ fn link_llvm() {
     build.file("cpp/utils.cc");
     build.file("cpp/verifier.cc");
     build.file("cpp/instructions.cc");
-
-    // todo: android ndk clang?
-    //build.flag("-stdlib=c++");
-    //println!("cargo:rustc-link-lib=c++");
-    //println!("cargo:rustc-link-search=native=linux-x86-refs_heads_main-clang-r522817/lib");
-
+    
+    #[cfg(feature = "android-ndk")]
+    {
+        build.define("AMICE_ENABLE_CLONE_FUNCTION", None);
+    }
+    
     #[cfg(target_env = "msvc")]
     build.flag_if_supported("/std:c++17");
     #[cfg(not(target_env = "msvc"))]
