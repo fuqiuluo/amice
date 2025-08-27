@@ -1,7 +1,8 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 use amice_llvm::module_utils::verify_function2;
-use amice_llvm::{ptr_type};
+use amice_llvm::ptr_type;
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
@@ -11,7 +12,6 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
 
 #[amice(priority = 990, name = "IndirectCall", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -139,11 +139,7 @@ impl LlvmModulePass for IndirectCall {
             feature = "llvm16-0",
             feature = "llvm15-0",
         )))]
-        error!(
-            "(indirect_call) LLVM version is not supported: llvm-{}.{}",
-            get_llvm_version_major(),
-            get_llvm_version_minor()
-        );
+        error!("(indirect_call) LLVM version is not supported");
 
         for f in module.get_functions() {
             if verify_function2(f) {
@@ -195,12 +191,7 @@ fn do_handle<'a>(
         } else {
             index_value
         };
-        let gep = builder.build_gep2(
-            pty_type,
-            global_fun_table.as_pointer_value(),
-            &[index_value],
-            ""
-        )?;
+        let gep = builder.build_gep2(pty_type, global_fun_table.as_pointer_value(), &[index_value], "")?;
         let addr = builder.build_load2(pty_type, gep, "")?.into_pointer_value();
 
         let call_site = unsafe { CallSiteValue::new(inst.as_value_ref()) };
