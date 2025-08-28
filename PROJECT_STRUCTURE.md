@@ -1,7 +1,7 @@
 # 项目结构
 
 - 仓库：amice
-- 生成时间：2025-08-22 06:06:27 UTC
+- 生成时间：2025-08-28 17:34:43 UTC
 - 深度：3
 - 忽略：.git|target|node_modules|.idea|.vscode|dist|build
 
@@ -11,11 +11,17 @@
 │   ├── copilot-instructions.md
 │   └── workflows/
 │       ├── generate-structure.yml
-│       └── rustfmt.yml
+│       ├── linux-x64-build-android-ndk.yml
+│       ├── linux-x64-build.yml
+│       ├── macos-arm64-build.yml
+│       ├── rustfmt.yml
+│       ├── windwos-x64-link-lld-build.yml
+│       └── windwos-x64-link-opt-build.yml
 ├── .gitignore
 ├── .rustfmt.toml
 ├── Cargo.lock
 ├── Cargo.toml
+├── LICENSE
 ├── PROJECT_STRUCTURE.md
 ├── README.md
 ├── amice-llvm/
@@ -30,10 +36,10 @@
 │   │   └── verifier.cc
 │   └── src/
 │       ├── analysis/
+│       ├── annotate.rs
 │       ├── ffi.rs
-│       ├── ir/
-│       ├── lib.rs
-│       └── module_utils.rs
+│       ├── inkwell2/
+│       └── lib.rs
 ├── amice-macro/
 │   ├── Cargo.lock
 │   ├── Cargo.toml
@@ -42,8 +48,10 @@
 ├── build.rs
 ├── src/
 │   ├── aotu/
+│   │   ├── alias_access/
 │   │   ├── bogus_control_flow/
 │   │   ├── clone_function/
+│   │   ├── custom_calling_conv/
 │   │   ├── flatten/
 │   │   ├── function_wrapper/
 │   │   ├── indirect_branch/
@@ -56,8 +64,10 @@
 │   │   ├── string_encryption/
 │   │   └── vm_flatten/
 │   ├── config/
+│   │   ├── alias_access.rs
 │   │   ├── bogus_control_flow.rs
 │   │   ├── clone_function.rs
+│   │   ├── custom_calling_conv.rs
 │   │   ├── flatten.rs
 │   │   ├── function_wrapper.rs
 │   │   ├── indirect_branch.rs
@@ -80,6 +90,7 @@
     ├── complex_switch_test.c
     ├── const_strings.c
     ├── const_strings.rs
+    ├── custom_calling_conv.c
     ├── function_wrapper_test.c
     ├── function_wrapper_test.rs
     ├── indirect_branch.c
@@ -99,7 +110,7 @@
     ├── test_strings.c
     └── vm_flatten.c
 
-27 directories, 65 files
+29 directories, 74 files
 ```
 
 > 本文件由 GitHub Actions 自动生成，请勿手动编辑。
