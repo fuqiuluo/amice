@@ -1,4 +1,5 @@
 mod basic;
+mod polaris_primes;
 
 use crate::aotu::bogus_control_flow::basic::BogusControlFlowBasic;
 use crate::config::{BogusControlFlowMode, Config};
@@ -8,6 +9,7 @@ use amice_macro::amice;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error};
+use crate::aotu::bogus_control_flow::polaris_primes::BogusControlFlowPolarisPrimes;
 
 #[amice(priority = 950, name = "BogusControlFlow", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -45,6 +47,7 @@ impl LlvmModulePass for BogusControlFlow {
 
         let mut algo: Box<dyn BogusControlFlowAlgo> = match self.mode {
             BogusControlFlowMode::Basic => Box::new(BogusControlFlowBasic::default()),
+            BogusControlFlowMode::PolarisPrimes => Box::new(BogusControlFlowPolarisPrimes::default()),
         };
 
         if let Err(err) = algo.initialize(self, module) {
