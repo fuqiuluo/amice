@@ -85,22 +85,6 @@ int amice_get_llvm_version_minor() {
   return LLVM_VERSION_MINOR;
 }
 
-llvm::Constant * amice_constant_get_bit_cast(llvm::Constant *C, llvm::Type *Ty) {
-    return llvm::ConstantExpr::getBitCast(C, Ty);
-}
-
-llvm::Constant * amice_constant_get_ptr_to_int(llvm::Constant *C, llvm::Type *Ty) {
-    return llvm::ConstantExpr::getPtrToInt(C, Ty);
-}
-
-llvm::Constant * amice_constant_get_int_to_ptr(llvm::Constant *C, llvm::Type *Ty) {
-    return llvm::ConstantExpr::getIntToPtr(C, Ty);
-}
-
-llvm::Constant * amice_constant_get_xor(llvm::Constant *C1, llvm::Constant *C2) {
-    return llvm::ConstantExpr::getXor(C1, C2);
-}
-
 void amice_fix_stack(llvm::Function *f, int AtTerminator, int MaxIterations) {
     // https://bbs.kanxue.com/thread-268789-1.htm
     std::vector<llvm::PHINode *> tmpPhi;

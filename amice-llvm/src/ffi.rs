@@ -29,14 +29,6 @@ unsafe extern "C" {
 
     pub(crate) fn amice_free_msg(errmsg: *const c_char) -> i32;
 
-    pub(crate) fn amice_constant_get_bit_cast(value: *mut c_void, ty: *mut c_void) -> *mut c_void;
-
-    pub(crate) fn amice_constant_get_ptr_to_int(value: *mut c_void, ty: *mut c_void) -> *mut c_void;
-
-    pub(crate) fn amice_constant_get_int_to_ptr(value: *mut c_void, ty: *mut c_void) -> *mut c_void;
-
-    pub(crate) fn amice_constant_get_xor(value1: *mut c_void, value2: *mut c_void) -> *mut c_void;
-
     pub(crate) fn amice_split_basic_block(
         block: *mut c_void,
         inst: *mut c_void,
