@@ -114,6 +114,7 @@ impl LlvmModulePass for CloneFunction {
     }
 }
 
+#[cfg(not(feature = "android-ndk"))]
 fn do_replace_call_with_call_to_specialized_function<'a>(
     module: &mut Module<'a>,
     call_inst: InstructionValue<'_>,

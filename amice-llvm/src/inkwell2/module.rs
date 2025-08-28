@@ -53,6 +53,7 @@ impl<'ctx> ModuleExt<'ctx> for Module<'ctx> {
         read_function_annotate(self, func)
     }
 
+    #[cfg(not(feature = "android-ndk"))]
     unsafe fn specialize_function_by_args(
         &self,
         original_func: FunctionValue<'ctx>,
