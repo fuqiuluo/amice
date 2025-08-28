@@ -34,7 +34,7 @@ impl LlvmModulePass for SplitBasicBlock {
 
         for function in module.get_functions() {
             if function.is_undef_function() {
-                continue
+                continue;
             }
 
             if let Err(e) = do_split(module, function, self.split_num) {
