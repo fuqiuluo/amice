@@ -1,6 +1,6 @@
 use crate::config::{Config, IndirectBranchFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
+use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
@@ -82,7 +82,7 @@ impl LlvmModulePass for IndirectBranch {
         global_indirect_branch_table.set_linkage(Linkage::Internal);
         global_indirect_branch_table.set_constant(true);
 
-        amice_llvm::module_utils::append_to_compiler_used(module, global_indirect_branch_table);
+        module.append_to_compiler_used(global_indirect_branch_table);
 
         let encrypt_key_global = if self.flags.contains(IndirectBranchFlags::EncryptBlockIndex) {
             let xor_key = self
@@ -100,7 +100,7 @@ impl LlvmModulePass for IndirectBranch {
             table.set_linkage(Linkage::Private);
             table.set_constant(true);
 
-            amice_llvm::module_utils::append_to_compiler_used(module, table);
+            module.append_to_compiler_used(table);
 
             Some(table)
         } else {
@@ -161,7 +161,7 @@ impl LlvmModulePass for IndirectBranch {
                         local_indirect_branch_table.set_linkage(Linkage::Private);
                         local_indirect_branch_table.set_constant(true);
 
-                        amice_llvm::module_utils::append_to_compiler_used(module, local_indirect_branch_table);
+                        module.append_to_compiler_used(local_indirect_branch_table);
 
                         Some(local_indirect_branch_table)
                     } else {

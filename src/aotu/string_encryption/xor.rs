@@ -3,8 +3,7 @@ use crate::aotu::string_encryption::{
     array_as_const_string, collect_insert_points,
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
-use amice_llvm::module_utils::append_to_global_ctors;
+use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
 use amice_llvm::ptr_type;
 use inkwell::module::Module;
 use inkwell::values::FunctionValue;
@@ -324,7 +323,7 @@ fn emit_global_string_decryptor_ctor<'a>(
     builder.build_return(None)?;
 
     let priority = 0; // Default priority
-    append_to_global_ctors(module, decrypt_stub, priority);
+    module.append_to_global_ctors(decrypt_stub, priority);
 
     Ok(())
 }

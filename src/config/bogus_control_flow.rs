@@ -20,12 +20,15 @@ pub enum BogusControlFlowMode {
     #[serde(rename = "basic")]
     #[default]
     Basic,
+    #[serde(rename = "polaris-primes")]
+    PolarisPrimes,
 }
 
 fn parse_alias_access_mode(s: &str) -> Result<BogusControlFlowMode, String> {
     let s = s.to_lowercase();
     match s.as_str() {
         "basic" | "v1" => Ok(BogusControlFlowMode::Basic),
+        "polaris-primes" | "primes" | "v2" => Ok(BogusControlFlowMode::PolarisPrimes),
         _ => Err(format!("unknown alias access mode: {}", s)),
     }
 }

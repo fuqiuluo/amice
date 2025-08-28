@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
+use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
 use amice_llvm::module_utils::verify_function2;
 use amice_llvm::ptr_type;
 use amice_macro::amice;
@@ -100,7 +100,7 @@ impl LlvmModulePass for IndirectCall {
         global_fun_table.set_linkage(Linkage::Private);
         global_fun_table.set_initializer(&initializer);
 
-        amice_llvm::module_utils::append_to_compiler_used(module, global_fun_table);
+        module.append_to_compiler_used(global_fun_table);
 
         let xor_key_global = if self.xor_key != 0 {
             let g = module.add_global(i32_type, None, ".amice_xor_key");

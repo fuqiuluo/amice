@@ -1,5 +1,5 @@
 use crate::aotu::alias_access::{AliasAccess, AliasAccessAlgo};
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
+use amice_llvm::inkwell2::BuilderExt;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ptr_type;

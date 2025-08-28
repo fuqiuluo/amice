@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::is_inline_marked_function;
-use amice_llvm::module_utils::append_to_compiler_used;
 use amice_macro::amice;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::module::{Linkage, Module};
@@ -13,6 +12,7 @@ use llvm_plugin::inkwell::{Either::Left, Either::Right, context::ContextRef};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error};
 use rand::Rng;
+use amice_llvm::inkwell2::ModuleExt;
 
 #[amice(priority = 1010, name = "FunctionWrapper", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -204,7 +204,7 @@ fn create_wrapper_function<'a>(
     copy_function_attributes(&wrapper_function, &called_function);
 
     // Mark as used to prevent elimination
-    append_to_compiler_used(module, wrapper_function.as_global_value());
+    module.append_to_compiler_used(wrapper_function.as_global_value());
 
     // Create the wrapper function body
     create_wrapper_body(ctx, &wrapper_function, &called_function)?;

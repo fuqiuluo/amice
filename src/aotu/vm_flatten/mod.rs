@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
+use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
 use amice_llvm::ir::basic_block::split_basic_block;
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
@@ -412,7 +412,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     local_opcodes_value.set_initializer(&opcode_array);
     local_opcodes_value.set_linkage(Linkage::Private);
 
-    amice_llvm::module_utils::append_to_compiler_used(module, local_opcodes_value);
+    module.append_to_compiler_used(local_opcodes_value);
 
     let builder = ctx.create_builder();
     let vm_entry = ctx.append_basic_block(function, ".amice.vm_flatten_entry");

@@ -1,7 +1,7 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use amice_llvm::analysis::dominators::DominatorTree;
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
+use amice_llvm::inkwell2::BuilderExt;
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::get_basic_block_entry;

@@ -9,7 +9,7 @@ use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType};
 use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
 use crate::aotu::mba::expr::Expr;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
+use amice_llvm::inkwell2::BuilderExt;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_llvm::module_utils::verify_function2;
 use amice_macro::amice;

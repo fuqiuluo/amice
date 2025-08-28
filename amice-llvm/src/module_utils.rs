@@ -5,7 +5,7 @@ use inkwell::values::{AsValueRef, FunctionValue, GlobalValue};
 use std::ffi::{CStr, c_char};
 use std::result;
 
-pub fn append_to_global_ctors(module: &Module, function: FunctionValue, priority: i32) {
+pub(crate) fn append_to_global_ctors(module: &Module, function: FunctionValue, priority: i32) {
     unsafe {
         ffi::amice_append_to_global_ctors(
             module.as_mut_ptr() as LLVMModuleRef,
@@ -15,7 +15,7 @@ pub fn append_to_global_ctors(module: &Module, function: FunctionValue, priority
     }
 }
 
-pub fn append_to_used(module: &Module, value: GlobalValue) {
+pub(crate) fn append_to_used(module: &Module, value: GlobalValue) {
     unsafe {
         ffi::amice_append_to_used(
             module.as_mut_ptr() as LLVMModuleRef,
@@ -24,7 +24,7 @@ pub fn append_to_used(module: &Module, value: GlobalValue) {
     }
 }
 
-pub fn append_to_compiler_used(module: &Module, value: GlobalValue) {
+pub(crate) fn append_to_compiler_used(module: &Module, value: GlobalValue) {
     unsafe {
         ffi::amice_append_to_compiler_used(
             module.as_mut_ptr() as LLVMModuleRef,

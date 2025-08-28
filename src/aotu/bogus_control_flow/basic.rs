@@ -1,5 +1,5 @@
 use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
-use amice_llvm::inkwell2::AdvancedInkwellBuilder;
+use amice_llvm::inkwell2::BuilderExt;
 use amice_llvm::ir::branch_inst;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
