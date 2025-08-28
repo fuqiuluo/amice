@@ -1,10 +1,9 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::BuilderExt;
+use amice_llvm::inkwell2::{BuilderExt, FunctionExt};
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
 use amice_llvm::ir::switch_inst;
-use amice_llvm::module_utils::verify_function2;
 use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::module::Module;
@@ -41,7 +40,7 @@ impl LlvmModulePass for LowerSwitch {
         }
 
         for f in module.get_functions() {
-            if verify_function2(f) {
+            if f.verify_function_bool() {
                 warn!("(lower-switch) function {:?} is not verified", f.get_name());
             }
         }

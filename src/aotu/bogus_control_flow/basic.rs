@@ -3,7 +3,6 @@ use amice_llvm::inkwell2::BuilderExt;
 use amice_llvm::ir::branch_inst;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
-use amice_llvm::module_utils::{VerifyResult, verify_function};
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;

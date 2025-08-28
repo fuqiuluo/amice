@@ -6,7 +6,6 @@ use crate::aotu::flatten::cf_flatten_dominator::FlattenDominator;
 use crate::config::{Config, FlattenMode};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::basic_block::split_basic_block;
-use amice_llvm::module_utils::{VerifyResult, verify_function};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -14,6 +13,7 @@ use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
+use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
 
 #[amice(priority = 959, name = "Flatten", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -71,7 +71,7 @@ impl LlvmModulePass for Flatten {
         }
 
         for x in module.get_functions() {
-            if let VerifyResult::Broken(e) = verify_function(x) {
+            if let VerifyResult::Broken(e) = x.verify_function() {
                 warn!("(flatten) function {:?} verify failed: {}", x.get_name(), e);
             }
         }

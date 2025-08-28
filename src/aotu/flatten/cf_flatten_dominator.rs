@@ -1,12 +1,11 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use amice_llvm::analysis::dominators::DominatorTree;
-use amice_llvm::inkwell2::BuilderExt;
+use amice_llvm::inkwell2::{BuilderExt, FunctionExt, VerifyResult};
 use amice_llvm::ir::basic_block::get_first_insertion_pt;
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::switch_inst::find_case_dest;
-use amice_llvm::module_utils::{VerifyResult, verify_function};
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -492,7 +491,7 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
     builder.position_at_end(bb_update_key_arr_ret);
     builder.build_return(None)?;
 
-    if let VerifyResult::Broken(e) = verify_function(update_fn) {
+    if let VerifyResult::Broken(e) = update_fn.verify_function() {
         warn!(
             "(flatten-enhanced) function {:?} verify failed: {}",
             update_fn.get_name(),

@@ -6,8 +6,6 @@ use crate::aotu::string_encryption::xor::XorAlgo;
 use crate::config::{Config, StringAlgorithm, StringDecryptTiming};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::get_basic_block_entry;
-use amice_llvm::module_utils::VerifyResult::Broken;
-use amice_llvm::module_utils::verify_function;
 use amice_macro::amice;
 use inkwell::llvm_sys::core::LLVMGetAsString;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
@@ -18,6 +16,7 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::{debug, error};
 use std::ptr::NonNull;
+use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
 
 /// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled
@@ -85,7 +84,7 @@ impl LlvmModulePass for StringEncryption {
         }
 
         for x in module.get_functions() {
-            if let Broken(err) = verify_function(x) {
+            if let VerifyResult::Broken(err) = x.verify_function() {
                 error!("(strenc) function {:?} verify failed: {}", x.get_name(), err);
             }
         }

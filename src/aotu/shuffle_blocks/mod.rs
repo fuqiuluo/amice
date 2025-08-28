@@ -1,12 +1,12 @@
 use crate::config::{Config, ShuffleBlocksFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::ir::function::get_basic_block_entry;
-use amice_llvm::module_utils::verify_function2;
 use amice_macro::amice;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::FunctionValue;
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
+use amice_llvm::inkwell2::FunctionExt;
 
 #[amice(priority = 970, name = "ShuffleBlocks", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -101,7 +101,7 @@ fn handle_function(function: FunctionValue<'_>, flags: ShuffleBlocksFlags) -> an
         }
     }
 
-    if verify_function2(function) {
+    if function.verify_function_bool() {
         warn!("(shuffle-blocks) function {:?} is not verified", function.get_name());
     }
 

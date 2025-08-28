@@ -1,11 +1,10 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
+use amice_llvm::inkwell2::{BuilderExt, FunctionExt, ModuleExt};
 use amice_llvm::ir::basic_block::split_basic_block;
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_llvm::ir::switch_inst;
-use amice_llvm::module_utils::verify_function2;
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -639,7 +638,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         builder.build_unconditional_branch(vm_entry)?;
     }
 
-    if verify_function2(function) {
+    if function.verify_function_bool() {
         warn!("(vm_flatten) function {:?} verify failed", function.get_name());
     }
 

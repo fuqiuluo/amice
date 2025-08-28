@@ -39,7 +39,7 @@ pub enum VerifyResult {
     Ok,
 }
 
-pub fn verify_function(function: FunctionValue) -> VerifyResult {
+pub(crate) fn verify_function(function: FunctionValue) -> VerifyResult {
     let mut errmsg: *const c_char = std::ptr::null();
     let broken = unsafe {
         ffi::amice_verify_function(
@@ -59,7 +59,7 @@ pub fn verify_function(function: FunctionValue) -> VerifyResult {
     result
 }
 
-pub fn verify_function2(function: FunctionValue) -> bool {
+pub(crate) fn verify_function2(function: FunctionValue) -> bool {
     match verify_function(function) {
         VerifyResult::Broken(_) => true,
         VerifyResult::Ok => false,

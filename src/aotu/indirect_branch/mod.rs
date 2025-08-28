@@ -1,10 +1,9 @@
 use crate::config::{Config, IndirectBranchFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
+use amice_llvm::inkwell2::{BuilderExt, FunctionExt, ModuleExt};
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
-use amice_llvm::module_utils::verify_function2;
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -316,7 +315,7 @@ impl LlvmModulePass for IndirectBranch {
                 br_inst.erase_from_basic_block();
             }
 
-            if verify_function2(function) {
+            if function.verify_function_bool() {
                 warn!("(indirect-branch) function {:?} verify failed", function.get_name());
             }
         }

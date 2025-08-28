@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
-use amice_llvm::module_utils::verify_function2;
+use amice_llvm::inkwell2::{BuilderExt, FunctionExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
@@ -142,7 +141,7 @@ impl LlvmModulePass for IndirectCall {
         error!("(indirect_call) LLVM version is not supported");
 
         for f in module.get_functions() {
-            if verify_function2(f) {
+            if f.verify_function_bool() {
                 warn!("(indirect_call) function {:?} is not verified", f.get_name());
             }
         }
