@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::inkwell2::ModuleExt;
 use amice_llvm::ir::function::is_inline_marked_function;
 use amice_macro::amice;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
@@ -12,7 +13,6 @@ use llvm_plugin::inkwell::{Either::Left, Either::Right, context::ContextRef};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error};
 use rand::Rng;
-use amice_llvm::inkwell2::ModuleExt;
 
 #[amice(priority = 1010, name = "FunctionWrapper", position = PassPosition::PipelineStart)]
 #[derive(Default)]
