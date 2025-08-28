@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::annotate::read_annotate;
+use amice_llvm::inkwell2::ModuleExt;
 use amice_macro::amice;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, CallSiteValue, FunctionValue, InstructionOpcode};
@@ -46,7 +46,9 @@ impl LlvmModulePass for CustomCallingConv {
 }
 
 fn do_random_calling_conv<'a>(module: &mut Module<'a>, function: FunctionValue<'a>) -> anyhow::Result<()> {
-    let annotates = read_annotate(module, function).map_err(|e| anyhow::anyhow!("failed to read annotate: {}", e))?;
+    let annotates = module
+        .read_function_annotate(function)
+        .map_err(|e| anyhow::anyhow!("failed to read annotate: {}", e))?;
 
     if !annotates.iter().any(|annotate| {
         annotate == "random_calling_conv" || annotate == "custom_calling_conv" || annotate.contains("customcc")
