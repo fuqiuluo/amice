@@ -30,13 +30,13 @@ unsafe extern "C" {
     pub(crate) fn amice_free_msg(errmsg: *const c_char) -> i32;
 
     pub(crate) fn amice_split_basic_block(
-        block: *mut c_void,
-        inst: *mut c_void,
+        block: LLVMBasicBlockRef,
+        inst: LLVMValueRef,
         name: *const c_char,
         before: i32,
     ) -> *mut c_void;
 
-    pub(crate) fn amice_get_first_insertion_pt(block: *mut c_void) -> *mut c_void;
+    pub(crate) fn amice_get_first_insertion_pt(block: LLVMBasicBlockRef) -> LLVMValueRef;
 
     pub(crate) fn llvm_dominator_tree_create() -> LLVMDominatorTreeRef;
 

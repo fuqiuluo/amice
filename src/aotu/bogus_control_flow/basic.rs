@@ -1,8 +1,5 @@
 use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
-use amice_llvm::inkwell2::{BranchInst, BuilderExt};
-use amice_llvm::ir::branch_inst;
-use amice_llvm::ir::function::get_basic_block_entry;
-use amice_llvm::ir::phi_inst::update_phi_nodes;
+use amice_llvm::inkwell2::{PhiInst, BuilderExt, FunctionExt, InstructionExt, BasicBlockExt};
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
@@ -86,7 +83,7 @@ fn handle_function(
 
     let mut rng = rand::rng();
     let mut blocks_to_modify = Vec::new();
-    let entry_block = get_basic_block_entry(function);
+    let entry_block = function.get_entry_block();
 
     // Collect blocks to modify (excluding entry block)
     for bb in basic_blocks.iter() {
@@ -148,8 +145,8 @@ fn apply_bogus_control_flow_to_unconditional_branch(
         return Ok(()); // Skip if not a branch instruction
     }
 
-    let terminator: BranchInst = terminator.into();
     let target_bb = terminator
+        .into_branch_inst()
         .get_successor(0)
         .ok_or_else(|| anyhow::anyhow!("Cannot get branch target"))?;
 
@@ -166,7 +163,7 @@ fn apply_bogus_control_flow_to_unconditional_branch(
     // 所以说不会出现因为在终结指令后面新增代码出现校验不通过的问题
     builder.position_at_end(original_block);
     builder.build_unconditional_branch(condition_block)?;
-    update_phi_nodes(original_block, condition_block, target_bb);
+    target_bb.fix_phi_node(original_block, condition_block);
 
     // Build condition block with opaque predicate
     builder.position_at_end(condition_block);
@@ -224,7 +221,7 @@ fn apply_bogus_control_flow_to_unconditional_branch(
         },
     }
 
-    update_phi_nodes(condition_block, fake_block, target_bb);
+    target_bb.fix_phi_node(condition_block, fake_block);
 
     terminator.erase_from_basic_block();
 

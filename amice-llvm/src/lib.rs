@@ -2,10 +2,8 @@ use std::borrow::Cow;
 use std::ffi::{CStr, CString};
 
 pub mod analysis;
+mod annotate;
 mod ffi;
-pub mod ir;
-pub mod module_utils;
-pub mod annotate;
 pub mod inkwell2;
 
 pub fn get_llvm_version_major() -> i32 {

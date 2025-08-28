@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::ModuleExt;
-use amice_llvm::ir::function::is_inline_marked_function;
+use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::module::{Linkage, Module};
@@ -11,6 +10,7 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::inkwell::{Either::Left, Either::Right, context::ContextRef};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use log::{debug, error};
 use rand::Rng;
 
@@ -127,7 +127,7 @@ fn should_skip_function_by_name(name: &str) -> bool {
 }
 
 fn should_skip_function_by_inline_attribute(function_value: FunctionValue) -> bool {
-    is_inline_marked_function(function_value)
+    function_value.is_inline_marked()
 }
 
 /// Extract called function from a call instruction
@@ -331,7 +331,7 @@ fn replace_call_with_wrapper<'a>(
 
     // Replace all uses of the old instruction with the new call
     if !call_inst.get_type().is_void_type() {
-        let new_call_inst = unsafe { InstructionValue::new(new_call.as_value_ref()) };
+        let new_call_inst = (new_call.as_value_ref() as LLVMValueRef).into_instruction_value();
         call_inst.replace_all_uses_with(&new_call_inst);
     }
 
@@ -339,6 +339,6 @@ fn replace_call_with_wrapper<'a>(
     call_inst.erase_from_basic_block();
 
     // Return the new call instruction
-    let new_inst = unsafe { InstructionValue::new(new_call.as_value_ref()) };
-    Ok(Some(new_inst))
+    let new_call_inst = (new_call.as_value_ref() as LLVMValueRef).into_instruction_value();
+    Ok(Some(new_call_inst))
 }

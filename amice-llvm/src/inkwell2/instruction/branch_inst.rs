@@ -1,4 +1,3 @@
-use crate::ir::branch_inst::get_successor;
 use inkwell::basic_block::BasicBlock;
 use inkwell::values::{InstructionOpcode, InstructionValue};
 use std::ops::{Deref, DerefMut};
@@ -14,8 +13,14 @@ impl<'ctx> BranchInst<'ctx> {
         Self { inst }
     }
 
-    pub fn get_successor(self, idx: u32) -> Option<BasicBlock<'ctx>> {
-        get_successor(self.inst, idx)
+    pub fn get_successor(&self, idx: u32) -> Option<BasicBlock<'ctx>> {
+        if self.inst.get_num_operands() == 1 {
+            return self.inst.get_operand(0)?.right();
+        }
+
+        assert!(idx < 2);
+
+        self.inst.get_operand(2 - idx)?.right()
     }
 }
 

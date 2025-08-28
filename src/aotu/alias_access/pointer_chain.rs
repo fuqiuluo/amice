@@ -1,6 +1,5 @@
 use crate::aotu::alias_access::{AliasAccess, AliasAccessAlgo};
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt};
-use amice_llvm::ir::function::get_basic_block_entry;
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, LLVMValueRefExt};
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::AddressSpace;
@@ -136,7 +135,7 @@ fn do_alias_access_pointer_chain(
         buckets[idx].push(ai);
     }
 
-    let Some(entry_block) = get_basic_block_entry(function) else {
+    let Some(entry_block) = function.get_entry_block() else {
         return Err(anyhow::anyhow!("function {:?} has no entry block", function.get_name()));
     };
     let first_insertion_pt = entry_block.get_first_insertion_pt();
@@ -278,11 +277,13 @@ fn do_alias_access_pointer_chain(
     let mut getters: HashMap<u32, LLVMValueRef> = HashMap::new();
     let get_getter = |idx: u32, getters: &mut HashMap<u32, LLVMValueRef>| -> anyhow::Result<FunctionValue> {
         if let Some(fv) = getters.get(&idx) {
-            let g = unsafe { FunctionValue::new(*fv) }.ok_or(anyhow!("failed to get existing getter function"))?;
+            let g = fv
+                .into_function_value()
+                .ok_or(anyhow!("failed to get existing getter function"))?;
             Ok(g)
         } else {
             let g = build_getter_function(module, meta_box_ty, idx)?;
-            getters.insert(idx, g.as_value_ref());
+            getters.insert(idx, g.as_value_ref() as LLVMValueRef);
             Ok(g)
         }
     };

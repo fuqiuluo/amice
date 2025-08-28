@@ -3,12 +3,11 @@ mod pointer_chain;
 use crate::aotu::alias_access::pointer_chain::PointerChainAlgo;
 use crate::config::{AliasAccessMode, Config};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::module_utils::{VerifyResult};
 use amice_macro::amice;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
-use amice_llvm::inkwell2::FunctionExt;
+use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
 
 #[amice(priority = 1112, name = "AliasAccess", position = PassPosition::PipelineStart)]
 #[derive(Default)]

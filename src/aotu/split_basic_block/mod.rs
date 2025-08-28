@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::function::get_basic_block_entry;
+use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -9,7 +9,6 @@ use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
-use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt};
 
 #[amice(priority = 980, name = "SplitBasicBlock", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -54,7 +53,7 @@ impl LlvmModulePass for SplitBasicBlock {
 }
 
 fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) -> anyhow::Result<()> {
-    let Some(entry) = get_basic_block_entry(function) else {
+    let Some(entry) = function.get_entry_block() else {
         return Err(anyhow!("Function {:?} has no entry block", function.get_name()));
     };
 

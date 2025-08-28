@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::function::{function_specialize_partial, is_inline_marked_function};
+use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
@@ -114,27 +114,18 @@ impl LlvmModulePass for CloneFunction {
     }
 }
 
-fn do_replace_call_with_call_to_specialized_function(
-    module: &mut Module<'_>,
+fn do_replace_call_with_call_to_specialized_function<'a>(
+    module: &mut Module<'a>,
     call_inst: InstructionValue<'_>,
-    call_func: FunctionValue<'_>,
+    call_func: FunctionValue<'a>,
     args: Vec<(u32, BasicValueEnum)>,
 ) -> anyhow::Result<()> {
     let replacements = args
         .iter()
         .map(|(i, operand)| (*i, operand.as_value_ref() as LLVMValueRef))
         .collect::<Vec<(u32, LLVMValueRef)>>();
-    let special_function = unsafe {
-        function_specialize_partial(
-            module.as_mut_ptr() as LLVMModuleRef,
-            call_func.as_value_ref() as LLVMValueRef,
-            &replacements,
-        )
-    }
-    .map_err(|e| anyhow!("(clone-function) function_specialize_partial failed: {}", e))?;
-
-    let special_function = unsafe { FunctionValue::new(special_function) }
-        .ok_or_else(|| anyhow!("(clone-function) failed to create FunctionValue from specialized function"))?;
+    let special_function = unsafe { module.specialize_function_by_args(call_func, &replacements) }
+        .map_err(|e| anyhow!("(clone-function) function_specialize_partial failed: {}", e))?;
 
     let context = module.get_context();
     let builder = context.create_builder();
@@ -173,7 +164,7 @@ fn do_replace_call_with_call_to_specialized_function(
     // 生成新的调用指令
     let new_call_site = builder.build_call(special_function, &new_call_args, "cloned.call")?;
 
-    let new_inst = unsafe { InstructionValue::new(new_call_site.as_value_ref()) };
+    let new_inst = (new_call_site.as_value_ref() as LLVMValueRef).into_instruction_value();
 
     // 如果原调用有返回值，则替换所有 uses
     let is_void_ret = call_inst.get_type().is_void_type();
@@ -198,7 +189,7 @@ fn should_skip_function_by_name(name: &str) -> bool {
 }
 
 fn should_skip_function_by_inline_attribute(function_value: FunctionValue) -> bool {
-    is_inline_marked_function(function_value)
+    function_value.is_inline_marked()
 }
 
 fn should_skip_function_by_defined_state(function_value: FunctionValue) -> bool {

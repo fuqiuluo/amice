@@ -10,7 +10,6 @@ use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
 use crate::aotu::mba::expr::Expr;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::inkwell2::{BuilderExt, FunctionExt};
-use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_macro::amice;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
@@ -147,7 +146,7 @@ impl LlvmModulePass for Mba {
             }
 
             let stack_aux_params = if !self.alloc_aux_params_in_global
-                && let Some(entry_block) = get_basic_block_entry(function)
+                && let Some(entry_block) = function.get_entry_block()
                 && let Some(first_inst) = entry_block.get_first_instruction()
             {
                 let ctx = module.get_context();
@@ -220,7 +219,7 @@ impl LlvmModulePass for Mba {
 
             if self.fix_stack {
                 unsafe {
-                    fix_stack(function);
+                    function.fix_stack()
                 }
             }
         }

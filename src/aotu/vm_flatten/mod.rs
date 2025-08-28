@@ -2,8 +2,6 @@ use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
 
-use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
-use amice_llvm::ir::switch_inst;
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -183,7 +181,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         return Ok(());
     }
 
-    let Some(entry_block) = get_basic_block_entry(function) else {
+    let Some(entry_block) = function.get_entry_block() else {
         return Err(anyhow::anyhow!("failed to get entry block"));
     };
 
@@ -339,9 +337,10 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                 //  i32 1, label %15
                 //  i32 2, label %18
                 //  ]
-                let default_case = switch_inst::get_default_block(inst);
-                let _condition = switch_inst::get_condition(inst);
-                let cases = switch_inst::get_cases(inst);
+                let switch_inst = inst.into_switch_inst();
+                let default_case = switch_inst.get_default_block();
+                let _condition = switch_inst.get_condition();
+                let cases = switch_inst.get_cases();
                 node.push(default_case);
                 for (_, bb) in cases {
                     node.push(bb);
@@ -555,9 +554,11 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
 
                 if inst.get_opcode() == InstructionOpcode::Switch {
                     builder.position_before(&inst);
-                    let cases = switch_inst::get_cases(inst);
-                    let _default_case = switch_inst::get_default_block(inst);
-                    let condition = switch_inst::get_condition(inst);
+
+                    let switch_inst = inst.into_switch_inst();
+                    let cases = switch_inst.get_cases();
+                    let _default_case = switch_inst.get_default_block();
+                    let condition = switch_inst.get_condition();
 
                     let mut new_cases = Vec::<(IntValue, BasicBlock)>::new();
                     let new_default_block = ctx.append_basic_block(function, ".vm_switch_case_");
@@ -642,9 +643,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         warn!("(vm_flatten) function {:?} verify failed", function.get_name());
     }
 
-    unsafe {
-        fix_stack(function);
-    }
+    unsafe { function.fix_stack() }
 
     for node in all_nodes {
         node.free();

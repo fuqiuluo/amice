@@ -1,9 +1,6 @@
 use crate::config::{Config, IndirectBranchFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::{BuilderExt, FunctionExt, InstructionExt, ModuleExt};
-
-use amice_llvm::ir::function::get_basic_block_entry;
-use amice_llvm::ir::phi_inst::update_phi_nodes;
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -289,10 +286,9 @@ impl LlvmModulePass for IndirectBranch {
 
                     for &target_block in &successors {
                         if let Some(pb) = br_inst.get_parent() {
-                            update_phi_nodes(
+                            target_block.fix_phi_node(
                                 pb,               // 原始前驱块
                                 goal_dummy_block, // 新前驱块
-                                target_block,     // 目标块
                             );
                         } else {
                             warn!("(indirect-branch) branch: {br_inst:?}, parent is None");
@@ -347,7 +343,7 @@ fn emit_dummy_junk<'ctx>(builder: &Builder<'ctx>, i32_ty: IntType<'ctx>) {
 fn collect_basic_block<'a>(module: &Module<'a>) -> Vec<BasicBlock<'a>> {
     let mut basic_blocks = Vec::new();
     for fun in module.get_functions() {
-        let Some(entry_block) = get_basic_block_entry(fun) else {
+        let Some(entry_block) = fun.get_entry_block() else {
             continue;
         };
         for bb in fun.get_basic_blocks() {

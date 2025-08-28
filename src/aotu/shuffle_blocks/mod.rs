@@ -1,12 +1,11 @@
 use crate::config::{Config, ShuffleBlocksFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::function::get_basic_block_entry;
+use amice_llvm::inkwell2::FunctionExt;
 use amice_macro::amice;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::FunctionValue;
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
-use amice_llvm::inkwell2::FunctionExt;
 
 #[amice(priority = 970, name = "ShuffleBlocks", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -52,7 +51,9 @@ fn handle_function(function: FunctionValue<'_>, flags: ShuffleBlocksFlags) -> an
         return Ok(());
     }
 
-    let entry_block = get_basic_block_entry(function).ok_or_else(|| anyhow::anyhow!("failed to get entry block"))?;
+    let entry_block = function
+        .get_entry_block()
+        .ok_or_else(|| anyhow::anyhow!("failed to get entry block"))?;
     blocks.retain(|block| block != &entry_block);
 
     if log_enabled!(Level::Debug) {

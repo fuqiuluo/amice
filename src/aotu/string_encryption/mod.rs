@@ -5,7 +5,7 @@ use crate::aotu::string_encryption::simd_xor::SimdXorAlgo;
 use crate::aotu::string_encryption::xor::XorAlgo;
 use crate::config::{Config, StringAlgorithm, StringDecryptTiming};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::function::get_basic_block_entry;
+use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, VerifyResult};
 use amice_macro::amice;
 use inkwell::llvm_sys::core::LLVMGetAsString;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
@@ -16,7 +16,6 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use log::{debug, error};
 use std::ptr::NonNull;
-use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
 
 /// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled
@@ -122,7 +121,7 @@ impl<'a> EncryptedGlobalValue<'a> {
     ) -> Self {
         let user = Box::new(
             user.iter()
-                .map(|(value_ref, op_num)| unsafe { (InstructionValue::new(*value_ref), *op_num) })
+                .map(|(value_ref, op_num)| (value_ref.into_instruction_value(), *op_num))
                 .collect::<Vec<_>>(),
         );
         EncryptedGlobalValue {
@@ -285,7 +284,7 @@ fn alloc_stack_string<'a>(
     if in_entry_block
         && let Some(parent_block) = inst.get_parent()
         && let Some(parent_function) = parent_block.get_parent()
-        && let Some(entry_block) = get_basic_block_entry(parent_function)
+        && let Some(entry_block) = parent_function.get_entry_block()
         && let Some(terminator) = entry_block.get_terminator()
     {
         builder.position_before(&terminator);

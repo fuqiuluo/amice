@@ -1,10 +1,11 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::{BuilderExt, FunctionExt, ModuleExt};
+use amice_llvm::inkwell2::{BuilderExt, FunctionExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
+use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
     AsValueRef, BasicValue, CallSiteValue, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue,
@@ -230,7 +231,7 @@ fn do_handle<'a>(
         for x in return_attributes {
             new_call_site.add_attribute(AttributeLoc::Return, x);
         }
-        let new_call_inst = unsafe { InstructionValue::new(new_call_site.as_value_ref()) };
+        let new_call_inst = (new_call_site.as_value_ref() as LLVMValueRef).into_instruction_value();
 
         inst.replace_all_uses_with(&new_call_inst);
         inst.erase_from_basic_block();

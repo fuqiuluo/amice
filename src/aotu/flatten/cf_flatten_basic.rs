@@ -1,8 +1,6 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
-use amice_llvm::inkwell2::{BasicBlockExt, BranchInst, BuilderExt, InstructionExt};
-use amice_llvm::ir::branch_inst;
-use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, LLVMBasicBlockRefExt, PhiInst};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
@@ -42,7 +40,7 @@ impl FlattenAlgo for FlattenBasic {
 
             if pass.fix_stack {
                 unsafe {
-                    fix_stack(function);
+                    function.fix_stack();
                 }
             }
         }
@@ -52,7 +50,7 @@ impl FlattenAlgo for FlattenBasic {
 }
 
 fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bool) -> anyhow::Result<()> {
-    let Some(entry_block) = get_basic_block_entry(function) else {
+    let Some(entry_block) = function.get_entry_block() else {
         return Err(anyhow::anyhow!(
             "(flatten) function {:?} has no entry block",
             function.get_name()
@@ -105,7 +103,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     let dispatch_cases = basic_block_mapping
         .iter()
         .map(|(k, v)| (i32_ty.const_int(*v as u64, false), k))
-        .map(|(v, bb)| (v, unsafe { BasicBlock::new(*bb) }))
+        .map(|(v, bb)| (v, bb.into_basic_block()))
         .filter_map(|(v, bb)| {
             if let Some(bb) = bb {
                 Some((v, bb))
@@ -158,7 +156,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
                     }
                 },
                 InstructionOpcode::Switch => {
-                    switch.push(terminator);
+                    switch.push(terminator.into_switch_inst());
                 },
                 _ => continue, // 其他类型的终结指令不处理
             }

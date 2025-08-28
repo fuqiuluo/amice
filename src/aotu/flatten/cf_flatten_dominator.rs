@@ -1,9 +1,7 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use amice_llvm::analysis::dominators::DominatorTree;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, VerifyResult};
-use amice_llvm::ir::function::get_basic_block_entry;
-use amice_llvm::ir::switch_inst::find_case_dest;
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, LLVMValueRefExt, VerifyResult};
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -32,7 +30,9 @@ impl FlattenAlgo for FlattenDominator {
     }
 
     fn do_flatten(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
-        let update_key_fn = unsafe { FunctionValue::new(self.update_key_fn) }
+        let update_key_fn = self
+            .update_key_fn
+            .into_function_value()
             .ok_or_else(|| anyhow!("failed to get update key function"))?;
 
         'out: for function in module.get_functions() {
@@ -70,7 +70,7 @@ fn do_handle(
     update_key_fn: FunctionValue,
     fix_stack: bool,
 ) -> anyhow::Result<()> {
-    let Some(entry_block) = get_basic_block_entry(function) else {
+    let Some(entry_block) = function.get_entry_block() else {
         return Err(anyhow::anyhow!(
             "(flatten-enhanced) function {:?} has no entry block",
             function.get_name()
@@ -118,6 +118,7 @@ fn do_handle(
             .into_iter()
             .filter_map(|bb| bb.get_terminator())
             .filter(|inst| inst.get_opcode() == InstructionOpcode::Switch)
+            .map(|inst| inst.into_switch_inst())
             .collect::<Vec<_>>();
 
         if !switch_inst_list.is_empty() {
@@ -273,7 +274,9 @@ fn do_handle(
     let dispatch_id_val = builder
         .build_load2(i64_type, dispatch_id, "dispatch_id")?
         .into_int_value();
-    let switch = builder.build_switch(dispatch_id_val, bb_dispatcher_default, &cases)?;
+    let switch = builder
+        .build_switch(dispatch_id_val, bb_dispatcher_default, &cases)?
+        .into_switch_inst();
 
     for bb in basic_blocks {
         let Some(terminator) = bb.get_terminator() else {
@@ -290,7 +293,7 @@ fn do_handle(
             let successor = terminator
                 .get_successor(0)
                 .ok_or_else(|| anyhow::anyhow!("failed to get successor for terminator {:?}", terminator))?;
-            let Some(dispatch_id_val) = find_case_dest(switch, successor) else {
+            let Some(dispatch_id_val) = switch.find_case_dest(successor) else {
                 return Err(anyhow::anyhow!(
                     "failed to find case destination for block {:?}, switch: {:?}, successor: {:?}",
                     bb.get_name(),
@@ -319,7 +322,7 @@ fn do_handle(
             let false_successor = terminator
                 .get_successor(1)
                 .ok_or_else(|| anyhow::anyhow!("failed to get successor for terminator {:?}", terminator))?;
-            let Some(true_dispatch_id_val) = find_case_dest(switch, true_successor) else {
+            let Some(true_dispatch_id_val) = switch.find_case_dest(true_successor) else {
                 return Err(anyhow::anyhow!(
                     "failed to find case destination for block {:?}, switch: {:?}, successor0: {:?}, successor1: {:?}",
                     bb.get_name(),
@@ -328,7 +331,7 @@ fn do_handle(
                     false_successor
                 ));
             };
-            let Some(false_dispatch_id_val) = find_case_dest(switch, false_successor) else {
+            let Some(false_dispatch_id_val) = switch.find_case_dest(false_successor) else {
                 return Err(anyhow::anyhow!(
                     "failed to find case destination for block {:?}, switch: {:?}, successor1: {:?}, successor0: {:?}",
                     bb.get_name(),
@@ -376,9 +379,7 @@ fn do_handle(
     builder.build_unconditional_branch(bb_dispatcher)?;
 
     if fix_stack {
-        unsafe {
-            amice_llvm::ir::function::fix_stack(function);
-        }
+        unsafe { function.fix_stack() }
     }
 
     Ok(())
