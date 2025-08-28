@@ -1,6 +1,5 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::basic_block::split_basic_block;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -10,7 +9,7 @@ use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
-use amice_llvm::inkwell2::FunctionExt;
+use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt};
 
 #[amice(priority = 980, name = "SplitBasicBlock", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -129,7 +128,7 @@ fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) ->
                 }
 
                 let split_name = format!(".split_{}", i);
-                if let Some(new_block) = split_basic_block(to_split, curr_inst, &split_name, false) {
+                if let Some(new_block) = to_split.split_basic_block(curr_inst, &split_name, false) {
                     to_split = new_block;
                 } else {
                     error!("Failed to split basic block at point {}", split_point);

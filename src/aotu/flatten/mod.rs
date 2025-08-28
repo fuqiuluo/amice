@@ -5,7 +5,6 @@ use crate::aotu::flatten::cf_flatten_basic::FlattenBasic;
 use crate::aotu::flatten::cf_flatten_dominator::FlattenDominator;
 use crate::config::{Config, FlattenMode};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::basic_block::split_basic_block;
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -13,7 +12,7 @@ use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
-use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
+use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, VerifyResult};
 
 #[amice(priority = 959, name = "Flatten", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -112,7 +111,7 @@ fn split_entry_block_for_flatten<'a>(
                 if entry_block_inst_count > 0 {
                     split_pos = split_pos.get_previous_instruction().unwrap();
                 }
-                let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.br", false) else {
+                let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.br", false) else {
                     panic!("failed to split basic block");
                 };
                 if new_block.get_parent().unwrap() != function {
@@ -136,7 +135,7 @@ fn split_entry_block_for_flatten<'a>(
             if entry_block_inst_count > 0 {
                 split_pos = split_pos.get_previous_instruction().unwrap();
             }
-            let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.term", false) else {
+            let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.term", false) else {
                 panic!("failed to split basic block");
             };
             if new_block.get_parent().unwrap() != function {

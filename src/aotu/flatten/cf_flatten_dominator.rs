@@ -1,8 +1,7 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use amice_llvm::analysis::dominators::DominatorTree;
-use amice_llvm::inkwell2::{BuilderExt, FunctionExt, VerifyResult};
-use amice_llvm::ir::basic_block::get_first_insertion_pt;
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, VerifyResult};
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::switch_inst::find_case_dest;
@@ -180,7 +179,7 @@ fn do_handle(
 
     let block_count = i32_type.const_int(basic_blocks.len() as u64, false);
 
-    let first_insertion_pt = get_first_insertion_pt(entry_block);
+    let first_insertion_pt = entry_block.get_first_insertion_pt();
     builder.position_before(&first_insertion_pt);
     let visited_array = builder.build_array_alloca(i8_type, block_count, "visited")?;
     let key_array = builder.build_array_alloca(i64_type, block_count, "key_array")?;

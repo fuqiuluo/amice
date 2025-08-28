@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::{BuilderExt, FunctionExt, ModuleExt};
-use amice_llvm::ir::basic_block::split_basic_block;
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, ModuleExt};
 use amice_llvm::ir::branch_inst::get_successor;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_llvm::ir::switch_inst;
@@ -208,7 +207,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                 if entry_block_inst_count > 0 {
                     split_pos = split_pos.get_previous_instruction().unwrap();
                 }
-                let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.br", false) else {
+                let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.br", false) else {
                     panic!("failed to split basic block");
                 };
                 if new_block.get_parent().unwrap() != function {
@@ -235,7 +234,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
             if entry_block_inst_count > 0 {
                 split_pos = split_pos.get_previous_instruction().unwrap();
             }
-            let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.term", false) else {
+            let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.term", false) else {
                 panic!("failed to split basic block");
             };
             if new_block.get_parent().unwrap() != function {
@@ -253,7 +252,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
             if entry_block_inst_count > 0 {
                 split_pos = split_pos.get_previous_instruction().unwrap();
             }
-            if let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.others", false) {
+            if let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.others", false) {
                 if new_block.get_parent().unwrap() != function {
                     return Err(anyhow!("Split block has wrong parent"));
                 }

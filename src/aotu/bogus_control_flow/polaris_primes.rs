@@ -2,8 +2,7 @@
 // A little improvement
 
 use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
-use amice_llvm::inkwell2::BuilderExt;
-use amice_llvm::ir::basic_block::get_first_insertion_pt;
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt};
 use amice_llvm::ir::function::get_basic_block_entry;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -31,7 +30,7 @@ impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
 
             let entry_block = get_basic_block_entry(func)
                 .ok_or_else(|| anyhow!("Failed to get entry block for function {:?}", func.get_name()))?;
-            let first_insertion_pt = get_first_insertion_pt(entry_block);
+            let first_insertion_pt = entry_block.get_first_insertion_pt();
 
             // let i64_ty = ctx.i64_type();
             //

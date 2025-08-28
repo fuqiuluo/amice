@@ -1,7 +1,6 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
-use amice_llvm::inkwell2::BuilderExt;
-use amice_llvm::ir::basic_block::get_first_insertion_pt;
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt};
 use amice_llvm::ir::branch_inst;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -125,7 +124,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     dispatcher.move_before(first_block).expect("failed to move basic block");
     default.move_after(dispatcher).expect("failed to move basic block");
 
-    let first_insertion_pt = get_first_insertion_pt(entry_block);
+    let first_insertion_pt = entry_block.get_first_insertion_pt();
     builder.position_before(&first_insertion_pt);
     let dispatch_id_ptr = builder.build_alloca(i32_ty, "")?;
 

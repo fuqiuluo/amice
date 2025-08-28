@@ -1,6 +1,5 @@
 use crate::aotu::alias_access::{AliasAccess, AliasAccessAlgo};
-use amice_llvm::inkwell2::BuilderExt;
-use amice_llvm::ir::basic_block::get_first_insertion_pt;
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt};
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
@@ -140,7 +139,7 @@ fn do_alias_access_pointer_chain(
     let Some(entry_block) = get_basic_block_entry(function) else {
         return Err(anyhow::anyhow!("function {:?} has no entry block", function.get_name()));
     };
-    let first_insertion_pt = get_first_insertion_pt(entry_block);
+    let first_insertion_pt = entry_block.get_first_insertion_pt();
 
     let builder = ctx.create_builder();
     builder.position_before(&first_insertion_pt);
