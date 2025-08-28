@@ -52,13 +52,9 @@ impl LlvmModulePass for FunctionWrapper {
                 continue;
             }
 
-            // Check if function should be obfuscated (using similar logic from other passes)
-            let function_name = function.get_name().to_str().unwrap_or("");
-            if should_skip_function_by_name(function_name) || should_skip_function_by_inline_attribute(function) {
+            if function.is_llvm_function() || function.is_inline_marked() {
                 continue;
             }
-
-            debug!("(function-wrapper) processing function: {}", function_name);
 
             for bb in function.get_basic_blocks() {
                 for inst in bb.get_instructions() {
@@ -116,20 +112,6 @@ impl LlvmModulePass for FunctionWrapper {
     }
 }
 
-/// Check if a function should be skipped from obfuscation
-fn should_skip_function_by_name(name: &str) -> bool {
-    // Skip intrinsics, compiler-generated functions, and system functions
-    name.starts_with("llvm.")
-        || name.starts_with("clang.")
-        || name.starts_with("__")
-        || name.starts_with("@")
-        || name.is_empty()
-}
-
-fn should_skip_function_by_inline_attribute(function_value: FunctionValue) -> bool {
-    function_value.is_inline_marked()
-}
-
 /// Extract called function from a call instruction
 fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<'a>> {
     match inst.get_opcode() {
@@ -171,13 +153,9 @@ fn handle_call_instruction<'a>(
         return Ok(None);
     }
 
-    let function_name = called_function.get_name().to_str().unwrap_or("");
-    if should_skip_function_by_name(function_name) || should_skip_function_by_inline_attribute(called_function) {
-        debug!("(function-wrapper) skipping function: {}", function_name);
+    if called_function.is_llvm_function() || called_function.is_inline_marked() {
         return Ok(None);
     }
-
-    debug!("(function-wrapper) wrapping call to function: {}", function_name);
 
     // Create wrapper function
     create_wrapper_function(module, &call_inst, called_function)

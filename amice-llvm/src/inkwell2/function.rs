@@ -15,6 +15,10 @@ pub trait FunctionExt<'ctx> {
 
     fn is_inline_marked(&self) -> bool;
 
+    fn is_llvm_function(&self) -> bool;
+
+    fn is_undef_function(&self) -> bool;
+
     #[cfg(not(feature = "android-ndk"))]
     fn clone_function(&self) -> Option<FunctionValue<'ctx>>;
 
@@ -68,6 +72,20 @@ impl<'ctx> FunctionExt<'ctx> for FunctionValue<'ctx> {
 
     fn is_inline_marked(&self) -> bool {
         unsafe { ffi::amice_is_inline_marked_function(self.as_value_ref() as LLVMValueRef) }
+    }
+
+    fn is_llvm_function(&self) -> bool {
+        let name = self.get_name().to_str().unwrap_or("");
+        name.starts_with("llvm.")
+            || name.starts_with("clang.")
+            || name.starts_with("__")
+            || name.starts_with("@")
+            || name.is_empty()
+            || self.get_intrinsic_id() != 0
+    }
+
+    fn is_undef_function(&self) -> bool {
+        self.is_null() || self.is_undef() || self.count_basic_blocks() <= 0 || self.get_intrinsic_id() != 0
     }
 
     #[cfg(not(feature = "android-ndk"))]

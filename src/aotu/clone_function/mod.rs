@@ -40,9 +40,7 @@ impl LlvmModulePass for CloneFunction {
                     continue;
                 }
 
-                // Check if function should be obfuscated (using similar logic from other passes)
-                let function_name = function.get_name().to_str().unwrap_or("");
-                if should_skip_function_by_name(function_name) || should_skip_function_by_inline_attribute(function) {
+                if function.is_llvm_function() || function.is_undef_function() {
                     continue;
                 }
 
@@ -50,11 +48,7 @@ impl LlvmModulePass for CloneFunction {
                     for inst in bb.get_instructions() {
                         if matches!(inst.get_opcode(), InstructionOpcode::Call) {
                             if let Some(called_func) = get_called_function(&inst) {
-                                let function_name = called_func.get_name().to_str().unwrap_or("");
-                                if should_skip_function_by_name(function_name)
-                                    || should_skip_function_by_inline_attribute(called_func)
-                                    || should_skip_function_by_defined_state(called_func)
-                                {
+                                if called_func.is_llvm_function() || called_func.is_undef_function() {
                                     continue;
                                 }
 
@@ -81,7 +75,7 @@ impl LlvmModulePass for CloneFunction {
                             _ => false,
                         };
                         if is_const {
-                            args.push((i as u32, operand_value));
+                            args.push((i, operand_value));
                         }
                     }
                 }
@@ -177,27 +171,6 @@ fn do_replace_call_with_call_to_specialized_function<'a>(
     call_inst.erase_from_basic_block();
 
     Ok(())
-}
-
-/// Check if a function should be skipped from obfuscation
-fn should_skip_function_by_name(name: &str) -> bool {
-    // Skip intrinsics, compiler-generated functions, and system functions
-    name.starts_with("llvm.")
-        || name.starts_with("clang.")
-        || name.starts_with("__")
-        || name.starts_with("@")
-        || name.is_empty()
-}
-
-fn should_skip_function_by_inline_attribute(function_value: FunctionValue) -> bool {
-    function_value.is_inline_marked()
-}
-
-fn should_skip_function_by_defined_state(function_value: FunctionValue) -> bool {
-    function_value.is_null()
-        || function_value.is_undef()
-        || function_value.count_basic_blocks() <= 0
-        || function_value.get_intrinsic_id() != 0
 }
 
 fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<'a>> {
