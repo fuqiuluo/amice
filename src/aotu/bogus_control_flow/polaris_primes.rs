@@ -28,7 +28,7 @@ impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
                 continue;
             }
             let ctx = module.get_context();
-            
+
             let entry_block = get_basic_block_entry(func)
                 .ok_or_else(|| anyhow!("Failed to get entry block for function {:?}", func.get_name()))?;
             let first_insertion_pt = get_first_insertion_pt(entry_block);
