@@ -1,5 +1,5 @@
 use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
-use amice_llvm::inkwell2::BuilderExt;
+use amice_llvm::inkwell2::{BranchInst, BuilderExt};
 use amice_llvm::ir::branch_inst;
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
@@ -148,8 +148,10 @@ fn apply_bogus_control_flow_to_unconditional_branch(
         return Ok(()); // Skip if not a branch instruction
     }
 
-    let target_bb =
-        branch_inst::get_successor(terminator, 0).ok_or_else(|| anyhow::anyhow!("Cannot get branch target"))?;
+    let terminator: BranchInst = terminator.into();
+    let target_bb = terminator
+        .get_successor(0)
+        .ok_or_else(|| anyhow::anyhow!("Cannot get branch target"))?;
 
     let context = function.get_type().get_context();
     let i32_type = context.i32_type();

@@ -1,7 +1,7 @@
 use crate::config::{Config, IndirectBranchFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::{BuilderExt, FunctionExt, ModuleExt};
-use amice_llvm::ir::branch_inst::get_successor;
+use amice_llvm::inkwell2::{BuilderExt, FunctionExt, InstructionExt, ModuleExt};
+
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::phi_inst::update_phi_nodes;
 use amice_llvm::ptr_type;
@@ -111,7 +111,7 @@ impl LlvmModulePass for IndirectBranch {
             for basic_block in function.get_basic_blocks() {
                 for instruction in basic_block.get_instructions() {
                     if instruction.get_opcode() == InstructionOpcode::Br {
-                        branch_instructions.push(instruction);
+                        branch_instructions.push(instruction.into_branch_inst());
                     }
                 }
             }
@@ -123,10 +123,10 @@ impl LlvmModulePass for IndirectBranch {
                 if br_inst.is_conditional() {
                     // future_branches的[1]是内存下标，get_successor(0)为真块
                     // 当为真时，把bool扩展为i32,则这个i32的值是1，直接作为下标使用即future_branches[1]应该保存真分支
-                    future_branches[1] = get_successor(br_inst, 0);
-                    future_branches[0] = get_successor(br_inst, 1);
+                    future_branches[1] = br_inst.get_successor(0);
+                    future_branches[0] = br_inst.get_successor(1);
                 } else {
-                    future_branches[0] = get_successor(br_inst, 0); // true分支
+                    future_branches[0] = br_inst.get_successor(0); // true分支
                 }
 
                 // 可能要去到的分支

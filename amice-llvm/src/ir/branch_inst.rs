@@ -1,8 +1,7 @@
-use inkwell::Either;
 use inkwell::basic_block::BasicBlock;
-use inkwell::values::{BasicValueEnum, InstructionOpcode, InstructionValue};
+use inkwell::values::{InstructionOpcode, InstructionValue};
 
-pub fn get_successor(inst: InstructionValue, idx: u32) -> Option<BasicBlock> {
+pub(crate) fn get_successor(inst: InstructionValue, idx: u32) -> Option<BasicBlock> {
     assert_eq!(inst.get_opcode(), InstructionOpcode::Br);
 
     if inst.get_num_operands() == 1 {

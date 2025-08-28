@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, ModuleExt};
-use amice_llvm::ir::branch_inst::get_successor;
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
+
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use amice_llvm::ir::switch_inst;
 use amice_llvm::ptr_type;
@@ -311,8 +311,9 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         for inst in node.block.get_instructions() {
             if inst.get_opcode() == InstructionOpcode::Br {
                 if inst.is_conditional() || inst.get_num_operands() > 1 {
-                    let left = get_successor(inst, 0);
-                    let right = get_successor(inst, 1);
+                    let branch_inst = inst.into_branch_inst();
+                    let left = branch_inst.get_successor(0);
+                    let right = branch_inst.get_successor(1);
                     let left = left.ok_or(anyhow!("expected left operand for conditional br: is not a block"))?;
                     let right = right.ok_or(anyhow!("expected right operand for conditional br: is not a block"))?;
 

@@ -1,6 +1,6 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt};
+use amice_llvm::inkwell2::{BasicBlockExt, BranchInst, BuilderExt, InstructionExt};
 use amice_llvm::ir::branch_inst;
 use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -152,9 +152,9 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
             match terminator.get_opcode() {
                 InstructionOpcode::Br => {
                     if terminator.is_conditional() {
-                        conditional_br.push(terminator);
+                        conditional_br.push(terminator.into_branch_inst());
                     } else {
-                        unconditional_br.push(terminator);
+                        unconditional_br.push(terminator.into_branch_inst());
                     }
                 },
                 InstructionOpcode::Switch => {
@@ -168,7 +168,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     }
 
     for terminator in unconditional_br {
-        let successor_block = branch_inst::get_successor(terminator, 0).unwrap();
+        let successor_block = terminator.get_successor(0).unwrap();
         let dispatch_id = basic_block_mapping[&successor_block.as_mut_ptr()];
         let dispatch_id = i32_ty.const_int(dispatch_id as u64, false);
         builder.position_before(&terminator);
@@ -178,8 +178,8 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     }
 
     for terminator in conditional_br {
-        let successor_true = branch_inst::get_successor(terminator, 0).unwrap();
-        let successor_false = branch_inst::get_successor(terminator, 1).unwrap();
+        let successor_true = terminator.get_successor(0).unwrap();
+        let successor_false = terminator.get_successor(1).unwrap();
         let dispatch_id_true = basic_block_mapping[&successor_true.as_mut_ptr()];
         let dispatch_id_false = basic_block_mapping[&successor_false.as_mut_ptr()];
         let dispatch_id_true = i32_ty.const_int(dispatch_id_true as u64, false);

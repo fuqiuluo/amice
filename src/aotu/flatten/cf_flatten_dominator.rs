@@ -1,8 +1,7 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use amice_llvm::analysis::dominators::DominatorTree;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, VerifyResult};
-use amice_llvm::ir::branch_inst::get_successor;
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, VerifyResult};
 use amice_llvm::ir::function::get_basic_block_entry;
 use amice_llvm::ir::switch_inst::find_case_dest;
 use amice_llvm::ptr_type;
@@ -284,10 +283,12 @@ fn do_handle(
             continue;
         }
 
+        let terminator = terminator.into_branch_inst();
         builder.position_before(&terminator);
 
         if terminator.get_num_operands() == 1 {
-            let successor = get_successor(terminator, 0)
+            let successor = terminator
+                .get_successor(0)
                 .ok_or_else(|| anyhow::anyhow!("failed to get successor for terminator {:?}", terminator))?;
             let Some(dispatch_id_val) = find_case_dest(switch, successor) else {
                 return Err(anyhow::anyhow!(
@@ -312,9 +313,11 @@ fn do_handle(
             builder.build_unconditional_branch(bb_dispatcher)?;
             terminator.erase_from_basic_block();
         } else {
-            let true_successor = get_successor(terminator, 0)
+            let true_successor = terminator
+                .get_successor(0)
                 .ok_or_else(|| anyhow::anyhow!("failed to get successor for terminator {:?}", terminator))?;
-            let false_successor = get_successor(terminator, 1)
+            let false_successor = terminator
+                .get_successor(1)
                 .ok_or_else(|| anyhow::anyhow!("failed to get successor for terminator {:?}", terminator))?;
             let Some(true_dispatch_id_val) = find_case_dest(switch, true_successor) else {
                 return Err(anyhow::anyhow!(
