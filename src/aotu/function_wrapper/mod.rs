@@ -3,6 +3,7 @@ use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
+use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::BasicTypeEnum;
 use llvm_plugin::inkwell::values::{
@@ -10,7 +11,6 @@ use llvm_plugin::inkwell::values::{
 };
 use llvm_plugin::inkwell::{Either::Left, Either::Right, context::ContextRef};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use log::{debug, error};
 use rand::Rng;
 

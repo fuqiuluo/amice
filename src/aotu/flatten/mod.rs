@@ -5,6 +5,7 @@ use crate::aotu::flatten::cf_flatten_basic::FlattenBasic;
 use crate::aotu::flatten::cf_flatten_dominator::FlattenDominator;
 use crate::config::{Config, FlattenMode};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, VerifyResult};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -12,7 +13,6 @@ use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
-use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, VerifyResult};
 
 #[amice(priority = 959, name = "Flatten", position = PassPosition::PipelineStart)]
 #[derive(Default)]

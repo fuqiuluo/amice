@@ -2,14 +2,14 @@ mod basic;
 mod polaris_primes;
 
 use crate::aotu::bogus_control_flow::basic::BogusControlFlowBasic;
+use crate::aotu::bogus_control_flow::polaris_primes::BogusControlFlowPolarisPrimes;
 use crate::config::{BogusControlFlowMode, Config};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
 use amice_macro::amice;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error};
-use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
-use crate::aotu::bogus_control_flow::polaris_primes::BogusControlFlowPolarisPrimes;
 
 #[amice(priority = 950, name = "BogusControlFlow", position = PassPosition::PipelineStart)]
 #[derive(Default)]

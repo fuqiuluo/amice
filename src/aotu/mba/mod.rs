@@ -218,9 +218,7 @@ impl LlvmModulePass for Mba {
             }
 
             if self.fix_stack {
-                unsafe {
-                    function.fix_stack()
-                }
+                unsafe { function.fix_stack() }
             }
         }
 

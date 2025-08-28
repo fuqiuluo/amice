@@ -1,5 +1,5 @@
 use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
-use amice_llvm::inkwell2::{PhiInst, BuilderExt, FunctionExt, InstructionExt, BasicBlockExt};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, PhiInst};
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
