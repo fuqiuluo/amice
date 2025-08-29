@@ -23,6 +23,30 @@ Amice 是一个基于 **llvm-plugin-rs** 构建的 LLVM Pass 插件项目，可�
 
 ---
 
+## 支持的混淆
+
+| 混淆           | C/C++ | Rust | ObjC |
+|:-------------|:-----:|:----:|:----:|
+| 字符串加密        |   ✅   |  ⏳   |  ⏳   |
+| 间接调用混淆       |   ✅   |  ⏳   |  ❌   |
+| 间接跳转混淆       |   ✅   |  ⏳   |  ❌   |
+| 切割基本块        |   ✅   |  ⏳   |  ❌   |
+| switch 降级    |   ✅   |  ⏳   |  ❌   |
+| 扁平化控制流 (VM)  |   ✅   |  ⏳   |  ❌   |
+| 控制流平坦化       |   ✅   |  ⏳   |  ❌   |
+| MBA 算术混淆     |   ✅   |  ⏳   |  ❌   |
+| 虚假控制流混淆      |   ✅   |  ⏳   |  ❌   |
+| 函数包装         |   ✅   |  ⏳   |  ❌   |
+| 常参特化克隆混淆     |   ✅   |  ⏳   |  ❌   |
+| 别名访问混淆       |   ✅   |  ⏳   |  ❌   |
+| 自定义调用约定      |   ⏳   |  ⏳   |  ❌   |
+| 延时偏移加载 (AMA) |   ⏳   |  ⏳   |  ❌   |
+
+> 说明：  
+> - ✅ 已支持 
+> - ⏳ 进行中 / 计划中 / 未测试 
+> - ❌ 暂未规划
+
 ## 运行时环境变量
 
 详细说明请参阅 Wiki：  
@@ -50,26 +74,31 @@ Amice 是一个基于 **llvm-plugin-rs** 构建的 LLVM Pass 插件项目，可�
   ```
 
 如使用自编译或自解压版本，请手动配置路径：
+
 ```bash
 # 假设 LLVM 安装在 ~/llvm
 export PATH="$PATH:$HOME/llvm/bin"
 # 或者
 export LLVM_SYS_140_PREFIX="$HOME/llvm"
 ```
+
 ### 2. Windows
 
 官方预编译的 LLVM 无法启用动态插件，需**自行编译**或使用社区版本：  
 <https://github.com/jamesmth/llvm-project/releases>
+
 ```powershell
 # 假设 LLVM 安装在 C:\llvm
 setx PATH "%PATH%;C:\llvm\bin"
 rem 或者
 setx LLVM_SYS_140_PREFIX "C:\llvm"
 ```
+
 ### 3. Android NDK
 
 Android 自带 clang 支持动态加载 Pass，但缺少 `opt`。可采用“未精简版 clang”方案，参考：  
 [Ylarod：NDK 加载 LLVM Pass](https://xtuly.cn/article/ndk-load-llvm-pass-plugin)
+
 ```bash
 # 以下示例基于 r522817 (NDK 25c)
 export CXX="/path/to/unstripped-clang/bin/clang++"
