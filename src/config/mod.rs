@@ -8,6 +8,7 @@ pub use alias_access::{AliasAccessConfig, AliasAccessMode};
 pub use bogus_control_flow::{BogusControlFlowConfig, BogusControlFlowMode};
 pub use clone_function::CloneFunctionConfig;
 use custom_calling_conv::CustomCallingConvConfig;
+use delay_offset_loading::DelayOffsetLoadingConfig;
 pub use flatten::FlattenMode;
 pub use function_wrapper::FunctionWrapperConfig;
 pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
@@ -28,6 +29,7 @@ mod alias_access;
 mod bogus_control_flow;
 mod clone_function;
 mod custom_calling_conv;
+mod delay_offset_loading;
 mod flatten;
 mod function_wrapper;
 mod indirect_branch;
@@ -67,6 +69,7 @@ pub struct Config {
     pub clone_function: CloneFunctionConfig,
     pub alias_access: AliasAccessConfig,
     pub custom_calling_conv: CustomCallingConvConfig,
+    pub delay_offset_loading: DelayOffsetLoadingConfig,
 }
 
 fn is_truthy(value: &str) -> bool {
