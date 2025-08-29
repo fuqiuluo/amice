@@ -21,23 +21,8 @@ pub fn build_u128_constant<'ctx>(
         32 => int_type.const_int(value as u64, false),
         64 => int_type.const_int(value as u64, false),
         128 => {
-            // 对于128位，需要特殊处理
-            let low = (value & 0xFFFFFFFFFFFFFFFF) as u64;
-            let high = (value >> 64) as u64;
-            let low_val = context.i64_type().const_int(low, false);
-            let high_val = context.i64_type().const_int(high, false);
-
-            // 创建128位值：(high << 64) | low
-            let high_shifted = builder
-                .build_left_shift(
-                    high_val.const_bit_cast(int_type),
-                    int_type.const_int(64, false),
-                    "high_shift",
-                )
-                .unwrap();
-
-            let low_extended = low_val.const_bit_cast(int_type);
-            builder.build_or(high_shifted, low_extended, "const128").unwrap()
+            let words = [(value & 0xFFFF_FFFF_FFFF_FFFF) as u64, (value >> 64) as u64];
+            int_type.const_int_arbitrary_precision(&words)
         },
         _ => panic!("Unsupported bit width: {}", int_type.get_bit_width()),
     }

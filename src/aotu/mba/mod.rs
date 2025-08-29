@@ -111,6 +111,27 @@ impl LlvmModulePass for Mba {
                         | InstructionOpcode::Or
                         | InstructionOpcode::Xor => binary_inst_vec.push(inst),
                         _ => {
+                            if matches!(
+                                inst.get_opcode(),
+                                InstructionOpcode::Switch
+                                    | InstructionOpcode::Invoke
+                                    | InstructionOpcode::Phi
+                                    | InstructionOpcode::LandingPad
+                                    | InstructionOpcode::CallBr
+                                    | InstructionOpcode::Resume
+                                    | InstructionOpcode::CatchSwitch
+                                    | InstructionOpcode::CleanupRet
+                                    | InstructionOpcode::IndirectBr
+                                    | InstructionOpcode::Unreachable
+                                    | InstructionOpcode::Alloca
+                                    | InstructionOpcode::Load
+                                    | InstructionOpcode::GetElementPtr
+                                    | InstructionOpcode::InsertElement
+                                    | InstructionOpcode::VAArg
+                            ) {
+                                continue;
+                            }
+
                             let mut const_operands = Vec::new();
                             for i in 0..inst.get_num_operands() {
                                 let op = inst.get_operand(i);
@@ -193,7 +214,7 @@ impl LlvmModulePass for Mba {
                     global_aux_params.as_ref(),
                     stack_aux_params.as_ref(),
                 ) {
-                    warn!("(mba) rewrite store with mba failed: {:?}", e);
+                    warn!("(mba) rewrite_constant_inst_with_mba failed: {:?}", e);
                 }
             }
 
@@ -334,22 +355,26 @@ fn rewrite_binop_with_mba<'a>(
 fn rewrite_constant_inst_with_mba<'a>(
     pass: &Mba,
     module: &mut Module<'a>,
-    store: InstructionValue<'a>,
+    constant_inst: InstructionValue<'a>,
     const_operands: Vec<(u32, IntValue<'a>)>,
     global_aux_params: Option<&HashMap<BitWidth, Vec<GlobalValue>>>,
     stack_aux_params: Option<&HashMap<BitWidth, Vec<PointerValue>>>,
 ) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let builder = ctx.create_builder();
-    builder.position_before(&store);
+    builder.position_before(&constant_inst);
     for (index, value) in const_operands {
         let value_type = value.get_type();
+        if value_type.get_bit_width() == 1 {
+            continue;
+        }
+
         let Some(signed_value) = value.get_sign_extended_constant() else {
             warn!("(mba) store value {:?} is not constant", value);
             continue;
         };
-        let mba_int_width =
-            BitWidth::from_bits(value_type.get_bit_width()).ok_or(anyhow::anyhow!("unsupported int type"))?;
+        let mba_int_width = BitWidth::from_bits(value_type.get_bit_width())
+            .ok_or(anyhow::anyhow!("unsupported int type: {}", value_type))?;
         let cfg = ConstantMbaConfig::new(
             mba_int_width,
             NumberType::Signed,
@@ -362,7 +387,7 @@ fn rewrite_constant_inst_with_mba<'a>(
         let expr = generate_const_mba(&cfg);
         let is_valid = verify_const_mba(&expr, cfg.constant, cfg.width, cfg.aux_count);
         if !is_valid {
-            error!("(mba) rewrite store with mba failed: {:?}", expr);
+            error!("(mba) verify_const_mba failed: {:?}", expr);
             continue;
         }
 
@@ -397,10 +422,10 @@ fn rewrite_constant_inst_with_mba<'a>(
         }
 
         let value = generator::expr_to_llvm_value(ctx, &builder, &expr, &aux_params, value_type, mba_int_width);
-        if !store.set_operand(index, value) {
+        if !constant_inst.set_operand(index, value) {
             warn!(
-                "(mba) failed to set operand {} for store instruction: {:?}",
-                index, store
+                "(mba) failed to set operand {} for constant instruction: {:?}",
+                index, constant_inst
             );
         }
     }
