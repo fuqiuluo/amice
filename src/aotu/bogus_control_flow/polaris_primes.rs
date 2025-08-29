@@ -12,7 +12,9 @@ use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
 use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::types::IntType;
-use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue, PhiValue, PointerValue};
+use llvm_plugin::inkwell::values::{
+    AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue, PhiValue, PointerValue,
+};
 use log::error;
 use rand::Rng;
 
@@ -91,7 +93,7 @@ impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
                     continue;
                 };
                 let Some(next_bb) = terminator.into_branch_inst().get_successor(0) else {
-                    continue
+                    continue;
                 };
 
                 builder.position_before(&terminator);
@@ -103,7 +105,7 @@ impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
                 } else {
                     builder.build_int_compare(IntPredicate::NE, var0_val, var1_val, "var0 != var1")
                 }?;
-                let fake_bb= unconditional_branch_blocks[rand::random_range(0..unconditional_branch_blocks.len())];
+                let fake_bb = unconditional_branch_blocks[rand::random_range(0..unconditional_branch_blocks.len())];
 
                 for phi in fake_bb.get_first_instruction().iter() {
                     if phi.get_opcode() != InstructionOpcode::Phi {
@@ -111,8 +113,7 @@ impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
                     }
 
                     let phi = phi.into_phi_inst().into_phi_value();
-                    let incoming_vec = phi.get_incomings()
-                        .collect::<Vec<_>>();
+                    let incoming_vec = phi.get_incomings().collect::<Vec<_>>();
                     // 如果真的有这个前支，则不需要再添加
                     if incoming_vec.iter().any(|(_, pred)| pred == bb) {
                         break;
