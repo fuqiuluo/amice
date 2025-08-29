@@ -52,7 +52,7 @@ impl<'ctx> BasicBlockExt<'ctx> for BasicBlock<'ctx> {
     fn fix_phi_node(&self, old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>) {
         for phi in self.get_first_instruction().iter() {
             if phi.get_opcode() != InstructionOpcode::Phi {
-                break;
+                continue;
             }
 
             let phi = unsafe { PhiValue::new(phi.as_value_ref()) };
@@ -88,7 +88,7 @@ impl<'ctx> BasicBlockExt<'ctx> for BasicBlock<'ctx> {
     fn replace_phi_node(&self, old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>) {
         for phi in self.get_first_instruction().iter() {
             if phi.get_opcode() != InstructionOpcode::Phi {
-                break;
+                continue;
             }
 
             let phi = phi.into_phi_inst();

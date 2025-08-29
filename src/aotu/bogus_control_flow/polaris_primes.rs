@@ -2,14 +2,18 @@
 // A little improvement
 
 use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt};
 use anyhow::anyhow;
+use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
-use llvm_plugin::inkwell::context::Context;
+use llvm_plugin::inkwell::context::{Context, ContextRef};
+use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
+use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::types::IntType;
-use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue, IntValue, PointerValue};
+use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue, PhiValue, PointerValue};
+use log::error;
 use rand::Rng;
 
 #[derive(Default)]
@@ -27,23 +31,189 @@ impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
             }
             let ctx = module.get_context();
 
+            let i64_ty = ctx.i64_type();
+
+            let builder = ctx.create_builder();
+
             let entry_block = func
                 .get_entry_block()
                 .ok_or_else(|| anyhow!("Failed to get entry block for function {:?}", func.get_name()))?;
             let first_insertion_pt = entry_block.get_first_insertion_pt();
+            builder.position_before(&first_insertion_pt);
 
-            // let i64_ty = ctx.i64_type();
-            //
-            // let builder = ctx.create_builder();
-            //
-            // let mut basic_blocks = Vec::new();
-            // for bb in func.get_basic_blocks() {
-            //     let Some(term) = bb.get_terminator() else { continue; };
-            //     builder.position_before(&term);
-            //
-            // }
+            let var0 = builder.build_alloca(i64_ty, "var0")?;
+            let var1 = builder.build_alloca(i64_ty, "var1")?;
+
+            let module = 0x100000000u64 - rand::random::<u32>() as u64;
+            let x = PRIMES[rand::random_range(0..PRIMES.len())] % module;
+
+            builder.build_store(var0, i64_ty.const_int(x, false))?;
+            builder.build_store(var1, i64_ty.const_int(x, false))?;
+
+            let mut basic_blocks = func.get_basic_blocks();
+            basic_blocks.retain(|bb| bb != &entry_block);
+
+            let expr = [PreserveExpr::SingleInverseAffine, PreserveExpr::DoubleInverseAffine];
+            let mut unconditional_branch_blocks = Vec::new();
+            for bb in basic_blocks {
+                let Some(terminator) = bb.get_terminator() else {
+                    continue;
+                };
+
+                if !matches!(terminator.get_opcode(), InstructionOpcode::Br) {
+                    continue;
+                }
+
+                let terminator = terminator.into_branch_inst();
+                if terminator.is_conditional() {
+                    continue;
+                }
+
+                if rand::random::<bool>() {
+                    let first_insertion_pt = bb.get_first_insertion_pt();
+                    builder.position_before(&first_insertion_pt);
+                } else {
+                    builder.position_before(&terminator);
+                }
+
+                let expr = expr[rand::random_range(0..expr.len())];
+                let modify_var = if rand::random::<bool>() { var0 } else { var1 };
+                if let Err(err) = expr.build(&ctx, &builder, module, x, modify_var) {
+                    error!("(polaris-primes) failed to build preserve expr: {:?}({})", expr, err);
+                    continue;
+                }
+
+                unconditional_branch_blocks.push(bb);
+            }
+
+            for bb in &unconditional_branch_blocks {
+                let Some(terminator) = bb.get_terminator() else {
+                    continue;
+                };
+                let Some(next_bb) = terminator.into_branch_inst().get_successor(0) else {
+                    continue
+                };
+
+                builder.position_before(&terminator);
+                let var0_val = builder.build_load2(i64_ty, var0, "")?.into_int_value();
+                let var1_val = builder.build_load2(i64_ty, var1, "")?.into_int_value();
+                let is_eq = rand::random::<bool>();
+                let condition = if is_eq {
+                    builder.build_int_compare(IntPredicate::EQ, var0_val, var1_val, "var0 == var1")
+                } else {
+                    builder.build_int_compare(IntPredicate::NE, var0_val, var1_val, "var0 != var1")
+                }?;
+                let fake_bb= unconditional_branch_blocks[rand::random_range(0..unconditional_branch_blocks.len())];
+
+                for phi in fake_bb.get_first_instruction().iter() {
+                    if phi.get_opcode() != InstructionOpcode::Phi {
+                        break;
+                    }
+
+                    let phi = phi.into_phi_inst().into_phi_value();
+                    let incoming_vec = phi.get_incomings()
+                        .collect::<Vec<_>>();
+                    let (_value, old_pred) = incoming_vec[rand::random_range(0..incoming_vec.len())];
+
+                    fake_bb.fix_phi_node(old_pred, *bb);
+                }
+                
+                if is_eq {
+                    builder.build_conditional_branch(condition, next_bb, fake_bb)?;
+                } else {
+                    builder.build_conditional_branch(condition, fake_bb, next_bb)?;
+                }
+                terminator.erase_from_basic_block();
+            }
         }
 
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PreserveExpr {
+    SingleInverseAffine,
+    DoubleInverseAffine,
+}
+
+impl PreserveExpr {
+    fn build<'a>(
+        &self,
+        ctx: &ContextRef<'a>,
+        builder: &Builder<'a>,
+        module: u64,
+        x: u64,
+        var0: PointerValue<'a>,
+    ) -> anyhow::Result<()> {
+        let i64_ty = ctx.i64_type();
+
+        let module_int = i64_ty.const_int(module, false);
+        match self {
+            PreserveExpr::SingleInverseAffine => {
+                let b = rand::random::<u64>() % module;
+                let inv = get_inverse(x, module).unwrap();
+                let a = ((b * inv) % module + 1) % module;
+
+                let var0_val = builder.build_load2(i64_ty, var0, "")?.into_int_value();
+                let var0_val = builder.build_int_unsigned_rem(
+                    builder.build_int_mul(var0_val, i64_ty.const_int(a, false), "var0 * a")?,
+                    module_int,
+                    "(var0 * a) % m",
+                )?;
+                let var0_val = builder.build_int_unsigned_rem(
+                    builder.build_int_sub(var0_val, i64_ty.const_int(b, false), "(var0 * a) % m - b")?,
+                    module_int,
+                    "((var0 * a) % m - b) % m",
+                )?;
+                builder.build_store(var0, var0_val)?;
+            },
+            PreserveExpr::DoubleInverseAffine => {
+                let mut k;
+                loop {
+                    k = rand::random::<u64>() % module;
+                    if k != 0 && gcd(k, module) == 1 {
+                        break;
+                    }
+                }
+                let c = rand::random::<u64>() % module;
+                let inv_k = get_inverse(k, module).unwrap();
+
+                let c = i64_ty.const_int(c, false);
+                let ink_k = i64_ty.const_int(inv_k, false);
+
+                let var0_val = builder.build_load2(i64_ty, var0, "")?.into_int_value();
+                let var0_val = builder.build_int_unsigned_rem(
+                    builder.build_int_sub(
+                        builder.build_int_add(
+                            builder.build_int_unsigned_rem(
+                                builder.build_int_add(
+                                    builder.build_int_mul(var0_val, i64_ty.const_int(k, false), "var0 * k")?,
+                                    c,
+                                    "var0 * k + c",
+                                )?,
+                                module_int,
+                                "(var0 * k + c) % m",
+                            )?,
+                            module_int,
+                            "(var0 * k + c) % m + m",
+                        )?,
+                        c,
+                        "(var0 * k + c) % m + m - c",
+                    )?,
+                    module_int,
+                    "((var0 * k + c) % m + m - c) % m",
+                )?;
+                builder.build_store(var0, var0_val)?;
+                let var0_val = builder.build_load2(i64_ty, var0, "")?.into_int_value();
+                let var0_val = builder.build_int_unsigned_rem(
+                    builder.build_int_mul(var0_val, ink_k, "var0 * inv_k")?,
+                    module_int,
+                    "(var0 * inv_k) % m",
+                )?;
+                builder.build_store(var0, var0_val)?;
+            },
+        }
         Ok(())
     }
 }
@@ -215,28 +385,6 @@ mod tests {
     }
 
     #[test]
-    fn test_double_mod_inv() {
-        let mut var0 = 0;
-        let mut var1 = 0;
-
-        let module = 0x100000000u64 - rand::random::<u32>() as u64;
-        // PRIMES.max() = 9973
-        let x = PRIMES[rand::random_range(0..PRIMES.len())] % module;
-
-        println!("x = {}", x);
-        println!("module = {}", module);
-
-        var0 = x;
-        var1 = x;
-
-        let n = rand::random_range(100..10000);
-        for i in 0..n {
-            println!("[{}] var0 = {}, var1 = {}", i, var0, var1);
-            assert_eq!(var0, var1)
-        }
-    }
-
-    #[test]
     fn test_double_inverse_affine_chain() {
         let mut var0 = 0;
         let mut var1 = 0;
@@ -281,7 +429,6 @@ mod tests {
         let mut var0 = 0;
         let mut var1 = 0;
 
-        // 选择一个素数作为模数
         let p = PRIMES[rand::random_range(0..PRIMES.len())];
         let x = PRIMES[rand::random_range(0..PRIMES.len())] % p;
 
