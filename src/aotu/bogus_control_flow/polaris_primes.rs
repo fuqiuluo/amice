@@ -113,11 +113,15 @@ impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
                     let phi = phi.into_phi_inst().into_phi_value();
                     let incoming_vec = phi.get_incomings()
                         .collect::<Vec<_>>();
+                    // 如果真的有这个前支，则不需要再添加
+                    if incoming_vec.iter().any(|(_, pred)| pred == bb) {
+                        break;
+                    }
                     let (_value, old_pred) = incoming_vec[rand::random_range(0..incoming_vec.len())];
 
                     fake_bb.fix_phi_node(old_pred, *bb);
                 }
-                
+
                 if is_eq {
                     builder.build_conditional_branch(condition, next_bb, fake_bb)?;
                 } else {
