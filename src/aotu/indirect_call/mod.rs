@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::{BuilderExt, FunctionExt, LLVMValueRefExt, ModuleExt};
+use amice_llvm::inkwell2::{BuilderExt, CallInst, FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
@@ -73,7 +73,7 @@ impl LlvmModulePass for IndirectCall {
                             continue;
                         }
 
-                        call_instructions.push((inst, callee));
+                        call_instructions.push((inst.into_call_inst(), callee));
                         if likely_functions.contains(&callee) {
                             continue;
                         }
@@ -165,7 +165,7 @@ fn do_handle<'a>(
     module: &mut Module<'_>,
     likely_functions: &Vec<FunctionValue>,
     global_fun_table: GlobalValue,
-    call_instructions: &Vec<(InstructionValue, FunctionValue)>,
+    call_instructions: &Vec<(CallInst, FunctionValue)>,
     xor_key_global: Option<GlobalValue>,
 ) -> anyhow::Result<()> {
     let ctx = module.get_context();
@@ -194,7 +194,7 @@ fn do_handle<'a>(
         let gep = builder.build_gep2(pty_type, global_fun_table.as_pointer_value(), &[index_value], "")?;
         let addr = builder.build_load2(pty_type, gep, "")?.into_pointer_value();
 
-        let call_site = unsafe { CallSiteValue::new(inst.as_value_ref()) };
+        let call_site = inst.into_call_site_value();
         let mut args = Vec::new();
         let fun_attributes = call_site.attributes(AttributeLoc::Function);
         let mut param_attributes = Vec::new();
