@@ -19,6 +19,7 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use std::cmp::max;
 use std::collections::HashMap;
+use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 
 #[amice(
     priority = 955,
@@ -33,6 +34,7 @@ pub struct Mba {
     rewrite_depth: u32,
     alloc_aux_params_in_global: bool, // 仅测试用途
     fix_stack: bool,
+    opt_none: bool
 }
 
 impl AmicePassLoadable for Mba {
@@ -43,6 +45,7 @@ impl AmicePassLoadable for Mba {
         self.rewrite_depth = max(3, cfg.mba.rewrite_depth);
         self.alloc_aux_params_in_global = cfg.mba.alloc_aux_params_in_global;
         self.fix_stack = cfg.mba.fix_stack;
+        self.opt_none = cfg.mba.opt_none;
 
         if !self.enable {
             return false;
@@ -59,7 +62,7 @@ impl AmicePassLoadable for Mba {
 }
 
 impl LlvmModulePass for Mba {
-    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }
@@ -232,6 +235,12 @@ impl LlvmModulePass for Mba {
                 ) {
                     warn!("(mba) rewrite binop with mba failed: {:?}", e);
                 }
+            }
+
+            if self.opt_none {
+                let ctx = module.get_context();
+                let optnone_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("optnone"), 0);
+                function.add_attribute(AttributeLoc::Function, optnone_attr);
             }
 
             if function.verify_function_bool() {

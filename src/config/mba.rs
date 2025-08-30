@@ -18,6 +18,8 @@ pub struct MbaConfig {
     pub alloc_aux_params_in_global: bool,
     /// Enable stack fixing to prevent crashes during MBA transformation
     pub fix_stack: bool,
+    ///  MBAFunction must not be optimized
+    pub opt_none: bool,
 }
 
 impl Default for MbaConfig {
@@ -29,6 +31,7 @@ impl Default for MbaConfig {
             rewrite_depth: 3,
             alloc_aux_params_in_global: false,
             fix_stack: false,
+            opt_none: false,
         }
     }
 }
@@ -58,6 +61,10 @@ impl EnvOverlay for MbaConfig {
 
         if std::env::var("AMICE_MBA_FIX_STACK").is_ok() {
             self.fix_stack = bool_var("AMICE_MBA_FIX_STACK", self.fix_stack);
+        }
+
+        if std::env::var("AMICE_MBA_OPT_NONE").is_ok() {
+            self.opt_none = bool_var("AMICE_MBA_OPT_NONE", self.opt_none);
         }
     }
 }

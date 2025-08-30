@@ -464,6 +464,10 @@ impl AttributeEnumKind {
         )
     }
 
+    pub fn is_dangerous(self) -> bool {
+        matches!(self, AttributeEnumKind::InReg)
+    }
+
     pub fn all() -> Vec<Self> {
         Self::iter().collect()
     }
