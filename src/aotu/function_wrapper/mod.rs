@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, ModuleExt};
+use amice_llvm::inkwell2::{FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
@@ -115,7 +115,8 @@ impl LlvmModulePass for FunctionWrapper {
 /// Extract called function from a call instruction
 fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<'a>> {
     match inst.get_opcode() {
-        InstructionOpcode::Call | InstructionOpcode::Invoke => {
+        InstructionOpcode::Call => inst.into_call_inst().get_call_function(),
+        InstructionOpcode::Invoke => {
             let operand_num = inst.get_num_operands();
             if operand_num == 0 {
                 return None;

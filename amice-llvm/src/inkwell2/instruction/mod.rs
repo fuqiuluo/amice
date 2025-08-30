@@ -1,9 +1,11 @@
 mod branch_inst;
+mod call_inst;
 mod gep_inst;
 mod phi_inst;
 mod switch_inst;
 
 pub use branch_inst::*;
+pub use call_inst::*;
 pub use gep_inst::*;
 use inkwell::values::InstructionValue;
 pub use phi_inst::*;
@@ -17,6 +19,8 @@ pub trait InstructionExt<'ctx> {
     fn into_phi_inst(self) -> PhiInst<'ctx>;
 
     fn into_gep_inst(self) -> GepInst<'ctx>;
+
+    fn into_call_inst(self) -> CallInst<'ctx>;
 }
 
 impl<'ctx> InstructionExt<'ctx> for InstructionValue<'ctx> {
@@ -33,6 +37,10 @@ impl<'ctx> InstructionExt<'ctx> for InstructionValue<'ctx> {
     }
 
     fn into_gep_inst(self) -> GepInst<'ctx> {
+        self.into()
+    }
+
+    fn into_call_inst(self) -> CallInst<'ctx> {
         self.into()
     }
 }
