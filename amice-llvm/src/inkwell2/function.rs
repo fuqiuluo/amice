@@ -19,9 +19,6 @@ pub trait FunctionExt<'ctx> {
 
     fn is_undef_function(&self) -> bool;
 
-    #[cfg(not(feature = "android-ndk"))]
-    fn clone_function(&self) -> Option<FunctionValue<'ctx>>;
-
     unsafe fn fix_stack(&self);
 
     unsafe fn fix_stack_at_terminator(&self);
@@ -86,15 +83,6 @@ impl<'ctx> FunctionExt<'ctx> for FunctionValue<'ctx> {
 
     fn is_undef_function(&self) -> bool {
         self.is_null() || self.is_undef() || self.count_basic_blocks() <= 0 || self.get_intrinsic_id() != 0
-    }
-
-    #[cfg(not(feature = "android-ndk"))]
-    fn clone_function(&self) -> Option<FunctionValue<'ctx>> {
-        let clone = unsafe { ffi::amice_clone_function(self.as_value_ref() as LLVMValueRef) };
-        if clone.is_null() {
-            return None;
-        }
-        clone.into_function_value()
     }
 
     unsafe fn fix_stack(&self) {

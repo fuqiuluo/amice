@@ -66,8 +66,6 @@ unsafe extern "C" {
         new_block: LLVMBasicBlockRef,
     );
 
-    pub(crate) fn amice_clone_function(function: LLVMValueRef) -> LLVMValueRef;
-
     pub(crate) fn amice_specialize_function(
         original_func: LLVMValueRef,
         module: LLVMModuleRef,

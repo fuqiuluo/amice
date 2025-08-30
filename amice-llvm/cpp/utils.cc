@@ -72,17 +72,6 @@ void amice_phi_node_replace_incoming_block_with(llvm::PHINode* PHI, llvm::BasicB
     PHI->replaceIncomingBlockWith(O, N);
 }
 
-llvm::Function * amice_clone_function(llvm::Function* F) {
-#if !defined(AMICE_ENABLE_CLONE_FUNCTION)
-  llvm::ValueToValueMapTy Mappings;
-  llvm::Function *Clone = CloneFunction(F, Mappings);
-  Clone->setName(F->getName() + ".specialized.amice");
-  return Clone;
-#else
-  return nullptr;
-#endif
-}
-
 typedef struct {
     unsigned int index;
     void* constant;
