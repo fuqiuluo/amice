@@ -174,17 +174,25 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
 #define ENUM_CASE(name, simple_name) case name: str = #simple_name; break;
     std::string str;
     switch (kind) {
-        ENUM_CASE(llvm::Attribute::AllocAlign, AllocAlign)
-        ENUM_CASE(llvm::Attribute::AllocatedPointer, AllocatedPointer)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 15)
+        ENUM_CASE(llvm::Attribute::AllocAlign, AllocAlign) // llvm 15
+        ENUM_CASE(llvm::Attribute::AllocatedPointer, AllocatedPointer) // llvm 15
+#endif
         ENUM_CASE(llvm::Attribute::AlwaysInline, AlwaysInline)
         ENUM_CASE(llvm::Attribute::Builtin, Builtin)
         ENUM_CASE(llvm::Attribute::NoUndef, NoUndef)
         ENUM_CASE(llvm::Attribute::Cold, Cold)
         ENUM_CASE(llvm::Attribute::Convergent, Convergent)
         ENUM_CASE(llvm::Attribute::Hot, Hot)
-        ENUM_CASE(llvm::Attribute::DisableSanitizerInstrumentation, DisableSanitizerInstrumentation)
-        ENUM_CASE(llvm::Attribute::FnRetThunkExtern, FnRetThunkExtern)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 14)
+        ENUM_CASE(llvm::Attribute::DisableSanitizerInstrumentation, DisableSanitizerInstrumentation) // llvm 14
+#endif
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 15)
+        ENUM_CASE(llvm::Attribute::FnRetThunkExtern, FnRetThunkExtern) // llvm 15
+#endif
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 19)
         ENUM_CASE(llvm::Attribute::HybridPatchable, HybridPatchable) // llvm 19
+#endif
         ENUM_CASE(llvm::Attribute::InlineHint, InlineHint)
         ENUM_CASE(llvm::Attribute::InReg, InReg)
         ENUM_CASE(llvm::Attribute::JumpTable, JumpTable)
@@ -202,7 +210,9 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
         ENUM_CASE(llvm::Attribute::NoExt, NoExt) // llvm 20
 #endif
         ENUM_CASE(llvm::Attribute::NoFree, NoFree)
-        ENUM_CASE(llvm::Attribute::DeadOnUnwind, DeadOnUnwind)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 18)
+        ENUM_CASE(llvm::Attribute::DeadOnUnwind, DeadOnUnwind) // llvm 18
+#endif
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 21)
         ENUM_CASE(llvm::Attribute::DeadOnReturn, DeadOnReturn)
 #endif
@@ -217,12 +227,20 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
         ENUM_CASE(llvm::Attribute::NoSync, NoSync)
         ENUM_CASE(llvm::Attribute::NoCfCheck, NoCfCheck)
         ENUM_CASE(llvm::Attribute::NoProfile, NoProfile)
-        ENUM_CASE(llvm::Attribute::SkipProfile, SkipProfile)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 16)
+        ENUM_CASE(llvm::Attribute::SkipProfile, SkipProfile) // llvm 16
+#endif
         ENUM_CASE(llvm::Attribute::NoUnwind, NoUnwind)
-        ENUM_CASE(llvm::Attribute::NoSanitizeBounds, NoSanitizeBounds)
-        ENUM_CASE(llvm::Attribute::NoSanitizeCoverage, NoSanitizeCoverage)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 15)
+        ENUM_CASE(llvm::Attribute::NoSanitizeBounds, NoSanitizeBounds) // llvm 15
+#endif
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 13)
+        ENUM_CASE(llvm::Attribute::NoSanitizeCoverage, NoSanitizeCoverage) // llvm 13
+#endif
         ENUM_CASE(llvm::Attribute::NullPointerIsValid, NullPointerIsValid)
-        ENUM_CASE(llvm::Attribute::OptimizeForDebugging, OptimizeForDebugging)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 18)
+        ENUM_CASE(llvm::Attribute::OptimizeForDebugging, OptimizeForDebugging) // llvm18
+#endif
         ENUM_CASE(llvm::Attribute::OptForFuzzing, OptForFuzzing)
         ENUM_CASE(llvm::Attribute::OptimizeForSize, OptimizeForSize)
         ENUM_CASE(llvm::Attribute::OptimizeNone, OptimizeNone)
@@ -247,7 +265,9 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
         ENUM_CASE(llvm::Attribute::SanitizeMemory, SanitizeMemory)
         ENUM_CASE(llvm::Attribute::SanitizeHWAddress, SanitizeHWAddress)
         ENUM_CASE(llvm::Attribute::SanitizeMemTag, SanitizeMemTag)
-        ENUM_CASE(llvm::Attribute::SanitizeNumericalStability, SanitizeNumericalStability)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 19)
+        ENUM_CASE(llvm::Attribute::SanitizeNumericalStability, SanitizeNumericalStability) // llvm 19
+#endif
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 20)
         ENUM_CASE(llvm::Attribute::SanitizeRealtime, SanitizeRealtime) // llvm 20
         ENUM_CASE(llvm::Attribute::SanitizeRealtimeBlocking, SanitizeRealtimeBlocking) // llvm 20
@@ -255,14 +275,22 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
         ENUM_CASE(llvm::Attribute::SpeculativeLoadHardening, SpeculativeLoadHardening)
         ENUM_CASE(llvm::Attribute::SwiftError, SwiftError)
         ENUM_CASE(llvm::Attribute::SwiftSelf, SwiftSelf)
-        ENUM_CASE(llvm::Attribute::SwiftAsync, SwiftAsync)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 13)
+        ENUM_CASE(llvm::Attribute::SwiftAsync, SwiftAsync) // llvm 13
+#endif
         ENUM_CASE(llvm::Attribute::WillReturn, WillReturn)
-        ENUM_CASE(llvm::Attribute::Writable, Writable)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 18)
+        ENUM_CASE(llvm::Attribute::Writable, Writable) // llvm18
+#endif
         ENUM_CASE(llvm::Attribute::WriteOnly, WriteOnly)
         ENUM_CASE(llvm::Attribute::ZExt, ZExt)
         ENUM_CASE(llvm::Attribute::MustProgress, MustProgress)
-        ENUM_CASE(llvm::Attribute::PresplitCoroutine, PresplitCoroutine)
-        ENUM_CASE(llvm::Attribute::CoroDestroyOnlyWhenComplete, CoroDestroyOnlyWhenComplete)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 15)
+        ENUM_CASE(llvm::Attribute::PresplitCoroutine, PresplitCoroutine) // llvm 15
+#endif
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 18)
+        ENUM_CASE(llvm::Attribute::CoroDestroyOnlyWhenComplete, CoroDestroyOnlyWhenComplete) // llvm18
+#endif
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 20)
         ENUM_CASE(llvm::Attribute::CoroElideSafe, CoroElideSafe) // llvm 20
 #endif
