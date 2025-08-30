@@ -103,31 +103,39 @@ impl LlvmModulePass for DelayOffsetLoading {
                 };
 
                 builder.position_before(&gep_inst);
-                let Ok(offset_value) = builder.build_load2(i32_type, global_offset_value.as_pointer_value(), "offset_val") else {
+                let Ok(offset_value) =
+                    builder.build_load2(i32_type, global_offset_value.as_pointer_value(), "offset_val")
+                else {
                     error!("(delay-offset-loading) load global_offset_value failed");
                     continue;
                 };
                 let mut offset_value = offset_value.into_int_value();
 
                 if self.xor_offset {
-                    offset_value = match builder.build_xor(offset_value, i32_type.const_int(xor_key, false), "offset_val_no_xor") {
-                        Ok(value) => value,
-                        Err(e) => {
-                            error!("(delay-offset-loading) xor offset value failed: {}", e);
-                            continue;
-                        },
-                    }
+                    offset_value =
+                        match builder.build_xor(offset_value, i32_type.const_int(xor_key, false), "offset_val_no_xor") {
+                            Ok(value) => value,
+                            Err(e) => {
+                                error!("(delay-offset-loading) xor offset value failed: {}", e);
+                                continue;
+                            },
+                        }
                 }
 
-                let Ok(ptr) = builder.build_bit_cast(struct_ptr.into_pointer_value(), i8_ptr, "st_ptr_as_i8_ptr") else {
+                let Ok(ptr) = builder.build_bit_cast(struct_ptr.into_pointer_value(), i8_ptr, "st_ptr_as_i8_ptr")
+                else {
                     error!("(delay-offset-loading) bit cast struct_ptr to i8_ptr failed");
                     continue;
                 };
-                let Ok(gep) = builder.build_gep2(i8_type, ptr.into_pointer_value(), &[offset_value], "st_ptr_to_gep_ptr") else {
+                let Ok(gep) =
+                    builder.build_gep2(i8_type, ptr.into_pointer_value(), &[offset_value], "st_ptr_to_gep_ptr")
+                else {
                     error!("(delay-offset-loading) gep failed");
                     continue;
                 };
-                let Ok(ptr) = builder.build_bit_cast(gep, gep_inst.get_type().into_pointer_type(), "gep_ptr_to_gep_ty_ptr") else {
+                let Ok(ptr) =
+                    builder.build_bit_cast(gep, gep_inst.get_type().into_pointer_type(), "gep_ptr_to_gep_ty_ptr")
+                else {
                     error!("(delay-offset-loading) bit cast gep to gep_inst.get_type() failed");
                     continue;
                 };
