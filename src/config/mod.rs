@@ -15,6 +15,7 @@ pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
 pub use indirect_call::IndirectCallConfig;
 pub use lower_switch::LowerSwitchConfig;
 pub use mba::MbaConfig;
+use param_aggregate::ParamAggregateConfig;
 pub use pass_order::PassOrderConfig;
 use serde::{Deserialize, Serialize};
 pub use shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
@@ -22,7 +23,6 @@ pub use split_basic_block::SplitBasicBlockConfig;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use param_aggregate::ParamAggregateConfig;
 pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use vm_flatten::VmFlattenConfig;
 
@@ -37,12 +37,12 @@ mod indirect_branch;
 mod indirect_call;
 mod lower_switch;
 mod mba;
+mod param_aggregate;
 mod pass_order;
 mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
-mod param_aggregate;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
