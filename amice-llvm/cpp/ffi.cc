@@ -184,7 +184,7 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
         ENUM_CASE(llvm::Attribute::Hot, Hot)
         ENUM_CASE(llvm::Attribute::DisableSanitizerInstrumentation, DisableSanitizerInstrumentation)
         ENUM_CASE(llvm::Attribute::FnRetThunkExtern, FnRetThunkExtern)
-        ENUM_CASE(llvm::Attribute::HybridPatchable, HybridPatchable)
+        ENUM_CASE(llvm::Attribute::HybridPatchable, HybridPatchable) // llvm 19
         ENUM_CASE(llvm::Attribute::InlineHint, InlineHint)
         ENUM_CASE(llvm::Attribute::InReg, InReg)
         ENUM_CASE(llvm::Attribute::JumpTable, JumpTable)
@@ -194,9 +194,13 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
         ENUM_CASE(llvm::Attribute::NoAlias, NoAlias)
         ENUM_CASE(llvm::Attribute::NoBuiltin, NoBuiltin)
         ENUM_CASE(llvm::Attribute::NoCallback, NoCallback)
-        ENUM_CASE(llvm::Attribute::NoDivergenceSource, NoDivergenceSource)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 20)
+        ENUM_CASE(llvm::Attribute::NoDivergenceSource, NoDivergenceSource) // llvm 20
+#endif
         ENUM_CASE(llvm::Attribute::NoDuplicate, NoDuplicate)
-        ENUM_CASE(llvm::Attribute::NoExt, NoExt)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 20)
+        ENUM_CASE(llvm::Attribute::NoExt, NoExt) // llvm 20
+#endif
         ENUM_CASE(llvm::Attribute::NoFree, NoFree)
         ENUM_CASE(llvm::Attribute::DeadOnUnwind, DeadOnUnwind)
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 21)
@@ -237,13 +241,17 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
         ENUM_CASE(llvm::Attribute::StrictFP, StrictFP)
         ENUM_CASE(llvm::Attribute::SanitizeAddress, SanitizeAddress)
         ENUM_CASE(llvm::Attribute::SanitizeThread, SanitizeThread)
-        ENUM_CASE(llvm::Attribute::SanitizeType, SanitizeType)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 20)
+        ENUM_CASE(llvm::Attribute::SanitizeType, SanitizeType) // llvm 20
+#endif
         ENUM_CASE(llvm::Attribute::SanitizeMemory, SanitizeMemory)
         ENUM_CASE(llvm::Attribute::SanitizeHWAddress, SanitizeHWAddress)
         ENUM_CASE(llvm::Attribute::SanitizeMemTag, SanitizeMemTag)
         ENUM_CASE(llvm::Attribute::SanitizeNumericalStability, SanitizeNumericalStability)
-        ENUM_CASE(llvm::Attribute::SanitizeRealtime, SanitizeRealtime)
-        ENUM_CASE(llvm::Attribute::SanitizeRealtimeBlocking, SanitizeRealtimeBlocking)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 20)
+        ENUM_CASE(llvm::Attribute::SanitizeRealtime, SanitizeRealtime) // llvm 20
+        ENUM_CASE(llvm::Attribute::SanitizeRealtimeBlocking, SanitizeRealtimeBlocking) // llvm 20
+#endif
         ENUM_CASE(llvm::Attribute::SpeculativeLoadHardening, SpeculativeLoadHardening)
         ENUM_CASE(llvm::Attribute::SwiftError, SwiftError)
         ENUM_CASE(llvm::Attribute::SwiftSelf, SwiftSelf)
@@ -255,8 +263,9 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
         ENUM_CASE(llvm::Attribute::MustProgress, MustProgress)
         ENUM_CASE(llvm::Attribute::PresplitCoroutine, PresplitCoroutine)
         ENUM_CASE(llvm::Attribute::CoroDestroyOnlyWhenComplete, CoroDestroyOnlyWhenComplete)
-        ENUM_CASE(llvm::Attribute::CoroElideSafe, CoroElideSafe)
-
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 20)
+        ENUM_CASE(llvm::Attribute::CoroElideSafe, CoroElideSafe) // llvm 20
+#endif
         default: str = "unknown"; break;
     }
     char* cstr = (char*)malloc(str.size() + 1);
