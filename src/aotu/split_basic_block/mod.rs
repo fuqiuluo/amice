@@ -150,7 +150,7 @@ fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) ->
     Ok(())
 }
 
-pub fn shuffle(vec: &mut [u32]) {
+fn shuffle(vec: &mut [u32]) {
     let mut rng = rand::rng();
     vec.shuffle(&mut rng);
 }
