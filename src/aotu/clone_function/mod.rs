@@ -11,6 +11,7 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::error;
 use std::collections::BTreeSet;
+use llvm_plugin::inkwell::attributes::AttributeLoc;
 
 #[amice(priority = 1111, name = "CloneFunction", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -121,6 +122,16 @@ fn do_replace_call_with_call_to_specialized_function<'a>(
         .collect::<Vec<(u32, LLVMValueRef)>>();
     let special_function = unsafe { module.specialize_function_by_args(call_func, &replacements) }
         .map_err(|e| anyhow!("(clone-function) function_specialize_partial failed: {}", e))?;
+
+    for (arg_index, _) in replacements {
+        for attr in special_function.attributes(AttributeLoc::Param(arg_index)) {
+            if attr.is_enum() {
+                special_function.remove_enum_attribute(AttributeLoc::Param(arg_index), attr.get_enum_kind_id())
+            } else if attr.is_string() {
+                special_function.remove_string_attribute(AttributeLoc::Param(arg_index), attr.get_string_kind_id().to_str()?)
+            }
+        }
+    }
 
     let context = module.get_context();
     let builder = context.create_builder();
