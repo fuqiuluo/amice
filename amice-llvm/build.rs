@@ -23,6 +23,7 @@ fn link_llvm() {
     build.file("cpp/utils.cc");
     build.file("cpp/verifier.cc");
     build.file("cpp/instructions.cc");
+    build.file("cpp/adt_ffi.cc");
     
     #[cfg(feature = "android-ndk")]
     {

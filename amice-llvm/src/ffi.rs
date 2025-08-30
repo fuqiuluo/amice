@@ -74,6 +74,8 @@ unsafe extern "C" {
         replacements: *const ArgReplacement,
         replacement_count: u32,
     ) -> LLVMValueRef;
+    
+    pub(crate) fn amice_gep_accumulate_constant_offset(gep: LLVMValueRef, module: LLVMModuleRef, offset: *mut u64) -> bool;
 
     pub(crate) fn amice_get_llvm_version_major() -> i32;
 
