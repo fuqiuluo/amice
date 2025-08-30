@@ -73,11 +73,11 @@ impl<'ctx> FunctionExt<'ctx> for FunctionValue<'ctx> {
 
     fn is_llvm_function(&self) -> bool {
         let name = self.get_name().to_str().unwrap_or("");
-        name.starts_with("llvm.")
+        name.is_empty()
+            || name.starts_with("llvm.")
             || name.starts_with("clang.")
             || name.starts_with("__")
             || name.starts_with("@")
-            || name.is_empty()
             || self.get_intrinsic_id() != 0
     }
 

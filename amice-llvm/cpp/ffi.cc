@@ -40,6 +40,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/IR/Attributes.h"
 
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 14)
 #include <llvm/Passes/OptimizationLevel.h>
@@ -167,6 +168,101 @@ void amice_fix_stack(llvm::Function *f, int AtTerminator, int MaxIterations) {
             break;
          }
     } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
+}
+
+char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
+#define ENUM_CASE(name, simple_name) case name: str = #simple_name; break;
+    std::string str;
+    switch (kind) {
+        ENUM_CASE(llvm::Attribute::AllocAlign, AllocAlign)
+        ENUM_CASE(llvm::Attribute::AllocatedPointer, AllocatedPointer)
+        ENUM_CASE(llvm::Attribute::AlwaysInline, AlwaysInline)
+        ENUM_CASE(llvm::Attribute::Builtin, Builtin)
+        ENUM_CASE(llvm::Attribute::NoUndef, NoUndef)
+        ENUM_CASE(llvm::Attribute::Cold, Cold)
+        ENUM_CASE(llvm::Attribute::Convergent, Convergent)
+        ENUM_CASE(llvm::Attribute::Hot, Hot)
+        ENUM_CASE(llvm::Attribute::DisableSanitizerInstrumentation, DisableSanitizerInstrumentation)
+        ENUM_CASE(llvm::Attribute::FnRetThunkExtern, FnRetThunkExtern)
+        ENUM_CASE(llvm::Attribute::HybridPatchable, HybridPatchable)
+        ENUM_CASE(llvm::Attribute::InlineHint, InlineHint)
+        ENUM_CASE(llvm::Attribute::InReg, InReg)
+        ENUM_CASE(llvm::Attribute::JumpTable, JumpTable)
+        ENUM_CASE(llvm::Attribute::MinSize, MinSize)
+        ENUM_CASE(llvm::Attribute::Naked, Naked)
+        ENUM_CASE(llvm::Attribute::Nest, Nest)
+        ENUM_CASE(llvm::Attribute::NoAlias, NoAlias)
+        ENUM_CASE(llvm::Attribute::NoBuiltin, NoBuiltin)
+        ENUM_CASE(llvm::Attribute::NoCallback, NoCallback)
+        ENUM_CASE(llvm::Attribute::NoDivergenceSource, NoDivergenceSource)
+        ENUM_CASE(llvm::Attribute::NoDuplicate, NoDuplicate)
+        ENUM_CASE(llvm::Attribute::NoExt, NoExt)
+        ENUM_CASE(llvm::Attribute::NoFree, NoFree)
+        ENUM_CASE(llvm::Attribute::DeadOnUnwind, DeadOnUnwind)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 21)
+        ENUM_CASE(llvm::Attribute::DeadOnReturn, DeadOnReturn)
+#endif
+        ENUM_CASE(llvm::Attribute::NoImplicitFloat, NoImplicitFloat)
+        ENUM_CASE(llvm::Attribute::NoInline, NoInline)
+        ENUM_CASE(llvm::Attribute::NonLazyBind, NonLazyBind)
+        ENUM_CASE(llvm::Attribute::NoMerge, NoMerge)
+        ENUM_CASE(llvm::Attribute::NonNull, NonNull)
+        ENUM_CASE(llvm::Attribute::NoRecurse, NoRecurse)
+        ENUM_CASE(llvm::Attribute::NoRedZone, NoRedZone)
+        ENUM_CASE(llvm::Attribute::NoReturn, NoReturn)
+        ENUM_CASE(llvm::Attribute::NoSync, NoSync)
+        ENUM_CASE(llvm::Attribute::NoCfCheck, NoCfCheck)
+        ENUM_CASE(llvm::Attribute::NoProfile, NoProfile)
+        ENUM_CASE(llvm::Attribute::SkipProfile, SkipProfile)
+        ENUM_CASE(llvm::Attribute::NoUnwind, NoUnwind)
+        ENUM_CASE(llvm::Attribute::NoSanitizeBounds, NoSanitizeBounds)
+        ENUM_CASE(llvm::Attribute::NoSanitizeCoverage, NoSanitizeCoverage)
+        ENUM_CASE(llvm::Attribute::NullPointerIsValid, NullPointerIsValid)
+        ENUM_CASE(llvm::Attribute::OptimizeForDebugging, OptimizeForDebugging)
+        ENUM_CASE(llvm::Attribute::OptForFuzzing, OptForFuzzing)
+        ENUM_CASE(llvm::Attribute::OptimizeForSize, OptimizeForSize)
+        ENUM_CASE(llvm::Attribute::OptimizeNone, OptimizeNone)
+        ENUM_CASE(llvm::Attribute::ReadNone, ReadNone)
+        ENUM_CASE(llvm::Attribute::ReadOnly, ReadOnly)
+        ENUM_CASE(llvm::Attribute::Returned, Returned)
+        ENUM_CASE(llvm::Attribute::ImmArg, ImmArg)
+        ENUM_CASE(llvm::Attribute::ReturnsTwice, ReturnsTwice)
+        ENUM_CASE(llvm::Attribute::SafeStack, SafeStack)
+        ENUM_CASE(llvm::Attribute::ShadowCallStack, ShadowCallStack)
+        ENUM_CASE(llvm::Attribute::SExt, SExt)
+        ENUM_CASE(llvm::Attribute::Speculatable, Speculatable)
+        ENUM_CASE(llvm::Attribute::StackProtect, StackProtect)
+        ENUM_CASE(llvm::Attribute::StackProtectReq, StackProtectReq)
+        ENUM_CASE(llvm::Attribute::StackProtectStrong, StackProtectStrong)
+        ENUM_CASE(llvm::Attribute::StrictFP, StrictFP)
+        ENUM_CASE(llvm::Attribute::SanitizeAddress, SanitizeAddress)
+        ENUM_CASE(llvm::Attribute::SanitizeThread, SanitizeThread)
+        ENUM_CASE(llvm::Attribute::SanitizeType, SanitizeType)
+        ENUM_CASE(llvm::Attribute::SanitizeMemory, SanitizeMemory)
+        ENUM_CASE(llvm::Attribute::SanitizeHWAddress, SanitizeHWAddress)
+        ENUM_CASE(llvm::Attribute::SanitizeMemTag, SanitizeMemTag)
+        ENUM_CASE(llvm::Attribute::SanitizeNumericalStability, SanitizeNumericalStability)
+        ENUM_CASE(llvm::Attribute::SanitizeRealtime, SanitizeRealtime)
+        ENUM_CASE(llvm::Attribute::SanitizeRealtimeBlocking, SanitizeRealtimeBlocking)
+        ENUM_CASE(llvm::Attribute::SpeculativeLoadHardening, SpeculativeLoadHardening)
+        ENUM_CASE(llvm::Attribute::SwiftError, SwiftError)
+        ENUM_CASE(llvm::Attribute::SwiftSelf, SwiftSelf)
+        ENUM_CASE(llvm::Attribute::SwiftAsync, SwiftAsync)
+        ENUM_CASE(llvm::Attribute::WillReturn, WillReturn)
+        ENUM_CASE(llvm::Attribute::Writable, Writable)
+        ENUM_CASE(llvm::Attribute::WriteOnly, WriteOnly)
+        ENUM_CASE(llvm::Attribute::ZExt, ZExt)
+        ENUM_CASE(llvm::Attribute::MustProgress, MustProgress)
+        ENUM_CASE(llvm::Attribute::PresplitCoroutine, PresplitCoroutine)
+        ENUM_CASE(llvm::Attribute::CoroDestroyOnlyWhenComplete, CoroDestroyOnlyWhenComplete)
+        ENUM_CASE(llvm::Attribute::CoroElideSafe, CoroElideSafe)
+
+        default: str = "unknown"; break;
+    }
+    char* cstr = (char*)malloc(str.size() + 1);
+    strcpy(cstr, str.c_str());
+    cstr[str.size()] = '\0';
+    return cstr;
 }
 
 int amice_free_msg(char* err) {

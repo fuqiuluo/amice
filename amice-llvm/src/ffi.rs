@@ -74,6 +74,8 @@ unsafe extern "C" {
     ) -> LLVMValueRef;
     
     pub(crate) fn amice_gep_accumulate_constant_offset(gep: LLVMValueRef, module: LLVMModuleRef, offset: *mut u64) -> bool;
+    
+    pub(crate) fn amice_attribute_enum_kind_to_str(kind: u32) -> *const c_char; 
 
     pub(crate) fn amice_get_llvm_version_major() -> i32;
 

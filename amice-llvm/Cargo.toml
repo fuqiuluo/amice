@@ -27,6 +27,8 @@ llvm20-1 = ["inkwell/llvm20-1-no-llvm-linking"]
 [dependencies]
 lazy_static = "1.5.0"
 inkwell = { version = "0.6.0", default-features = false }
+strum = "0.27"
+strum_macros = "0.27"
 
 [build-dependencies]
 cc = "1"
