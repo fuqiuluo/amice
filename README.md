@@ -140,6 +140,7 @@ Download: [android-ndk-r25c Linux X64](https://github.com/fuqiuluo/amice/release
 - llvm-plugin-rs
     - <https://github.com/jamesmth/llvm-plugin-rs/tree/feat/llvm-20>
     - <https://github.com/stevefan1999-personal/llvm-plugin-rs>
+- Obfuscator-LLVM - <https://github.com/obfuscator-llvm/obfuscator>
 - SsagePass – <https://github.com/SsageParuders/SsagePass>
 - Polaris-Obfuscator – <https://github.com/za233/Polaris-Obfuscator>
 - 相关文章
