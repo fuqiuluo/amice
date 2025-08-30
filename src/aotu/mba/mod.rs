@@ -11,6 +11,7 @@ use crate::aotu::mba::expr::Expr;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::inkwell2::{BuilderExt, FunctionExt};
 use amice_macro::amice;
+use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
     BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue,
@@ -19,7 +20,6 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
 use std::cmp::max;
 use std::collections::HashMap;
-use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 
 #[amice(
     priority = 955,
@@ -34,7 +34,7 @@ pub struct Mba {
     rewrite_depth: u32,
     alloc_aux_params_in_global: bool, // 仅测试用途
     fix_stack: bool,
-    opt_none: bool
+    opt_none: bool,
 }
 
 impl AmicePassLoadable for Mba {
