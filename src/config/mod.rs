@@ -22,6 +22,7 @@ pub use split_basic_block::SplitBasicBlockConfig;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use param_aggregate::ParamAggregateConfig;
 pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use vm_flatten::VmFlattenConfig;
 
@@ -41,6 +42,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
+mod param_aggregate;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
@@ -70,6 +72,7 @@ pub struct Config {
     pub alias_access: AliasAccessConfig,
     pub custom_calling_conv: CustomCallingConvConfig,
     pub delay_offset_loading: DelayOffsetLoadingConfig,
+    pub param_aggregate: ParamAggregateConfig,
 }
 
 fn is_truthy(value: &str) -> bool {
