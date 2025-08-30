@@ -3,6 +3,7 @@ use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
 use anyhow::anyhow;
+use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{
@@ -11,7 +12,6 @@ use llvm_plugin::inkwell::values::{
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::error;
 use std::collections::BTreeSet;
-use llvm_plugin::inkwell::attributes::AttributeLoc;
 
 #[amice(priority = 1111, name = "CloneFunction", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -49,7 +49,10 @@ impl LlvmModulePass for CloneFunction {
                     for inst in bb.get_instructions() {
                         if matches!(inst.get_opcode(), InstructionOpcode::Call) {
                             if let Some(called_func) = get_called_function(&inst) {
-                                if called_func.is_llvm_function() || called_func.is_undef_function() {
+                                if called_func.is_llvm_function()
+                                    || called_func.is_undef_function()
+                                    || called_func.is_inline_marked()
+                                {
                                     continue;
                                 }
 
@@ -128,7 +131,8 @@ fn do_replace_call_with_call_to_specialized_function<'a>(
             if attr.is_enum() {
                 special_function.remove_enum_attribute(AttributeLoc::Param(arg_index), attr.get_enum_kind_id())
             } else if attr.is_string() {
-                special_function.remove_string_attribute(AttributeLoc::Param(arg_index), attr.get_string_kind_id().to_str()?)
+                special_function
+                    .remove_string_attribute(AttributeLoc::Param(arg_index), attr.get_string_kind_id().to_str()?)
             }
         }
     }
