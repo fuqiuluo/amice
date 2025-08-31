@@ -37,6 +37,7 @@
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/InlineCost.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
+#include "llvm/Transforms/Utils/CodeExtractor.h"
 
 extern "C" {
 
@@ -159,6 +160,27 @@ llvm::Function* amice_specialize_function(
 #else
     return nullptr;
 #endif
+}
+
+llvm::CodeExtractor* amice_create_code_extractor(llvm::BasicBlock** BBs, int BBs_len) {
+    std::vector<llvm::BasicBlock*> bb_vec;
+    for (int i = 0; i < BBs_len; i++) {
+        bb_vec.push_back(BBs[i]);
+    }
+    return new llvm::CodeExtractor(bb_vec);
+}
+
+void amice_delete_code_extractor(llvm::CodeExtractor* ce) {
+    delete ce;
+}
+
+bool amice_code_extractor_is_eligible(llvm::CodeExtractor* ce) {
+    return ce->isEligible();
+}
+
+llvm::Function* amice_code_extractor_extract_code_region(llvm::CodeExtractor* ce, llvm::Function* F) {
+    llvm::CodeExtractorAnalysisCache CEAC(*F);
+    return ce->extractCodeRegion(CEAC);
 }
 
 }

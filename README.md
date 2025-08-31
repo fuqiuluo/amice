@@ -145,6 +145,7 @@ Download: [android-ndk-r25c Linux X64](https://github.com/fuqiuluo/amice/release
 - Obfuscator-LLVM - <https://github.com/obfuscator-llvm/obfuscator>
 - SsagePass – <https://github.com/SsageParuders/SsagePass>
 - Polaris-Obfuscator – <https://github.com/za233/Polaris-Obfuscator>
+- YANSOllvm - <https://github.com/emc2314/YANSOllvm>
 - 相关文章
     - MBA – <https://plzin.github.io/posts/mba>
     - LLVM PassManager 变更及动态注册 – <https://bbs.kanxue.com/thread-272801.htm>
