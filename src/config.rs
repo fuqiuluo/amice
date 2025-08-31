@@ -5,6 +5,7 @@ use lazy_static::lazy_static;
 use log::warn;
 
 pub use alias_access::{AliasAccessConfig, AliasAccessMode};
+use basic_block_outlining::BasicBlockOutliningConfig;
 pub use bogus_control_flow::{BogusControlFlowConfig, BogusControlFlowMode};
 pub use clone_function::CloneFunctionConfig;
 use custom_calling_conv::CustomCallingConvConfig;
@@ -27,6 +28,7 @@ pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncrypti
 pub use vm_flatten::VmFlattenConfig;
 
 mod alias_access;
+mod basic_block_outlining;
 mod bogus_control_flow;
 mod clone_function;
 mod custom_calling_conv;
@@ -73,6 +75,7 @@ pub struct Config {
     pub custom_calling_conv: CustomCallingConvConfig,
     pub delay_offset_loading: DelayOffsetLoadingConfig,
     pub param_aggregate: ParamAggregateConfig,
+    pub basic_block_outlining: BasicBlockOutliningConfig,
 }
 
 fn is_truthy(value: &str) -> bool {

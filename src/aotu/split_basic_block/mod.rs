@@ -18,7 +18,7 @@ pub struct SplitBasicBlock {
 }
 
 impl AmicePassLoadable for SplitBasicBlock {
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
+    fn init(&mut self, cfg: &Config, _position: PassPosition) -> bool {
         self.enable = cfg.split_basic_block.enable;
         self.split_num = cfg.split_basic_block.num;
 
@@ -27,7 +27,7 @@ impl AmicePassLoadable for SplitBasicBlock {
 }
 
 impl LlvmModulePass for SplitBasicBlock {
-    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }
