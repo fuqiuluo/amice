@@ -2,12 +2,12 @@ use crate::pass_registry::{AmicePassLoadable, PassPosition};
 use amice_llvm::code_extractor::CodeExtractor;
 use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
 use amice_macro::amice;
+use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::FunctionValue;
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, warn, Level};
+use log::{Level, debug, error, warn};
 use std::ops::Not;
-use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 
 #[amice(priority = 979, name = "BasicBlockOutlining", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -62,7 +62,11 @@ impl LlvmModulePass for BasicBlockOutlining {
     }
 }
 
-fn do_outline<'a>(module: &mut Module<'_>, function: FunctionValue<'a>, max_extractor_size: usize) -> anyhow::Result<()> {
+fn do_outline<'a>(
+    module: &mut Module<'_>,
+    function: FunctionValue<'a>,
+    max_extractor_size: usize,
+) -> anyhow::Result<()> {
     let mut bbs = function
         .get_basic_blocks()
         .iter()
@@ -89,7 +93,11 @@ fn do_outline<'a>(module: &mut Module<'_>, function: FunctionValue<'a>, max_extr
     }
 
     if log::log_enabled!(Level::Debug) {
-        debug!("{:?} bbs to outline: {:?}", function.get_name(), bbs.iter().map(|bb| bb.0).collect::<Vec<_>>());
+        debug!(
+            "{:?} bbs to outline: {:?}",
+            function.get_name(),
+            bbs.iter().map(|bb| bb.0).collect::<Vec<_>>()
+        );
     }
 
     for (_, bb) in bbs {
@@ -99,7 +107,7 @@ fn do_outline<'a>(module: &mut Module<'_>, function: FunctionValue<'a>, max_extr
         };
 
         if !ce.is_eligible() {
-            continue
+            continue;
         }
 
         if let Some(new_function) = ce.extract_code_region(function) {
@@ -107,7 +115,10 @@ fn do_outline<'a>(module: &mut Module<'_>, function: FunctionValue<'a>, max_extr
             let noinline_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0);
             new_function.add_attribute(AttributeLoc::Function, noinline_attr);
         } else {
-            warn!("(bb-outlining) failed to extract code region from function {:?}", function.get_name());
+            warn!(
+                "(bb-outlining) failed to extract code region from function {:?}",
+                function.get_name()
+            );
         }
     }
 
