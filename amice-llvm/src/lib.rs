@@ -1,8 +1,11 @@
+extern crate alloc;
+
 use std::borrow::Cow;
 use std::ffi::{CStr, CString};
 
 pub mod analysis;
 mod annotate;
+pub mod code_extractor;
 mod ffi;
 pub mod inkwell2;
 

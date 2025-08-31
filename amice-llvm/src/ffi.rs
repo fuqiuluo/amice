@@ -3,6 +3,7 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMUseRef, LLVMValueRef};
 use inkwell::values::InstructionValue;
 use std::ffi::{CStr, c_char, c_void};
+use crate::code_extractor::LLVMCodeExtractorRef;
 
 #[link(name = "amice-llvm-ffi")]
 unsafe extern "C" {
@@ -76,6 +77,14 @@ unsafe extern "C" {
     pub(crate) fn amice_gep_accumulate_constant_offset(gep: LLVMValueRef, module: LLVMModuleRef, offset: *mut u64) -> bool;
     
     pub(crate) fn amice_attribute_enum_kind_to_str(kind: u32) -> *const c_char; 
+    
+    pub(crate) fn amice_create_code_extractor(bbs: *const LLVMBasicBlockRef, bb_len: i32) -> LLVMCodeExtractorRef;
+    
+    pub(crate) fn amice_delete_code_extractor(ce: LLVMCodeExtractorRef);
+    
+    pub(crate) fn amice_code_extractor_is_eligible(ce: LLVMCodeExtractorRef) -> bool;
+    
+    pub(crate) fn amice_code_extractor_extract_code_region(ce: LLVMCodeExtractorRef, function: LLVMValueRef) -> LLVMValueRef;
 
     pub(crate) fn amice_get_llvm_version_major() -> i32;
 
@@ -87,3 +96,4 @@ pub(crate) struct ArgReplacement {
     pub index: u32,
     pub constant: LLVMValueRef,
 }
+
