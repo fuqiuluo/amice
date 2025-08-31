@@ -1,7 +1,7 @@
 # 项目结构
 
 - 仓库：amice
-- 生成时间：2025-08-28 17:34:43 UTC
+- 生成时间：2025-08-31 11:07:28 UTC
 - 深度：3
 - 忽略：.git|target|node_modules|.idea|.vscode|dist|build
 
@@ -29,6 +29,7 @@
 │   ├── Cargo.toml
 │   ├── build.rs
 │   ├── cpp/
+│   │   ├── adt_ffi.cc
 │   │   ├── dominators_ffi.cc
 │   │   ├── ffi.cc
 │   │   ├── instructions.cc
@@ -36,9 +37,11 @@
 │   │   └── verifier.cc
 │   └── src/
 │       ├── analysis/
+│       ├── analysis.rs
 │       ├── annotate.rs
 │       ├── ffi.rs
 │       ├── inkwell2/
+│       ├── inkwell2.rs
 │       └── lib.rs
 ├── amice-macro/
 │   ├── Cargo.lock
@@ -52,6 +55,7 @@
 │   │   ├── bogus_control_flow/
 │   │   ├── clone_function/
 │   │   ├── custom_calling_conv/
+│   │   ├── delay_offset_loading/
 │   │   ├── flatten/
 │   │   ├── function_wrapper/
 │   │   ├── indirect_branch/
@@ -59,6 +63,7 @@
 │   │   ├── lower_switch/
 │   │   ├── mba/
 │   │   ├── mod.rs
+│   │   ├── param_aggregate/
 │   │   ├── shuffle_blocks/
 │   │   ├── split_basic_block/
 │   │   ├── string_encryption/
@@ -68,23 +73,25 @@
 │   │   ├── bogus_control_flow.rs
 │   │   ├── clone_function.rs
 │   │   ├── custom_calling_conv.rs
+│   │   ├── delay_offset_loading.rs
 │   │   ├── flatten.rs
 │   │   ├── function_wrapper.rs
 │   │   ├── indirect_branch.rs
 │   │   ├── indirect_call.rs
 │   │   ├── lower_switch.rs
 │   │   ├── mba.rs
-│   │   ├── mod.rs
+│   │   ├── param_aggregate.rs
 │   │   ├── pass_order.rs
 │   │   ├── shuffle_blocks.rs
 │   │   ├── split_basic_block.rs
 │   │   ├── string_encryption.rs
 │   │   └── vm_flatten.rs
+│   ├── config.rs
 │   ├── lib.rs
-│   └── pass_registry/
-│       └── mod.rs
+│   └── pass_registry.rs
 └── tests/
     ├── .gitignore
+    ├── ama.c
     ├── bogus_control_flow.c
     ├── clone_function.c
     ├── complex_switch_test.c
@@ -110,7 +117,7 @@
     ├── test_strings.c
     └── vm_flatten.c
 
-29 directories, 74 files
+30 directories, 80 files
 ```
 
 > 本文件由 GitHub Actions 自动生成，请勿手动编辑。
