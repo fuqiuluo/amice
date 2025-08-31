@@ -1,24 +1,36 @@
 use crate::aotu::string_encryption::{
-    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, alloc_stack_string, array_as_const_string,
-    collect_insert_points,
+    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo, alloc_stack_string,
+    array_as_const_string, collect_insert_points,
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
-use crate::ptr_type;
-use amice_llvm::module_utils::append_to_global_ctors;
+use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
+use amice_llvm::ptr_type;
 use anyhow::anyhow;
+use llvm_plugin::inkwell;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue};
-use llvm_plugin::{ModuleAnalysisManager, inkwell};
 use log::{error, warn};
 use rand::Rng;
 
-pub(crate) fn do_handle<'a>(
-    pass: &StringEncryption,
-    module: &mut Module<'a>,
-    manager: &ModuleAnalysisManager,
-) -> anyhow::Result<()> {
+#[derive(Default)]
+pub(super) struct SimdXorAlgo {
+    pub(super) key: [u8; 32],
+}
+
+impl StringEncryptionAlgo for SimdXorAlgo {
+    fn initialize(&mut self, _pass: &StringEncryption, _module: &mut Module<'_>) -> anyhow::Result<()> {
+        rand::rng().fill(&mut self.key);
+        Ok(())
+    }
+
+    fn do_string_encrypt(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()> {
+        do_handle(pass, module, &self.key)
+    }
+}
+
+fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, key: &[u8; 32]) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
     let i8_ty = ctx.i8_type();
@@ -26,9 +38,6 @@ pub(crate) fn do_handle<'a>(
 
     let is_lazy_mode = matches!(pass.timing, DecryptTiming::Lazy);
     let is_global_mode = matches!(pass.timing, DecryptTiming::Global);
-
-    let mut key = [0u8; 32];
-    rand::rng().fill(&mut key);
 
     let global_key = module.add_global(vector256, Some(AddressSpace::default()), "");
     let array_values = key
@@ -320,7 +329,7 @@ fn emit_global_string_decryptor_ctor<'a>(
     builder.build_return(None)?;
 
     let priority = 0; // Default priority
-    append_to_global_ctors(module, decrypt_stub, priority);
+    module.append_to_global_ctors(decrypt_stub, priority);
 
     Ok(())
 }
@@ -343,7 +352,7 @@ fn add_decrypt_function<'a>(
     let vector_ptr_type = vector_256.ptr_type(AddressSpace::default());
     let i32_one = i32_ty.const_int(1, false);
 
-    let fn_ty = i8_ty.fn_type(
+    let fn_ty = i8_ptr.fn_type(
         &[
             i8_ptr.into(),
             i8_ptr.into(),
@@ -407,7 +416,7 @@ fn add_decrypt_function<'a>(
         builder.build_conditional_branch(cond_if_flag_ptr_is_null, key_prepare, entry_has_flags)?;
 
         builder.position_at_end(entry_has_flags);
-        let flag = builder.build_load(i32_ty, flag_ptr, "")?.into_int_value();
+        let flag = builder.build_load2(i32_ty, flag_ptr, "flag")?.into_int_value();
         let is_decrypted = builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "")?;
         builder.build_conditional_branch(is_decrypted, update_flag, exit)?;
     } else {
@@ -421,20 +430,21 @@ fn add_decrypt_function<'a>(
     builder.build_unconditional_branch(key_prepare)?;
 
     builder.position_at_end(key_prepare);
-    let key_load_inst = builder.build_load(vector_256, key_ptr, "key_vec")?;
+    let key_load_inst = builder.build_load2(vector_256, key_ptr, "key_vec")?;
     let key_vec = key_load_inst.into_vector_value();
     builder.build_unconditional_branch(main_loop)?;
 
     // 检查是否还有完整的32字节块
     builder.position_at_end(main_loop);
-    let index = builder.build_load(i32_ty, idx, "cur_idx")?.into_int_value();
+    ();
+    let index = builder.build_load2(i32_ty, idx, "cur_idx")?.into_int_value();
     let tmp = builder.build_int_add(index, ctx.i32_type().const_int(31, false), "tmp")?;
     let cond = builder.build_int_compare(inkwell::IntPredicate::ULT, tmp, len, "cond")?;
     builder.build_conditional_branch(cond, next, check_rest)?;
 
     builder.position_at_end(next);
-    let src_gep = unsafe { builder.build_gep(i8_ty, src_ptr, &[index], "src_gep") }?;
-    let src_load_inst = builder.build_load(vector_256, src_gep, "src_vec")?;
+    let src_gep = builder.build_gep2(i8_ty, src_ptr, &[index], "src_gep")?;
+    let src_load_inst = builder.build_load2(vector_256, src_gep, "src_vec")?;
     if let Some(load_inst) = src_load_inst.as_instruction_value() {
         load_inst
             .set_alignment(1)
@@ -442,7 +452,7 @@ fn add_decrypt_function<'a>(
     }
     let src_vec = src_load_inst.into_vector_value();
     let xored_vec = builder.build_xor(src_vec, key_vec, "xored_vec")?;
-    let dst_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "dst_gep") }?;
+    let dst_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "dst_gep")?;
     let store_inst = builder.build_store(dst_gep, xored_vec)?;
     store_inst
         .set_alignment(1)
@@ -454,7 +464,7 @@ fn add_decrypt_function<'a>(
 
     builder.position_at_end(check_rest);
     // 查询是否有剩余的字节没有处理
-    let index = builder.build_load(i32_ty, idx, "")?.into_int_value();
+    let index = builder.build_load2(i32_ty, idx, "")?.into_int_value();
     let cond = builder.build_int_compare(inkwell::IntPredicate::ULT, index, len, "cond2")?;
     builder.build_conditional_branch(cond, rest, exit)?;
 
@@ -462,13 +472,13 @@ fn add_decrypt_function<'a>(
     // 处理剩余的字节
     // for(;i<len;i++) output[i] = input[i] ^ key[i % 32];
 
-    let src_gep = unsafe { builder.build_gep(i8_ty, src_ptr, &[index], "src_rest_gep") }?;
-    let ch = builder.build_load(i8_ty, src_gep, "cur")?.into_int_value();
+    let src_gep = builder.build_gep2(i8_ty, src_ptr, &[index], "src_rest_gep")?;
+    let ch = builder.build_load2(i8_ty, src_gep, "cur")?.into_int_value();
     let key_index = builder.build_int_signed_rem(index, ctx.i32_type().const_int(32, false), "key_index")?;
-    let key_gep = unsafe { builder.build_gep(i8_ty, key_ptr, &[key_index], "key_rest_gep") }?;
-    let key_ch = builder.build_load(i8_ty, key_gep, "key_cur")?.into_int_value();
+    let key_gep = builder.build_gep2(i8_ty, key_ptr, &[key_index], "key_rest_gep")?;
+    let key_ch = builder.build_load2(i8_ty, key_gep, "key_cur")?.into_int_value();
     let xored = builder.build_xor(ch, key_ch, "xored_rest")?;
-    let dst_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "dst_rest_gep") }?;
+    let dst_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "dst_rest_gep")?;
     builder.build_store(dst_gep, xored)?;
 
     let next_index = builder.build_int_add(index, ctx.i32_type().const_int(1, false), "next_index_rest")?;
@@ -477,7 +487,7 @@ fn add_decrypt_function<'a>(
 
     builder.position_at_end(exit);
     let index = builder.build_int_sub(len, i32_one, "")?;
-    let null_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "null_gep") }?;
+    let null_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "null_gep")?;
     builder.build_store(null_gep, i8_ty.const_zero())?;
     builder.build_return(Some(&dst_ptr))?;
 

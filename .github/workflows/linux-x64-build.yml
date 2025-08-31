@@ -1,0 +1,158 @@
+name: Linux X64 Build
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-build:
+    name: "LLVM/OPT ${{ matrix.llvm-version[0] }} Linux"
+    runs-on: ubuntu-latest
+    env:
+      BUILD_OUTPUT_PATH: target/release
+    strategy:
+      fail-fast: false
+      matrix:
+        # [<major>, <feature-suffix>, <llvm-sys env suffix>]
+        llvm-version:
+          - ["12", "12-0", "120", "v12.0.1-rust-1.55/llvm-lld-12.0.1-rust-1.55-linux-x86_64.tar.gz"]
+          - ["13", "13-0", "130", "v13.0.0-rust-1.59/llvm-lld-13.0.0-rust-1.59-linux-x86_64.tar.gz"]
+          - ["14", "14-0", "140", "v14.0.6-rust-1.64/llvm-lld-14.0.6-rust-1.64-linux-x86_64.tar.gz"]
+          - ["15", "15-0", "150", "v15.0.0-rust-1.65/llvm-lld-15.0.0-rust-1.65-linux-x86_64.tar.gz"]
+          - ["16", "16-0", "160", "16.0"]
+          - ["17", "17-0", "170", "17.0"]
+          - ["18", "18-1", "181", "18.1"]
+          - ["19", "19-1", "191", "19.1"]
+          - ["20", "20-1", "201", "20.1"]
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Cache Rust Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
+
+      - name: Install Dependencies
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt update && sudo apt install -y libtinfo6
+
+      - name: Install LLVM and Clang (LLVM >= 19.1)
+        if: ${{ matrix.llvm-version[0] >= 19 }}
+        run: |
+          sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh ${{ matrix.llvm-version[0] }}
+          sudo apt-get update
+          sudo apt install --no-install-recommends -y libllvm${{ matrix.llvm-version[0] }} \
+                                                      llvm-${{ matrix.llvm-version[0] }} \
+                                                      llvm-${{ matrix.llvm-version[0] }}-dev \
+                                                      llvm-${{ matrix.llvm-version[0] }}-runtime \
+                                                      libpolly-${{ matrix.llvm-version[0] }}-dev
+          sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-${{ matrix.llvm-version[0] }} 10
+
+      - name: Install LLVM and Clang (15 < LLVM <= 19)
+        uses: KyleMayes/install-llvm-action@v2
+        if: ${{ matrix.llvm-version[0] > 15 && matrix.llvm-version[0] < 19 }}
+        with:
+          version: ${{ matrix.llvm-version[0] }}
+
+      - name: Install LLVM and Clang (12 <= LLVM <= 15)
+        if: ${{ matrix.llvm-version[0] >= 12 && matrix.llvm-version[0] <= 15 }}
+        run: |
+          set -euxo pipefail
+          ver=${{ matrix.llvm-version[0] }}
+          
+          mkdir ~/llvm
+          echo "$HOME/llvm/bin" >> $GITHUB_PATH
+          
+          wget --user-agent='GithubCI' -O llvm.tar.gz https://github.com/jamesmth/llvm-project/releases/download/${{ matrix.llvm-version[3] }}
+          tar -C ~ -xf llvm.tar.gz
+
+      - name: Symlink libLLVM.so (LLVM >= 16) (Linux)
+        if: ${{ matrix.llvm-version[0] >= 16 }}
+        working-directory: ${{ env.LLVM_PATH }}/lib
+        run: |
+          set -euxo pipefail
+          ver=${{ matrix.llvm-version[0] }}
+          
+          prefix="/usr/lib/llvm-${ver}"
+          echo "Using LLVM prefix: ${prefix}"
+
+          env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
+          echo "${env_name}=${prefix}" >> "$GITHUB_ENV"
+
+          if [ ! -e "${prefix}/lib/libLLVM.so" ]; then
+            if [ -e "${prefix}/lib/libLLVM-${ver}.so" ]; then
+              sudo ln -s "libLLVM-${ver}.so" "${prefix}/lib/libLLVM.so"
+            elif [ -e "/usr/lib/x86_64-linux-gnu/libLLVM-${ver}.so.1" ]; then
+              sudo ln -s "../../x86_64-linux-gnu/libLLVM-${ver}.so.1" "${prefix}/lib/libLLVM.so"
+            fi
+          fi
+
+      - name: Check LLVM/Clang ${{ matrix.llvm-version[0] }}
+        run: |
+          set -euxo pipefail
+          ver=${{ matrix.llvm-version[0] }}
+          
+          if ldconfig -p | grep -q 'libLLVM\.so'; then
+            ldconfig -p | grep 'libLLVM\.so' || true
+          else
+            echo "libLLVM.so NOT found in ldconfig cache."
+          fi
+
+      - name: Build libamice.so (Release)
+        run: |
+          set -euxo pipefail
+          cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+          
+          # Verify the built library exists
+          if [ ! -f "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" ]; then
+            echo "Error: libamice.so not found in expected location"
+            ls -la ${{ env.BUILD_OUTPUT_PATH }}/
+            exit 1
+          fi
+          
+          # Show library info
+          file "${{ env.BUILD_OUTPUT_PATH }}/libamice.so"
+          ldd "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" || true
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libamice-llvm${{ matrix.llvm-version[0] }}-linux-x64
+          path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.so
+          retention-days: 30
+          if-no-files-found: error

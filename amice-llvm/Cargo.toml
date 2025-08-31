@@ -5,6 +5,14 @@ edition = "2024"
 
 [features]
 default = ["llvm20-1"]
+
+android-ndk = []
+
+# On Windows, llvm plugins require linking with either opt.lib,
+# or lld.lib.
+win-link-opt = []
+win-link-lld = []
+
 llvm11-0 = ["inkwell/llvm11-0-no-llvm-linking"]
 llvm12-0 = ["inkwell/llvm12-0-no-llvm-linking"]
 llvm13-0 = ["inkwell/llvm13-0-no-llvm-linking"]
@@ -19,6 +27,8 @@ llvm20-1 = ["inkwell/llvm20-1-no-llvm-linking"]
 [dependencies]
 lazy_static = "1.5.0"
 inkwell = { version = "0.6.0", default-features = false }
+strum = "0.27"
+strum_macros = "0.27"
 
 [build-dependencies]
 cc = "1"

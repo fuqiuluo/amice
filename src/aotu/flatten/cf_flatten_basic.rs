@@ -1,54 +1,56 @@
-use crate::aotu::flatten::{Flatten, cf_flatten_basic, cf_flatten_dominator, split_entry_block_for_flatten};
+use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
-use amice_llvm::ir::basic_block::get_first_insertion_pt;
-use amice_llvm::ir::branch_inst;
-use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
-use amice_llvm::module_utils::{VerifyResult, verify_function};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, LLVMBasicBlockRefExt, PhiInst};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode};
+use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use log::warn;
 use rand::Rng;
 use std::collections::HashMap;
 
-pub(crate) fn run(pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
-    'out: for function in module.get_functions() {
-        if function.count_basic_blocks() <= 2 {
-            continue;
-        }
+#[derive(Default)]
+pub(super) struct FlattenBasic;
 
-        if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-            continue;
-        }
+impl FlattenAlgo for FlattenBasic {
+    fn initialize(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
+        Ok(())
+    }
 
-        for _ in 0..pass.loop_count {
-            if let Err(err) = do_handle(module, function, pass.demote_switch) {
-                warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
-                continue 'out;
+    fn do_flatten(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
+        'out: for function in module.get_functions() {
+            if function.count_basic_blocks() <= 2 {
+                continue;
             }
 
             if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-                break;
+                continue;
+            }
+
+            for _ in 0..pass.loop_count {
+                if let Err(err) = do_handle(module, function, pass.demote_switch) {
+                    warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
+                    continue 'out;
+                }
+
+                if pass.skip_big_function && function.count_basic_blocks() > 4096 {
+                    break;
+                }
+            }
+
+            if pass.fix_stack {
+                unsafe {
+                    function.fix_stack();
+                }
             }
         }
 
-        if pass.fix_stack {
-            unsafe {
-                fix_stack(function);
-            }
-        }
-
-        if let VerifyResult::Broken(e) = verify_function(function) {
-            warn!("(flatten) function {:?} verify failed: {}", function.get_name(), e);
-        }
+        Ok(())
     }
-
-    Ok(())
 }
 
 fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bool) -> anyhow::Result<()> {
-    let Some(entry_block) = get_basic_block_entry(function) else {
+    let Some(entry_block) = function.get_entry_block() else {
         return Err(anyhow::anyhow!(
             "(flatten) function {:?} has no entry block",
             function.get_name()
@@ -57,18 +59,18 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
 
     let mut has_eh_or_invoke_in_entry = false;
     for inst in entry_block.get_instructions() {
-        match inst.get_opcode() {
+        if matches!(
+            inst.get_opcode(),
             InstructionOpcode::Invoke
-            | InstructionOpcode::LandingPad
-            | InstructionOpcode::CatchSwitch
-            | InstructionOpcode::CatchPad
-            | InstructionOpcode::CatchRet
-            | InstructionOpcode::CleanupPad
-            | InstructionOpcode::CallBr => {
-                has_eh_or_invoke_in_entry = true;
-                break;
-            },
-            _ => {},
+                | InstructionOpcode::LandingPad
+                | InstructionOpcode::CatchSwitch
+                | InstructionOpcode::CatchPad
+                | InstructionOpcode::CatchRet
+                | InstructionOpcode::CleanupPad
+                | InstructionOpcode::CallBr
+        ) {
+            has_eh_or_invoke_in_entry = true;
+            break;
         }
     }
     if has_eh_or_invoke_in_entry {
@@ -101,7 +103,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     let dispatch_cases = basic_block_mapping
         .iter()
         .map(|(k, v)| (i32_ty.const_int(*v as u64, false), k))
-        .map(|(v, bb)| (v, unsafe { BasicBlock::new(*bb) }))
+        .map(|(v, bb)| (v, bb.into_basic_block()))
         .filter_map(|(v, bb)| {
             if let Some(bb) = bb {
                 Some((v, bb))
@@ -120,7 +122,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     dispatcher.move_before(first_block).expect("failed to move basic block");
     default.move_after(dispatcher).expect("failed to move basic block");
 
-    let first_insertion_pt = get_first_insertion_pt(entry_block);
+    let first_insertion_pt = entry_block.get_first_insertion_pt();
     builder.position_before(&first_insertion_pt);
     let dispatch_id_ptr = builder.build_alloca(i32_ty, "")?;
 
@@ -131,7 +133,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     entry_terminator.erase_from_basic_block();
 
     builder.position_at_end(dispatcher);
-    let dispatch_id = builder.build_load(i32_ty, dispatch_id_ptr, "")?;
+    let dispatch_id = builder.build_load2(i32_ty, dispatch_id_ptr, "")?;
     builder.build_switch(dispatch_id.into_int_value(), default, &dispatch_cases)?;
 
     builder.position_at_end(default);
@@ -148,13 +150,13 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
             match terminator.get_opcode() {
                 InstructionOpcode::Br => {
                     if terminator.is_conditional() {
-                        conditional_br.push(terminator);
+                        conditional_br.push(terminator.into_branch_inst());
                     } else {
-                        unconditional_br.push(terminator);
+                        unconditional_br.push(terminator.into_branch_inst());
                     }
                 },
                 InstructionOpcode::Switch => {
-                    switch.push(terminator);
+                    switch.push(terminator.into_switch_inst());
                 },
                 _ => continue, // 其他类型的终结指令不处理
             }
@@ -164,7 +166,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     }
 
     for terminator in unconditional_br {
-        let successor_block = branch_inst::get_successor(terminator, 0).unwrap();
+        let successor_block = terminator.get_successor(0).unwrap();
         let dispatch_id = basic_block_mapping[&successor_block.as_mut_ptr()];
         let dispatch_id = i32_ty.const_int(dispatch_id as u64, false);
         builder.position_before(&terminator);
@@ -174,8 +176,8 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
     }
 
     for terminator in conditional_br {
-        let successor_true = branch_inst::get_successor(terminator, 0).unwrap();
-        let successor_false = branch_inst::get_successor(terminator, 1).unwrap();
+        let successor_true = terminator.get_successor(0).unwrap();
+        let successor_false = terminator.get_successor(1).unwrap();
         let dispatch_id_true = basic_block_mapping[&successor_true.as_mut_ptr()];
         let dispatch_id_false = basic_block_mapping[&successor_false.as_mut_ptr()];
         let dispatch_id_true = i32_ty.const_int(dispatch_id_true as u64, false);

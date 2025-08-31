@@ -1,9 +1,11 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::module_utils::{verify_function, verify_function2};
+use amice_llvm::inkwell2::{BuilderExt, CallInst, FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
+use amice_llvm::ptr_type;
 use amice_macro::amice;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
+use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
     AsValueRef, BasicValue, CallSiteValue, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue,
@@ -71,7 +73,7 @@ impl LlvmModulePass for IndirectCall {
                             continue;
                         }
 
-                        call_instructions.push((inst, callee));
+                        call_instructions.push((inst.into_call_inst(), callee));
                         if likely_functions.contains(&callee) {
                             continue;
                         }
@@ -84,9 +86,7 @@ impl LlvmModulePass for IndirectCall {
 
         let ctx = module.get_context();
         let i32_type = ctx.i32_type();
-        let i8_type = ctx.i8_type();
-        let ptr_type = ctx.ptr_type(AddressSpace::default());
-        let int64_type = ctx.i64_type();
+        let ptr_type = ptr_type!(ctx, i8_type);
 
         let likely_functions_values = likely_functions
             .iter()
@@ -100,7 +100,7 @@ impl LlvmModulePass for IndirectCall {
         global_fun_table.set_linkage(Linkage::Private);
         global_fun_table.set_initializer(&initializer);
 
-        amice_llvm::module_utils::append_to_compiler_used(module, global_fun_table);
+        module.append_to_compiler_used(global_fun_table);
 
         let xor_key_global = if self.xor_key != 0 {
             let g = module.add_global(i32_type, None, ".amice_xor_key");
@@ -112,6 +112,14 @@ impl LlvmModulePass for IndirectCall {
             None
         };
 
+        #[cfg(any(
+            feature = "llvm20-1",
+            feature = "llvm19-1",
+            feature = "llvm18-1",
+            feature = "llvm17-0",
+            feature = "llvm16-0",
+            feature = "llvm15-0",
+        ))]
         if let Err(e) = do_handle(
             self,
             module,
@@ -123,8 +131,18 @@ impl LlvmModulePass for IndirectCall {
             error!("(indirect_call) failed to handle: {e}");
         }
 
+        #[cfg(not(any(
+            feature = "llvm20-1",
+            feature = "llvm19-1",
+            feature = "llvm18-1",
+            feature = "llvm17-0",
+            feature = "llvm16-0",
+            feature = "llvm15-0",
+        )))]
+        error!("(indirect_call) LLVM version is not supported");
+
         for f in module.get_functions() {
-            if verify_function2(f) {
+            if f.verify_function_bool() {
                 warn!("(indirect_call) function {:?} is not verified", f.get_name());
             }
         }
@@ -134,18 +152,25 @@ impl LlvmModulePass for IndirectCall {
 }
 
 // Only handle type 1 and 3
+#[cfg(any(
+    feature = "llvm20-1",
+    feature = "llvm19-1",
+    feature = "llvm18-1",
+    feature = "llvm17-0",
+    feature = "llvm16-0",
+    feature = "llvm15-0",
+))]
 fn do_handle<'a>(
     pass: &IndirectCall,
     module: &mut Module<'_>,
     likely_functions: &Vec<FunctionValue>,
     global_fun_table: GlobalValue,
-    call_instructions: &Vec<(InstructionValue, FunctionValue)>,
+    call_instructions: &Vec<(CallInst, FunctionValue)>,
     xor_key_global: Option<GlobalValue>,
 ) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_type = ctx.i32_type();
-    let pty_type = ctx.ptr_type(AddressSpace::default());
-    let int64_type = ctx.i64_type();
+    let pty_type = ptr_type!(ctx, i8_type);
 
     for (inst, function) in call_instructions {
         let index = likely_functions
@@ -161,15 +186,15 @@ fn do_handle<'a>(
         let builder = ctx.create_builder();
         builder.position_before(inst);
         let index_value = if xor_key_global.is_some() {
-            let xor_key_value = builder.build_load(i32_type, xor_key_global.unwrap().as_pointer_value(), "")?;
+            let xor_key_value = builder.build_load2(i32_type, xor_key_global.unwrap().as_pointer_value(), "")?;
             builder.build_xor(index_value, xor_key_value.into_int_value(), "")?
         } else {
             index_value
         };
-        let gep = unsafe { builder.build_gep(pty_type, global_fun_table.as_pointer_value(), &[index_value], "")? };
-        let addr = builder.build_load(pty_type, gep, "")?.into_pointer_value();
+        let gep = builder.build_gep2(pty_type, global_fun_table.as_pointer_value(), &[index_value], "")?;
+        let addr = builder.build_load2(pty_type, gep, "")?.into_pointer_value();
 
-        let call_site = unsafe { CallSiteValue::new(inst.as_value_ref()) };
+        let call_site = inst.into_call_site_value();
         let mut args = Vec::new();
         let fun_attributes = call_site.attributes(AttributeLoc::Function);
         let mut param_attributes = Vec::new();
@@ -190,8 +215,11 @@ fn do_handle<'a>(
 
         let new_call_site = builder.build_indirect_call(function.get_type(), addr, &args, "")?;
         new_call_site.set_call_convention(call_site.get_call_convention());
-        new_call_site.set_tail_call(call_site.is_tail_call());
-        new_call_site.set_tail_call_kind(call_site.get_tail_call_kind());
+        #[cfg(any(feature = "llvm20-1", feature = "llvm19-1", feature = "llvm18-1"))]
+        {
+            new_call_site.set_tail_call(call_site.is_tail_call());
+            new_call_site.set_tail_call_kind(call_site.get_tail_call_kind());
+        }
         for x in fun_attributes {
             new_call_site.add_attribute(AttributeLoc::Function, x);
         }
@@ -203,7 +231,7 @@ fn do_handle<'a>(
         for x in return_attributes {
             new_call_site.add_attribute(AttributeLoc::Return, x);
         }
-        let new_call_inst = unsafe { InstructionValue::new(new_call_site.as_value_ref()) };
+        let new_call_inst = (new_call_site.as_value_ref() as LLVMValueRef).into_instruction_value();
 
         inst.replace_all_uses_with(&new_call_inst);
         inst.erase_from_basic_block();

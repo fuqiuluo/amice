@@ -36,7 +36,6 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/InlineCost.h"
-#include "llvm/IR/ValueHandle.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
 
 extern "C" {
@@ -73,13 +72,6 @@ void amice_phi_node_replace_incoming_block_with(llvm::PHINode* PHI, llvm::BasicB
     PHI->replaceIncomingBlockWith(O, N);
 }
 
-llvm::Function * amice_clone_function(llvm::Function* F) {
-  llvm::ValueToValueMapTy Mappings;
-  llvm::Function *Clone = CloneFunction(F, Mappings);
-  Clone->setName(F->getName() + ".specialized.amice");
-  return Clone;
-}
-
 typedef struct {
     unsigned int index;
     void* constant;
@@ -90,7 +82,7 @@ llvm::Function* amice_specialize_function(
     llvm::Module* mod,
     const ArgReplacement* replacements,
     unsigned int replacement_count) {
-
+#if !defined(AMICE_ENABLE_CLONE_FUNCTION)
     if (!originalFunc || !mod) {
         return nullptr;
     }
@@ -143,13 +135,30 @@ llvm::Function* amice_specialize_function(
     }
 
     llvm::SmallVector<llvm::ReturnInst*, 8> returns;
+// llvm 12
+//    void llvm::CloneAndPruneFunctionInto(Function *NewFunc, const Function *OldFunc,
+//                                         ValueToValueMapTy &VMap,
+//                                         bool ModuleLevelChanges,
+//                                         SmallVectorImpl<ReturnInst*> &Returns,
+//                                         const char *NameSuffix,
+//                                         ClonedCodeInfo *CodeInfo,
+//                                         Instruction *TheCall)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 13)
     llvm::CloneFunctionInto(specializedFunc, originalFunc, VMap,
-                     llvm::CloneFunctionChangeType::LocalChangesOnly,
-                     returns, "", nullptr);
+        llvm::CloneFunctionChangeType::LocalChangesOnly,
+        returns, "", nullptr);
+#else
+    llvm::CloneFunctionInto(specializedFunc, originalFunc, VMap,
+        false,
+        returns, "", nullptr);
+#endif
 
     specializedFunc->copyAttributesFrom(originalFunc);
 
     return specializedFunc;
+#else
+    return nullptr;
+#endif
 }
 
 }

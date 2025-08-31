@@ -4,6 +4,11 @@ use amice_macro::amice_config_manager;
 use lazy_static::lazy_static;
 use log::warn;
 
+pub use alias_access::{AliasAccessConfig, AliasAccessMode};
+pub use bogus_control_flow::{BogusControlFlowConfig, BogusControlFlowMode};
+pub use clone_function::CloneFunctionConfig;
+use custom_calling_conv::CustomCallingConvConfig;
+use delay_offset_loading::DelayOffsetLoadingConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -18,20 +23,29 @@ pub use indirect_branch::{IndirectBranchConfig, IndirectBranchFlags};
 pub use indirect_call::IndirectCallConfig;
 pub use lower_switch::LowerSwitchConfig;
 pub use mba::MbaConfig;
+use param_aggregate::ParamAggregateConfig;
 pub use pass_order::PassOrderConfig;
+use serde::{Deserialize, Serialize};
 pub use shuffle_blocks::{ShuffleBlocksConfig, ShuffleBlocksFlags};
 pub use split_basic_block::SplitBasicBlockConfig;
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 pub use string_encryption::{StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 pub use vm_flatten::VmFlattenConfig;
 
+mod alias_access;
 mod bogus_control_flow;
 mod clone_function;
+mod custom_calling_conv;
+mod delay_offset_loading;
 mod flatten;
 mod function_wrapper;
 mod indirect_branch;
 mod indirect_call;
 mod lower_switch;
 mod mba;
+mod param_aggregate;
 mod pass_order;
 mod shuffle_blocks;
 mod split_basic_block;
@@ -64,6 +78,10 @@ pub struct Config {
     pub mba: MbaConfig,
     pub bogus_control_flow: BogusControlFlowConfig,
     pub clone_function: CloneFunctionConfig,
+    pub alias_access: AliasAccessConfig,
+    pub custom_calling_conv: CustomCallingConvConfig,
+    pub delay_offset_loading: DelayOffsetLoadingConfig,
+    pub param_aggregate: ParamAggregateConfig,
     pub code_extractor: CodeExtractorConfig,
 }
 

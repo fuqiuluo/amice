@@ -1,18 +1,17 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::function::is_inline_marked_function;
-use amice_llvm::module_utils::append_to_compiler_used;
+use amice_llvm::inkwell2::{FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
-use llvm_plugin::inkwell::AddressSpace;
-use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
+use llvm_plugin::inkwell::attributes::AttributeLoc;
+use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::types::{AnyTypeEnum, BasicTypeEnum};
+use llvm_plugin::inkwell::types::BasicTypeEnum;
 use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, FunctionValue, InstructionOpcode, InstructionValue,
+    AsValueRef, BasicMetadataValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
 };
-use llvm_plugin::inkwell::{Either::Left, Either::Right, builder::Builder, context::ContextRef};
+use llvm_plugin::inkwell::{Either::Left, Either::Right, context::ContextRef};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, warn};
+use log::{debug, error};
 use rand::Rng;
 
 #[amice(priority = 1010, name = "FunctionWrapper", position = PassPosition::PipelineStart)]
@@ -53,13 +52,9 @@ impl LlvmModulePass for FunctionWrapper {
                 continue;
             }
 
-            // Check if function should be obfuscated (using similar logic from other passes)
-            let function_name = function.get_name().to_str().unwrap_or("");
-            if should_skip_function_by_name(function_name) || should_skip_function_by_inline_attribute(function) {
+            if function.is_llvm_function() || function.is_inline_marked() {
                 continue;
             }
-
-            debug!("(function-wrapper) processing function: {}", function_name);
 
             for bb in function.get_basic_blocks() {
                 for inst in bb.get_instructions() {
@@ -117,24 +112,11 @@ impl LlvmModulePass for FunctionWrapper {
     }
 }
 
-/// Check if a function should be skipped from obfuscation
-fn should_skip_function_by_name(name: &str) -> bool {
-    // Skip intrinsics, compiler-generated functions, and system functions
-    name.starts_with("llvm.")
-        || name.starts_with("clang.")
-        || name.starts_with("__")
-        || name.starts_with("@")
-        || name.is_empty()
-}
-
-fn should_skip_function_by_inline_attribute(function_value: FunctionValue) -> bool {
-    is_inline_marked_function(function_value)
-}
-
 /// Extract called function from a call instruction
 fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<'a>> {
     match inst.get_opcode() {
-        InstructionOpcode::Call | InstructionOpcode::Invoke => {
+        InstructionOpcode::Call => inst.into_call_inst().get_call_function(),
+        InstructionOpcode::Invoke => {
             let operand_num = inst.get_num_operands();
             if operand_num == 0 {
                 return None;
@@ -172,13 +154,9 @@ fn handle_call_instruction<'a>(
         return Ok(None);
     }
 
-    let function_name = called_function.get_name().to_str().unwrap_or("");
-    if should_skip_function_by_name(function_name) || should_skip_function_by_inline_attribute(called_function) {
-        debug!("(function-wrapper) skipping function: {}", function_name);
+    if called_function.is_llvm_function() || called_function.is_inline_marked() {
         return Ok(None);
     }
-
-    debug!("(function-wrapper) wrapping call to function: {}", function_name);
 
     // Create wrapper function
     create_wrapper_function(module, &call_inst, called_function)
@@ -205,7 +183,7 @@ fn create_wrapper_function<'a>(
     copy_function_attributes(&wrapper_function, &called_function);
 
     // Mark as used to prevent elimination
-    append_to_compiler_used(module, wrapper_function.as_global_value());
+    module.append_to_compiler_used(wrapper_function.as_global_value());
 
     // Create the wrapper function body
     create_wrapper_body(ctx, &wrapper_function, &called_function)?;
@@ -332,7 +310,7 @@ fn replace_call_with_wrapper<'a>(
 
     // Replace all uses of the old instruction with the new call
     if !call_inst.get_type().is_void_type() {
-        let new_call_inst = unsafe { InstructionValue::new(new_call.as_value_ref()) };
+        let new_call_inst = (new_call.as_value_ref() as LLVMValueRef).into_instruction_value();
         call_inst.replace_all_uses_with(&new_call_inst);
     }
 
@@ -340,6 +318,6 @@ fn replace_call_with_wrapper<'a>(
     call_inst.erase_from_basic_block();
 
     // Return the new call instruction
-    let new_inst = unsafe { InstructionValue::new(new_call.as_value_ref()) };
-    Ok(Some(new_inst))
+    let new_call_inst = (new_call.as_value_ref() as LLVMValueRef).into_instruction_value();
+    Ok(Some(new_call_inst))
 }

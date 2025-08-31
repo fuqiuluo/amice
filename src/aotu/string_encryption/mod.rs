@@ -1,11 +1,12 @@
 mod simd_xor;
 mod xor;
 
+use crate::aotu::string_encryption::simd_xor::SimdXorAlgo;
+use crate::aotu::string_encryption::xor::XorAlgo;
 use crate::config::{Config, StringAlgorithm, StringDecryptTiming};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::function::get_basic_block_entry;
+use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, VerifyResult};
 use amice_macro::amice;
-use ascon_hash::Digest;
 use inkwell::llvm_sys::core::LLVMGetAsString;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::Module;
@@ -30,6 +31,7 @@ pub struct StringEncryption {
     inline_decrypt: bool,
     only_dot_string: bool,
     allow_non_entry_stack_alloc: bool,
+    max_encryption_count: u32,
 }
 
 impl AmicePassLoadable for StringEncryption {
@@ -53,26 +55,47 @@ impl AmicePassLoadable for StringEncryption {
         self.inline_decrypt = inline_decrypt;
         self.only_dot_string = only_llvm_string;
         self.allow_non_entry_stack_alloc = cfg.string_encryption.allow_non_entry_stack_alloc;
+        self.max_encryption_count = cfg.string_encryption.max_encryption_count;
 
         self.enable
     }
 }
 
 impl LlvmModulePass for StringEncryption {
-    fn run_pass<'a>(&self, module: &mut Module<'a>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+    fn run_pass<'a>(&self, module: &mut Module<'a>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }
 
-        if let Err(e) = match self.encryption_type {
-            StringAlgorithm::Xor => xor::do_handle(self, module, manager),
-            StringAlgorithm::SimdXor => simd_xor::do_handle(self, module, manager),
-        } {
-            error!("(strenc) failed to handle string encryption: {e}");
+        let mut algo: Box<dyn StringEncryptionAlgo> = match self.encryption_type {
+            StringAlgorithm::Xor => Box::new(XorAlgo::default()),
+            StringAlgorithm::SimdXor => Box::new(SimdXorAlgo::default()),
+        };
+
+        if let Err(err) = algo.initialize(self, module) {
+            error!("(strenc) initialize failed: {}", err);
+            return PreservedAnalyses::All;
+        }
+
+        if let Err(err) = algo.do_string_encrypt(self, module) {
+            error!("(strenc) do_string_encrypt failed: {}", err);
+            return PreservedAnalyses::All;
+        }
+
+        for x in module.get_functions() {
+            if let VerifyResult::Broken(err) = x.verify_function() {
+                error!("(strenc) function {:?} verify failed: {}", x.get_name(), err);
+            }
         }
 
         PreservedAnalyses::None
     }
+}
+
+pub(super) trait StringEncryptionAlgo {
+    fn initialize(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()>;
+
+    fn do_string_encrypt(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()>;
 }
 
 #[derive(Copy, Clone)]
@@ -98,7 +121,7 @@ impl<'a> EncryptedGlobalValue<'a> {
     ) -> Self {
         let user = Box::new(
             user.iter()
-                .map(|(value_ref, op_num)| unsafe { (InstructionValue::new(*value_ref), *op_num) })
+                .map(|(value_ref, op_num)| (value_ref.into_instruction_value(), *op_num))
                 .collect::<Vec<_>>(),
         );
         EncryptedGlobalValue {
@@ -261,7 +284,7 @@ fn alloc_stack_string<'a>(
     if in_entry_block
         && let Some(parent_block) = inst.get_parent()
         && let Some(parent_function) = parent_block.get_parent()
-        && let Some(entry_block) = get_basic_block_entry(parent_function)
+        && let Some(entry_block) = parent_function.get_entry_block()
         && let Some(terminator) = entry_block.get_terminator()
     {
         builder.position_before(&terminator);

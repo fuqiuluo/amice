@@ -1,103 +1,155 @@
-# Amice 
+# Amice
 
-# How to use
+Amice 是一个基于 **llvm-plugin-rs** 构建的 LLVM Pass 插件项目，可通过 `clang -fpass-plugin` 方式注入到编译流程中。
 
-```shell
-# 在此之前，您需要构建 Amice 的 Rust 代码库，生成 `libamice.so` 插件。
-# export RUST_LOG=debug 如果需要调试日志
+---
 
-clang \
-  -fpass-plugin=libamice.so \
-  your_source.c -o your_source
+## 快速上手
+
+1. **构建插件**
+
+   ```bash
+   # 如需调试日志请解除注释
+   # export RUST_LOG=debug
+   cargo build --release
+   # 生成的动态库位于 target/release/libamice.so
+   ```
+
+2. **编译并注入 Pass**
+
+   ```bash
+   clang -fpass-plugin=libamice.so your_source.c -o your_source
+   ```
+
+---
+
+## 支持的混淆
+
+| 混淆            | C/C++ | Rust | ObjC |
+|:--------------|:-----:|:----:|:----:|
+| 字符串加密         |   ✅   |  ⏳   |  ⏳   |
+| 间接调用混淆        |   ✅   |  ⏳   |  ❌   |
+| 间接跳转混淆        |   ✅   |  ⏳   |  ❌   |
+| 切割基本块         |   ✅   |  ⏳   |  ❌   |
+| switch 降级     |   ✅   |  ⏳   |  ❌   |
+| 扁平化控制流 (VM)   |   ✅   |  ⏳   |  ❌   |
+| 控制流平坦化        |   ✅   |  ⏳   |  ❌   |
+| MBA 算术混淆      |   ✅   |  ⏳   |  ❌   |
+| 虚假控制流混淆       |   ✅   |  ⏳   |  ❌   |
+| 函数包装          |   ✅   |  ⏳   |  ❌   |
+| 常参特化克隆混淆      |   ✅   |  ⏳   |  ❌   |
+| 别名访问混淆        |   ✅   |  ⏳   |  ❌   |
+| 自定义调用约定       |   ⏳   |  ⏳   |  ❌   |
+| 延时偏移加载 (AMA)  |   ✅   |  ⏳   |  ❌   |
+| 反Class导出      |   ❌   |  ❌   |  ⏳   |
+| 参数结构化混淆 (PAO) |   ✅   |  ⏳   |  ❌   |
+| 指令虚拟化         |   ⏳   |  ⏳   |  ❌   |
+
+> 说明：
+> - ✅ 已支持
+> - ⏳ 进行中 / 计划中 / 未测试
+> - ❌ 暂未规划
+
+## 运行时环境变量
+
+详细说明请参阅 Wiki：  
+<https://github.com/fuqiuluo/amice/wiki>
+
+---
+
+## 构建指南
+
+### 1. Linux / macOS
+
+> 要求 LLVM 工具链支持 **动态链接** LLVM 库。  
+> 推荐使用系统包管理器安装。
+
+- Debian / Ubuntu
+
+  ```bash
+  sudo apt install llvm-14
+  ```
+
+- Homebrew
+
+  ```bash
+  brew install llvm@14
+  ```
+
+如使用自编译或自解压版本，请手动配置路径：
+
+```bash
+# 假设 LLVM 安装在 ~/llvm
+export PATH="$PATH:$HOME/llvm/bin"
+# 或者
+export LLVM_SYS_140_PREFIX="$HOME/llvm"
 ```
 
-# Runtime environment variables
+### 2. Windows
 
-[点击这里](https://github.com/fuqiuluo/amice/wiki)
+官方预编译的 LLVM 无法启用动态插件，需**自行编译**或使用社区版本：  
+<https://github.com/jamesmth/llvm-project/releases>
 
-# Build Me
+```powershell
+# 假设 LLVM 安装在 C:\llvm
+setx PATH "%PATH%;C:\llvm\bin"
+rem 或者
+setx LLVM_SYS_140_PREFIX "C:\llvm"
+```
 
-## Linux & MacOS Requirements
+### 3. Android NDK
 
-您的 LLVM 工具链应能动态链接 LLVM 库！ 目前来说您可以使用`apt` 或者 `homebrew` 安装LLVM，而不需要其它大量额外的配置！
+Android 自带 clang 支持动态加载 Pass，但缺少 `opt`。可采用“未精简版 clang”方案，参考：  
+[Ylarod：NDK 加载 LLVM Pass](https://xtuly.cn/article/ndk-load-llvm-pass-plugin)
 
-> Fedora的用户请注意，您需要安装的是 `llvm-devel` 包。
+```bash
+# 以下示例基于 r522817 (NDK 25c)
+export CXX="/path/to/unstripped-clang/bin/clang++"
+export CXXFLAGS="-stdlib=libc++ -I/path/to/unstripped-clang/include/c++/v1"
+export LDFLAGS="-stdlib=libc++ -L/path/to/unstripped-clang/lib"
 
-<details>
- <summary><em>安装 LLVM-14 通过 apt</em></summary>
+# llvm-plugin-rs 18.1，对应 NDK clang 18.0
+export LLVM_SYS_181_PREFIX=/path/to/unstripped-clang
 
- ```shell
- $ apt install llvm-14
- ```
+# cargo build --release 
+# ndk 25c is llvm-18-1
+cargo b --release --no-default-features --features llvm-18-1
 
- </details>
+# 如遇找不到 libLLVM.so，可指定 LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/path/to/unstripped-clang/lib
 
-<details>
- <summary><em>安装 LLVM-14 通过 homebrew</em></summary>
-
- ```shell
- $ brew install llvm@14
- ```
-
- </details>
-
-如果您不使用这些包管理器中的任何一个，您可以从自己编译或者下载编译好了的LLVM工具包。
-在这种情况下，不要忘记配置LLVM 工具链路径。
-
-例如，如果您的 LLVM-14 工具链位于`~/llvm`，则应设置以下任一选项：
-- `PATH=$PATH;$HOME/llvm/bin`
-- `LLVM_SYS_140_PREFIX=$HOME/llvm`
-
-## Windows Requirements
-
-适用于 Windows 的官方 LLVM 工具链迄今为止不支持使用动态加载的LLVM插件，您可能需要手动编译一个`clang/llvm`。也许，这里可以找到兼容的工具链：[点我](https://github.com/jamesmth/llvm-project/releases).
-
-不要忘记使用 LLVM 工具链路径更新您的`PATH`环境变量，或更新`LLVM_SYS_XXX_PREFIX`环境变量来定位您的工具链。
-
-例如，如果您的 LLVM-14 工具链位于`C:\llvm`，则应设置以下任一选项：
-- `PATH=$PATH;C:\llvm\bin`
-- `LLVM_SYS_140_PREFIX=C:\llvm`
-
-## Android NDK
-
-安卓的 LLVM 工具链可以动态加载插件，虽然安卓的clang没有提供`opt`工具，但您可以使用`clang`来编译您的代码，包括但不限于基于LLVM插件，或者将混淆器内敛进您的clang中。
-
-### Plugin
-
-首先我们需要下载ndk对应的未精简的clang，详细教程这里面有：[Ylarod：NDK加载 LLVM Pass 方案](https://xtuly.cn/article/ndk-load-llvm-pass-plugin)!
-
-```shell
-# r522817 对应 NDK 25c
-export CXX="/linux-x86-refs_heads_main-clang-r522817/bin/clang++"
-export CXXFLAGS="-stdlib=libc++ -I/linux-x86-refs_heads_main-clang-r522817/include/c++/v1"
-export LDFLAGS="-stdlib=libc++ -L/linux-x86-refs_heads_main-clang-r522817/lib"
-
-# 例如这里我的ndk是llvm-18.0的
-# 但是llvm-plugin-rs只有18.1的版本，只能设置LLVM_SYS_181_PREFIX来指向未精简的clang
-# (注意：llvm的API在这两个版本没有大的变化，这样改不会影响什么)
-export LLVM_SYS_181_PREFIX=/您的NDK对应的未精简的clang
-
-cargo build --release
-
-# export LD_LIBRARY_PATH=/您的NDK对应的未精简的clang/lib
-# 由于一些奇怪的问题，可能需要设置 LD_LIBRARY_PATH 来指向未精简的clang的lib目录
-# 因为他依赖了`libLLVM.so`，这在android ndk里面是没有的！
-/home/fuqiuluo/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64/bin/clang \
+/path/to/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang \
   -fpass-plugin=../target/release/libamice.so \
   -Xclang -load -Xclang ../target/release/libamice.so \
-   luo.c -o luo
+  luo.c -o luo
 ```
 
-### Inline 
+Download: [android-ndk-r25c Linux X64](https://github.com/fuqiuluo/amice/releases/tag/android-ndk-r25c)
 
-> TODO
+---
 
-# Thanks
+## TODO
 
-- [Project: LLVM](https://llvm.org/)
-- [Project: jamesmth/llvm-plugin-rs](https://github.com/jamesmth/llvm-plugin-rs/tree/feat/llvm-20#)
-- [Project: stevefan1999-personal/llvm-plugin-rs](https://github.com/stevefan1999-personal/llvm-plugin-rs)
-- [Project: SsagePass](https://github.com/SsageParuders/SsagePass)
-- [Article: MBA](https://plzin.github.io/posts/mba)
-- [Article: llvm PassManager的变更及动态注册Pass的加载过程](https://bbs.kanxue.com/thread-272801.htm)
-- [Person: Ylarod](https://github.com/Ylarod)
+- [ ] 内联模式（Inline）支持
+- [ ] 更多 Pass 示例
+- [ ] CI / CD
+
+---
+
+## 鸣谢
+
+- LLVM Project – <https://llvm.org/>
+- llvm-plugin-rs
+    - <https://github.com/jamesmth/llvm-plugin-rs/tree/feat/llvm-20>
+    - <https://github.com/stevefan1999-personal/llvm-plugin-rs>
+- Obfuscator-LLVM - <https://github.com/obfuscator-llvm/obfuscator>
+- SsagePass – <https://github.com/SsageParuders/SsagePass>
+- Polaris-Obfuscator – <https://github.com/za233/Polaris-Obfuscator>
+- 相关文章
+    - MBA – <https://plzin.github.io/posts/mba>
+    - LLVM PassManager 变更及动态注册 – <https://bbs.kanxue.com/thread-272801.htm>
+
+---
+
+> © 2025 Fuqiuluo & Contributors.  
+> 使用遵循本仓库 LICENSE。

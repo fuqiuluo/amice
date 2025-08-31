@@ -1,6 +1,3 @@
-use std::env;
-use std::path::PathBuf;
-
 fn main() {
     link_llvm();
 }
@@ -20,21 +17,19 @@ fn link_llvm() {
     let includedir = llvm_sys::llvm_config("--includedir");
 
     let mut build = cc::Build::new();
-    build
-        .cpp(true)
-        .include(includedir.trim())
-        .file("cpp/ffi.cc");
+    build.cpp(true).include(includedir.trim()).file("cpp/ffi.cc");
 
     build.file("cpp/dominators_ffi.cc");
     build.file("cpp/utils.cc");
     build.file("cpp/verifier.cc");
     build.file("cpp/instructions.cc");
-
-    // todo: android ndk clang?
-    //build.flag("-stdlib=c++");
-    //println!("cargo:rustc-link-lib=c++");
-    //println!("cargo:rustc-link-search=native=linux-x86-refs_heads_main-clang-r522817/lib");
-
+    build.file("cpp/adt_ffi.cc");
+    
+    #[cfg(feature = "android-ndk")]
+    {
+        build.define("AMICE_ENABLE_CLONE_FUNCTION", None);
+    }
+    
     #[cfg(target_env = "msvc")]
     build.flag_if_supported("/std:c++17");
     #[cfg(not(target_env = "msvc"))]
@@ -128,12 +123,12 @@ mod llvm_sys {
                 Ok(version) if LLVM_VERSION_FROM_FEATURES.0 as u64 == version.major => {
                     // Compatible version found. Nice.
                     return Some(binary_name);
-                }
+                },
                 Ok(_) => continue,
                 Err(ref e) if e.kind() == ErrorKind::NotFound => {
                     // Looks like we failed to execute any llvm-config. Keep
                     // searching.
-                }
+                },
                 // Some other error, probably a weird failure. Give up.
                 Err(e) => panic!("Failed to search PATH for llvm-config: {}", e),
             }
@@ -191,8 +186,7 @@ mod llvm_sys {
                     "llvm-config returned empty output",
                 ))
             } else {
-                Ok(String::from_utf8(output.stdout)
-                    .expect("Output from llvm-config was not valid UTF-8"))
+                Ok(String::from_utf8(output.stdout).expect("Output from llvm-config was not valid UTF-8"))
             }
         })
     }
@@ -212,7 +206,7 @@ mod llvm_sys {
                     "Could not determine LLVM version from llvm-config. Version string: {}",
                     version_str
                 );
-            }
+            },
         };
 
         // some systems don't have a patch number but Version wants it so we just append .0 if it isn't

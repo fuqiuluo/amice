@@ -1,0 +1,84 @@
+name: MacOS Arm64 Build
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos-build:
+    name: "LLVM/OPT ${{ matrix.llvm-version[0] }} MacOS"
+    runs-on: macos-latest
+    env:
+      BUILD_OUTPUT_PATH: target/release
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version:
+          - ["18", "18-1", "181"]
+          - ["19", "19-1", "191"]
+          - ["20", "20-1", "201"]
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+
+      - name: Cache Homebrew downloads & Cellar
+        uses: actions/cache@v4
+        with:
+          path: |
+            /Users/runner/Library/Caches/Homebrew
+            /opt/homebrew/Library/Caches/Homebrew
+            /opt/homebrew/Cellar
+          key: ${{ runner.os }}-homebrew-llvm-${{ matrix.llvm-version[0] }}
+          restore-keys: |
+            ${{ runner.os }}-homebrew-llvm-${{ matrix.llvm-version[0] }}
+
+      - name: Install Homebrew LLVM (clang) and set env dynamically
+        run: |
+          set -euo pipefail
+          major=${{ matrix.llvm-version[0] }}
+          suffix=${{ matrix.llvm-version[2] }}
+          echo "Installing llvm@${major} via Homebrew"
+          brew update
+          # Prefer bottled binaries to avoid building from source; fall back to normal install if bottles not available
+          if ! brew install --force-bottle "llvm@${major}"; then
+            brew install "llvm@${major}"
+          fi
+          brew link "llvm@${major}"
+          # Get the Homebrew prefix for the installed llvm formula (usually /opt/homebrew/opt/llvm@<major>)
+          prefix=$(brew --prefix "llvm@${major}")
+          echo "Found llvm prefix: ${prefix}"
+          # Use suffix from matrix for the llvm-sys env var name (e.g. 201)
+          env_name="LLVM_SYS_${suffix}_PREFIX"
+          echo "${env_name}=${prefix}" >> $GITHUB_ENV
+          # Ensure brewed clang is on PATH for subsequent steps
+          echo "PATH=${prefix}/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Build libamice.dylib (Release)
+        run: |
+          cargo b --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+
+      - name: Upload libamice.dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: libamice-llvm${{ matrix.llvm-version[0] }}-macos
+          path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.dylib
+          retention-days: 30

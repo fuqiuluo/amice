@@ -1,8 +1,8 @@
-use std::ffi::{CStr, c_char, c_void};
+use crate::analysis::dominators::LLVMDominatorTreeRef;
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMUseRef, LLVMValueRef};
 use inkwell::values::InstructionValue;
-use crate::analysis::dominators::LLVMDominatorTreeRef;
+use std::ffi::{CStr, c_char, c_void};
 
 #[link(name = "amice-llvm-ffi")]
 unsafe extern "C" {
@@ -29,22 +29,14 @@ unsafe extern "C" {
 
     pub(crate) fn amice_free_msg(errmsg: *const c_char) -> i32;
 
-    pub(crate) fn amice_constant_get_bit_cast(value: *mut c_void, ty: *mut c_void) -> *mut c_void;
-
-    pub(crate) fn amice_constant_get_ptr_to_int(value: *mut c_void, ty: *mut c_void) -> *mut c_void;
-
-    pub(crate) fn amice_constant_get_int_to_ptr(value: *mut c_void, ty: *mut c_void) -> *mut c_void;
-
-    pub(crate) fn amice_constant_get_xor(value1: *mut c_void, value2: *mut c_void) -> *mut c_void;
-
     pub(crate) fn amice_split_basic_block(
-        block: *mut c_void,
-        inst: *mut c_void,
-        name: *const i8,
+        block: LLVMBasicBlockRef,
+        inst: LLVMValueRef,
+        name: *const c_char,
         before: i32,
     ) -> *mut c_void;
 
-    pub(crate) fn amice_get_first_insertion_pt(block: *mut c_void) -> *mut c_void;
+    pub(crate) fn amice_get_first_insertion_pt(block: LLVMBasicBlockRef) -> LLVMValueRef;
 
     pub(crate) fn llvm_dominator_tree_create() -> LLVMDominatorTreeRef;
 
@@ -54,7 +46,11 @@ unsafe extern "C" {
 
     pub(crate) fn llvm_dominator_tree_view_graph(dt: LLVMDominatorTreeRef);
 
-    pub(crate) fn llvm_dominator_tree_dominate_BU(dt: LLVMDominatorTreeRef, b: LLVMBasicBlockRef, u: LLVMUseRef) -> bool;
+    pub(crate) fn llvm_dominator_tree_dominate_BU(
+        dt: LLVMDominatorTreeRef,
+        b: LLVMBasicBlockRef,
+        u: LLVMUseRef,
+    ) -> bool;
 
     pub(crate) fn amice_switch_find_case_dest(inst: LLVMValueRef, b: LLVMBasicBlockRef) -> LLVMValueRef;
 
@@ -64,9 +60,11 @@ unsafe extern "C" {
 
     pub(crate) fn amice_phi_node_remove_incoming_value(phi_node: LLVMValueRef, incoming: LLVMBasicBlockRef);
 
-    pub(crate) fn amice_phi_node_replace_incoming_block_with(phi_node: LLVMValueRef, incoming: LLVMBasicBlockRef, new_block: LLVMBasicBlockRef);
-
-    pub(crate) fn amice_clone_function(function: LLVMValueRef) -> LLVMValueRef;
+    pub(crate) fn amice_phi_node_replace_incoming_block_with(
+        phi_node: LLVMValueRef,
+        incoming: LLVMBasicBlockRef,
+        new_block: LLVMBasicBlockRef,
+    );
 
     pub(crate) fn amice_specialize_function(
         original_func: LLVMValueRef,
@@ -74,6 +72,10 @@ unsafe extern "C" {
         replacements: *const ArgReplacement,
         replacement_count: u32,
     ) -> LLVMValueRef;
+    
+    pub(crate) fn amice_gep_accumulate_constant_offset(gep: LLVMValueRef, module: LLVMModuleRef, offset: *mut u64) -> bool;
+    
+    pub(crate) fn amice_attribute_enum_kind_to_str(kind: u32) -> *const c_char; 
 
     pub(crate) fn amice_get_llvm_version_major() -> i32;
 

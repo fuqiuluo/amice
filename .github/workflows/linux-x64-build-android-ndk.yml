@@ -1,0 +1,113 @@
+name: Linux X64 Build For Android NDK
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-build:
+    name: "LLVM/OPT ${{ matrix.llvm-version[0] }} Linux For Android NDK"
+    runs-on: ubuntu-latest
+    env:
+      BUILD_OUTPUT_PATH: target/release
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version:
+          - ["18", "18-1", "181", "android-ndk-r25c", "android-ndk-r25c.7z", "linux-x86-refs_heads_main-clang-r522817.tar.gz"]
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Cache Rust Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}-android-ndk-r25c
+          restore-keys: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}-android-ndk-r25c
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
+
+      - name: Install Dependencies
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt update
+          sudo apt install -y libtinfo6
+          sudo apt install -y clang
+
+      - name: Install LLVM and Clang
+        run: |
+          set -euxo pipefail
+          
+          mkdir -p $HOME/llvm
+          echo "$HOME/llvm/bin" >> $GITHUB_PATH
+          
+          wget --user-agent='GithubCI' -O llvm.tar.gz https://github.com/fuqiuluo/amice/releases/download/${{ matrix.llvm-version[3] }}/${{ matrix.llvm-version[5] }}
+          tar -C $HOME/llvm -xf llvm.tar.gz
+    
+          env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
+          echo "${env_name}=$HOME/llvm" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/llvm/lib" >> "$GITHUB_ENV"
+          echo "CC=$HOME/llvm/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$HOME/llvm/bin/clang++" >> "$GITHUB_ENV"
+          echo "CXXFLAGS=-stdlib=libc++ -I$HOME/llvm/include/c++/v1" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-stdlib=libc++ -L$HOME/llvm/lib" >> "$GITHUB_ENV"
+    
+          ver=${{ matrix.llvm-version[1] }}
+          if [ ! -e "$HOME/llvm/lib/libLLVM.so" ]; then
+            if [ -e "$HOME/llvm/lib/libLLVM-${ver}.so" ]; then
+              ln -s "$HOME/llvm/lib/libLLVM-${ver}.so" "$HOME/llvm/lib/libLLVM.so"
+            elif [ -e "$HOME/llvm/lib/libLLVM-${ver}.so.1" ]; then
+              ln -s "$HOME/llvm/lib/libLLVM-${ver}.so.1" "$HOME/llvm/lib/libLLVM.so"
+            fi
+          fi
+
+      - name: Build libamice.so (Release)
+        run: |
+          set -euxo pipefail
+          cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }},android-ndk
+          
+          # Verify the built library exists
+          if [ ! -f "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" ]; then
+            echo "Error: libamice.so not found in expected location"
+            ls -la ${{ env.BUILD_OUTPUT_PATH }}/
+            exit 1
+          fi
+          
+          # Show library info
+          file "${{ env.BUILD_OUTPUT_PATH }}/libamice.so"
+          ldd "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" || true
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libamice-llvm${{ matrix.llvm-version[0] }}-linux-x64-android-ndk
+          path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.so
+          retention-days: 30
+          if-no-files-found: error

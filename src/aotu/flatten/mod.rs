@@ -1,22 +1,18 @@
 mod cf_flatten_basic;
 mod cf_flatten_dominator;
 
-use crate::aotu::lower_switch::demote_switch_to_if;
-use crate::config::{Config, FlattenMode, IndirectBranchFlags};
+use crate::aotu::flatten::cf_flatten_basic::FlattenBasic;
+use crate::aotu::flatten::cf_flatten_dominator::FlattenDominator;
+use crate::config::{Config, FlattenMode};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::basic_block::split_basic_block;
-use amice_llvm::ir::function::fix_stack;
-use amice_llvm::module_utils::{VerifyResult, verify_function, verify_function2};
+use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, VerifyResult};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue};
+use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{Level, debug, error, log_enabled, warn};
-use rand::Rng;
-use std::collections::HashMap;
+use log::{error, warn};
 
 #[amice(priority = 959, name = "Flatten", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -31,7 +27,7 @@ pub struct Flatten {
 }
 
 impl AmicePassLoadable for Flatten {
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
+    fn init(&mut self, cfg: &Config, _position: PassPosition) -> bool {
         self.enable = cfg.flatten.enable;
         self.fix_stack = cfg.flatten.fix_stack;
         self.demote_switch = cfg.flatten.lower_switch;
@@ -54,21 +50,39 @@ impl AmicePassLoadable for Flatten {
 }
 
 impl LlvmModulePass for Flatten {
-    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }
 
-        if let Err(err) = match self.mode {
-            FlattenMode::Basic => cf_flatten_basic::run(self, module),
-            FlattenMode::DominatorEnhanced => cf_flatten_dominator::run(self, module),
-        } {
-            error!("(flatten) run pass failed: {}", err);
-            return PreservedAnalyses::All;
+        let mut algo: Box<dyn FlattenAlgo> = match self.mode {
+            FlattenMode::Basic => Box::new(FlattenBasic::default()),
+            FlattenMode::DominatorEnhanced => Box::new(FlattenDominator::default()),
+        };
+        if let Err(e) = algo.initialize(self, module) {
+            error!("(flatten) initialize failed: {}", e);
+            return PreservedAnalyses::None;
+        }
+
+        if let Err(e) = algo.do_flatten(self, module) {
+            error!("(flatten) do_flatten failed: {}", e);
+            return PreservedAnalyses::None;
+        }
+
+        for x in module.get_functions() {
+            if let VerifyResult::Broken(e) = x.verify_function() {
+                warn!("(flatten) function {:?} verify failed: {}", x.get_name(), e);
+            }
         }
 
         PreservedAnalyses::None
     }
+}
+
+pub(super) trait FlattenAlgo {
+    fn initialize(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()>;
+
+    fn do_flatten(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()>;
 }
 
 fn split_entry_block_for_flatten<'a>(
@@ -97,7 +111,7 @@ fn split_entry_block_for_flatten<'a>(
                 if entry_block_inst_count > 0 {
                     split_pos = split_pos.get_previous_instruction().unwrap();
                 }
-                let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.br", false) else {
+                let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.br", false) else {
                     panic!("failed to split basic block");
                 };
                 if new_block.get_parent().unwrap() != function {
@@ -121,7 +135,7 @@ fn split_entry_block_for_flatten<'a>(
             if entry_block_inst_count > 0 {
                 split_pos = split_pos.get_previous_instruction().unwrap();
             }
-            let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.term", false) else {
+            let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.term", false) else {
                 panic!("failed to split basic block");
             };
             if new_block.get_parent().unwrap() != function {

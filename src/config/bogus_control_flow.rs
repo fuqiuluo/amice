@@ -8,16 +8,36 @@ use std::cmp::{max, min};
 #[serde(default)]
 pub struct BogusControlFlowConfig {
     pub enable: bool,
+    pub mode: BogusControlFlowMode,
     /// Probability (0-100) that a basic block will be obfuscated
     pub probability: u32,
     /// Number of times to run the obfuscation pass on the function
     pub loop_count: u32,
 }
 
+#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum BogusControlFlowMode {
+    #[serde(rename = "basic")]
+    #[default]
+    Basic,
+    #[serde(rename = "polaris-primes")]
+    PolarisPrimes,
+}
+
+fn parse_alias_access_mode(s: &str) -> Result<BogusControlFlowMode, String> {
+    let s = s.to_lowercase();
+    match s.as_str() {
+        "basic" | "v1" => Ok(BogusControlFlowMode::Basic),
+        "polaris-primes" | "primes" | "v2" => Ok(BogusControlFlowMode::PolarisPrimes),
+        _ => Err(format!("unknown alias access mode: {}", s)),
+    }
+}
+
 impl Default for BogusControlFlowConfig {
     fn default() -> Self {
         Self {
             enable: false,
+            mode: BogusControlFlowMode::Basic,
             probability: 80,
             loop_count: 1,
         }
@@ -53,6 +73,14 @@ impl EnvOverlay for BogusControlFlowConfig {
                 }
             } else {
                 warn!("Invalid AMICE_BOGUS_CONTROL_FLOW_LOOPS value: {}, using default", loops);
+            }
+        }
+
+        if let Ok(mode) = std::env::var("AMICE_BOGUS_CONTROL_FLOW_MODE") {
+            if let Ok(val) = parse_alias_access_mode(&mode) {
+                self.mode = val;
+            } else {
+                warn!("Invalid AMICE_BOGUS_CONTROL_FLOW_MODE value: {}, using default", mode);
             }
         }
     }

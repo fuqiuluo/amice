@@ -1,13 +1,11 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::basic_block::split_basic_block;
-use amice_llvm::ir::function::get_basic_block_entry;
-use amice_llvm::module_utils::{verify_function, verify_function2};
+use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt};
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode};
+use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::seq::SliceRandom;
@@ -35,6 +33,10 @@ impl LlvmModulePass for SplitBasicBlock {
         }
 
         for function in module.get_functions() {
+            if function.is_undef_function() {
+                continue;
+            }
+
             if let Err(e) = do_split(module, function, self.split_num) {
                 error!(
                     "Failed to split basic blocks in function {:?}: {}",
@@ -45,7 +47,7 @@ impl LlvmModulePass for SplitBasicBlock {
         }
 
         for f in module.get_functions() {
-            if verify_function2(f) {
+            if f.verify_function_bool() {
                 warn!("(split-basic-block) function {:?} is not verified", f.get_name());
             }
         }
@@ -55,7 +57,7 @@ impl LlvmModulePass for SplitBasicBlock {
 }
 
 fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) -> anyhow::Result<()> {
-    let Some(entry) = get_basic_block_entry(function) else {
+    let Some(entry) = function.get_entry_block() else {
         return Err(anyhow!("Function {:?} has no entry block", function.get_name()));
     };
 
@@ -129,7 +131,7 @@ fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) ->
                 }
 
                 let split_name = format!(".split_{}", i);
-                if let Some(new_block) = split_basic_block(to_split, curr_inst, &split_name, false) {
+                if let Some(new_block) = to_split.split_basic_block(curr_inst, &split_name, false) {
                     to_split = new_block;
                 } else {
                     error!("Failed to split basic block at point {}", split_point);
@@ -148,7 +150,7 @@ fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) ->
     Ok(())
 }
 
-pub fn shuffle(vec: &mut [u32]) {
+fn shuffle(vec: &mut [u32]) {
     let mut rng = rand::rng();
     vec.shuffle(&mut rng);
 }

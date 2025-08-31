@@ -1,24 +1,33 @@
 use crate::aotu::string_encryption::{
-    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, alloc_stack_string, array_as_const_string,
-    collect_insert_points,
+    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo, alloc_stack_string,
+    array_as_const_string, collect_insert_points,
 };
 use crate::config::StringDecryptTiming as DecryptTiming;
-use crate::ptr_type;
-use amice_llvm::module_utils::append_to_global_ctors;
+use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
+use amice_llvm::ptr_type;
 use inkwell::module::Module;
 use inkwell::values::FunctionValue;
+use llvm_plugin::inkwell;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::Linkage;
-use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, BasicValueEnum};
-use llvm_plugin::{ModuleAnalysisManager, inkwell};
+use llvm_plugin::inkwell::values::{BasicValue, BasicValueEnum};
 use log::{debug, error, warn};
 
-pub(crate) fn do_handle<'a>(
-    pass: &StringEncryption,
-    module: &mut Module<'a>,
-    manager: &ModuleAnalysisManager,
-) -> anyhow::Result<()> {
+#[derive(Default)]
+pub(super) struct XorAlgo;
+
+impl StringEncryptionAlgo for XorAlgo {
+    fn initialize(&mut self, _pass: &StringEncryption, _module: &mut Module<'_>) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn do_string_encrypt(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()> {
+        do_handle(pass, module)
+    }
+}
+
+fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
 
@@ -55,7 +64,12 @@ pub(crate) fn do_handle<'a>(
         .filter_map(|(global, stru, arr)| {
             // we ignore non-UTF8 strings, since they are probably not human-readable
             let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
-            let encoded_str = s.bytes().map(|c| c ^ 0xAA).collect::<Vec<_>>();
+
+            let mut encoded_str = s.bytes().collect::<Vec<_>>();
+            for byte in encoded_str.iter_mut() {
+                *byte ^= 0xAA;
+            }
+
             let unique_name = global
                 .get_name()
                 .to_str()
@@ -72,17 +86,6 @@ pub(crate) fn do_handle<'a>(
                     "(strenc) string '{}' ({}B) exceeds 4KB limit for stack allocation, using global timing instead",
                     unique_name, string_len
                 );
-            }
-
-            if let Some(stru) = stru {
-                // Rust-like strings
-                let new_const = ctx.const_string(&encoded_str, false);
-                stru.set_field_at_index(0, new_const);
-                global.set_initializer(&stru);
-            } else {
-                // C-like strings
-                let new_const = ctx.const_string(&encoded_str, false);
-                global.set_initializer(&new_const);
             }
 
             let mut users = Vec::new();
@@ -137,6 +140,17 @@ pub(crate) fn do_handle<'a>(
             } else {
                 None
             };
+
+            if let Some(stru) = stru {
+                // Rust-like strings
+                let new_const = ctx.const_string(&encoded_str, false);
+                stru.set_field_at_index(0, new_const);
+                global.set_initializer(&stru);
+            } else {
+                // C-like strings
+                let new_const = ctx.const_string(&encoded_str, false);
+                global.set_initializer(&new_const);
+            }
 
             // 如果有flag的话 ===> 回写模式，字符串不能是一个常量
             if !flag.is_none() || is_global_mode {
@@ -309,7 +323,7 @@ fn emit_global_string_decryptor_ctor<'a>(
     builder.build_return(None)?;
 
     let priority = 0; // Default priority
-    append_to_global_ctors(module, decrypt_stub, priority);
+    module.append_to_global_ctors(decrypt_stub, priority);
 
     Ok(())
 }
@@ -386,7 +400,7 @@ fn add_decrypt_function<'a>(
         builder.build_conditional_branch(cond, entry, prepare_has_flags)?;
 
         builder.position_at_end(prepare_has_flags);
-        let flag = builder.build_load(i32_ty, flag_ptr, "flag")?.into_int_value();
+        let flag = builder.build_load2(i32_ty, flag_ptr, "flag")?.into_int_value();
         let is_decrypted =
             builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "is_decrypted")?;
         builder.build_conditional_branch(is_decrypted, update_flag.unwrap(), exit)?;
@@ -406,20 +420,20 @@ fn add_decrypt_function<'a>(
     builder.build_unconditional_branch(body)?;
 
     builder.position_at_end(body);
-    let index = builder.build_load(i32_ty, idx, "cur_idx")?.into_int_value();
+    let index = builder.build_load2(i32_ty, idx, "cur_idx")?.into_int_value();
     let cond = builder.build_int_compare(inkwell::IntPredicate::ULT, index, len, "cond")?;
     builder.build_conditional_branch(cond, next, exit)?;
 
     builder.position_at_end(next);
 
     // 从源地址读取
-    let src_gep = unsafe { builder.build_gep(i8_ty, ptr, &[index], "src_gep") }?;
-    let ch = builder.build_load(i8_ty, src_gep, "cur")?.into_int_value();
+    let src_gep = builder.build_gep2(i8_ty, ptr, &[index], "src_gep")?;
+    let ch = builder.build_load2(i8_ty, src_gep, "cur")?.into_int_value();
     // 解密
     let xor_ch = i8_ty.const_int(0xAA, false);
     let xored = builder.build_xor(ch, xor_ch, "new")?;
     // 写入目标地址（栈上）
-    let dst_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "dst_gep") }?;
+    let dst_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "dst_gep")?;
     builder.build_store(dst_gep, xored)?;
 
     let next_index = builder.build_int_add(index, ctx.i32_type().const_int(1, false), "")?;
@@ -428,7 +442,7 @@ fn add_decrypt_function<'a>(
 
     builder.position_at_end(exit);
     let index = builder.build_int_sub(len, i32_one, "")?;
-    let null_gep = unsafe { builder.build_gep(i8_ty, dst_ptr, &[index], "null_gep") }?;
+    let null_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "null_gep")?;
     builder.build_store(null_gep, i8_ty.const_zero())?;
     builder.build_return(None)?;
 

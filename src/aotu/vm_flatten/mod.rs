@@ -1,16 +1,13 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use crate::ptr_type;
-use amice_llvm::ir::basic_block::split_basic_block;
-use amice_llvm::ir::branch_inst::get_successor;
-use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
-use amice_llvm::ir::switch_inst;
-use amice_llvm::module_utils::{verify_function, verify_function2};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
+
+use amice_llvm::ptr_type;
 use amice_macro::amice;
 use anyhow::anyhow;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, FunctionValue, InstructionOpcode, IntValue};
+use llvm_plugin::inkwell::values::{ArrayValue, FunctionValue, InstructionOpcode, IntValue};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, debug, error, log_enabled, warn};
@@ -184,7 +181,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         return Ok(());
     }
 
-    let Some(entry_block) = get_basic_block_entry(function) else {
+    let Some(entry_block) = function.get_entry_block() else {
         return Err(anyhow::anyhow!("failed to get entry block"));
     };
 
@@ -208,7 +205,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                 if entry_block_inst_count > 0 {
                     split_pos = split_pos.get_previous_instruction().unwrap();
                 }
-                let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.br", false) else {
+                let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.br", false) else {
                     panic!("failed to split basic block");
                 };
                 if new_block.get_parent().unwrap() != function {
@@ -235,7 +232,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
             if entry_block_inst_count > 0 {
                 split_pos = split_pos.get_previous_instruction().unwrap();
             }
-            let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.term", false) else {
+            let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.term", false) else {
                 panic!("failed to split basic block");
             };
             if new_block.get_parent().unwrap() != function {
@@ -253,7 +250,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
             if entry_block_inst_count > 0 {
                 split_pos = split_pos.get_previous_instruction().unwrap();
             }
-            if let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.others", false) {
+            if let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.others", false) {
                 if new_block.get_parent().unwrap() != function {
                     return Err(anyhow!("Split block has wrong parent"));
                 }
@@ -312,8 +309,9 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         for inst in node.block.get_instructions() {
             if inst.get_opcode() == InstructionOpcode::Br {
                 if inst.is_conditional() || inst.get_num_operands() > 1 {
-                    let left = get_successor(inst, 0);
-                    let right = get_successor(inst, 1);
+                    let branch_inst = inst.into_branch_inst();
+                    let left = branch_inst.get_successor(0);
+                    let right = branch_inst.get_successor(1);
                     let left = left.ok_or(anyhow!("expected left operand for conditional br: is not a block"))?;
                     let right = right.ok_or(anyhow!("expected right operand for conditional br: is not a block"))?;
 
@@ -339,9 +337,10 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
                 //  i32 1, label %15
                 //  i32 2, label %18
                 //  ]
-                let default_case = switch_inst::get_default_block(inst);
-                let _condition = switch_inst::get_condition(inst);
-                let cases = switch_inst::get_cases(inst);
+                let switch_inst = inst.into_switch_inst();
+                let default_case = switch_inst.get_default_block();
+                let _condition = switch_inst.get_condition();
+                let cases = switch_inst.get_cases();
                 node.push(default_case);
                 for (_, bb) in cases {
                     node.push(bb);
@@ -411,7 +410,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     local_opcodes_value.set_initializer(&opcode_array);
     local_opcodes_value.set_linkage(Linkage::Private);
 
-    amice_llvm::module_utils::append_to_compiler_used(module, local_opcodes_value);
+    module.append_to_compiler_used(local_opcodes_value);
 
     let builder = ctx.create_builder();
     let vm_entry = ctx.append_basic_block(function, ".amice.vm_flatten_entry");
@@ -439,50 +438,44 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
 
     builder.position_at_end(vm_entry);
 
-    let pc_value = builder.build_load(i32_type, pc, "__pc__")?.into_int_value();
+    let pc_value = builder.build_load2(i32_type, pc, "__pc__")?.into_int_value();
     let pc_plus_one = builder.build_int_add(pc_value, i32_one, "pc_plus_1")?;
     let pc_plus_two = builder.build_int_add(pc_value, i32_two, "pc_plus_2")?;
     let pc_plus_three = builder.build_int_add(pc_value, i32_three, "pc_plus_3")?;
 
     let opcode = builder
-        .build_load(
+        .build_load2(
             i32_type,
-            unsafe {
-                builder.build_in_bounds_gep(
-                    opcode_array_type,
-                    local_opcodes_value.as_pointer_value(),
-                    &[i32_zero, pc_value],
-                    "",
-                )
-            }?,
+            builder.build_in_bounds_gep2(
+                opcode_array_type,
+                local_opcodes_value.as_pointer_value(),
+                &[i32_zero, pc_value],
+                "",
+            )?,
             "__op__",
         )?
         .into_int_value();
     let left = builder
-        .build_load(
+        .build_load2(
             i32_type,
-            unsafe {
-                builder.build_in_bounds_gep(
-                    opcode_array_type,
-                    local_opcodes_value.as_pointer_value(),
-                    &[i32_zero, pc_plus_one],
-                    "",
-                )
-            }?,
+            builder.build_in_bounds_gep2(
+                opcode_array_type,
+                local_opcodes_value.as_pointer_value(),
+                &[i32_zero, pc_plus_one],
+                "",
+            )?,
             "__left__",
         )?
         .into_int_value();
     let right = builder
-        .build_load(
+        .build_load2(
             i32_type,
-            unsafe {
-                builder.build_in_bounds_gep(
-                    opcode_array_type,
-                    local_opcodes_value.as_pointer_value(),
-                    &[i32_zero, pc_plus_two],
-                    "",
-                )
-            }?,
+            builder.build_in_bounds_gep2(
+                opcode_array_type,
+                local_opcodes_value.as_pointer_value(),
+                &[i32_zero, pc_plus_two],
+                "",
+            )?,
             "__right__",
         )?
         .into_int_value();
@@ -561,9 +554,11 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
 
                 if inst.get_opcode() == InstructionOpcode::Switch {
                     builder.position_before(&inst);
-                    let cases = switch_inst::get_cases(inst);
-                    let _default_case = switch_inst::get_default_block(inst);
-                    let condition = switch_inst::get_condition(inst);
+
+                    let switch_inst = inst.into_switch_inst();
+                    let cases = switch_inst.get_cases();
+                    let _default_case = switch_inst.get_default_block();
+                    let condition = switch_inst.get_condition();
 
                     let mut new_cases = Vec::<(IntValue, BasicBlock)>::new();
                     let new_default_block = ctx.append_basic_block(function, ".vm_switch_case_");
@@ -600,21 +595,19 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         let label_size = left; // 有多少个label，这里的大小是case数量 + 1
         //let default_label_value = right;
         let flag_value = builder
-            .build_load(i32_type, vm_flag, "__vm_br_flag__")?
+            .build_load2(i32_type, vm_flag, "__vm_br_flag__")?
             .into_int_value();
         //let cases_num = builder.build_int_sub(label_size, i32_one, "cases_num")?;
         let offset = builder.build_int_sub(label_size, flag_value, "offset")?;
-        let curr_pc = builder.build_load(i32_type, pc, "__pc__")?.into_int_value();
+        let curr_pc = builder.build_load2(i32_type, pc, "__pc__")?.into_int_value();
         let new_pc_offset = builder.build_int_sub(curr_pc, offset, "pc_with_offset")?;
-        let new_pc_gep = unsafe {
-            builder.build_in_bounds_gep(
-                opcode_array_type,
-                local_opcodes_value.as_pointer_value(),
-                &[i32_zero, new_pc_offset],
-                "",
-            )
-        }?;
-        let new_pc = builder.build_load(i32_type, new_pc_gep, "__value__")?.into_int_value();
+        let new_pc_gep = builder.build_in_bounds_gep2(
+            opcode_array_type,
+            local_opcodes_value.as_pointer_value(),
+            &[i32_zero, new_pc_offset],
+            "",
+        )?;
+        let new_pc = builder.build_load2(i32_type, new_pc_gep, "__value__")?.into_int_value();
         builder.build_store(pc, new_pc)?;
         builder.build_unconditional_branch(vm_entry)?;
     }
@@ -628,7 +621,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     {
         builder.position_at_end(vm_jmp_if);
         let flag_value = builder
-            .build_load(i32_type, vm_flag, "__vm_br_flag__")?
+            .build_load2(i32_type, vm_flag, "__vm_br_flag__")?
             .into_int_value();
 
         let jump_true = ctx.append_basic_block(function, ".amice.jump_true");
@@ -646,13 +639,11 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         builder.build_unconditional_branch(vm_entry)?;
     }
 
-    if verify_function2(function) {
+    if function.verify_function_bool() {
         warn!("(vm_flatten) function {:?} verify failed", function.get_name());
     }
 
-    unsafe {
-        fix_stack(function);
-    }
+    unsafe { function.fix_stack() }
 
     for node in all_nodes {
         node.free();

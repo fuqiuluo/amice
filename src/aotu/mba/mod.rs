@@ -8,18 +8,16 @@ use crate::aotu::mba::binary_expr_mba::{BinOp, mba_binop};
 use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType};
 use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
 use crate::aotu::mba::expr::Expr;
-use crate::aotu::mba::generator::generate_constant_mba_function;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::function::{fix_stack, get_basic_block_entry};
-use amice_llvm::module_utils::{verify_function, verify_function2};
+use amice_llvm::inkwell2::{BuilderExt, FunctionExt};
 use amice_macro::amice;
-use llvm_plugin::inkwell::llvm_sys;
+use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue,
+    BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use std::cmp::max;
 use std::collections::HashMap;
 
@@ -36,6 +34,7 @@ pub struct Mba {
     rewrite_depth: u32,
     alloc_aux_params_in_global: bool, // 仅测试用途
     fix_stack: bool,
+    opt_none: bool,
 }
 
 impl AmicePassLoadable for Mba {
@@ -46,6 +45,7 @@ impl AmicePassLoadable for Mba {
         self.rewrite_depth = max(3, cfg.mba.rewrite_depth);
         self.alloc_aux_params_in_global = cfg.mba.alloc_aux_params_in_global;
         self.fix_stack = cfg.mba.fix_stack;
+        self.opt_none = cfg.mba.opt_none;
 
         if !self.enable {
             return false;
@@ -62,7 +62,7 @@ impl AmicePassLoadable for Mba {
 }
 
 impl LlvmModulePass for Mba {
-    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
         if !self.enable {
             return PreservedAnalyses::All;
         }
@@ -114,6 +114,27 @@ impl LlvmModulePass for Mba {
                         | InstructionOpcode::Or
                         | InstructionOpcode::Xor => binary_inst_vec.push(inst),
                         _ => {
+                            if matches!(
+                                inst.get_opcode(),
+                                InstructionOpcode::Switch
+                                    | InstructionOpcode::Invoke
+                                    | InstructionOpcode::Phi
+                                    | InstructionOpcode::LandingPad
+                                    | InstructionOpcode::CallBr
+                                    | InstructionOpcode::Resume
+                                    | InstructionOpcode::CatchSwitch
+                                    | InstructionOpcode::CleanupRet
+                                    | InstructionOpcode::IndirectBr
+                                    | InstructionOpcode::Unreachable
+                                    | InstructionOpcode::Alloca
+                                    | InstructionOpcode::Load
+                                    | InstructionOpcode::GetElementPtr
+                                    | InstructionOpcode::InsertElement
+                                    | InstructionOpcode::VAArg
+                            ) {
+                                continue;
+                            }
+
                             let mut const_operands = Vec::new();
                             for i in 0..inst.get_num_operands() {
                                 let op = inst.get_operand(i);
@@ -149,7 +170,7 @@ impl LlvmModulePass for Mba {
             }
 
             let stack_aux_params = if !self.alloc_aux_params_in_global
-                && let Some(entry_block) = get_basic_block_entry(function)
+                && let Some(entry_block) = function.get_entry_block()
                 && let Some(first_inst) = entry_block.get_first_instruction()
             {
                 let ctx = module.get_context();
@@ -196,7 +217,7 @@ impl LlvmModulePass for Mba {
                     global_aux_params.as_ref(),
                     stack_aux_params.as_ref(),
                 ) {
-                    warn!("(mba) rewrite store with mba failed: {:?}", e);
+                    warn!("(mba) rewrite_constant_inst_with_mba failed: {:?}", e);
                 }
             }
 
@@ -216,14 +237,18 @@ impl LlvmModulePass for Mba {
                 }
             }
 
-            if verify_function2(function) {
+            if self.opt_none {
+                let ctx = module.get_context();
+                let optnone_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("optnone"), 0);
+                function.add_attribute(AttributeLoc::Function, optnone_attr);
+            }
+
+            if function.verify_function_bool() {
                 warn!("(mba) function {:?} is not verified", function.get_name());
             }
 
             if self.fix_stack {
-                unsafe {
-                    fix_stack(function);
-                }
+                unsafe { function.fix_stack() }
             }
         }
 
@@ -305,14 +330,14 @@ fn rewrite_binop_with_mba<'a>(
         {
             let global_aux = global_aux_params[i];
             let int = builder
-                .build_load(value_type, global_aux.as_pointer_value(), "")?
+                .build_load2(value_type, global_aux.as_pointer_value(), "")?
                 .into_int_value();
             aux_params.push(int);
         } else if let Some(stack_aux) = stack_aux_params
             && let Some(stack_aux_params) = stack_aux.get(&mba_int_width)
         {
             let stack_aux = stack_aux_params[i];
-            let int = builder.build_load(value_type, stack_aux, "")?.into_int_value();
+            let int = builder.build_load2(value_type, stack_aux, "")?.into_int_value();
             aux_params.push(int);
         } else {
             let rand = match mba_int_width {
@@ -339,22 +364,26 @@ fn rewrite_binop_with_mba<'a>(
 fn rewrite_constant_inst_with_mba<'a>(
     pass: &Mba,
     module: &mut Module<'a>,
-    store: InstructionValue<'a>,
+    constant_inst: InstructionValue<'a>,
     const_operands: Vec<(u32, IntValue<'a>)>,
     global_aux_params: Option<&HashMap<BitWidth, Vec<GlobalValue>>>,
     stack_aux_params: Option<&HashMap<BitWidth, Vec<PointerValue>>>,
 ) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let builder = ctx.create_builder();
-    builder.position_before(&store);
+    builder.position_before(&constant_inst);
     for (index, value) in const_operands {
         let value_type = value.get_type();
+        if value_type.get_bit_width() == 1 {
+            continue;
+        }
+
         let Some(signed_value) = value.get_sign_extended_constant() else {
             warn!("(mba) store value {:?} is not constant", value);
             continue;
         };
-        let mba_int_width =
-            BitWidth::from_bits(value_type.get_bit_width()).ok_or(anyhow::anyhow!("unsupported int type"))?;
+        let mba_int_width = BitWidth::from_bits(value_type.get_bit_width())
+            .ok_or(anyhow::anyhow!("unsupported int type: {}", value_type))?;
         let cfg = ConstantMbaConfig::new(
             mba_int_width,
             NumberType::Signed,
@@ -367,7 +396,7 @@ fn rewrite_constant_inst_with_mba<'a>(
         let expr = generate_const_mba(&cfg);
         let is_valid = verify_const_mba(&expr, cfg.constant, cfg.width, cfg.aux_count);
         if !is_valid {
-            error!("(mba) rewrite store with mba failed: {:?}", expr);
+            error!("(mba) verify_const_mba failed: {:?}", expr);
             continue;
         }
 
@@ -379,14 +408,14 @@ fn rewrite_constant_inst_with_mba<'a>(
             {
                 let global_aux = global_aux_params[i];
                 let int = builder
-                    .build_load(value_type, global_aux.as_pointer_value(), "")?
+                    .build_load2(value_type, global_aux.as_pointer_value(), "")?
                     .into_int_value();
                 aux_params.push(int);
             } else if let Some(stack_aux) = stack_aux_params
                 && let Some(stack_aux_params) = stack_aux.get(&mba_int_width)
             {
                 let stack_aux = stack_aux_params[i];
-                let int = builder.build_load(value_type, stack_aux, "")?.into_int_value();
+                let int = builder.build_load2(value_type, stack_aux, "")?.into_int_value();
                 aux_params.push(int);
             } else {
                 let rand = match mba_int_width {
@@ -402,10 +431,10 @@ fn rewrite_constant_inst_with_mba<'a>(
         }
 
         let value = generator::expr_to_llvm_value(ctx, &builder, &expr, &aux_params, value_type, mba_int_width);
-        if !store.set_operand(index, value) {
+        if !constant_inst.set_operand(index, value) {
             warn!(
-                "(mba) failed to set operand {} for store instruction: {:?}",
-                index, store
+                "(mba) failed to set operand {} for constant instruction: {:?}",
+                index, constant_inst
             );
         }
     }

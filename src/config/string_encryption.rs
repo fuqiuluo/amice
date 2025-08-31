@@ -28,6 +28,8 @@ pub struct StringEncryptionConfig {
     /// Allow stack allocation for decryption in non-entry blocks
     /// When false, limits stack allocations to entry blocks for better optimization
     pub allow_non_entry_stack_alloc: bool,
+
+    pub max_encryption_count: u32,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +70,7 @@ impl Default for StringEncryptionConfig {
             inline_decrypt: false,
             only_dot_str: true,
             allow_non_entry_stack_alloc: false,
+            max_encryption_count: 1,
         }
     }
 }
@@ -122,6 +125,16 @@ impl EnvOverlay for StringEncryptionConfig {
                 "AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC",
                 self.allow_non_entry_stack_alloc,
             );
+        }
+
+        if self.timing != StringDecryptTiming::Global
+            && let Ok(v) = std::env::var("AMICE_STRING_MAX_ENCRYPTION_COUNT")
+        {
+            if let Ok(count) = v.parse::<u32>() {
+                self.max_encryption_count = count.clamp(1, 100000);
+            } else {
+                error!("(strenc) invalid max encryption count value, using default");
+            }
         }
     }
 }

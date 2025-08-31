@@ -1,23 +1,17 @@
-use crate::aotu::lower_switch::demote_switch_to_if;
-use crate::config::{Config, FlattenMode, IndirectBranchFlags};
+use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::basic_block::split_basic_block;
-use amice_llvm::ir::function::{fix_stack, function_specialize_partial, is_inline_marked_function};
-use amice_llvm::module_utils::{VerifyResult, verify_function, verify_function2};
+use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
 use anyhow::anyhow;
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMValueRef};
+use llvm_plugin::inkwell::attributes::AttributeLoc;
+use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
-    IntValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{Level, debug, error, log_enabled, warn};
-use rand::Rng;
-use std::collections::{BTreeSet, HashMap};
-use std::result;
+use log::error;
+use std::collections::BTreeSet;
 
 #[amice(priority = 1111, name = "CloneFunction", position = PassPosition::PipelineStart)]
 #[derive(Default)]
@@ -39,106 +33,109 @@ impl LlvmModulePass for CloneFunction {
             return PreservedAnalyses::All;
         }
 
-        let mut call_instructions = Vec::new();
-        for function in module.get_functions() {
-            if function.count_basic_blocks() == 0 {
-                continue;
-            }
+        #[cfg(not(feature = "android-ndk"))]
+        {
+            let mut call_instructions = Vec::new();
+            for function in module.get_functions() {
+                if function.count_basic_blocks() == 0 {
+                    continue;
+                }
 
-            // Check if function should be obfuscated (using similar logic from other passes)
-            let function_name = function.get_name().to_str().unwrap_or("");
-            if should_skip_function_by_name(function_name) || should_skip_function_by_inline_attribute(function) {
-                continue;
-            }
+                if function.is_llvm_function() || function.is_undef_function() {
+                    continue;
+                }
 
-            for bb in function.get_basic_blocks() {
-                for inst in bb.get_instructions() {
-                    if matches!(inst.get_opcode(), InstructionOpcode::Call) {
-                        if let Some(called_func) = get_called_function(&inst) {
-                            let function_name = called_func.get_name().to_str().unwrap_or("");
-                            if should_skip_function_by_name(function_name)
-                                || should_skip_function_by_inline_attribute(called_func)
-                                || should_skip_function_by_defined_state(called_func)
-                            {
-                                continue;
+                for bb in function.get_basic_blocks() {
+                    for inst in bb.get_instructions() {
+                        if matches!(inst.get_opcode(), InstructionOpcode::Call) {
+                            if let Some(called_func) = get_called_function(&inst) {
+                                if called_func.is_llvm_function()
+                                    || called_func.is_undef_function()
+                                    || called_func.is_inline_marked()
+                                {
+                                    continue;
+                                }
+
+                                //debug!("(clone-function) adding call to function: {:?}",called_func.get_name());
+                                call_instructions.push((inst, called_func));
                             }
-
-                            //debug!("(clone-function) adding call to function: {:?}",called_func.get_name());
-                            call_instructions.push((inst, called_func));
                         }
                     }
                 }
             }
-        }
 
-        let mut call_instructions_with_constant_args = Vec::new();
-        for (call, call_func) in call_instructions {
-            let mut args = Vec::new();
-            for i in 0..call.get_num_operands() {
-                let operand = call.get_operand(i);
-                if let Some(operand) = operand
-                    && let Some(operand_value) = operand.left()
-                    && (operand_value.is_int_value() || operand_value.is_float_value())
-                {
-                    let is_const = match operand_value {
-                        BasicValueEnum::IntValue(iv) => iv.is_const(),
-                        BasicValueEnum::FloatValue(fv) => fv.is_const(),
-                        _ => false,
-                    };
-                    if is_const {
-                        args.push((i as u32, operand_value));
+            let mut call_instructions_with_constant_args = Vec::new();
+            for (call, call_func) in call_instructions {
+                let mut args = Vec::new();
+                for i in 0..call.get_num_operands() {
+                    let operand = call.get_operand(i);
+                    if let Some(operand) = operand
+                        && let Some(operand_value) = operand.left()
+                        && (operand_value.is_int_value() || operand_value.is_float_value())
+                    {
+                        let is_const = match operand_value {
+                            BasicValueEnum::IntValue(iv) => iv.is_const(),
+                            BasicValueEnum::FloatValue(fv) => fv.is_const(),
+                            _ => false,
+                        };
+                        if is_const {
+                            args.push((i, operand_value));
+                        }
                     }
                 }
+                if args.len() > 0 {
+                    //debug!("(clone-function) adding call to function: {:?}",call_func.get_name());
+                    call_instructions_with_constant_args.push((call, call_func, args));
+                }
             }
-            if args.len() > 0 {
-                //debug!("(clone-function) adding call to function: {:?}",call_func.get_name());
-                call_instructions_with_constant_args.push((call, call_func, args));
+
+            if call_instructions_with_constant_args.is_empty() {
+                return PreservedAnalyses::All;
+            }
+
+            for (inst, call_func, args) in call_instructions_with_constant_args {
+                if let Err(e) = do_replace_call_with_call_to_specialized_function(module, inst, call_func, args) {
+                    error!(
+                        "(clone-function) failed to replace call with specialized function: {}",
+                        e
+                    );
+                }
             }
         }
 
-        if call_instructions_with_constant_args.is_empty() {
-            return PreservedAnalyses::All;
-        }
-
-        // pub unsafe fn function_specialize_partial(
-        //     module: LLVMModuleRef,
-        //     original_func: LLVMValueRef,
-        //     replacements: &[(u32, LLVMValueRef)],
-        // ) -> Result<LLVMValueRef, &'static str>
-        for (inst, call_func, args) in call_instructions_with_constant_args {
-            if let Err(e) = do_replace_call_with_call_to_specialized_function(module, inst, call_func, args) {
-                error!(
-                    "(clone-function) failed to replace call with specialized function: {}",
-                    e
-                );
-            }
+        #[cfg(feature = "android-ndk")]
+        {
+            error!("(clone-function) not support android-ndk");
         }
 
         PreservedAnalyses::None
     }
 }
 
-fn do_replace_call_with_call_to_specialized_function(
-    module: &mut Module<'_>,
+#[cfg(not(feature = "android-ndk"))]
+fn do_replace_call_with_call_to_specialized_function<'a>(
+    module: &mut Module<'a>,
     call_inst: InstructionValue<'_>,
-    call_func: FunctionValue<'_>,
+    call_func: FunctionValue<'a>,
     args: Vec<(u32, BasicValueEnum)>,
 ) -> anyhow::Result<()> {
     let replacements = args
         .iter()
         .map(|(i, operand)| (*i, operand.as_value_ref() as LLVMValueRef))
         .collect::<Vec<(u32, LLVMValueRef)>>();
-    let special_function = unsafe {
-        function_specialize_partial(
-            module.as_mut_ptr() as LLVMModuleRef,
-            call_func.as_value_ref() as LLVMValueRef,
-            &replacements,
-        )
-    }
-    .map_err(|e| anyhow!("(clone-function) function_specialize_partial failed: {}", e))?;
+    let special_function = unsafe { module.specialize_function_by_args(call_func, &replacements) }
+        .map_err(|e| anyhow!("(clone-function) function_specialize_partial failed: {}", e))?;
 
-    let special_function = unsafe { FunctionValue::new(special_function) }
-        .ok_or_else(|| anyhow!("(clone-function) failed to create FunctionValue from specialized function"))?;
+    for (arg_index, _) in replacements {
+        for attr in special_function.attributes(AttributeLoc::Param(arg_index)) {
+            if attr.is_enum() {
+                special_function.remove_enum_attribute(AttributeLoc::Param(arg_index), attr.get_enum_kind_id())
+            } else if attr.is_string() {
+                special_function
+                    .remove_string_attribute(AttributeLoc::Param(arg_index), attr.get_string_kind_id().to_str()?)
+            }
+        }
+    }
 
     let context = module.get_context();
     let builder = context.create_builder();
@@ -177,7 +174,7 @@ fn do_replace_call_with_call_to_specialized_function(
     // 生成新的调用指令
     let new_call_site = builder.build_call(special_function, &new_call_args, "cloned.call")?;
 
-    let new_inst = unsafe { InstructionValue::new(new_call_site.as_value_ref()) };
+    let new_inst = (new_call_site.as_value_ref() as LLVMValueRef).into_instruction_value();
 
     // 如果原调用有返回值，则替换所有 uses
     let is_void_ret = call_inst.get_type().is_void_type();
@@ -189,24 +186,6 @@ fn do_replace_call_with_call_to_specialized_function(
     call_inst.erase_from_basic_block();
 
     Ok(())
-}
-
-/// Check if a function should be skipped from obfuscation
-fn should_skip_function_by_name(name: &str) -> bool {
-    // Skip intrinsics, compiler-generated functions, and system functions
-    name.starts_with("llvm.")
-        || name.starts_with("clang.")
-        || name.starts_with("__")
-        || name.starts_with("@")
-        || name.is_empty()
-}
-
-fn should_skip_function_by_inline_attribute(function_value: FunctionValue) -> bool {
-    is_inline_marked_function(function_value)
-}
-
-fn should_skip_function_by_defined_state(function_value: FunctionValue) -> bool {
-    function_value.is_null() || function_value.is_undef() || function_value.count_basic_blocks() <= 0
 }
 
 fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<'a>> {

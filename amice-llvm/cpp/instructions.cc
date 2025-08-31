@@ -1,9 +1,6 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Module.h>
-#include <llvm/IR/PassManager.h>
-#include <llvm/Passes/PassBuilder.h>
-#include <llvm/Passes/PassPlugin.h>
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/IR/Constants.h"
@@ -29,6 +26,8 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/ADT/APInt.h"
+#include "llvm/IR/Module.h"
 
 extern "C" {
 
@@ -45,6 +44,18 @@ bool amice_is_inline_marked_function(llvm::Function &F) {
         return true;
     }
 
+    return false;
+}
+
+bool amice_gep_accumulate_constant_offset(llvm::Instruction *I, llvm::Module *M, uint64_t *OutOffset) {
+    if (auto *GEP = llvm::dyn_cast<llvm::GetElementPtrInst>(I)) {
+        const llvm::DataLayout &DL = M->getDataLayout();
+        llvm::APInt OffsetAI(DL.getIndexSizeInBits(/*AS=*/0), 0);
+        bool result = GEP->accumulateConstantOffset(DL, OffsetAI);
+        uint64_t Offset = OffsetAI.getZExtValue();
+        *OutOffset = Offset;
+        return result;
+    }
     return false;
 }
 

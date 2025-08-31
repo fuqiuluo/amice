@@ -32,7 +32,16 @@ void llvm_dominator_tree_view_graph(llvm::DominatorTree* dt) {
 }
 
 bool llvm_dominator_tree_dominate_BU(llvm::DominatorTree* dt, llvm::BasicBlock* B, llvm::Use& U) {
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 12)
+    //llvm::BasicBlock* BB = (llvm::BasicBlock*)&*U;
     return dt->dominates(B, U);
+#else
+    const llvm::DomTreeNodeBase<llvm::BasicBlock> *NA = dt->getNode(B);
+    const llvm::DomTreeNodeBase<llvm::BasicBlock> *NB = dt->getNode((llvm::BasicBlock*)&*U);
+    if (!NA || !NB) return false;
+
+    return dt->dominates(NA, NB);
+#endif
 }
 
 } // extern "C"

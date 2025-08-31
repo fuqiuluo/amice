@@ -1,18 +1,13 @@
 use crate::config::{Config, IndirectBranchFlags};
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::branch_inst::get_successor;
-use amice_llvm::ir::function::{get_basic_block_entry, get_basic_block_entry_ref};
-use amice_llvm::ir::phi_inst::update_phi_nodes;
-use amice_llvm::module_utils::{verify_function, verify_function2};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
+use amice_llvm::ptr_type;
 use amice_macro::amice;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
-use llvm_plugin::inkwell::context::ContextRef;
-use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
-use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::{AsTypeRef, IntType};
-use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, InstructionOpcode, PhiValue};
+use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, InstructionOpcode};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{debug, error, warn};
@@ -56,10 +51,10 @@ impl LlvmModulePass for IndirectBranch {
             return PreservedAnalyses::All;
         }
 
-        let context = module.get_context();
-        let i32_type = context.i32_type();
+        let ctx = module.get_context();
+        let i32_type = ctx.i32_type();
         let const_zero = i32_type.const_zero();
-        let ptr_type = context.ptr_type(AddressSpace::default());
+        let ptr_type = ptr_type!(ctx, i8_type);
 
         let non_entry_basic_blocks = collect_basic_block(module);
         if non_entry_basic_blocks.is_empty() {
@@ -83,7 +78,7 @@ impl LlvmModulePass for IndirectBranch {
         global_indirect_branch_table.set_linkage(Linkage::Internal);
         global_indirect_branch_table.set_constant(true);
 
-        amice_llvm::module_utils::append_to_compiler_used(module, global_indirect_branch_table);
+        module.append_to_compiler_used(global_indirect_branch_table);
 
         let encrypt_key_global = if self.flags.contains(IndirectBranchFlags::EncryptBlockIndex) {
             let xor_key = self
@@ -101,7 +96,7 @@ impl LlvmModulePass for IndirectBranch {
             table.set_linkage(Linkage::Private);
             table.set_constant(true);
 
-            amice_llvm::module_utils::append_to_compiler_used(module, table);
+            module.append_to_compiler_used(table);
 
             Some(table)
         } else {
@@ -113,7 +108,7 @@ impl LlvmModulePass for IndirectBranch {
             for basic_block in function.get_basic_blocks() {
                 for instruction in basic_block.get_instructions() {
                     if instruction.get_opcode() == InstructionOpcode::Br {
-                        branch_instructions.push(instruction);
+                        branch_instructions.push(instruction.into_branch_inst());
                     }
                 }
             }
@@ -125,10 +120,10 @@ impl LlvmModulePass for IndirectBranch {
                 if br_inst.is_conditional() {
                     // future_branches的[1]是内存下标，get_successor(0)为真块
                     // 当为真时，把bool扩展为i32,则这个i32的值是1，直接作为下标使用即future_branches[1]应该保存真分支
-                    future_branches[1] = get_successor(br_inst, 0);
-                    future_branches[0] = get_successor(br_inst, 1);
+                    future_branches[1] = br_inst.get_successor(0);
+                    future_branches[0] = br_inst.get_successor(1);
                 } else {
-                    future_branches[0] = get_successor(br_inst, 0); // true分支
+                    future_branches[0] = br_inst.get_successor(0); // true分支
                 }
 
                 // 可能要去到的分支
@@ -162,7 +157,7 @@ impl LlvmModulePass for IndirectBranch {
                         local_indirect_branch_table.set_linkage(Linkage::Private);
                         local_indirect_branch_table.set_constant(true);
 
-                        amice_llvm::module_utils::append_to_compiler_used(module, local_indirect_branch_table);
+                        module.append_to_compiler_used(local_indirect_branch_table);
 
                         Some(local_indirect_branch_table)
                     } else {
@@ -175,11 +170,11 @@ impl LlvmModulePass for IndirectBranch {
                     continue;
                 };
 
-                let builder = context.create_builder();
+                let builder = ctx.create_builder();
                 // 如果是 DummyBlock，则创建一个空的基本块作为目标,
                 // 先跳进链式混淆块最后再进真正的块执行代码
                 let goal_dummy_block = if self.flags.contains(IndirectBranchFlags::DummyBlock) {
-                    let block = context.append_basic_block(function, "");
+                    let block = ctx.append_basic_block(function, "");
                     builder.position_at_end(block);
                     Some(block)
                 } else {
@@ -209,18 +204,18 @@ impl LlvmModulePass for IndirectBranch {
                         let key_index = index % xor_key.len();
                         index ^= xor_key[key_index] as usize;
                         let enc_index = i32_type.const_int(index as u64, false);
-                        let key_gep = unsafe {
-                            builder.build_in_bounds_gep(
+                        let key_gep = builder
+                            .build_in_bounds_gep2(
                                 xor_key_table.get_value_type().into_array_type(),
                                 xor_key_table.as_pointer_value(),
                                 &[const_zero, i32_type.const_int(key_index as u64, false)],
                                 "",
                             )
-                        }
-                        .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}"))
-                        .expect("build gep_index failed");
+                            .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}"))
+                            .expect("build gep_index failed");
+
                         let key_val = builder
-                            .build_load(i32_type, key_gep, "IndirectBranchingKey")
+                            .build_load2(i32_type, key_gep, "IndirectBranchingKey")
                             .map_err(|e| error!("(indirect-branch) build load failed: {e}"))
                             .expect("build load failed")
                             .into_int_value();
@@ -238,20 +233,19 @@ impl LlvmModulePass for IndirectBranch {
                     warn!("(indirect-branch) index is None, skipping this branch, branch: {br_inst:?}");
                     continue;
                 };
-                let Ok(gep) = (unsafe {
-                    builder
-                        .build_in_bounds_gep(
-                            indirect_branch_table.get_value_type().into_array_type(),
-                            indirect_branch_table.as_pointer_value(),
-                            &[const_zero, index],
-                            "",
-                        )
-                        .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}"))
-                }) else {
+                let Ok(gep) = builder
+                    .build_in_bounds_gep2(
+                        indirect_branch_table.get_value_type().into_array_type(),
+                        indirect_branch_table.as_pointer_value(),
+                        &[const_zero, index],
+                        "",
+                    )
+                    .map_err(|e| error!("(indirect-branch) build gep_index failed: {e}"))
+                else {
                     panic!("(indirect-branch) build gep_index failed, this should never happen");
                 };
                 let Ok(loaded_address) = builder
-                    .build_load(ptr_type, gep, "IndirectBranchingTargetAddress")
+                    .build_load2(ptr_type, gep, "IndirectBranchingTargetAddress")
                     .map_err(|e| error!("(indirect-branch) build load failed: {e}"))
                 else {
                     panic!("(indirect-branch) build load failed, this should never happen");
@@ -275,7 +269,7 @@ impl LlvmModulePass for IndirectBranch {
 
                     let mut cur_dummy_block = goal_dummy_block;
                     for _ in 0..chain_nums - 1 {
-                        let dummy_block = context.append_basic_block(function, "dummy_block");
+                        let dummy_block = ctx.append_basic_block(function, "dummy_block");
                         builder.position_at_end(dummy_block);
                         let target = unsafe { cur_dummy_block.get_address().unwrap().as_basic_value_enum() };
 
@@ -292,10 +286,9 @@ impl LlvmModulePass for IndirectBranch {
 
                     for &target_block in &successors {
                         if let Some(pb) = br_inst.get_parent() {
-                            update_phi_nodes(
+                            target_block.fix_phi_node(
                                 pb,               // 原始前驱块
                                 goal_dummy_block, // 新前驱块
-                                target_block,     // 目标块
                             );
                         } else {
                             warn!("(indirect-branch) branch: {br_inst:?}, parent is None");
@@ -318,7 +311,7 @@ impl LlvmModulePass for IndirectBranch {
                 br_inst.erase_from_basic_block();
             }
 
-            if verify_function2(function) {
+            if function.verify_function_bool() {
                 warn!("(indirect-branch) function {:?} verify failed", function.get_name());
             }
         }
@@ -350,7 +343,7 @@ fn emit_dummy_junk<'ctx>(builder: &Builder<'ctx>, i32_ty: IntType<'ctx>) {
 fn collect_basic_block<'a>(module: &Module<'a>) -> Vec<BasicBlock<'a>> {
     let mut basic_blocks = Vec::new();
     for fun in module.get_functions() {
-        let Some(entry_block) = get_basic_block_entry(fun) else {
+        let Some(entry_block) = fun.get_entry_block() else {
             continue;
         };
         for bb in fun.get_basic_blocks() {

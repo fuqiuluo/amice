@@ -1,19 +1,10 @@
 use crate::config::Config;
 use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::ir::function::get_basic_block_entry;
-use amice_llvm::ir::phi_inst::update_phi_nodes;
-use amice_llvm::ir::switch_inst;
-use amice_llvm::module_utils::{verify_function, verify_function2};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, SwitchInst};
 use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::context::ContextRef;
-use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
-use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicValue, FunctionValue, InstructionOpcode, InstructionValue, PhiValue,
-};
+use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{error, warn};
 
@@ -46,7 +37,7 @@ impl LlvmModulePass for LowerSwitch {
         }
 
         for f in module.get_functions() {
-            if verify_function2(f) {
+            if f.verify_function_bool() {
                 warn!("(lower-switch) function {:?} is not verified", f.get_name());
             }
         }
@@ -61,6 +52,7 @@ fn do_lower_switch(module: &mut Module<'_>, function: FunctionValue, append_dumm
         .into_iter()
         .filter_map(|bb| bb.get_terminator())
         .filter(|inst| inst.get_opcode() == InstructionOpcode::Switch)
+        .map(|inst| inst.into_switch_inst())
         .collect::<Vec<_>>();
 
     if switch_inst_list.is_empty() {
@@ -77,15 +69,15 @@ fn do_lower_switch(module: &mut Module<'_>, function: FunctionValue, append_dumm
 pub(crate) fn demote_switch_to_if(
     module: &mut Module<'_>,
     function: FunctionValue,
-    inst: InstructionValue,
+    inst: SwitchInst,
     append_dummy_code: bool,
 ) -> anyhow::Result<()> {
     let switch_block = inst
         .get_parent()
         .ok_or_else(|| anyhow::anyhow!("Switch instruction has no parent block"))?;
-    let default = switch_inst::get_default_block(inst);
-    let condition = switch_inst::get_condition(inst);
-    let cases = switch_inst::get_cases(inst);
+    let default = inst.get_default_block();
+    let condition = inst.get_condition();
+    let cases = inst.get_cases();
 
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
@@ -116,7 +108,7 @@ pub(crate) fn demote_switch_to_if(
         builder.position_at_end(current_branch);
         let cond =
             builder.build_int_compare(IntPredicate::EQ, condition.into_int_value(), case.into_int_value(), "")?;
-        update_phi_nodes(switch_block, current_branch, dest);
+        dest.fix_phi_node(switch_block, current_branch);
         builder.build_conditional_branch(cond, dest, next_branch)?;
 
         lower_branches.push(current_branch);
@@ -125,13 +117,13 @@ pub(crate) fn demote_switch_to_if(
     }
 
     let mut dummy_value_ptr = None;
-    if append_dummy_code && let Some(entry_block) = get_basic_block_entry(function) {
+    if append_dummy_code && let Some(entry_block) = function.get_entry_block() {
         builder.position_before(&entry_block.get_terminator().unwrap());
         let tmp = builder.build_alloca(i32_ty, ".tmp")?;
         builder.build_store(tmp, i32_zero)?;
 
         builder.position_before(&inst);
-        let dummy_value = builder.build_load(i32_ty, tmp, "")?;
+        let dummy_value = builder.build_load2(i32_ty, tmp, "")?;
         let cond = builder.build_int_compare(IntPredicate::EQ, dummy_value.into_int_value(), i32_zero, "")?;
         builder.build_conditional_branch(cond, lower_branches[0], unreachable_block)?;
         dummy_value_ptr = Some(tmp);
@@ -141,7 +133,7 @@ pub(crate) fn demote_switch_to_if(
     }
 
     if append_dummy_code
-        && let Some(_entry_block) = get_basic_block_entry(function)
+        && let Some(_entry_block) = function.get_entry_block()
         && let Some(case_last) = lower_branches.last()
         && let Some(dummy_value_ptr) = dummy_value_ptr
     {
@@ -149,7 +141,7 @@ pub(crate) fn demote_switch_to_if(
         let phi = builder.build_phi(i32_ty, "lower_switch_phi")?;
         phi.add_incoming(&[(&i32_zero, *case_last), (&i32_one, switch_block)]);
         builder.build_store(dummy_value_ptr, phi.as_basic_value())?;
-        let dummy_value = builder.build_load(i32_ty, dummy_value_ptr, "")?;
+        let dummy_value = builder.build_load2(i32_ty, dummy_value_ptr, "")?;
         let cond =
             builder.build_int_compare(IntPredicate::EQ, dummy_value.into_int_value(), i32_zero, "switch_cond")?;
         builder.build_conditional_branch(cond, default, unreachable_block)?;
@@ -157,7 +149,7 @@ pub(crate) fn demote_switch_to_if(
         builder.position_at_end(current_branch);
         builder.build_unconditional_branch(default)?;
     }
-    update_phi_nodes(switch_block, current_branch, default);
+    default.fix_phi_node(switch_block, current_branch);
 
     inst.erase_from_basic_block();
 
