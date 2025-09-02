@@ -185,7 +185,7 @@ static void md5_hex(const void* data, size_t len, char hex[33]) {
     hex[32] = '\0';
 }
 
-int main(void) {
+int __attribute__((annotate("+vmf"))) main(void) {
     const char* tests[] = {
         "", "a", "abc", "message digest",
         "abcdefghijklmnopqrstuvwxyz",

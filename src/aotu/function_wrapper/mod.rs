@@ -1,7 +1,8 @@
-use crate::config::Config;
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{Config, FunctionWrapperConfig};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
+use llvm_plugin::PreservedAnalyses;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
@@ -10,49 +11,34 @@ use llvm_plugin::inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
 };
 use llvm_plugin::inkwell::{Either::Left, Either::Right, context::ContextRef};
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error};
 use rand::Rng;
 
-#[amice(priority = 1010, name = "FunctionWrapper", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 1010,
+    name = "FunctionWrapper",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = FunctionWrapperConfig,
+)]
 #[derive(Default)]
-pub struct FunctionWrapper {
-    enable: bool,
-    probability: u32,
-    times: u32,
-}
+pub struct FunctionWrapper {}
 
-impl AmicePassLoadable for FunctionWrapper {
-    fn init(&mut self, cfg: &Config, _position: PassPosition) -> bool {
-        self.enable = cfg.function_wrapper.enable;
-        self.probability = cfg.function_wrapper.probability.min(100);
-        self.times = cfg.function_wrapper.times.max(1);
-
-        // debug!(
-        //     "(function-wrapper) initialized with enable={}, probability={}%, times={}",
-        //     self.enable, self.probability, self.times
-        // );
-
-        self.enable
+impl AmicePass for FunctionWrapper {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.function_wrapper.clone();
+        self.default_config.probability = cfg.function_wrapper.probability.min(100);
+        self.default_config.times = cfg.function_wrapper.times.max(1);
     }
-}
 
-impl LlvmModulePass for FunctionWrapper {
-    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
-        }
-
-        debug!("(function-wrapper) starting function wrapper pass");
-
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
         // Collect call sites that need to be wrapped
         let mut call_instructions = Vec::new();
         for function in module.get_functions() {
-            if function.count_basic_blocks() == 0 {
+            if function.is_llvm_function() || function.is_inline_marked() || function.is_undef_function() {
                 continue;
             }
 
-            if function.is_llvm_function() || function.is_inline_marked() {
+            let cfg = self.parse_function_annotations(module, function)?;
+            if !cfg.enable {
                 continue;
             }
 
@@ -60,12 +46,9 @@ impl LlvmModulePass for FunctionWrapper {
                 for inst in bb.get_instructions() {
                     if matches!(inst.get_opcode(), InstructionOpcode::Call | InstructionOpcode::Invoke) {
                         // Apply probability check
-                        if rand::random_range(0..100) < self.probability {
+                        if rand::random_range(0..100) < cfg.probability {
                             if let Some(called_func) = get_called_function(&inst) {
-                                debug!(
-                                    "(function-wrapper) adding call to function: {:?}",
-                                    called_func.get_name()
-                                );
+                                debug!("adding call to function: {:?}", called_func.get_name());
                                 call_instructions.push((inst, called_func));
                             }
                         }
@@ -74,18 +57,20 @@ impl LlvmModulePass for FunctionWrapper {
             }
         }
 
-        debug!(
-            "(function-wrapper) collected {} call sites for wrapping",
-            call_instructions.len()
-        );
+        if call_instructions.is_empty() {
+            return Ok(PreservedAnalyses::All);
+        }
+
+        debug!("starting function wrapper pass");
+        debug!("collected {} call sites for wrapping", call_instructions.len());
 
         // Apply wrapper transformation multiple times
         let mut current_call_instructions = call_instructions;
-        for iteration in 0..self.times {
+        for iteration in 0..self.default_config.times {
             debug!(
-                "(function-wrapper) applying wrapper iteration {}/{}",
+                "applying wrapper iteration {}/{}",
                 iteration + 1,
-                self.times
+                self.default_config.times
             );
 
             let mut next_call_instructions = Vec::new();
@@ -97,18 +82,19 @@ impl LlvmModulePass for FunctionWrapper {
                         }
                     },
                     Ok(None) => {
-                        debug!("(function-wrapper) call instruction was not wrapped (filtered out)");
+                        debug!("call instruction was not wrapped (filtered out)");
                     },
                     Err(e) => {
-                        error!("(function-wrapper) failed to handle call instruction: {}", e);
+                        error!("failed to handle call instruction: {}", e);
                     },
                 }
             }
             current_call_instructions = next_call_instructions;
         }
 
-        debug!("(function-wrapper) completed function wrapper pass");
-        PreservedAnalyses::None
+        debug!("completed function wrapper pass");
+
+        Ok(PreservedAnalyses::None)
     }
 }
 
@@ -144,13 +130,13 @@ fn handle_call_instruction<'a>(
     called_function: Option<FunctionValue<'a>>,
 ) -> anyhow::Result<Option<InstructionValue<'a>>> {
     let Some(called_function) = called_function else {
-        debug!("(function-wrapper) skipping call with no function");
+        debug!("skipping call with no function");
         return Ok(None);
     };
 
     // Skip intrinsic functions
     if called_function.get_intrinsic_id() != 0 {
-        debug!("(function-wrapper) skipping intrinsic function");
+        debug!("skipping intrinsic function");
         return Ok(None);
     }
 

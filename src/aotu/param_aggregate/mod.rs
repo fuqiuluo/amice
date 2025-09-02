@@ -1,47 +1,49 @@
-use crate::config::Config;
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{Config, ParamAggregateConfig};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{
     AttributeEnumKind, BuilderExt, CallInst, FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt, VerifyResult,
 };
 use amice_macro::amice;
 use anyhow::anyhow;
+use llvm_plugin::PreservedAnalyses;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
-use llvm_plugin::inkwell::llvm_sys::core::LLVMGetEnumAttributeKind;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::{BasicType, StructType};
 use llvm_plugin::inkwell::values::{
     AnyValue, AsValueRef, BasicMetadataValueEnum, FIRST_CUSTOM_METADATA_KIND_ID, FunctionValue, InstructionOpcode,
 };
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, log_enabled, warn};
 use rand::prelude::SliceRandom;
 use std::collections::HashMap;
+use log::log_enabled;
 
 const MAX_STRUCT_SIZE: usize = 4096;
 
-#[amice(priority = 1120, name = "ParamAggregate", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 1120,
+    name = "ParamAggregate",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = ParamAggregateConfig,
+)]
 #[derive(Default)]
-pub struct ParamAggregate {
-    enable: bool,
-}
+pub struct ParamAggregate {}
 
-impl AmicePassLoadable for ParamAggregate {
-    fn init(&mut self, cfg: &Config, _position: PassPosition) -> bool {
-        self.enable = cfg.param_aggregate.enable;
+impl AmicePass for ParamAggregate {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.param_aggregate.clone();
 
         #[cfg(feature = "android-ndk")]
-        return false;
-
-        self.enable
+        {
+            self.default_config.enable = false;
+        }
     }
-}
 
-impl LlvmModulePass for ParamAggregate {
-    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        #[cfg(feature = "android-ndk")]
+        {
+            warn!("not support android-ndk");
+            return Ok(PreservedAnalyses::All);
         }
 
         #[cfg(not(feature = "android-ndk"))]
@@ -51,7 +53,17 @@ impl LlvmModulePass for ParamAggregate {
                 if function.is_undef_function() || function.is_llvm_function() || function.is_inline_marked() {
                     continue;
                 }
+
+                let cfg = self.parse_function_annotations(module, function)?;
+                if !cfg.enable {
+                    continue;
+                }
+
                 functions.push(function);
+            }
+            
+            if functions.is_empty() {
+                return Ok(PreservedAnalyses::All);
             }
 
             let mut call_instructions = Vec::new();
@@ -78,12 +90,12 @@ impl LlvmModulePass for ParamAggregate {
                 match create_param_aggregated_function(module, call_function) {
                     Err(e) => {
                         if log_enabled!(log::Level::Debug) {
-                            warn!("(param-aggregate) failed handle_function {}", e);
+                            warn!("failed handle_function {}", e);
                         }
                     },
                     Ok(new_function) => {
-                        if let VerifyResult::Broken(errmsg) = new_function.function.verify_function() {
-                            error!("(param-aggregate) failed verify_function {}", errmsg);
+                        if let VerifyResult::Broken(msg) = new_function.function.verify_function() {
+                            error!("failed verify_function {}", msg);
                         }
 
                         param_aggregated_functions.insert(call_function, new_function);
@@ -92,16 +104,11 @@ impl LlvmModulePass for ParamAggregate {
             }
 
             if let Err(e) = replace_function_call(module, call_instructions, param_aggregated_functions) {
-                error!("(param-aggregate) failed replace_function_call {}", e);
+                error!("failed replace_function_call {}", e);
             }
         }
 
-        #[cfg(feature = "android-ndk")]
-        {
-            error!("(param-aggregate) not support android-ndk");
-        }
-
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 

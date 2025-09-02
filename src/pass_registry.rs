@@ -1,7 +1,9 @@
 use crate::config::Config;
 use bitflags::bitflags;
 use lazy_static::lazy_static;
-use llvm_plugin::ModulePassManager;
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::inkwell::values::FunctionValue;
+use llvm_plugin::{ModulePassManager, PreservedAnalyses};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,13 +13,31 @@ lazy_static! {
     static ref REGISTRY: Mutex<Vec<PassEntry>> = Mutex::new(Vec::new());
 }
 
-pub trait AmicePass {
+pub trait AmicePassMetadata {
     fn name() -> &'static str;
+
+    fn flag() -> AmicePassFlag;
 }
 
-pub trait AmicePassLoadable {
+pub trait AmicePass {
     #[allow(unused_variables)]
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool;
+    fn init(&mut self, cfg: &Config, flag: AmicePassFlag);
+
+    #[allow(unused_variables)]
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses>;
+}
+
+pub trait AmiceFunctionPass {
+    type Config;
+
+    #[allow(unused_variables)]
+    fn parse_function_annotations<'a>(&self, module: &mut Module<'a>, function: FunctionValue<'a>) -> anyhow::Result<Self::Config>;
+}
+
+pub trait FunctionAnnotationsOverlay {
+    type Config;
+    
+    fn overlay_annotations<'a>(&self, module: &mut Module<'a>, function: FunctionValue<'a>) -> anyhow::Result<Self::Config>;
 }
 
 pub trait EnvOverlay {
@@ -26,10 +46,17 @@ pub trait EnvOverlay {
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct  PassPosition: u32 {
-        const PipelineStart = 0b0001; // add_pipeline_start_ep_callback
-        const OptimizerLast = 0b0010; // add_optimizer_last_ep_callback
-        const FullLtoLast =   0b0100;   // add_full_lto_last_ep_callback
+    pub struct AmicePassFlag: u32 {
+        /// add_pipeline_start_ep_callback
+        const PipelineStart = 0b00001;
+        /// add_optimizer_ep_callback
+        const OptimizerLast = 0b00010;
+        /// add_full_lto_ep_callback
+        const FullLtoLast =   0b00100;
+        /// Function Level Pass
+        const FunctionLevel = 0b01000;
+        /// Module Level Pass
+        const ModuleLevel =   0b10000;
     }
 }
 
@@ -37,7 +64,7 @@ bitflags! {
 pub struct PassEntry {
     pub name: &'static str,
     pub priority: i32, // 优先级越大越先执行
-    pub add: fn(&Config, &mut ModulePassManager, PassPosition) -> bool,
+    pub add: fn(&Config, &mut ModulePassManager, AmicePassFlag) -> bool,
 }
 
 /// 供宏生成的注册函数调用
@@ -47,7 +74,7 @@ pub fn register(entry: PassEntry) {
 }
 
 /// 安装全部已注册的 pass：按优先级从高到低排序后依次调用 add
-pub fn install_all(cfg: &Config, manager: &mut ModulePassManager, position: PassPosition) {
+pub fn install_all(cfg: &Config, manager: &mut ModulePassManager, flag: AmicePassFlag) {
     // 拷贝一份快照，避免持锁执行用户代码
     let mut entries = {
         let reg = REGISTRY.lock().expect("pass_registry: lock poisoned");
@@ -83,8 +110,8 @@ pub fn install_all(cfg: &Config, manager: &mut ModulePassManager, position: Pass
     }
 
     for e in entries {
-        if (e.add)(cfg, manager, position) {
-            info!("pass_registry: install pass: {} \tin {:?}", e.name, position);
+        if (e.add)(cfg, manager, flag) {
+            //info!("pass_registry: install pass: {} \twith {:?}", e.name, flag);
         }
     }
 }

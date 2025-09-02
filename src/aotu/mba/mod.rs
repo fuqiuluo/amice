@@ -8,63 +8,61 @@ use crate::aotu::mba::binary_expr_mba::{BinOp, mba_binop};
 use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig, NumberType};
 use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
 use crate::aotu::mba::expr::Expr;
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{Config, MbaConfig};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BuilderExt, FunctionExt};
 use amice_macro::amice;
+use llvm_plugin::PreservedAnalyses;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
     BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue,
 };
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, warn};
 use std::cmp::max;
 use std::collections::HashMap;
 
 #[amice(
     priority = 955,
     name = "Mba",
-    position = PassPosition::PipelineStart | PassPosition::OptimizerLast
+    flag = AmicePassFlag::OptimizerLast | AmicePassFlag::FunctionLevel,
+    config = MbaConfig,
 )]
 #[derive(Default)]
 pub struct Mba {
-    enable: bool,
-    aux_count: u32,
-    rewrite_ops: u32,
-    rewrite_depth: u32,
-    alloc_aux_params_in_global: bool, // 仅测试用途
-    fix_stack: bool,
-    opt_none: bool,
+    pub alloc_aux_params_in_global: bool,
 }
 
-impl AmicePassLoadable for Mba {
-    fn init(&mut self, cfg: &crate::config::Config, position: PassPosition) -> bool {
-        self.enable = cfg.mba.enable;
-        self.aux_count = max(2, cfg.mba.aux_count);
-        self.rewrite_ops = max(24, cfg.mba.rewrite_ops);
-        self.rewrite_depth = max(3, cfg.mba.rewrite_depth);
-        self.alloc_aux_params_in_global = cfg.mba.alloc_aux_params_in_global;
-        self.fix_stack = cfg.mba.fix_stack;
-        self.opt_none = cfg.mba.opt_none;
+impl AmicePass for Mba {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.mba.clone();
+        self.default_config.enable = cfg.mba.enable;
+        self.default_config.aux_count = max(2, cfg.mba.aux_count);
+        self.default_config.rewrite_ops = max(24, cfg.mba.rewrite_ops);
+        self.default_config.rewrite_depth = max(3, cfg.mba.rewrite_depth);
+        self.default_config.alloc_aux_params_in_global = cfg.mba.alloc_aux_params_in_global;
+        self.default_config.fix_stack = cfg.mba.fix_stack;
+        self.default_config.opt_none = cfg.mba.opt_none;
 
-        if !self.enable {
-            return false;
-        }
-
-        // 如果alloc_aux_params_in_global为true则允许在没有优化的时候注册该Pass
-        if cfg.mba.alloc_aux_params_in_global {
-            // 如果直接返回true，你回收获一个超级大的可执行文件，hhh
-            return position == PassPosition::PipelineStart;
-        }
-
-        position == PassPosition::OptimizerLast
+        self.alloc_aux_params_in_global = false;
     }
-}
 
-impl LlvmModulePass for Mba {
-    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        let mut functions = Vec::new();
+        for function in module.get_functions() {
+            if function.is_undef_function() || function.is_llvm_function() {
+                continue;
+            }
+
+            let cfg = self.parse_function_annotations(module, function)?;
+            if !cfg.enable {
+                continue;
+            }
+
+            functions.push(function);
+        }
+        
+        if functions.is_empty() {
+            return Ok(PreservedAnalyses::All);
         }
 
         let mba_int_widths = [
@@ -75,12 +73,12 @@ impl LlvmModulePass for Mba {
             /*BitWidth::W128,*/
         ];
 
-        let global_aux_params = if self.alloc_aux_params_in_global {
+        let global_aux_params = if self.default_config.alloc_aux_params_in_global {
             let ctx = module.get_context();
             let mut aux_params_map = HashMap::new();
             for mba_int_width in mba_int_widths {
                 let mut global_aux_params = vec![];
-                for _ in 0..self.aux_count {
+                for _ in 0..self.default_config.aux_count {
                     let rand = match mba_int_width {
                         BitWidth::W8 => rand::random::<u8>() as u64,
                         BitWidth::W16 => rand::random::<u16>() as u64,
@@ -103,7 +101,7 @@ impl LlvmModulePass for Mba {
             None
         };
 
-        for function in module.get_functions() {
+        for function in &functions {
             let mut constant_inst_vec = Vec::new();
             let mut binary_inst_vec = Vec::new();
             for bb in function.get_basic_blocks() {
@@ -169,7 +167,7 @@ impl LlvmModulePass for Mba {
                 continue;
             }
 
-            let stack_aux_params = if !self.alloc_aux_params_in_global
+            let stack_aux_params = if !self.default_config.alloc_aux_params_in_global
                 && let Some(entry_block) = function.get_entry_block()
                 && let Some(first_inst) = entry_block.get_first_instruction()
             {
@@ -179,7 +177,7 @@ impl LlvmModulePass for Mba {
                 let mut aux_params_map = HashMap::new();
                 for mba_int_width in mba_int_widths {
                     let mut stack_aux_params = vec![];
-                    for _ in 0..self.aux_count {
+                    for _ in 0..self.default_config.aux_count {
                         let rand = match mba_int_width {
                             BitWidth::W8 => rand::random::<u8>() as u64,
                             BitWidth::W16 => rand::random::<u16>() as u64,
@@ -204,60 +202,56 @@ impl LlvmModulePass for Mba {
                 None
             };
 
-            debug!(
-                "(mba) rewrite constant inst with mba done: {} insts",
-                constant_inst_vec.len()
-            );
+            debug!("rewrite constant inst with mba done: {} insts", constant_inst_vec.len());
             for (inst, const_operands) in constant_inst_vec {
                 if let Err(e) = rewrite_constant_inst_with_mba(
-                    self,
+                    &self.default_config,
                     module,
                     inst,
                     const_operands,
                     global_aux_params.as_ref(),
                     stack_aux_params.as_ref(),
                 ) {
-                    warn!("(mba) rewrite_constant_inst_with_mba failed: {:?}", e);
+                    warn!("rewrite_constant_inst_with_mba failed: {:?}", e);
                 }
             }
 
-            debug!(
-                "(mba) rewrite binop inst with mba done: {} insts",
-                binary_inst_vec.len()
-            );
+            debug!("rewrite binop inst with mba done: {} insts", binary_inst_vec.len());
             for binary in binary_inst_vec {
                 if let Err(e) = rewrite_binop_with_mba(
-                    self,
+                    &self.default_config,
+                    self.alloc_aux_params_in_global,
                     module,
                     binary,
                     global_aux_params.as_ref(),
                     stack_aux_params.as_ref(),
                 ) {
-                    warn!("(mba) rewrite binop with mba failed: {:?}", e);
+                    warn!("rewrite binop with mba failed: {:?}", e);
                 }
             }
 
-            if self.opt_none {
+            if self.default_config.opt_none {
                 let ctx = module.get_context();
                 let optnone_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("optnone"), 0);
                 function.add_attribute(AttributeLoc::Function, optnone_attr);
             }
 
             if function.verify_function_bool() {
-                warn!("(mba) function {:?} is not verified", function.get_name());
+                warn!("function {:?} is not verified", function.get_name());
             }
 
-            if self.fix_stack {
+            if self.default_config.fix_stack {
                 unsafe { function.fix_stack() }
             }
         }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 
 fn rewrite_binop_with_mba<'a>(
-    pass: &Mba,
+    cfg: &MbaConfig,
+    alloc_aux_params_in_global: bool,
     module: &mut Module<'a>,
     binop_inst: InstructionValue<'a>,
     global_aux_params: Option<&HashMap<BitWidth, Vec<GlobalValue>>>,
@@ -301,9 +295,9 @@ fn rewrite_binop_with_mba<'a>(
     let cfg = ConstantMbaConfig::new(
         mba_int_width,
         NumberType::Signed,
-        pass.aux_count as usize,
-        pass.rewrite_ops as usize,
-        pass.rewrite_depth as usize,
+        cfg.aux_count as usize,
+        cfg.rewrite_ops as usize,
+        cfg.rewrite_depth as usize,
         format!("store_const_{}", rand::random::<u64>()),
     );
     let expr = mba_binop(&mut rng, binop, Expr::Var(0), Expr::Var(1), &cfg);
@@ -324,7 +318,7 @@ fn rewrite_binop_with_mba<'a>(
             continue;
         }
 
-        if pass.alloc_aux_params_in_global
+        if alloc_aux_params_in_global
             && let Some(global_aux) = global_aux_params
             && let Some(global_aux_params) = global_aux.get(&mba_int_width)
         {
@@ -362,7 +356,7 @@ fn rewrite_binop_with_mba<'a>(
 }
 
 fn rewrite_constant_inst_with_mba<'a>(
-    pass: &Mba,
+    cfg: &MbaConfig,
     module: &mut Module<'a>,
     constant_inst: InstructionValue<'a>,
     const_operands: Vec<(u32, IntValue<'a>)>,
@@ -379,30 +373,30 @@ fn rewrite_constant_inst_with_mba<'a>(
         }
 
         let Some(signed_value) = value.get_sign_extended_constant() else {
-            warn!("(mba) store value {:?} is not constant", value);
+            warn!("constant value {:?} is not constant", value);
             continue;
         };
         let mba_int_width = BitWidth::from_bits(value_type.get_bit_width())
             .ok_or(anyhow::anyhow!("unsupported int type: {}", value_type))?;
-        let cfg = ConstantMbaConfig::new(
+        let mba_config = ConstantMbaConfig::new(
             mba_int_width,
             NumberType::Signed,
-            pass.aux_count as usize,
-            pass.rewrite_ops as usize,
-            pass.rewrite_depth as usize,
+            cfg.aux_count as usize,
+            cfg.rewrite_ops as usize,
+            cfg.rewrite_depth as usize,
             format!("store_const_{}", rand::random::<u64>()),
         )
         .with_signed_constant(signed_value as i128);
-        let expr = generate_const_mba(&cfg);
-        let is_valid = verify_const_mba(&expr, cfg.constant, cfg.width, cfg.aux_count);
+        let expr = generate_const_mba(&mba_config);
+        let is_valid = verify_const_mba(&expr, mba_config.constant, mba_config.width, mba_config.aux_count);
         if !is_valid {
             error!("(mba) verify_const_mba failed: {:?}", expr);
             continue;
         }
 
         let mut aux_params = vec![];
-        for i in 0..cfg.aux_count {
-            if pass.alloc_aux_params_in_global
+        for i in 0..mba_config.aux_count {
+            if cfg.alloc_aux_params_in_global
                 && let Some(global_aux) = global_aux_params
                 && let Some(global_aux_params) = global_aux.get(&mba_int_width)
             {

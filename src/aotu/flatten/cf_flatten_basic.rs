@@ -1,5 +1,6 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
+use crate::config::FlattenConfig;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, LLVMBasicBlockRefExt, PhiInst};
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
@@ -13,35 +14,42 @@ use std::collections::HashMap;
 pub(super) struct FlattenBasic;
 
 impl FlattenAlgo for FlattenBasic {
-    fn initialize(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
+    fn initialize(&mut self, _cfg: &FlattenConfig, _module: &mut Module<'_>) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn do_flatten(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
-        'out: for function in module.get_functions() {
-            if function.count_basic_blocks() <= 2 {
-                continue;
+    fn do_flatten(
+        &mut self,
+        cfg: &FlattenConfig,
+        module: &mut Module<'_>,
+        function: FunctionValue,
+    ) -> anyhow::Result<()> {
+        if function.count_basic_blocks() <= 2 {
+            return Ok(());
+        }
+
+        if cfg.skip_big_function && function.count_basic_blocks() > 4096 {
+            warn!(
+                "(Flatten) function {:?} has too many basic blocks, skipping",
+                function.get_name()
+            );
+            return Ok(());
+        }
+
+        for _ in 0..cfg.loop_count {
+            if let Err(err) = do_handle(module, function, cfg.lower_switch) {
+                warn!("(Flatten) function {:?} failed: {}", function.get_name(), err);
+                return Ok(());
             }
 
-            if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-                continue;
+            if cfg.skip_big_function && function.count_basic_blocks() > 4096 {
+                break;
             }
+        }
 
-            for _ in 0..pass.loop_count {
-                if let Err(err) = do_handle(module, function, pass.demote_switch) {
-                    warn!("(flatten) function {:?} failed: {}", function.get_name(), err);
-                    continue 'out;
-                }
-
-                if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-                    break;
-                }
-            }
-
-            if pass.fix_stack {
-                unsafe {
-                    function.fix_stack();
-                }
+        if cfg.fix_stack {
+            unsafe {
+                function.fix_stack();
             }
         }
 
@@ -214,7 +222,7 @@ fn generate_basic_block_mapping(basic_blocks: &[BasicBlock]) -> HashMap<LLVMBasi
             unique = rng.random();
         }
         values.push(unique);
-        mapping.insert(bb.as_mut_ptr(), unique);
+        mapping.insert(bb.as_mut_ptr() as LLVMBasicBlockRef, unique);
     }
 
     mapping

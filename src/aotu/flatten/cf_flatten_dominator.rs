@@ -1,5 +1,6 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
+use crate::config::FlattenConfig;
 use amice_llvm::analysis::dominators::DominatorTree;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, LLVMValueRefExt, VerifyResult};
 use amice_llvm::ptr_type;
@@ -21,42 +22,45 @@ pub(super) struct FlattenDominator {
 }
 
 impl FlattenAlgo for FlattenDominator {
-    fn initialize(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
-        let update_key_fn = build_update_key_function(module, pass.inline_fn)?;
-
+    fn initialize(&mut self, cfg: &FlattenConfig, module: &mut Module<'_>) -> anyhow::Result<()> {
+        let update_key_fn = build_update_key_function(module, cfg.always_inline)?;
         self.update_key_fn = update_key_fn.as_value_ref() as LLVMValueRef;
 
         Ok(())
     }
 
-    fn do_flatten(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()> {
+    fn do_flatten(
+        &mut self,
+        cfg: &FlattenConfig,
+        module: &mut Module<'_>,
+        function: FunctionValue,
+    ) -> anyhow::Result<()> {
         let update_key_fn = self
             .update_key_fn
             .into_function_value()
             .ok_or_else(|| anyhow!("failed to get update key function"))?;
 
-        'out: for function in module.get_functions() {
-            if function.count_basic_blocks() <= 2 {
-                continue;
+        if function.count_basic_blocks() <= 2 {
+            return Ok(());
+        }
+
+        if function == update_key_fn {
+            // 跳过更新密钥函数本身
+            return Ok(());
+        }
+
+        if cfg.skip_big_function && function.count_basic_blocks() > 4096 {
+            return Ok(());
+        }
+
+        for _ in 0..cfg.loop_count {
+            if let Err(err) = do_handle(module, function, update_key_fn, cfg.fix_stack) {
+                warn!("(flatten-enhanced) function {:?} failed: {}", function.get_name(), err);
+                return Ok(());
             }
 
-            if function == update_key_fn {
-                continue;
-            }
-
-            if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-                continue;
-            }
-
-            for _ in 0..pass.loop_count {
-                if let Err(err) = do_handle(module, function, update_key_fn, pass.fix_stack) {
-                    warn!("(flatten-enhanced) function {:?} failed: {}", function.get_name(), err);
-                    continue 'out;
-                }
-
-                if pass.skip_big_function && function.count_basic_blocks() > 4096 {
-                    break;
-                }
+            if cfg.skip_big_function && function.count_basic_blocks() > 4096 {
+                break;
             }
         }
 
@@ -386,6 +390,10 @@ fn do_handle(
 }
 
 fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> anyhow::Result<FunctionValue<'a>> {
+    if let Some(update_fn) = module.get_function(".amice.flatten_dominator.update_key_arr") {
+        return Ok(update_fn);
+    }
+
     let ctx = module.get_context();
 
     let i8_type = ctx.i8_type();
@@ -414,7 +422,7 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
         ],
         false,
     );
-    let update_fn = module.add_function("update_key_arr", fn_type, None);
+    let update_fn = module.add_function(".amice.flatten_dominator.update_key_arr", fn_type, None);
 
     if inline_fn {
         let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);

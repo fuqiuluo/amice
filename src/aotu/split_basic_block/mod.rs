@@ -1,62 +1,64 @@
-use crate::config::Config;
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{Config, SplitBasicBlockConfig};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt};
 use amice_macro::amice;
 use anyhow::anyhow;
+use llvm_plugin::PreservedAnalyses;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{Level, debug, error, log_enabled, warn};
+use log::{Level, log_enabled};
 use rand::seq::SliceRandom;
 
-#[amice(priority = 980, name = "SplitBasicBlock", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 980,
+    name = "SplitBasicBlock",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = SplitBasicBlockConfig,
+)]
 #[derive(Default)]
-pub struct SplitBasicBlock {
-    enable: bool,
-    split_num: u32,
-}
+pub struct SplitBasicBlock {}
 
-impl AmicePassLoadable for SplitBasicBlock {
-    fn init(&mut self, cfg: &Config, _position: PassPosition) -> bool {
-        self.enable = cfg.split_basic_block.enable;
-        self.split_num = cfg.split_basic_block.num;
-
-        self.enable
+impl AmicePass for SplitBasicBlock {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.split_basic_block.clone();
     }
-}
 
-impl LlvmModulePass for SplitBasicBlock {
-    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
-        }
-
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        let mut has_executed = false;
         for function in module.get_functions() {
             if function.is_undef_function() {
                 continue;
             }
 
-            if let Err(e) = do_split(module, function, self.split_num) {
+            let cfg = self.parse_function_annotations(module, function)?;
+            if !cfg.enable {
+                continue;
+            }
+
+            if let Err(e) = do_split(module, function, cfg.num) {
                 error!(
                     "Failed to split basic blocks in function {:?}: {}",
                     function.get_name(),
                     e
                 );
             }
-        }
 
-        for f in module.get_functions() {
-            if f.verify_function_bool() {
-                warn!("(split-basic-block) function {:?} is not verified", f.get_name());
+            has_executed = true;
+            if function.verify_function_bool() {
+                warn!("function {:?} is not verified", function.get_name());
             }
         }
+        
+        if !has_executed {
+            return Ok(PreservedAnalyses::All);
+        }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 
-fn do_split(module: &mut Module<'_>, function: FunctionValue, split_num: u32) -> anyhow::Result<()> {
+fn do_split(_module: &mut Module<'_>, function: FunctionValue, split_num: u32) -> anyhow::Result<()> {
     let Some(entry) = function.get_entry_block() else {
         return Err(anyhow!("Function {:?} has no entry block", function.get_name()));
     };

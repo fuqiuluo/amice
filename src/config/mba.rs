@@ -1,6 +1,10 @@
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::inkwell::values::FunctionValue;
 use crate::config::bool_var;
-use crate::pass_registry::EnvOverlay;
+use crate::pass_registry::{EnvOverlay, FunctionAnnotationsOverlay};
 use serde::{Deserialize, Serialize};
+use amice_llvm::inkwell2::ModuleExt;
+use crate::config::eloquent_config::EloquentConfigParser;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -66,5 +70,33 @@ impl EnvOverlay for MbaConfig {
         if std::env::var("AMICE_MBA_OPT_NONE").is_ok() {
             self.opt_none = bool_var("AMICE_MBA_OPT_NONE", self.opt_none);
         }
+    }
+}
+
+impl FunctionAnnotationsOverlay for MbaConfig {
+    type Config = MbaConfig;
+
+    fn overlay_annotations<'a>(
+        &self,
+        module: &mut Module<'a>,
+        function: FunctionValue<'a>,
+    ) -> anyhow::Result<Self::Config> {
+        let mut cfg = self.clone();
+        let annotations_expr = module
+            .read_function_annotate(function)
+            .map_err(|e| anyhow::anyhow!("read function annotations failed: {}", e))?
+            .join(" ");
+
+        let mut parser = EloquentConfigParser::new();
+        parser
+            .parse(&annotations_expr)
+            .map_err(|e| anyhow::anyhow!("parse function annotations failed: {}", e))?;
+
+        parser
+            .get_bool("mba")
+            .or_else(|| parser.get_bool("linearmba"))
+            .map(|v| cfg.enable = v);
+
+        Ok(cfg)
     }
 }

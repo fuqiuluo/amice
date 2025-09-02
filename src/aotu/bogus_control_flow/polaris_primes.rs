@@ -17,119 +17,115 @@ use llvm_plugin::inkwell::values::{
 };
 use log::error;
 use rand::Rng;
+use crate::config::BogusControlFlowConfig;
 
 #[derive(Default)]
 pub struct BogusControlFlowPolarisPrimes;
 
 impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
-    fn initialize(&mut self, _pass: &BogusControlFlow, _module: &mut Module<'_>) -> anyhow::Result<()> {
+    fn initialize(&mut self, _cfg: &BogusControlFlowConfig, _module: &mut Module<'_>) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn apply_bogus_control_flow(&mut self, pass: &BogusControlFlow, module: &mut Module<'_>) -> anyhow::Result<()> {
-        for func in module.get_functions() {
-            if func.count_basic_blocks() <= 2 {
+    fn apply_bogus_control_flow(&mut self, _cfg: &BogusControlFlowConfig, module: &mut Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
+        let ctx = module.get_context();
+
+        let i64_ty = ctx.i64_type();
+
+        let builder = ctx.create_builder();
+
+        let entry_block = function
+            .get_entry_block()
+            .ok_or_else(|| anyhow!("Failed to get entry block for function {:?}", function.get_name()))?;
+        let first_insertion_pt = entry_block.get_first_insertion_pt();
+        builder.position_before(&first_insertion_pt);
+
+        let var0 = builder.build_alloca(i64_ty, "var0")?;
+        let var1 = builder.build_alloca(i64_ty, "var1")?;
+
+        let module = 0x100000000u64 - rand::random::<u32>() as u64;
+        let x = PRIMES[rand::random_range(0..PRIMES.len())] % module;
+
+        builder.build_store(var0, i64_ty.const_int(x, false))?;
+        builder.build_store(var1, i64_ty.const_int(x, false))?;
+
+        let mut basic_blocks = function.get_basic_blocks();
+        basic_blocks.retain(|bb| bb != &entry_block);
+
+        let expr = [PreserveExpr::SingleInverseAffine, PreserveExpr::DoubleInverseAffine];
+        let mut unconditional_branch_blocks = Vec::new();
+        for bb in basic_blocks {
+            let Some(terminator) = bb.get_terminator() else {
+                continue;
+            };
+
+            if !matches!(terminator.get_opcode(), InstructionOpcode::Br) {
                 continue;
             }
-            let ctx = module.get_context();
 
-            let i64_ty = ctx.i64_type();
-
-            let builder = ctx.create_builder();
-
-            let entry_block = func
-                .get_entry_block()
-                .ok_or_else(|| anyhow!("Failed to get entry block for function {:?}", func.get_name()))?;
-            let first_insertion_pt = entry_block.get_first_insertion_pt();
-            builder.position_before(&first_insertion_pt);
-
-            let var0 = builder.build_alloca(i64_ty, "var0")?;
-            let var1 = builder.build_alloca(i64_ty, "var1")?;
-
-            let module = 0x100000000u64 - rand::random::<u32>() as u64;
-            let x = PRIMES[rand::random_range(0..PRIMES.len())] % module;
-
-            builder.build_store(var0, i64_ty.const_int(x, false))?;
-            builder.build_store(var1, i64_ty.const_int(x, false))?;
-
-            let mut basic_blocks = func.get_basic_blocks();
-            basic_blocks.retain(|bb| bb != &entry_block);
-
-            let expr = [PreserveExpr::SingleInverseAffine, PreserveExpr::DoubleInverseAffine];
-            let mut unconditional_branch_blocks = Vec::new();
-            for bb in basic_blocks {
-                let Some(terminator) = bb.get_terminator() else {
-                    continue;
-                };
-
-                if !matches!(terminator.get_opcode(), InstructionOpcode::Br) {
-                    continue;
-                }
-
-                let terminator = terminator.into_branch_inst();
-                if terminator.is_conditional() {
-                    continue;
-                }
-
-                if rand::random::<bool>() {
-                    let first_insertion_pt = bb.get_first_insertion_pt();
-                    builder.position_before(&first_insertion_pt);
-                } else {
-                    builder.position_before(&terminator);
-                }
-
-                let expr = expr[rand::random_range(0..expr.len())];
-                let modify_var = if rand::random::<bool>() { var0 } else { var1 };
-                if let Err(err) = expr.build(&ctx, &builder, module, x, modify_var) {
-                    error!("(polaris-primes) failed to build preserve expr: {:?}({})", expr, err);
-                    continue;
-                }
-
-                unconditional_branch_blocks.push(bb);
+            let terminator = terminator.into_branch_inst();
+            if terminator.is_conditional() {
+                continue;
             }
 
-            for bb in &unconditional_branch_blocks {
-                let Some(terminator) = bb.get_terminator() else {
-                    continue;
-                };
-                let Some(next_bb) = terminator.into_branch_inst().get_successor(0) else {
-                    continue;
-                };
-
+            if rand::random::<bool>() {
+                let first_insertion_pt = bb.get_first_insertion_pt();
+                builder.position_before(&first_insertion_pt);
+            } else {
                 builder.position_before(&terminator);
-                let var0_val = builder.build_load2(i64_ty, var0, "")?.into_int_value();
-                let var1_val = builder.build_load2(i64_ty, var1, "")?.into_int_value();
-                let is_eq = rand::random::<bool>();
-                let condition = if is_eq {
-                    builder.build_int_compare(IntPredicate::EQ, var0_val, var1_val, "var0 == var1")
-                } else {
-                    builder.build_int_compare(IntPredicate::NE, var0_val, var1_val, "var0 != var1")
-                }?;
-                let fake_bb = unconditional_branch_blocks[rand::random_range(0..unconditional_branch_blocks.len())];
-
-                for phi in fake_bb.get_first_instruction().iter() {
-                    if phi.get_opcode() != InstructionOpcode::Phi {
-                        break;
-                    }
-
-                    let phi = phi.into_phi_inst().into_phi_value();
-                    let incoming_vec = phi.get_incomings().collect::<Vec<_>>();
-                    // 如果真的有这个前支，则不需要再添加
-                    if incoming_vec.iter().any(|(_, pred)| pred == bb) {
-                        break;
-                    }
-                    let (_value, old_pred) = incoming_vec[rand::random_range(0..incoming_vec.len())];
-
-                    fake_bb.fix_phi_node(old_pred, *bb);
-                }
-
-                if is_eq {
-                    builder.build_conditional_branch(condition, next_bb, fake_bb)?;
-                } else {
-                    builder.build_conditional_branch(condition, fake_bb, next_bb)?;
-                }
-                terminator.erase_from_basic_block();
             }
+
+            let expr = expr[rand::random_range(0..expr.len())];
+            let modify_var = if rand::random::<bool>() { var0 } else { var1 };
+            if let Err(err) = expr.build(&ctx, &builder, module, x, modify_var) {
+                error!("(PolarisPrimes) failed to build preserve expr: {:?}({})", expr, err);
+                continue;
+            }
+
+            unconditional_branch_blocks.push(bb);
+        }
+
+        for bb in &unconditional_branch_blocks {
+            let Some(terminator) = bb.get_terminator() else {
+                continue;
+            };
+            let Some(next_bb) = terminator.into_branch_inst().get_successor(0) else {
+                continue;
+            };
+
+            builder.position_before(&terminator);
+            let var0_val = builder.build_load2(i64_ty, var0, "")?.into_int_value();
+            let var1_val = builder.build_load2(i64_ty, var1, "")?.into_int_value();
+            let is_eq = rand::random::<bool>();
+            let condition = if is_eq {
+                builder.build_int_compare(IntPredicate::EQ, var0_val, var1_val, "var0 == var1")
+            } else {
+                builder.build_int_compare(IntPredicate::NE, var0_val, var1_val, "var0 != var1")
+            }?;
+            let fake_bb = unconditional_branch_blocks[rand::random_range(0..unconditional_branch_blocks.len())];
+
+            for phi in fake_bb.get_first_instruction().iter() {
+                if phi.get_opcode() != InstructionOpcode::Phi {
+                    break;
+                }
+
+                let phi = phi.into_phi_inst().into_phi_value();
+                let incoming_vec = phi.get_incomings().collect::<Vec<_>>();
+                // 如果真的有这个前支，则不需要再添加
+                if incoming_vec.iter().any(|(_, pred)| pred == bb) {
+                    break;
+                }
+                let (_value, old_pred) = incoming_vec[rand::random_range(0..incoming_vec.len())];
+
+                fake_bb.fix_phi_node(old_pred, *bb);
+            }
+
+            if is_eq {
+                builder.build_conditional_branch(condition, next_bb, fake_bb)?;
+            } else {
+                builder.build_conditional_branch(condition, fake_bb, next_bb)?;
+            }
+            terminator.erase_from_basic_block();
         }
 
         Ok(())

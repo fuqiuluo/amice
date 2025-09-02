@@ -1,5 +1,9 @@
 use crate::config::bool_var;
-use crate::pass_registry::EnvOverlay;
+use crate::config::eloquent_config::EloquentConfigParser;
+use crate::pass_registry::{EnvOverlay, FunctionAnnotationsOverlay};
+use amice_llvm::inkwell2::ModuleExt;
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::inkwell::values::FunctionValue;
 use log::error;
 use serde::{Deserialize, Serialize};
 
@@ -86,5 +90,75 @@ impl EnvOverlay for FlattenConfig {
         if std::env::var("AMICE_FLATTEN_ALWAYS_INLINE").is_ok() {
             self.always_inline = bool_var("AMICE_FLATTEN_ALWAYS_INLINE", self.always_inline);
         }
+    }
+}
+
+impl FunctionAnnotationsOverlay for FlattenConfig {
+    type Config = FlattenConfig;
+
+    fn overlay_annotations<'a>(
+        &self,
+        module: &mut Module<'a>,
+        function: FunctionValue<'a>,
+    ) -> anyhow::Result<Self::Config> {
+        let mut cfg = self.clone();
+        let annotations_expr = module
+            .read_function_annotate(function)
+            .map_err(|e| anyhow::anyhow!("read function annotations failed: {}", e))?
+            .join(" ");
+
+        let mut parser = EloquentConfigParser::new();
+        parser
+            .parse(&annotations_expr)
+            .map_err(|e| anyhow::anyhow!("parse function annotations failed: {}", e))?;
+
+        parser
+            .get_bool("flatten")
+            .or_else(|| parser.get_bool("flattening")) // 兼容 Polaris-Obfuscator
+            .or_else(|| parser.get_bool("fla")) // 兼容Arkari
+            .map(|v| cfg.enable = v);
+
+        parser
+            .get_bool("flatten_fix_stack")
+            .or_else(|| parser.get_bool("flattening_fix_stack"))
+            .or_else(|| parser.get_bool("fla_fix_stack"))
+            .map(|v| cfg.fix_stack = v);
+
+        parser
+            .get_bool("flatten_lower_switch")
+            .or_else(|| parser.get_bool("flattening_lower_switch"))
+            .or_else(|| parser.get_bool("fla_lower_switch"))
+            .map(|v| cfg.lower_switch = v);
+
+        parser
+            .get_string("flatten_mode")
+            .or_else(|| parser.get_string("flattening_mode"))
+            .or_else(|| parser.get_string("fla_mode"))
+            .map(|v| {
+                cfg.mode = parse_flatten_mode(&v).unwrap_or_else(|e| {
+                    error!("invalid flatten mode: {}", e);
+                    FlattenMode::Basic
+                })
+            });
+
+        parser
+            .get_number::<usize>("flatten_loop_count")
+            .or_else(|| parser.get_number::<usize>("flattening_loop_count"))
+            .or_else(|| parser.get_number::<usize>("fla_loop_count"))
+            .map(|v| cfg.loop_count = v);
+
+        parser
+            .get_bool("flatten_always_inline")
+            .or_else(|| parser.get_bool("flattening_always_inline"))
+            .or_else(|| parser.get_bool("fla_always_inline"))
+            .map(|v| cfg.always_inline = v);
+
+        parser
+            .get_bool("flatten_skip_big_function")
+            .or_else(|| parser.get_bool("flattening_skip_big_function"))
+            .or_else(|| parser.get_bool("fla_skip_big_function"))
+            .map(|v| cfg.skip_big_function = v);
+
+        Ok(cfg)
     }
 }

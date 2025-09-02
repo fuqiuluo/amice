@@ -2,7 +2,7 @@ use crate::aotu::string_encryption::{
     EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo, alloc_stack_string,
     array_as_const_string, collect_insert_points,
 };
-use crate::config::StringDecryptTiming as DecryptTiming;
+use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
 use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
@@ -20,24 +20,24 @@ pub(super) struct SimdXorAlgo {
 }
 
 impl StringEncryptionAlgo for SimdXorAlgo {
-    fn initialize(&mut self, _pass: &StringEncryption, _module: &mut Module<'_>) -> anyhow::Result<()> {
+    fn initialize(&mut self, _cfg: &StringEncryptionConfig, _module: &mut Module<'_>) -> anyhow::Result<()> {
         rand::rng().fill(&mut self.key);
         Ok(())
     }
 
-    fn do_string_encrypt(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()> {
-        do_handle(pass, module, &self.key)
+    fn do_string_encrypt(&mut self, cfg: &StringEncryptionConfig, module: &mut Module<'_>) -> anyhow::Result<()> {
+        do_handle(cfg, module, &self.key)
     }
 }
 
-fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, key: &[u8; 32]) -> anyhow::Result<()> {
+fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u8; 32]) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
     let i8_ty = ctx.i8_type();
     let vector256 = i8_ty.array_type(32);
 
-    let is_lazy_mode = matches!(pass.timing, DecryptTiming::Lazy);
-    let is_global_mode = matches!(pass.timing, DecryptTiming::Global);
+    let is_lazy_mode = matches!(cfg.timing, DecryptTiming::Lazy);
+    let is_global_mode = matches!(cfg.timing, DecryptTiming::Global);
 
     let global_key = module.add_global(vector256, Some(AddressSpace::default()), "");
     let array_values = key
@@ -49,7 +49,7 @@ fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, key: &[u8; 32
         .get_globals()
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            (!pass.only_dot_string || global.get_name().to_str().is_ok_and(|s| s.contains(".str")))
+            (!cfg.only_dot_str || global.get_name().to_str().is_ok_and(|s| s.contains(".str")))
                 && global
                     .get_section()
                     .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
@@ -87,10 +87,10 @@ fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, key: &[u8; 32
         })
         .map(|(unique_name, global, stru, encoded_str)| {
             let string_len = encoded_str.len() as u32;
-            let mut should_use_stack = pass.stack_alloc && string_len <= STACK_ALLOC_THRESHOLD;
+            let mut should_use_stack = cfg.stack_alloc && string_len <= STACK_ALLOC_THRESHOLD;
 
             // Warn if stack allocation is requested but string is too large
-            if pass.stack_alloc && string_len > STACK_ALLOC_THRESHOLD {
+            if cfg.stack_alloc && string_len > STACK_ALLOC_THRESHOLD {
                 warn!(
                     "(strenc) string '{}' ({}B) exceeds 4KB limit for stack allocation, using global timing instead",
                     unique_name, string_len
@@ -159,11 +159,11 @@ fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, key: &[u8; 32
         module,
         &format!("simd_xor_cipher_{}", rand::random::<u32>()),
         is_lazy_mode,
-        pass.inline_decrypt,
-        pass.stack_alloc,
+        cfg.inline_decrypt,
+        cfg.stack_alloc,
     )?;
 
-    match pass.timing {
+    match cfg.timing {
         DecryptTiming::Lazy => {
             // 按解密方法分隔字符串
             let mut stack_strings = Vec::new();
@@ -184,7 +184,7 @@ fn do_handle<'a>(pass: &StringEncryption, module: &mut Module<'a>, key: &[u8; 32
                     stack_strings,
                     decrypt_fn,
                     true,
-                    pass.allow_non_entry_stack_alloc,
+                    cfg.allow_non_entry_stack_alloc,
                     global_key,
                 )?;
             }

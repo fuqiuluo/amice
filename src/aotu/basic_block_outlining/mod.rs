@@ -1,38 +1,38 @@
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::BasicBlockOutliningConfig;
+use crate::config::Config;
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::code_extractor::CodeExtractor;
 use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
 use amice_macro::amice;
+use llvm_plugin::PreservedAnalyses;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::FunctionValue;
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{Level, debug, error, warn};
-use std::ops::Not;
+use log::Level;
 
-#[amice(priority = 979, name = "BasicBlockOutlining", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 979,
+    name = "BasicBlockOutlining",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = BasicBlockOutliningConfig,
+)]
 #[derive(Default)]
-pub struct BasicBlockOutlining {
-    enable: bool,
-    max_extractor_size: usize,
-}
+pub struct BasicBlockOutlining {}
 
-impl AmicePassLoadable for BasicBlockOutlining {
-    fn init(&mut self, cfg: &crate::config::Config, _position: PassPosition) -> bool {
-        self.enable = cfg.basic_block_outlining.enable;
-        self.max_extractor_size = cfg.basic_block_outlining.max_extractor_size;
-        self.enable
+impl AmicePass for BasicBlockOutlining {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.basic_block_outlining.clone();
     }
-}
 
-impl LlvmModulePass for BasicBlockOutlining {
-    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if self.enable.not() {
-            return PreservedAnalyses::All;
-        }
-
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
         let mut functions = Vec::new();
         for function in module.get_functions() {
             if function.is_undef_function() || function.is_llvm_function() && function.is_inline_marked() {
+                continue;
+            }
+
+            let cfg = self.parse_function_annotations(module, function)?;
+            if !cfg.enable {
                 continue;
             }
 
@@ -45,20 +45,24 @@ impl LlvmModulePass for BasicBlockOutlining {
                 continue;
             }
 
-            functions.push(function);
+            functions.push((function, cfg));
         }
 
-        for function in functions {
-            if let Err(e) = do_outline(module, function, self.max_extractor_size) {
-                error!("(bb-outlining) outline func {:?} failed: {}", function.get_name(), e);
+        if functions.is_empty() {
+            return Ok(PreservedAnalyses::All);
+        }
+
+        for (function, cfg) in functions {
+            if let Err(e) = do_outline(module, function, cfg.max_extractor_size) {
+                error!("outline func {:?} failed: {}", function.get_name(), e);
             }
 
             if let VerifyResult::Broken(e) = function.verify_function() {
-                error!("(bb-outlining) function {:?} verify failed: {}", function.get_name(), e);
+                error!("function {:?} verify failed: {}", function.get_name(), e);
             }
         }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 
@@ -116,7 +120,7 @@ fn do_outline<'a>(
             new_function.add_attribute(AttributeLoc::Function, noinline_attr);
         } else {
             warn!(
-                "(bb-outlining) failed to extract code region from function {:?}",
+                "failed to extract code region from function {:?}",
                 function.get_name()
             );
         }

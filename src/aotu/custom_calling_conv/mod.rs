@@ -1,47 +1,50 @@
-use crate::config::Config;
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
-use amice_llvm::inkwell2::ModuleExt;
+use crate::config::{Config, CustomCallingConvConfig};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
+use amice_llvm::inkwell2::{FunctionExt, ModuleExt};
 use amice_macro::amice;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, CallSiteValue, FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::error;
 
-#[amice(priority = 1121, name = "CustomCallingConv", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 1121,
+    name = "CustomCallingConv",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = CustomCallingConvConfig,
+)]
 #[derive(Default)]
-pub struct CustomCallingConv {
-    enable: bool,
-}
+pub struct CustomCallingConv {}
 
-impl AmicePassLoadable for CustomCallingConv {
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
-        self.enable = cfg.custom_calling_conv.enable;
-
-        self.enable
+impl AmicePass for CustomCallingConv {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.custom_calling_conv.clone();
     }
-}
 
-impl LlvmModulePass for CustomCallingConv {
-    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::None;
-        }
-
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        let mut executed = false;
         for function in module.get_functions() {
-            if function.get_intrinsic_id() != 0 {
+            if function.is_llvm_function() || function.is_undef_function() || function.is_inline_marked() {
+                continue;
+            }
+
+            let cfg = self.parse_function_annotations(module, function)?;
+            if !cfg.enable {
                 continue;
             }
 
             if let Err(e) = do_random_calling_conv(module, function) {
-                error!(
-                    "(custom-calling-conv) failed to process function {:?}: {}",
-                    function.get_name(),
-                    e
-                );
+                error!("failed to process function {:?}: {}", function.get_name(), e);
+                continue;
             }
+            
+            executed = true;
+        }
+        
+        if !executed {
+            return Ok(PreservedAnalyses::All);
         }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 
@@ -51,7 +54,7 @@ fn do_random_calling_conv<'a>(module: &mut Module<'a>, function: FunctionValue<'
         .map_err(|e| anyhow::anyhow!("failed to read annotate: {}", e))?;
 
     if !annotates.iter().any(|annotate| {
-        annotate == "random_calling_conv" || annotate == "custom_calling_conv" || annotate.contains("customcc")
+        annotate == "+random_calling_conv" || annotate == "+custom_calling_conv" || annotate.contains("+customcc")
     }) {
         return Ok(());
     }

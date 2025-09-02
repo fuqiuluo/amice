@@ -3,7 +3,7 @@ pub(crate) mod config;
 pub(crate) mod pass_registry;
 
 use crate::config::CONFIG;
-use crate::pass_registry::PassPosition;
+use crate::pass_registry::AmicePassFlag;
 use log::info;
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1.2")]
@@ -26,7 +26,7 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         info!("amice plugin pipeline start callback, level: {opt:?}");
 
         let cfg = &*CONFIG;
-        pass_registry::install_all(cfg, manager, PassPosition::PipelineStart);
+        pass_registry::install_all(cfg, manager, AmicePassFlag::PipelineStart);
     });
 
     #[cfg(any(
@@ -44,14 +44,14 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
     builder.add_optimizer_last_ep_callback(|manager, opt| {
         info!("amice plugin optimizer last callback, level: {opt:?}");
         let cfg = &*CONFIG;
-        pass_registry::install_all(cfg, manager, PassPosition::OptimizerLast);
+        pass_registry::install_all(cfg, manager, AmicePassFlag::OptimizerLast);
     });
 
     #[cfg(any(doc, feature = "llvm20-1"))]
     builder.add_optimizer_last_ep_callback(|manager, opt, phase| {
         info!("amice plugin optimizer last callback, level: {opt:?}, phase: {phase:?}");
         let cfg = &*CONFIG;
-        pass_registry::install_all(cfg, manager, PassPosition::OptimizerLast);
+        pass_registry::install_all(cfg, manager, AmicePassFlag::OptimizerLast);
     });
 
     #[cfg(any(
@@ -66,7 +66,7 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
     builder.add_full_lto_last_ep_callback(|manager, opt| {
         info!("amice plugin full lto last callback, level: {opt:?}");
         let cfg = &*CONFIG;
-        pass_registry::install_all(cfg, manager, PassPosition::FullLtoLast);
+        pass_registry::install_all(cfg, manager, AmicePassFlag::FullLtoLast);
     });
 
     info!("amice plugin registered");

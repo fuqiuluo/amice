@@ -1,8 +1,12 @@
 use super::bool_var;
-use crate::pass_registry::EnvOverlay;
+use crate::pass_registry::{EnvOverlay, FunctionAnnotationsOverlay};
 use bitflags::bitflags;
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::inkwell::values::FunctionValue;
 use log::warn;
 use serde::{Deserialize, Serialize};
+use amice_llvm::inkwell2::ModuleExt;
+use crate::config::eloquent_config::EloquentConfigParser;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,13 +37,13 @@ pub struct IndirectBranchConfig {
 impl Default for IndirectBranchConfig {
     fn default() -> Self {
         Self {
-            enable: true,
+            enable: false,
             flags: IndirectBranchFlags::empty(),
         }
     }
 }
 
-pub(crate) fn parse_indirect_branch_flags(value: &str) -> IndirectBranchFlags {
+fn parse_indirect_branch_flags(value: &str) -> IndirectBranchFlags {
     let mut flags = IndirectBranchFlags::empty();
     for x in value.split(',') {
         let x = x.trim().to_lowercase();
@@ -65,7 +69,7 @@ enum IndirectBranchFlagsRepr {
     Many(Vec<String>),
 }
 
-pub(crate) fn deserialize_indirect_branch_flags<'de, D>(deserializer: D) -> Result<IndirectBranchFlags, D::Error>
+fn deserialize_indirect_branch_flags<'de, D>(deserializer: D) -> Result<IndirectBranchFlags, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -92,5 +96,31 @@ impl EnvOverlay for IndirectBranchConfig {
         if let Ok(v) = std::env::var("AMICE_INDIRECT_BRANCH_FLAGS") {
             self.flags |= parse_indirect_branch_flags(&v);
         }
+    }
+}
+
+impl FunctionAnnotationsOverlay for IndirectBranchConfig {
+    type Config = Self;
+
+    fn overlay_annotations<'a>(&self, module: &mut Module<'a>, function: FunctionValue<'a>) -> anyhow::Result<Self::Config> {
+        let mut cfg = self.clone();
+        let annotations_expr = module
+            .read_function_annotate(function)
+            .map_err(|e| anyhow::anyhow!("read function annotations failed: {}", e))?
+            .join(" ");
+
+        let mut parser = EloquentConfigParser::new();
+        parser
+            .parse(&annotations_expr)
+            .map_err(|e| anyhow::anyhow!("parse function annotations failed: {}", e))?;
+
+        parser
+            .get_bool("indirect_branch")
+            .or_else(|| parser.get_bool("ib"))
+            .or_else(|| parser.get_bool("indirectbr")) // 兼容 Polaris-Obfuscator
+            .or_else(|| parser.get_bool("indbr")) // 兼容 Arkari
+            .map(|v| cfg.enable = v);
+
+        Ok(cfg)
     }
 }

@@ -1,47 +1,53 @@
-use crate::config::{Config, ShuffleBlocksFlags};
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{Config, ShuffleBlocksConfig, ShuffleBlocksFlags};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::FunctionExt;
 use amice_macro::amice;
+use llvm_plugin::PreservedAnalyses;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::FunctionValue;
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{Level, debug, error, log_enabled, warn};
+use log::{Level, log_enabled};
 
-#[amice(priority = 970, name = "ShuffleBlocks", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 970,
+    name = "ShuffleBlocks",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = ShuffleBlocksConfig,
+)]
 #[derive(Default)]
-pub struct ShuffleBlocks {
-    enable: bool,
-    flags: ShuffleBlocksFlags,
-}
+pub struct ShuffleBlocks {}
 
-impl AmicePassLoadable for ShuffleBlocks {
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
-        self.enable = cfg.shuffle_blocks.enable;
-        self.flags = cfg.shuffle_blocks.flags;
-        if self.flags.is_empty() {
-            warn!("(shuffle-blocks) no flags set, disabling shuffle blocks");
-            self.enable = false;
-        }
-        self.enable
+impl AmicePass for ShuffleBlocks {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.shuffle_blocks.clone();
     }
-}
 
-impl LlvmModulePass for ShuffleBlocks {
-    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
-        }
-
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        let mut executed = false;
         for function in module.get_functions() {
+            if function.is_inline_marked() || function.is_llvm_function() || function.is_undef_function() {
+                continue;
+            }
+
+            let cfg = self.parse_function_annotations(module, function)?;
+            if !cfg.enable {
+                continue;
+            }
+
             if function.count_basic_blocks() <= 1 {
                 continue;
             }
-            if let Err(e) = handle_function(function, self.flags) {
-                error!("(shuffle-blocks) failed to shuffle basic blocks: {}", e);
+
+            if let Err(e) = handle_function(function, cfg.flags) {
+                error!("failed to shuffle basic blocks: {}", e);
             }
+            executed = true;
+        }
+        
+        if !executed {
+            return Ok(PreservedAnalyses::All);
         }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 
@@ -58,7 +64,7 @@ fn handle_function(function: FunctionValue<'_>, flags: ShuffleBlocksFlags) -> an
 
     if log_enabled!(Level::Debug) {
         debug!(
-            "(shuffle-blocks) function {:?} has {:?} basic blocks: {:?}",
+            "function {:?} has {:?} basic blocks: {:?}",
             function.get_name(),
             blocks.len(),
             flags
@@ -103,7 +109,7 @@ fn handle_function(function: FunctionValue<'_>, flags: ShuffleBlocksFlags) -> an
     }
 
     if function.verify_function_bool() {
-        warn!("(shuffle-blocks) function {:?} is not verified", function.get_name());
+        warn!("function {:?} is not verified", function.get_name());
     }
 
     Ok(())

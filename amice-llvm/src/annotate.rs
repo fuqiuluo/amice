@@ -80,7 +80,7 @@ pub(crate) fn read_function_annotate<'ctx>(module: &Module<'ctx>, func: Function
                     }
                     let arr = std::slice::from_raw_parts::<u8>(ptr.cast(), len - 1);
                     let c_str = CString::new(arr).unwrap();
-                    out.push(c_str.to_string_lossy().into_owned().to_lowercase().replace("-", "_"));
+                    out.push(c_str.to_string_lossy().into_owned());
                 }
             } else {
                 continue;

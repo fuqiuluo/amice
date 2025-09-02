@@ -1,43 +1,42 @@
 // translate from AmaObfuscatePass
 
-use crate::config::Config;
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{Config, DelayOffsetLoadingConfig};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BuilderExt, FunctionExt, InstructionExt, LLVMValueRefExt, VerifyResult};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, InstructionOpcode};
-use llvm_plugin::inkwell::{AddressSpace, GlobalVisibility};
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, warn};
+use llvm_plugin::inkwell::values::{AsValueRef, InstructionOpcode};
+use llvm_plugin::inkwell::{AddressSpace};
+use llvm_plugin::{ModuleAnalysisManager, PreservedAnalyses};
 use std::collections::HashMap;
 use std::ops::BitXor;
 
-#[amice(priority = 1150, name = "DelayOffsetLoading", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 1150, 
+    name = "DelayOffsetLoading",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = DelayOffsetLoadingConfig,
+)]
 #[derive(Default)]
-pub struct DelayOffsetLoading {
-    enable: bool,
-    xor_offset: bool,
-}
+pub struct DelayOffsetLoading {}
 
-impl AmicePassLoadable for DelayOffsetLoading {
-    fn init(&mut self, cfg: &Config, _position: PassPosition) -> bool {
-        self.enable = cfg.delay_offset_loading.enable;
-        self.xor_offset = cfg.delay_offset_loading.xor_offset;
-        self.enable
+impl AmicePass for DelayOffsetLoading {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.delay_offset_loading.clone();
     }
-}
 
-impl LlvmModulePass for DelayOffsetLoading {
-    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
-        }
-
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
         let mut shared_global_offset_map = HashMap::new();
+        let mut executed = false;
         for function in module.get_functions() {
-            if function.is_undef_function() {
+            if function.is_undef_function() || function.is_llvm_function() {
+                continue;
+            }
+
+            let cfg = self.parse_function_annotations(module, function)?;
+            if !cfg.enable {
                 continue;
             }
 
@@ -86,8 +85,8 @@ impl LlvmModulePass for DelayOffsetLoading {
                 };
 
                 let (global_offset_value, xor_key) = if !shared_global_offset_map.contains_key(&offset) {
-                    let xor_key = if self.xor_offset { rand::random::<u64>() } else { 0 };
-                    let initializer = if self.xor_offset {
+                    let xor_key = if cfg.xor_offset { rand::random::<u64>() } else { 0 };
+                    let initializer = if cfg.xor_offset {
                         i32_type.const_int(offset.bitxor(xor_key), false)
                     } else {
                         i32_type.const_int(offset, false)
@@ -106,37 +105,37 @@ impl LlvmModulePass for DelayOffsetLoading {
                 let Ok(offset_value) =
                     builder.build_load2(i32_type, global_offset_value.as_pointer_value(), "offset_val")
                 else {
-                    error!("(delay-offset-loading) load global_offset_value failed");
+                    error!("load global_offset_value failed");
                     continue;
                 };
                 let mut offset_value = offset_value.into_int_value();
 
-                if self.xor_offset {
+                if cfg.xor_offset {
                     offset_value =
                         match builder.build_xor(offset_value, i32_type.const_int(xor_key, false), "offset_val_no_xor") {
                             Ok(value) => value,
                             Err(e) => {
-                                error!("(delay-offset-loading) xor offset value failed: {}", e);
+                                error!("xor offset value failed: {}", e);
                                 continue;
-                            },
+                            }
                         }
                 }
 
                 let Ok(ptr) = builder.build_bit_cast(struct_ptr.into_pointer_value(), i8_ptr, "st_ptr_as_i8_ptr")
                 else {
-                    error!("(delay-offset-loading) bit cast struct_ptr to i8_ptr failed");
+                    error!("bit cast struct_ptr to i8_ptr failed");
                     continue;
                 };
                 let Ok(gep) =
                     builder.build_gep2(i8_type, ptr.into_pointer_value(), &[offset_value], "st_ptr_to_gep_ptr")
                 else {
-                    error!("(delay-offset-loading) gep failed");
+                    error!("gep failed");
                     continue;
                 };
                 let Ok(ptr) =
                     builder.build_bit_cast(gep, gep_inst.get_type().into_pointer_type(), "gep_ptr_to_gep_ty_ptr")
                 else {
-                    error!("(delay-offset-loading) bit cast gep to gep_inst.get_type() failed");
+                    error!("bit cast gep to gep_inst.get_type() failed");
                     continue;
                 };
                 let ptr = (ptr.as_value_ref() as LLVMValueRef).into_instruction_value();
@@ -145,15 +144,16 @@ impl LlvmModulePass for DelayOffsetLoading {
                 gep_inst.erase_from_basic_block();
             }
 
+            executed = true;
             if let VerifyResult::Broken(err) = function.verify_function() {
-                warn!(
-                    "(delay-offset-loading) function {:?} is broken: {}",
-                    function.get_name(),
-                    err
-                );
+                warn!("function {:?} is broken: {}",function.get_name(),err);
             }
         }
+        
+        if !executed {
+            return Ok(PreservedAnalyses::All);
+        }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }

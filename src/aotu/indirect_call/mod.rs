@@ -1,5 +1,4 @@
-use crate::config::Config;
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BuilderExt, CallInst, FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
@@ -11,18 +10,23 @@ use llvm_plugin::inkwell::values::{
     AsValueRef, BasicValue, CallSiteValue, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{debug, error, warn};
+use crate::config::{Config, IndirectCallConfig};
 
-#[amice(priority = 990, name = "IndirectCall", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 990, 
+    name = "IndirectCall", 
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = IndirectCallConfig,
+)]
 #[derive(Default)]
 pub struct IndirectCall {
     enable: bool,
     xor_key: u32,
 }
 
-impl AmicePassLoadable for IndirectCall {
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
-        self.enable = cfg.indirect_call.enable;
+impl AmicePass for IndirectCall {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.indirect_call.clone();
 
         self.xor_key = cfg
             .indirect_call
@@ -35,37 +39,47 @@ impl AmicePassLoadable for IndirectCall {
                 self.xor_key
             );
         }
-
-        self.enable
     }
-}
 
-impl LlvmModulePass for IndirectCall {
-    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        let mut functions = Vec::new();
+        for function in module.get_functions() {
+            if function.is_undef_function() || function.is_llvm_function() {
+                continue;
+            }
+
+            let cfg = self.parse_function_annotations(module, function)?;
+            if !cfg.enable {
+                continue;
+            }
+
+            functions.push(function);
+        }
+
+        if functions.is_empty() {
+            return Ok(PreservedAnalyses::All);
         }
 
         let mut likely_functions = Vec::new();
         let mut call_instructions = Vec::new();
-        for function in module.get_functions() {
+        for function in &functions {
             for bb in function.get_basic_blocks() {
                 for inst in bb.get_instructions() {
                     if inst.get_opcode() == InstructionOpcode::Call {
                         let operand_num = inst.get_num_operands();
                         if operand_num == 0 {
-                            warn!("(indirect_call) indirect call instruction with no operands found: {inst:?}");
+                            warn!("indirect call instruction with no operands found: {inst:?}");
                             continue;
                         }
 
                         let callee = inst.get_operand(operand_num - 1).unwrap().left();
                         let Some(callee) = callee else {
-                            warn!("(indirect_call) indirect call instruction with no callee found: {inst:?}");
+                            warn!("indirect call instruction with no callee found: {inst:?}");
                             continue;
                         };
                         let callee = callee.into_pointer_value();
                         let Some(callee) = (unsafe { FunctionValue::new(callee.as_value_ref()) }) else {
-                            debug!("(indirect_call) indirect call instruction with no function found: {inst:?}");
+                            debug!("indirect call instruction with no function found: {inst:?}");
                             continue;
                         };
 
@@ -128,7 +142,7 @@ impl LlvmModulePass for IndirectCall {
             &call_instructions,
             xor_key_global,
         ) {
-            error!("(indirect_call) failed to handle: {e}");
+            error!("failed to handle: {e}");
         }
 
         #[cfg(not(any(
@@ -139,15 +153,15 @@ impl LlvmModulePass for IndirectCall {
             feature = "llvm16-0",
             feature = "llvm15-0",
         )))]
-        error!("(indirect_call) LLVM version is not supported");
+        error!("LLVM version is not supported");
 
-        for f in module.get_functions() {
+        for f in functions {
             if f.verify_function_bool() {
-                warn!("(indirect_call) function {:?} is not verified", f.get_name());
+                warn!("function {:?} is not verified", f.get_name());
             }
         }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 

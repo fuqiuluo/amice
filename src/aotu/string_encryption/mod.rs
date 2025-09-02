@@ -3,8 +3,8 @@ mod xor;
 
 use crate::aotu::string_encryption::simd_xor::SimdXorAlgo;
 use crate::aotu::string_encryption::xor::XorAlgo;
-use crate::config::{Config, StringAlgorithm, StringDecryptTiming};
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{Config, StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
+use crate::pass_registry::{AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, VerifyResult};
 use amice_macro::amice;
 use inkwell::llvm_sys::core::LLVMGetAsString;
@@ -14,88 +14,67 @@ use llvm_plugin::inkwell::values::{
     AnyValueEnum, ArrayValue, AsValueRef, BasicValue, GlobalValue, InstructionValue, PointerValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
-use log::{debug, error};
 use std::ptr::NonNull;
 
 /// Stack allocation threshold: strings larger than this will use global timing
 /// even when stack allocation is enabled
 const STACK_ALLOC_THRESHOLD: u32 = 4096; // 4KB
 
-#[amice(priority = 1000, name = "StringEncryption", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 1000,
+    name = "StringEncryption",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::ModuleLevel,
+    config = StringEncryptionConfig,
+)]
 #[derive(Default)]
-pub struct StringEncryption {
-    enable: bool,
-    timing: StringDecryptTiming,
-    encryption_type: StringAlgorithm,
-    stack_alloc: bool,
-    inline_decrypt: bool,
-    only_dot_string: bool,
-    allow_non_entry_stack_alloc: bool,
-    max_encryption_count: u32,
-}
+pub struct StringEncryption {}
 
-impl AmicePassLoadable for StringEncryption {
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
-        let decrypt_timing = cfg.string_encryption.timing;
-        let stack_alloc = cfg.string_encryption.stack_alloc;
-        let inline_decrypt = cfg.string_encryption.inline_decrypt;
-        let only_llvm_string = cfg.string_encryption.only_dot_str;
+impl AmicePass for StringEncryption {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.string_encryption.clone();
 
         assert!(
-            (decrypt_timing == StringDecryptTiming::Global && !stack_alloc)
-                || decrypt_timing != StringDecryptTiming::Global,
+            (self.default_config.timing == StringDecryptTiming::Global && !self.default_config.stack_alloc)
+                || self.default_config.timing != StringDecryptTiming::Global,
             "stack alloc is not supported with global decrypt timing: {:?}",
-            decrypt_timing
+            self.default_config.timing
         );
-
-        self.enable = cfg.string_encryption.enable;
-        self.timing = decrypt_timing;
-        self.encryption_type = cfg.string_encryption.algorithm;
-        self.stack_alloc = stack_alloc;
-        self.inline_decrypt = inline_decrypt;
-        self.only_dot_string = only_llvm_string;
-        self.allow_non_entry_stack_alloc = cfg.string_encryption.allow_non_entry_stack_alloc;
-        self.max_encryption_count = cfg.string_encryption.max_encryption_count;
-
-        self.enable
     }
-}
 
-impl LlvmModulePass for StringEncryption {
-    fn run_pass<'a>(&self, module: &mut Module<'a>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        if !self.default_config.enable { 
+            return Ok(PreservedAnalyses::All);
         }
-
-        let mut algo: Box<dyn StringEncryptionAlgo> = match self.encryption_type {
+        
+        let mut algo: Box<dyn StringEncryptionAlgo> = match self.default_config.algorithm {
             StringAlgorithm::Xor => Box::new(XorAlgo::default()),
             StringAlgorithm::SimdXor => Box::new(SimdXorAlgo::default()),
         };
 
-        if let Err(err) = algo.initialize(self, module) {
-            error!("(strenc) initialize failed: {}", err);
-            return PreservedAnalyses::All;
+        if let Err(err) = algo.initialize(&self.default_config, module) {
+            error!("initialize failed: {}", err);
+            return Ok(PreservedAnalyses::All);
         }
 
-        if let Err(err) = algo.do_string_encrypt(self, module) {
-            error!("(strenc) do_string_encrypt failed: {}", err);
-            return PreservedAnalyses::All;
+        if let Err(err) = algo.do_string_encrypt(&self.default_config, module) {
+            error!("do_string_encrypt failed: {}", err);
+            return Ok(PreservedAnalyses::All);
         }
 
         for x in module.get_functions() {
             if let VerifyResult::Broken(err) = x.verify_function() {
-                error!("(strenc) function {:?} verify failed: {}", x.get_name(), err);
+                error!("function {:?} verify failed: {}", x.get_name(), err);
             }
         }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 
 pub(super) trait StringEncryptionAlgo {
-    fn initialize(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()>;
+    fn initialize(&mut self, cfg: &StringEncryptionConfig, module: &mut Module<'_>) -> anyhow::Result<()>;
 
-    fn do_string_encrypt(&mut self, pass: &StringEncryption, module: &mut Module<'_>) -> anyhow::Result<()>;
+    fn do_string_encrypt(&mut self, cfg: &StringEncryptionConfig, module: &mut Module<'_>) -> anyhow::Result<()>;
 }
 
 #[derive(Copy, Clone)]

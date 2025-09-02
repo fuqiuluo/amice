@@ -1,5 +1,5 @@
-use crate::config::Config;
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{Config, VmFlattenConfig};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
 
 use amice_llvm::ptr_type;
@@ -10,46 +10,50 @@ use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{ArrayValue, FunctionValue, InstructionOpcode, IntValue};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{Level, debug, error, log_enabled, warn};
+use log::{Level, log_enabled};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
 
 const MAGIC_NUMBER: u32 = 0x7788ff;
 
-#[amice(priority = 960, name = "VmFlatten", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 960,
+    name = "VmFlatten",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = VmFlattenConfig,
+)]
 #[derive(Default)]
-pub struct VmFlatten {
-    enable: bool,
-    random_none_node_opcode: bool,
-}
+pub struct VmFlatten {}
 
-impl AmicePassLoadable for VmFlatten {
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
-        self.enable = cfg.vm_flatten.enable;
-        self.random_none_node_opcode = true;
-
-        self.enable
+impl AmicePass for VmFlatten {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.vm_flatten.clone();
     }
-}
 
-impl LlvmModulePass for VmFlatten {
-    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
-        }
-
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        let mut has_executed = false;
         for function in module.get_functions() {
-            if let Err(err) = do_handle(self, module, function) {
-                error!(
-                    "(vm_flatten) failed to handle function: {:?}, err = {}",
-                    function.get_name(),
-                    err
-                );
+            if function.is_undef_function() || function.is_llvm_function() {
+                continue;
             }
+
+            let cfg = self.parse_function_annotations(module, function)?;
+            if !cfg.enable {
+                continue;
+            }
+
+            if let Err(err) = do_handle(&cfg, module, function) {
+                error!("failed to handle function: {:?}, err = {}", function.get_name(), err);
+            }
+            has_executed = true;
+        }
+        
+        if !has_executed {
+            return Ok(PreservedAnalyses::All);
         }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 
@@ -147,7 +151,7 @@ enum VmBranchNodeKind {
     None = 0,
 }
 
-fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionValue) -> anyhow::Result<()> {
+fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: FunctionValue) -> anyhow::Result<()> {
     let mut basic_blocks = function.get_basic_blocks();
     if basic_blocks.is_empty() {
         return Ok(());
@@ -358,12 +362,12 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
         &mut opcode_inst_map,
         &mut opcodes,
         VmBranchNode::new_unconditional_branch(MAGIC_NUMBER, first_basic_block, first_basic_block),
-        pass.random_none_node_opcode,
+        cfg.random_none_node_opcode,
     )?;
     let opcode_array_size = calculate_pc(&opcodes, opcodes.len());
 
     debug!(
-        "(vm_flatten) fun: {:?} opcodes: {:?}, size: {}",
+        "fun: {:?} opcodes: {:?}, size: {}",
         function.get_name(),
         opcodes,
         opcode_array_size,
@@ -640,7 +644,7 @@ fn do_handle<'a>(pass: &VmFlatten, module: &mut Module<'a>, function: FunctionVa
     }
 
     if function.verify_function_bool() {
-        warn!("(vm_flatten) function {:?} verify failed", function.get_name());
+        warn!("function {:?} verify failed", function.get_name());
     }
 
     unsafe { function.fix_stack() }
@@ -800,7 +804,7 @@ fn generate_opcodes(
         }
 
         if log_enabled!(Level::Debug) {
-            debug!("(vm_flatten) switch case nums: {:?}", pc_values.len());
+            debug!("switch case nums: {:?}", pc_values.len());
         }
 
         for (i, pc) in pc_values.iter().enumerate() {

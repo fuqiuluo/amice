@@ -9,6 +9,7 @@ use llvm_plugin::inkwell::types::{BasicType, StructType};
 use llvm_plugin::inkwell::values::{AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
 use log::{debug, warn};
 use std::collections::HashMap;
+use crate::config::AliasAccessConfig;
 
 const META_BOX_COUNT: usize = 6;
 
@@ -81,21 +82,17 @@ fn build_getter_function<'ctx>(
 pub(super) struct PointerChainAlgo;
 
 impl AliasAccessAlgo for PointerChainAlgo {
-    fn initialize(&mut self, _pass: &AliasAccess) -> anyhow::Result<()> {
+    fn initialize(&mut self, _cfg: &AliasAccessConfig) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn do_alias_access(&mut self, pass: &AliasAccess, module: &Module<'_>) -> anyhow::Result<()> {
-        for function in module.get_functions() {
-            do_alias_access_pointer_chain(pass, module, function)?;
-        }
-
-        Ok(())
+    fn do_alias_access(&mut self, cfg: &AliasAccessConfig, module: &Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
+        do_alias_access_pointer_chain(cfg, module, function)
     }
 }
 
 fn do_alias_access_pointer_chain(
-    pass: &AliasAccess,
+    cfg: &AliasAccessConfig,
     module: &Module<'_>,
     function: FunctionValue,
 ) -> anyhow::Result<()> {
@@ -154,7 +151,7 @@ fn do_alias_access_pointer_chain(
     for items in buckets.into_iter().filter(|b| !b.is_empty()) {
         let mut items = items.into_iter().map(|p| (false, p.into())).collect::<Vec<_>>();
 
-        if pass.loose_raw_box {
+        if cfg.loose_raw_box {
             // 填充幽灵数据
             for i in 0..rand::random_range(0..items.len() + 1) {
                 let j = rand::random_range(0..=i);
@@ -162,7 +159,7 @@ fn do_alias_access_pointer_chain(
             }
         };
 
-        if pass.shuffle_raw_box {
+        if cfg.shuffle_raw_box {
             for i in (1..items.len()).rev() {
                 let j = rand::random_range(0..=i);
                 items.swap(i, j);
@@ -216,12 +213,12 @@ fn do_alias_access_pointer_chain(
     }
 
     if graph.is_empty() {
-        warn!("(alias-access) no allocas found");
+        warn!("(AliasAccess) no allocas found");
         return Ok(());
     }
 
     let meta_box_count = graph.len().saturating_mul(3).max(1);
-    debug!("(alias-access) meta box count: {}", meta_box_count);
+    debug!("(AliasAccess) meta box count: {}", meta_box_count);
 
     // 构造元盒类型
     let meta_box_ty = ctx.struct_type(&vec![i8_ptr.as_basic_type_enum(); META_BOX_COUNT], false);

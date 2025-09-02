@@ -3,8 +3,8 @@ mod cf_flatten_dominator;
 
 use crate::aotu::flatten::cf_flatten_basic::FlattenBasic;
 use crate::aotu::flatten::cf_flatten_dominator::FlattenDominator;
-use crate::config::{Config, FlattenMode};
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{Config, FlattenConfig, FlattenMode};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, VerifyResult};
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -12,77 +12,79 @@ use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{error, warn};
 
-#[amice(priority = 959, name = "Flatten", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 959,
+    name = "Flatten",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = FlattenConfig,
+)]
 #[derive(Default)]
-pub struct Flatten {
-    enable: bool,
-    fix_stack: bool,
-    demote_switch: bool,
-    mode: FlattenMode,
-    loop_count: usize,
-    skip_big_function: bool,
-    inline_fn: bool,
-}
+pub struct Flatten {}
 
-impl AmicePassLoadable for Flatten {
-    fn init(&mut self, cfg: &Config, _position: PassPosition) -> bool {
-        self.enable = cfg.flatten.enable;
-        self.fix_stack = cfg.flatten.fix_stack;
-        self.demote_switch = cfg.flatten.lower_switch;
+impl AmicePass for Flatten {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.flatten.clone();
 
-        if !self.fix_stack && !self.demote_switch {
+        if !self.default_config.fix_stack && !self.default_config.lower_switch {
             // switch降级没有开启且fixStack也没有开启意味着PHI 99%有问题！
-            error!(
-                "(flatten) both fix_stack and lower_switch are disabled, this will likely cause issues with PHI nodes"
-            );
+            error!("both fix_stack and lower_switch are disabled, this will likely cause issues with PHI nodes");
             // 给个警告，然后听天由命，这个是用户自己决定的，hhh
         }
-
-        self.mode = cfg.flatten.mode;
-        self.loop_count = cfg.flatten.loop_count;
-        self.skip_big_function = cfg.flatten.skip_big_function;
-        self.inline_fn = cfg.flatten.always_inline;
-
-        self.enable
     }
-}
 
-impl LlvmModulePass for Flatten {
-    fn run_pass(&self, module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
-        }
-
-        let mut algo: Box<dyn FlattenAlgo> = match self.mode {
-            FlattenMode::Basic => Box::new(FlattenBasic::default()),
-            FlattenMode::DominatorEnhanced => Box::new(FlattenDominator::default()),
-        };
-        if let Err(e) = algo.initialize(self, module) {
-            error!("(flatten) initialize failed: {}", e);
-            return PreservedAnalyses::None;
-        }
-
-        if let Err(e) = algo.do_flatten(self, module) {
-            error!("(flatten) do_flatten failed: {}", e);
-            return PreservedAnalyses::None;
-        }
-
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        let mut functions = Vec::new();
         for x in module.get_functions() {
-            if let VerifyResult::Broken(e) = x.verify_function() {
-                warn!("(flatten) function {:?} verify failed: {}", x.get_name(), e);
+            if x.is_llvm_function() || x.is_undef_function() {
+                continue;
+            }
+
+            let cfg = self.parse_function_annotations(module, x)?;
+            if !cfg.enable {
+                continue;
+            }
+
+            functions.push((x, cfg))
+        }
+
+        if functions.is_empty() {
+            return Ok(PreservedAnalyses::All);
+        }
+
+        for (function, cfg) in functions {
+            let mut algo: Box<dyn FlattenAlgo> = match cfg.mode {
+                FlattenMode::Basic => Box::new(FlattenBasic::default()),
+                FlattenMode::DominatorEnhanced => Box::new(FlattenDominator::default()),
+            };
+            if let Err(e) = algo.initialize(&cfg, module) {
+                error!("initialize failed: {}", e);
+                continue;
+            }
+
+            if let Err(e) = algo.do_flatten(&cfg, module, function) {
+                error!("do_flatten failed: {}", e);
+                continue;
+            }
+
+            if let VerifyResult::Broken(e) = function.verify_function() {
+                warn!("function {:?} verify failed: {}", function.get_name(), e);
             }
         }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 
 pub(super) trait FlattenAlgo {
-    fn initialize(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()>;
+    fn initialize(&mut self, cfg: &FlattenConfig, module: &mut Module<'_>) -> anyhow::Result<()>;
 
-    fn do_flatten(&mut self, pass: &Flatten, module: &mut Module<'_>) -> anyhow::Result<()>;
+    fn do_flatten(
+        &mut self,
+        cfg: &FlattenConfig,
+        module: &mut Module<'_>,
+        function: FunctionValue,
+    ) -> anyhow::Result<()>;
 }
 
 fn split_entry_block_for_flatten<'a>(

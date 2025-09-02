@@ -1,5 +1,9 @@
 use crate::config::{EnvOverlay, bool_var};
+use crate::pass_registry::FunctionAnnotationsOverlay;
+use amice_llvm::inkwell2::ModuleExt;
 use bitflags::bitflags;
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::inkwell::values::FunctionValue;
 use log::warn;
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +49,7 @@ impl EnvOverlay for ShuffleBlocksConfig {
     }
 }
 
-pub(crate) fn parse_shuffle_blocks_flags(value: &str) -> ShuffleBlocksFlags {
+fn parse_shuffle_blocks_flags(value: &str) -> ShuffleBlocksFlags {
     let mut flags = ShuffleBlocksFlags::empty();
     for x in value.split(',') {
         let x = x.trim().to_lowercase();
@@ -87,4 +91,35 @@ where
         },
     };
     Ok(flags)
+}
+
+impl FunctionAnnotationsOverlay for ShuffleBlocksConfig {
+    type Config = Self;
+
+    fn overlay_annotations<'a>(
+        &self,
+        module: &mut Module<'a>,
+        function: FunctionValue<'a>,
+    ) -> anyhow::Result<Self::Config> {
+        let mut cfg = self.clone();
+        let annotations_expr = module
+            .read_function_annotate(function)
+            .map_err(|e| anyhow::anyhow!("read function annotations failed: {}", e))?
+            .join(" ");
+
+        let mut parser = crate::config::eloquent_config::EloquentConfigParser::new();
+        parser
+            .parse(&annotations_expr)
+            .map_err(|e| anyhow::anyhow!("parse function annotations failed: {}", e))?;
+
+        parser.get_bool("shuffle_blocks").map(|v| cfg.enable = v);
+        parser.get_number("shuffle_blocks_flags").map(|v| {
+            cfg.flags |= ShuffleBlocksFlags::from_bits_truncate(v);
+        });
+        parser.get_string("shuffle_blocks_flags").map(|v| {
+            cfg.flags |= parse_shuffle_blocks_flags(&v);
+        });
+
+        Ok(cfg)
+    }
 }

@@ -7,6 +7,7 @@ use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, GlobalValue, InstructionOpcode, IntValue, PointerValue};
 use log::{error, warn};
 use rand::Rng;
+use crate::config::BogusControlFlowConfig;
 
 #[derive(Default)]
 pub struct BogusControlFlowBasic {
@@ -15,26 +16,20 @@ pub struct BogusControlFlowBasic {
 }
 
 impl BogusControlFlowAlgo for BogusControlFlowBasic {
-    fn initialize(&mut self, pass: &BogusControlFlow, module: &mut Module<'_>) -> anyhow::Result<()> {
+    fn initialize(&mut self, _cfg: &BogusControlFlowConfig, _module: &mut Module<'_>) -> anyhow::Result<()> {
         self.x = rand::random_range(0..2782812982);
         self.y = rand::random_range(0..459846238);
 
         Ok(())
     }
 
-    fn apply_bogus_control_flow(&mut self, pass: &BogusControlFlow, module: &mut Module<'_>) -> anyhow::Result<()> {
+    fn apply_bogus_control_flow(&mut self, cfg: &BogusControlFlowConfig, module: &mut Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
         // Create global variables for opaque predicates
         let globals = create_opaque_predicate_globals(self, module);
 
-        for function in module.get_functions() {
-            if function.count_basic_blocks() == 0 {
-                continue;
-            }
-
-            for _ in 0..pass.loop_count {
-                if let Err(e) = handle_function(self, function, &globals, pass.probability) {
-                    warn!("(bogus-control-flow) failed to obfuscate function: {}", e);
-                }
+        for _ in 0..cfg.loop_count {
+            if let Err(e) = handle_function(self, function, &globals, cfg.probability) {
+                warn!("(BogusControlFlow) failed to obfuscate function: {}", e);
             }
         }
 

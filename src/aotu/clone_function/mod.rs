@@ -1,5 +1,5 @@
-use crate::config::Config;
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{CloneFunctionConfig, Config};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
 use anyhow::anyhow;
@@ -10,38 +10,33 @@ use llvm_plugin::inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::error;
 use std::collections::BTreeSet;
 
-#[amice(priority = 1111, name = "CloneFunction", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 1111,
+    name = "CloneFunction",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = CloneFunctionConfig,
+)]
 #[derive(Default)]
-pub struct CloneFunction {
-    enable: bool,
-}
+pub struct CloneFunction {}
 
-impl AmicePassLoadable for CloneFunction {
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
-        self.enable = cfg.clone_function.enable;
-
-        self.enable
+impl AmicePass for CloneFunction {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.clone_function.clone();
     }
-}
 
-impl LlvmModulePass for CloneFunction {
-    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
-        }
-
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
         #[cfg(not(feature = "android-ndk"))]
         {
             let mut call_instructions = Vec::new();
             for function in module.get_functions() {
-                if function.count_basic_blocks() == 0 {
+                if function.is_llvm_function() || function.is_undef_function() {
                     continue;
                 }
 
-                if function.is_llvm_function() || function.is_undef_function() {
+                let cfg = self.parse_function_annotations(module, function)?;
+                if !cfg.enable {
                     continue;
                 }
 
@@ -62,6 +57,10 @@ impl LlvmModulePass for CloneFunction {
                         }
                     }
                 }
+            }
+
+            if call_instructions.is_empty() {
+                return Ok(PreservedAnalyses::All);
             }
 
             let mut call_instructions_with_constant_args = Vec::new();
@@ -90,25 +89,23 @@ impl LlvmModulePass for CloneFunction {
             }
 
             if call_instructions_with_constant_args.is_empty() {
-                return PreservedAnalyses::All;
+                return Ok(PreservedAnalyses::All);
             }
 
             for (inst, call_func, args) in call_instructions_with_constant_args {
                 if let Err(e) = do_replace_call_with_call_to_specialized_function(module, inst, call_func, args) {
-                    error!(
-                        "(clone-function) failed to replace call with specialized function: {}",
-                        e
-                    );
+                    error!("failed to replace call with specialized function: {}", e);
                 }
             }
         }
 
         #[cfg(feature = "android-ndk")]
         {
-            error!("(clone-function) not support android-ndk");
+            error!("not support android-ndk");
+            return Ok(PreservedAnalyses::All);
         }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 
@@ -124,7 +121,7 @@ fn do_replace_call_with_call_to_specialized_function<'a>(
         .map(|(i, operand)| (*i, operand.as_value_ref() as LLVMValueRef))
         .collect::<Vec<(u32, LLVMValueRef)>>();
     let special_function = unsafe { module.specialize_function_by_args(call_func, &replacements) }
-        .map_err(|e| anyhow!("(clone-function) function_specialize_partial failed: {}", e))?;
+        .map_err(|e| anyhow!("function_specialize_partial failed: {}", e))?;
 
     for (arg_index, _) in replacements {
         for attr in special_function.attributes(AttributeLoc::Param(arg_index)) {
@@ -144,7 +141,7 @@ fn do_replace_call_with_call_to_specialized_function<'a>(
     // 原调用的参数个数（不含最后一个被调函数操作数）
     let total_operands = call_inst.get_num_operands();
     if total_operands == 0 {
-        return Err(anyhow!("(clone-function) call has no operands"));
+        return Err(anyhow!("call has no operands"));
     }
     let callee_operand_index = total_operands - 1;
 
@@ -164,10 +161,10 @@ fn do_replace_call_with_call_to_specialized_function<'a>(
             if let Some(val) = op.left() {
                 new_call_args.push(val.into());
             } else {
-                return Err(anyhow!("(clone-function) operand {} of call is not a value", i));
+                return Err(anyhow!("operand {} of call is not a value", i));
             }
         } else {
-            return Err(anyhow!("(clone-function) missing operand {} for original call", i));
+            return Err(anyhow!("missing operand {} for original call", i));
         }
     }
 
@@ -196,10 +193,6 @@ fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<
             if operand_num == 0 {
                 return None;
             }
-
-            // for x in inst.get_operands() {
-            //     debug!("Operand: {:?}", x);
-            // }
 
             // The last operand of a call instruction is typically the called function
             if let Some(operand) = inst.get_operand(operand_num - 1) {

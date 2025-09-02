@@ -1,48 +1,54 @@
-use crate::config::Config;
-use crate::pass_registry::{AmicePassLoadable, PassPosition};
+use crate::config::{Config, LowerSwitchConfig};
+use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, SwitchInst};
 use amice_macro::amice;
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue};
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use log::{error, warn};
+use llvm_plugin::{PreservedAnalyses};
 
-#[amice(priority = 961, name = "LowerSwitch", position = PassPosition::PipelineStart)]
+#[amice(
+    priority = 961,
+    name = "LowerSwitch",
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    config = LowerSwitchConfig,
+)]
 #[derive(Default)]
 pub struct LowerSwitch {
-    enable: bool,
-    append_dummy_code: bool,
 }
 
-impl AmicePassLoadable for LowerSwitch {
-    fn init(&mut self, cfg: &Config, position: PassPosition) -> bool {
-        self.enable = cfg.lower_switch.enable;
-        self.append_dummy_code = cfg.lower_switch.append_dummy_code;
-
-        self.enable
+impl AmicePass for LowerSwitch {
+    fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
+        self.default_config = cfg.lower_switch.clone();
     }
-}
 
-impl LlvmModulePass for LowerSwitch {
-    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses {
-        if !self.enable {
-            return PreservedAnalyses::All;
-        }
-
+    fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        let mut executed = false;
         for function in module.get_functions() {
-            if let Err(e) = do_lower_switch(module, function, self.append_dummy_code) {
+            if function.is_undef_function() || function.is_llvm_function() {
+                continue;
+            }
+
+            let cfg = self.parse_function_annotations(module, function)?;
+            if !cfg.enable {
+                continue;
+            }
+
+            if let Err(e) = do_lower_switch(module, function, cfg.append_dummy_code) {
                 error!("Failed to lower switch in function {:?}: {}", function.get_name(), e);
             }
-        }
 
-        for f in module.get_functions() {
-            if f.verify_function_bool() {
-                warn!("(lower-switch) function {:?} is not verified", f.get_name());
+            executed = true;
+            if function.verify_function_bool() {
+                warn!("function {:?} is not verified", function.get_name());
             }
         }
+        
+        if !executed {
+            return Ok(PreservedAnalyses::All);
+        }
 
-        PreservedAnalyses::None
+        Ok(PreservedAnalyses::None)
     }
 }
 
