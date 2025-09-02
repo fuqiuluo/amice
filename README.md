@@ -53,8 +53,8 @@ Amice 是一个基于 **llvm-plugin-rs** 构建的 LLVM Pass 插件项目，可�
 
 ## 运行时环境变量
 
-详细说明请参阅 Wiki：  
-<https://github.com/fuqiuluo/amice/wiki>
+详细说明请参阅：  
+<https://github.com/fuqiuluo/amice/blob/master/docs>
 
 ---
 
