@@ -1,7 +1,7 @@
 use crate::config::bool_var;
 use crate::pass_registry::{EnvOverlay, FunctionAnnotationsOverlay};
-use serde::{Deserialize, Serialize};
 use amice_llvm::inkwell2::ModuleExt;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

@@ -1,11 +1,11 @@
+use crate::config::bool_var;
+use crate::config::eloquent_config::EloquentConfigParser;
+use crate::pass_registry::{EnvOverlay, FunctionAnnotationsOverlay};
+use amice_llvm::inkwell2::ModuleExt;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::FunctionValue;
-use crate::config::bool_var;
-use crate::pass_registry::{EnvOverlay, FunctionAnnotationsOverlay};
 use log::error;
 use serde::{Deserialize, Serialize};
-use amice_llvm::inkwell2::ModuleExt;
-use crate::config::eloquent_config::EloquentConfigParser;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -66,12 +66,14 @@ impl FunctionAnnotationsOverlay for AliasAccessConfig {
 
     fn overlay_annotations<'a>(&self, module: &mut Module<'a>, function: FunctionValue<'a>) -> anyhow::Result<Self> {
         let mut cfg = self.clone();
-        let annotations_expr = module.read_function_annotate(function)
+        let annotations_expr = module
+            .read_function_annotate(function)
             .map_err(|e| anyhow::anyhow!("read function annotations failed: {}", e))?
             .join(" ");
 
         let mut parser = EloquentConfigParser::new();
-        parser.parse(&annotations_expr)
+        parser
+            .parse(&annotations_expr)
             .map_err(|e| anyhow::anyhow!("parse function annotations failed: {}", e))?;
 
         parser
@@ -79,12 +81,18 @@ impl FunctionAnnotationsOverlay for AliasAccessConfig {
             .or_else(|| parser.get_bool("aliasaccess"))
             .or_else(|| parser.get_bool("alias")) // 兼容Polaris-Obfuscator
             .map(|v| cfg.enable = v);
-        parser.get_string("alias_access_mode").map(|v| cfg.mode = parse_alias_access_mode(&v).unwrap_or_else(|e| {
-            error!("parse alias access mode failed: {}", e);
-            AliasAccessMode::default()
-        }));
-        parser.get_bool("alias_access_shuffle_raw_box").map(|v| cfg.shuffle_raw_box = v);
-        parser.get_bool("alias_access_loose_raw_box").map(|v| cfg.loose_raw_box = v);
+        parser.get_string("alias_access_mode").map(|v| {
+            cfg.mode = parse_alias_access_mode(&v).unwrap_or_else(|e| {
+                error!("parse alias access mode failed: {}", e);
+                AliasAccessMode::default()
+            })
+        });
+        parser
+            .get_bool("alias_access_shuffle_raw_box")
+            .map(|v| cfg.shuffle_raw_box = v);
+        parser
+            .get_bool("alias_access_loose_raw_box")
+            .map(|v| cfg.loose_raw_box = v);
 
         Ok(cfg)
     }

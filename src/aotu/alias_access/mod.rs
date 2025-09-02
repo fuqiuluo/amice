@@ -37,8 +37,8 @@ impl AmicePass for AliasAccess {
 
             functions.push((function, cfg));
         }
-        
-        if functions.is_empty() { 
+
+        if functions.is_empty() {
             return Ok(PreservedAnalyses::All);
         }
 

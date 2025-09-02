@@ -1,4 +1,5 @@
 use crate::aotu::alias_access::{AliasAccess, AliasAccessAlgo};
+use crate::config::AliasAccessConfig;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, LLVMValueRefExt};
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
@@ -9,7 +10,6 @@ use llvm_plugin::inkwell::types::{BasicType, StructType};
 use llvm_plugin::inkwell::values::{AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
 use log::{debug, warn};
 use std::collections::HashMap;
-use crate::config::AliasAccessConfig;
 
 const META_BOX_COUNT: usize = 6;
 
@@ -86,7 +86,12 @@ impl AliasAccessAlgo for PointerChainAlgo {
         Ok(())
     }
 
-    fn do_alias_access(&mut self, cfg: &AliasAccessConfig, module: &Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
+    fn do_alias_access(
+        &mut self,
+        cfg: &AliasAccessConfig,
+        module: &Module<'_>,
+        function: FunctionValue,
+    ) -> anyhow::Result<()> {
         do_alias_access_pointer_chain(cfg, module, function)
     }
 }

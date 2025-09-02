@@ -14,9 +14,9 @@ use llvm_plugin::inkwell::types::{BasicType, StructType};
 use llvm_plugin::inkwell::values::{
     AnyValue, AsValueRef, BasicMetadataValueEnum, FIRST_CUSTOM_METADATA_KIND_ID, FunctionValue, InstructionOpcode,
 };
+use log::log_enabled;
 use rand::prelude::SliceRandom;
 use std::collections::HashMap;
-use log::log_enabled;
 
 const MAX_STRUCT_SIZE: usize = 4096;
 
@@ -61,7 +61,7 @@ impl AmicePass for ParamAggregate {
 
                 functions.push(function);
             }
-            
+
             if functions.is_empty() {
                 return Ok(PreservedAnalyses::All);
             }

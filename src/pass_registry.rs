@@ -31,13 +31,21 @@ pub trait AmiceFunctionPass {
     type Config;
 
     #[allow(unused_variables)]
-    fn parse_function_annotations<'a>(&self, module: &mut Module<'a>, function: FunctionValue<'a>) -> anyhow::Result<Self::Config>;
+    fn parse_function_annotations<'a>(
+        &self,
+        module: &mut Module<'a>,
+        function: FunctionValue<'a>,
+    ) -> anyhow::Result<Self::Config>;
 }
 
 pub trait FunctionAnnotationsOverlay {
     type Config;
-    
-    fn overlay_annotations<'a>(&self, module: &mut Module<'a>, function: FunctionValue<'a>) -> anyhow::Result<Self::Config>;
+
+    fn overlay_annotations<'a>(
+        &self,
+        module: &mut Module<'a>,
+        function: FunctionValue<'a>,
+    ) -> anyhow::Result<Self::Config>;
 }
 
 pub trait EnvOverlay {

@@ -185,13 +185,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
             }
 
             if !stack_strings.is_empty() {
-                emit_decrypt_before_inst(
-                    module,
-                    stack_strings,
-                    decrypt_fn,
-                    true,
-                    cfg.allow_non_entry_stack_alloc,
-                )?;
+                emit_decrypt_before_inst(module, stack_strings, decrypt_fn, true, cfg.allow_non_entry_stack_alloc)?;
             }
             if !write_back_strings.is_empty() {
                 emit_decrypt_before_inst(module, write_back_strings, decrypt_fn, false, false)?;

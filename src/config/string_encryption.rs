@@ -1,11 +1,11 @@
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::FunctionValue;
 use super::{EnvOverlay, bool_var};
-use log::error;
-use serde::{Deserialize, Serialize};
-use amice_llvm::inkwell2::ModuleExt;
 use crate::config::eloquent_config::EloquentConfigParser;
 use crate::pass_registry::FunctionAnnotationsOverlay;
+use amice_llvm::inkwell2::ModuleExt;
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::inkwell::values::FunctionValue;
+use log::error;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -146,7 +146,7 @@ impl EnvOverlay for StringEncryptionConfig {
 
 // impl FunctionAnnotationsOverlay for StringEncryptionConfig {
 //     type Config = StringEncryptionConfig;
-// 
+//
 //     fn overlay_annotations<'a>(
 //         &self,
 //         module: &mut Module<'a>,
@@ -157,54 +157,54 @@ impl EnvOverlay for StringEncryptionConfig {
 //             .read_function_annotate(function)
 //             .map_err(|e| anyhow::anyhow!("read function annotations failed: {}", e))?
 //             .join(" ");
-// 
+//
 //         let mut parser = EloquentConfigParser::new();
 //         parser
 //             .parse(&annotations_expr)
 //             .map_err(|e| anyhow::anyhow!("parse function annotations failed: {}", e))?;
-// 
+//
 //         parser
 //             .get_bool("string_encryption")
 //             .or_else(|| parser.get_bool("strenc"))
 //             .or_else(|| parser.get_bool("gvenc"))
 //             .map(|v| cfg.enable = v);
-//         
+//
 //         parser
 //             .get_string("string_algorithm")
 //             .or_else(|| parser.get_string("strenc_algorithm"))
 //             .or_else(|| parser.get_string("gvenc_algorithm"))
 //             .map(|v| cfg.algorithm = parse_string_algorithm(&v));
-//         
+//
 //         parser
 //             .get_string("string_decrypt_timing")
 //             .or_else(|| parser.get_string("strenc_decrypt_timing"))
 //             .or_else(|| parser.get_string("gvenc_decrypt_timing"))
 //             .map(|v| cfg.timing = parse_string_decrypt_timing(&v));
-//         
+//
 //         parser
 //             .get_bool("string_stack_alloc")
 //             .or_else(|| parser.get_bool("strenc_stack_alloc"))
 //             .or_else(|| parser.get_bool("gvenc_stack_alloc"))
 //             .map(|v| cfg.stack_alloc = v);
-//         
+//
 //         parser
 //             .get_bool("string_inline_decrypt_fn")
 //             .or_else(|| parser.get_bool("strenc_inline_decrypt_fn"))
 //             .or_else(|| parser.get_bool("gvenc_inline_decrypt_fn"))
 //             .map(|v| cfg.inline_decrypt = v);
-//         
+//
 //         parser
 //             .get_bool("string_only_dot_str")
 //             .or_else(|| parser.get_bool("strenc_only_dot_str"))
 //             .or_else(|| parser.get_bool("gvenc_only_dot_str"))
 //             .map(|v| cfg.only_dot_str = v);
-//         
+//
 //         parser
 //             .get_bool("string_allow_non_entry_stack_alloc")
 //             .or_else(|| parser.get_bool("strenc_allow_non_entry_stack_alloc"))
 //             .or_else(|| parser.get_bool("gvenc_allow_non_entry_stack_alloc"))
 //             .map(|v| cfg.allow_non_entry_stack_alloc = v);
-//         
+//
 //         if cfg.timing != StringDecryptTiming::Global {
 //             parser
 //                 .get_number::<u32>("string_max_encryption_count")
@@ -212,7 +212,7 @@ impl EnvOverlay for StringEncryptionConfig {
 //                 .or_else(|| parser.get_number::<u32>("gvenc_max_encryption_count"))
 //                 .map(|v| cfg.max_encryption_count = v.clamp(1, 100000));
 //         }
-// 
+//
 //         Ok(cfg)
 //     }
 // }

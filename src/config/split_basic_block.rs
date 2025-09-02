@@ -1,9 +1,9 @@
+use super::{EnvOverlay, bool_var};
+use crate::pass_registry::FunctionAnnotationsOverlay;
+use amice_llvm::inkwell2::ModuleExt;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::FunctionValue;
-use super::{EnvOverlay, bool_var};
 use serde::{Deserialize, Serialize};
-use amice_llvm::inkwell2::ModuleExt;
-use crate::pass_registry::FunctionAnnotationsOverlay;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

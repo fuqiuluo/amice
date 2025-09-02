@@ -48,7 +48,7 @@ impl AmicePass for VmFlatten {
             }
             has_executed = true;
         }
-        
+
         if !has_executed {
             return Ok(PreservedAnalyses::All);
         }

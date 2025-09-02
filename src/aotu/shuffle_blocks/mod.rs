@@ -42,7 +42,7 @@ impl AmicePass for ShuffleBlocks {
             }
             executed = true;
         }
-        
+
         if !executed {
             return Ok(PreservedAnalyses::All);
         }

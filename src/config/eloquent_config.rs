@@ -88,10 +88,7 @@ impl EloquentConfigParser {
             if key.is_empty() {
                 return Err("Empty key name".to_string());
             }
-            return Ok(EloquentConfigItem::Toggle {
-                key,
-                enabled: false,
-            });
+            return Ok(EloquentConfigItem::Toggle { key, enabled: false });
         }
 
         if item.contains('=') {
@@ -156,14 +153,11 @@ impl EloquentConfigParser {
         for item in &self.items {
             match item {
                 EloquentConfigItem::Toggle { key, enabled } => {
-                    map.insert(
-                        key.clone(),
-                        EloquentConfigValue::String(enabled.to_string()),
-                    );
-                }
+                    map.insert(key.clone(), EloquentConfigValue::String(enabled.to_string()));
+                },
                 EloquentConfigItem::KeyValue { key, value, .. } => {
                     map.insert(key.clone(), value.clone());
-                }
+                },
             }
         }
 
@@ -174,16 +168,11 @@ impl EloquentConfigParser {
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         for item in &self.items {
             match item {
-                EloquentConfigItem::Toggle {
-                    key: item_key,
-                    enabled,
-                } if item_key == key => {
+                EloquentConfigItem::Toggle { key: item_key, enabled } if item_key == key => {
                     return Some(*enabled);
-                }
+                },
                 EloquentConfigItem::KeyValue {
-                    key: item_key,
-                    value,
-                    ..
+                    key: item_key, value, ..
                 } if item_key == key => {
                     return match value {
                         EloquentConfigValue::String(s) => match s.to_lowercase().as_str() {
@@ -192,8 +181,8 @@ impl EloquentConfigParser {
                             _ => None,
                         },
                     };
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         None
@@ -203,22 +192,17 @@ impl EloquentConfigParser {
     pub fn get_string(&self, key: &str) -> Option<String> {
         for item in &self.items {
             match item {
-                EloquentConfigItem::Toggle {
-                    key: item_key,
-                    enabled,
-                } if item_key == key => {
+                EloquentConfigItem::Toggle { key: item_key, enabled } if item_key == key => {
                     return Some(enabled.to_string());
-                }
+                },
                 EloquentConfigItem::KeyValue {
-                    key: item_key,
-                    value,
-                    ..
+                    key: item_key, value, ..
                 } if item_key == key => {
                     return match value {
                         EloquentConfigValue::String(s) => Some(s.clone()),
                     };
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         None
@@ -231,22 +215,17 @@ impl EloquentConfigParser {
     {
         for item in &self.items {
             match item {
-                EloquentConfigItem::Toggle {
-                    key: item_key,
-                    enabled,
-                } if item_key == key => {
+                EloquentConfigItem::Toggle { key: item_key, enabled } if item_key == key => {
                     return Some(if *enabled { T::one() } else { T::zero() });
-                }
+                },
                 EloquentConfigItem::KeyValue {
-                    key: item_key,
-                    value,
-                    ..
+                    key: item_key, value, ..
                 } if item_key == key => {
                     return match value {
                         EloquentConfigValue::String(s) => Some(s.parse::<T>().ok()?),
                     };
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         None
@@ -306,10 +285,10 @@ mod tests {
             match item {
                 EloquentConfigItem::Toggle { key, .. } => {
                     assert!(["ssl", "retry", "verbose"].contains(&key.as_str()));
-                }
+                },
                 EloquentConfigItem::KeyValue { key, .. } => {
                     assert!(["timeout", "mode", "priority"].contains(&key.as_str()));
-                }
+                },
             }
         }
     }

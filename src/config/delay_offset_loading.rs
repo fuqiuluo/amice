@@ -59,7 +59,6 @@ impl FunctionAnnotationsOverlay for DelayOffsetLoadingConfig {
             .or_else(|| parser.get_bool("delay_offset_loading_xor_offset"))
             .map(|v| cfg.enable = v);
 
-
         parser
             .get_bool("delay_offset_loading_xor_offset")
             .or_else(|| parser.get_bool("ama_xor_offset"))

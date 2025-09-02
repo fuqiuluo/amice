@@ -60,7 +60,7 @@ impl AmicePass for Mba {
 
             functions.push(function);
         }
-        
+
         if functions.is_empty() {
             return Ok(PreservedAnalyses::All);
         }

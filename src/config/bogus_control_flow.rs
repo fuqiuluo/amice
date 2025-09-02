@@ -1,12 +1,12 @@
 use super::bool_var;
+use crate::config::eloquent_config::EloquentConfigParser;
 use crate::pass_registry::{EnvOverlay, FunctionAnnotationsOverlay};
+use amice_llvm::inkwell2::ModuleExt;
+use llvm_plugin::inkwell::module::Module;
+use llvm_plugin::inkwell::values::FunctionValue;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::cmp::{max, min};
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::FunctionValue;
-use amice_llvm::inkwell2::ModuleExt;
-use crate::config::eloquent_config::EloquentConfigParser;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -93,7 +93,11 @@ impl EnvOverlay for BogusControlFlowConfig {
 impl FunctionAnnotationsOverlay for BogusControlFlowConfig {
     type Config = BogusControlFlowConfig;
 
-    fn overlay_annotations<'a>(&self, module: &mut Module<'a>, function: FunctionValue<'a>) -> anyhow::Result<Self::Config> {
+    fn overlay_annotations<'a>(
+        &self,
+        module: &mut Module<'a>,
+        function: FunctionValue<'a>,
+    ) -> anyhow::Result<Self::Config> {
         let mut cfg = self.clone();
         let annotations_expr = module
             .read_function_annotate(function)
@@ -114,20 +118,22 @@ impl FunctionAnnotationsOverlay for BogusControlFlowConfig {
         parser
             .get_string("bogus_control_flow_mode")
             .or_else(|| parser.get_string("bcf_mode"))
-            .map(|v| cfg.mode = parse_alias_access_mode(&v).unwrap_or_else(|e| {
-                warn!("parse bogus control flow mode failed: {}", e);
-                BogusControlFlowMode::default()
-            }));
+            .map(|v| {
+                cfg.mode = parse_alias_access_mode(&v).unwrap_or_else(|e| {
+                    warn!("parse bogus control flow mode failed: {}", e);
+                    BogusControlFlowMode::default()
+                })
+            });
 
         parser
             .get_number("bogus_control_flow_prob")
             .or_else(|| parser.get_number("bcf_prob"))
             .map(|v| cfg.probability = v);
 
-        parser.get_number("bogus_control_flow_loops")
+        parser
+            .get_number("bogus_control_flow_loops")
             .or_else(|| parser.get_number("bcf_loops"))
             .map(|v| cfg.loop_count = v);
-
 
         Ok(cfg)
     }

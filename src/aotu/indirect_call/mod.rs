@@ -1,3 +1,4 @@
+use crate::config::{Config, IndirectCallConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BuilderExt, CallInst, FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
@@ -10,7 +11,6 @@ use llvm_plugin::inkwell::values::{
     AsValueRef, BasicValue, CallSiteValue, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
-use crate::config::{Config, IndirectCallConfig};
 
 #[amice(
     priority = 990,

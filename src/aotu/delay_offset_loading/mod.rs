@@ -5,10 +5,10 @@ use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BuilderExt, FunctionExt, InstructionExt, LLVMValueRefExt, VerifyResult};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
+use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{AsValueRef, InstructionOpcode};
-use llvm_plugin::inkwell::{AddressSpace};
 use llvm_plugin::{ModuleAnalysisManager, PreservedAnalyses};
 use std::collections::HashMap;
 use std::ops::BitXor;
@@ -117,7 +117,7 @@ impl AmicePass for DelayOffsetLoading {
                             Err(e) => {
                                 error!("xor offset value failed: {}", e);
                                 continue;
-                            }
+                            },
                         }
                 }
 
@@ -146,7 +146,7 @@ impl AmicePass for DelayOffsetLoading {
 
             executed = true;
             if let VerifyResult::Broken(err) = function.verify_function() {
-                warn!("function {:?} is broken: {}",function.get_name(),err);
+                warn!("function {:?} is broken: {}", function.get_name(), err);
             }
         }
 

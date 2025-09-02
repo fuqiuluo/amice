@@ -1,12 +1,12 @@
 use super::bool_var;
+use crate::config::eloquent_config::EloquentConfigParser;
 use crate::pass_registry::{EnvOverlay, FunctionAnnotationsOverlay};
+use amice_llvm::inkwell2::ModuleExt;
 use bitflags::bitflags;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::FunctionValue;
 use log::warn;
 use serde::{Deserialize, Serialize};
-use amice_llvm::inkwell2::ModuleExt;
-use crate::config::eloquent_config::EloquentConfigParser;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,7 +102,11 @@ impl EnvOverlay for IndirectBranchConfig {
 impl FunctionAnnotationsOverlay for IndirectBranchConfig {
     type Config = Self;
 
-    fn overlay_annotations<'a>(&self, module: &mut Module<'a>, function: FunctionValue<'a>) -> anyhow::Result<Self::Config> {
+    fn overlay_annotations<'a>(
+        &self,
+        module: &mut Module<'a>,
+        function: FunctionValue<'a>,
+    ) -> anyhow::Result<Self::Config> {
         let mut cfg = self.clone();
         let annotations_expr = module
             .read_function_annotate(function)

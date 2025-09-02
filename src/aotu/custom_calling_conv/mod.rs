@@ -36,10 +36,10 @@ impl AmicePass for CustomCallingConv {
                 error!("failed to process function {:?}: {}", function.get_name(), e);
                 continue;
             }
-            
+
             executed = true;
         }
-        
+
         if !executed {
             return Ok(PreservedAnalyses::All);
         }

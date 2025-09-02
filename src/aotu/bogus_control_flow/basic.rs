@@ -1,4 +1,5 @@
 use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
+use crate::config::BogusControlFlowConfig;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, PhiInst};
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
@@ -7,7 +8,6 @@ use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, GlobalValue, InstructionOpcode, IntValue, PointerValue};
 use log::{error, warn};
 use rand::Rng;
-use crate::config::BogusControlFlowConfig;
 
 #[derive(Default)]
 pub struct BogusControlFlowBasic {
@@ -23,7 +23,12 @@ impl BogusControlFlowAlgo for BogusControlFlowBasic {
         Ok(())
     }
 
-    fn apply_bogus_control_flow(&mut self, cfg: &BogusControlFlowConfig, module: &mut Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
+    fn apply_bogus_control_flow(
+        &mut self,
+        cfg: &BogusControlFlowConfig,
+        module: &mut Module<'_>,
+        function: FunctionValue,
+    ) -> anyhow::Result<()> {
         // Create global variables for opaque predicates
         let globals = create_opaque_predicate_globals(self, module);
 

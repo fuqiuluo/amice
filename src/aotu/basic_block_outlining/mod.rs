@@ -119,10 +119,7 @@ fn do_outline<'a>(
             let noinline_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0);
             new_function.add_attribute(AttributeLoc::Function, noinline_attr);
         } else {
-            warn!(
-                "failed to extract code region from function {:?}",
-                function.get_name()
-            );
+            warn!("failed to extract code region from function {:?}", function.get_name());
         }
     }
 

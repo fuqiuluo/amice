@@ -2,10 +2,10 @@ use crate::config::{Config, LowerSwitchConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, SwitchInst};
 use amice_macro::amice;
+use llvm_plugin::PreservedAnalyses;
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue};
-use llvm_plugin::{PreservedAnalyses};
 
 #[amice(
     priority = 961,
@@ -14,8 +14,7 @@ use llvm_plugin::{PreservedAnalyses};
     config = LowerSwitchConfig,
 )]
 #[derive(Default)]
-pub struct LowerSwitch {
-}
+pub struct LowerSwitch {}
 
 impl AmicePass for LowerSwitch {
     fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
@@ -43,7 +42,7 @@ impl AmicePass for LowerSwitch {
                 warn!("function {:?} is not verified", function.get_name());
             }
         }
-        
+
         if !executed {
             return Ok(PreservedAnalyses::All);
         }

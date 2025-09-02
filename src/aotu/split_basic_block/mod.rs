@@ -49,7 +49,7 @@ impl AmicePass for SplitBasicBlock {
                 warn!("function {:?} is not verified", function.get_name());
             }
         }
-        
+
         if !has_executed {
             return Ok(PreservedAnalyses::All);
         }

@@ -2,6 +2,7 @@
 // A little improvement
 
 use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
+use crate::config::BogusControlFlowConfig;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt};
 use anyhow::anyhow;
 use llvm_plugin::inkwell::IntPredicate;
@@ -17,7 +18,6 @@ use llvm_plugin::inkwell::values::{
 };
 use log::error;
 use rand::Rng;
-use crate::config::BogusControlFlowConfig;
 
 #[derive(Default)]
 pub struct BogusControlFlowPolarisPrimes;
@@ -27,7 +27,12 @@ impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
         Ok(())
     }
 
-    fn apply_bogus_control_flow(&mut self, _cfg: &BogusControlFlowConfig, module: &mut Module<'_>, function: FunctionValue) -> anyhow::Result<()> {
+    fn apply_bogus_control_flow(
+        &mut self,
+        _cfg: &BogusControlFlowConfig,
+        module: &mut Module<'_>,
+        function: FunctionValue,
+    ) -> anyhow::Result<()> {
         let ctx = module.get_context();
 
         let i64_ty = ctx.i64_type();

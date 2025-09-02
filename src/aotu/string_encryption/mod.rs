@@ -42,10 +42,10 @@ impl AmicePass for StringEncryption {
     }
 
     fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
-        if !self.default_config.enable { 
+        if !self.default_config.enable {
             return Ok(PreservedAnalyses::All);
         }
-        
+
         let mut algo: Box<dyn StringEncryptionAlgo> = match self.default_config.algorithm {
             StringAlgorithm::Xor => Box::new(XorAlgo::default()),
             StringAlgorithm::SimdXor => Box::new(SimdXorAlgo::default()),

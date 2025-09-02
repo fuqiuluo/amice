@@ -58,8 +58,8 @@ impl AmicePass for BogusControlFlow {
                 error!("function {:?} is broken: {}", function.get_name(), msg);
             }
         }
-        
-        if !executed { 
+
+        if !executed {
             return Ok(PreservedAnalyses::All);
         }
 
