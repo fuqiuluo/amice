@@ -13,8 +13,8 @@ use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use crate::config::{Config, IndirectCallConfig};
 
 #[amice(
-    priority = 990, 
-    name = "IndirectCall", 
+    priority = 990,
+    name = "IndirectCall",
     flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
     config = IndirectCallConfig,
 )]

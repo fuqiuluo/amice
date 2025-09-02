@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::ops::BitXor;
 
 #[amice(
-    priority = 1150, 
+    priority = 1150,
     name = "DelayOffsetLoading",
     flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
     config = DelayOffsetLoadingConfig,
@@ -149,7 +149,7 @@ impl AmicePass for DelayOffsetLoading {
                 warn!("function {:?} is broken: {}",function.get_name(),err);
             }
         }
-        
+
         if !executed {
             return Ok(PreservedAnalyses::All);
         }
