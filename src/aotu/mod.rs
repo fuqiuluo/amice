@@ -1,4 +1,5 @@
 pub mod alias_access;
+pub mod anti_class_dump;
 pub mod basic_block_outlining;
 pub mod bogus_control_flow;
 pub mod clone_function;

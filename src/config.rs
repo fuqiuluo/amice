@@ -4,6 +4,7 @@ use lazy_static::lazy_static;
 use log::warn;
 
 pub use alias_access::*;
+pub use anti_class_dump::*;
 pub use basic_block_outlining::*;
 pub use bogus_control_flow::*;
 pub use clone_function::*;
@@ -27,6 +28,7 @@ pub use string_encryption::*;
 pub use vm_flatten::*;
 
 mod alias_access;
+mod anti_class_dump;
 mod basic_block_outlining;
 mod bogus_control_flow;
 mod clone_function;
@@ -76,6 +78,7 @@ pub struct Config {
     pub delay_offset_loading: DelayOffsetLoadingConfig,
     pub param_aggregate: ParamAggregateConfig,
     pub basic_block_outlining: BasicBlockOutliningConfig,
+    pub anti_class_dump: AntiClassDumpConfig,
 }
 
 fn is_truthy(value: &str) -> bool {
