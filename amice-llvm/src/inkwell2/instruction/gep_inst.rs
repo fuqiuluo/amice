@@ -3,7 +3,7 @@ use inkwell::data_layout::DataLayout;
 use inkwell::llvm_sys::core::LLVMGetNumIndices;
 use inkwell::llvm_sys::prelude::LLVMValueRef;
 use inkwell::module::Module;
-use inkwell::values::{AsValueRef, BasicValueEnum, InstructionValue};
+use inkwell::values::{AsValueRef, BasicValueEnum, InstructionValue, PointerValue};
 use std::cell::Ref;
 use std::ops::{Deref, DerefMut};
 
@@ -46,6 +46,12 @@ impl<'ctx> GepInst<'ctx> {
     pub fn get_pointer_operand(&self) -> Option<BasicValueEnum<'ctx>> {
         assert!(self.get_num_operands() > 0);
         self.get_operand(0).unwrap().left()
+    }
+
+    pub fn get_pointer(&self) -> PointerValue<'ctx> {
+        let ptr = self.get_pointer_operand().unwrap();
+        assert!(ptr.is_pointer_value(), "Expected pointer value, got {:?}", ptr);
+        ptr.into_pointer_value()
     }
 }
 
