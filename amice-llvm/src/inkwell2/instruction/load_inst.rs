@@ -13,7 +13,7 @@ impl<'ctx> LoadInst<'ctx> {
         Self { inst }
     }
 
-    pub fn loaded_type(&self) -> AnyTypeEnum<'ctx> {
+    pub fn get_loaded_type(&self) -> AnyTypeEnum<'ctx> {
         self.get_type()
     }
 

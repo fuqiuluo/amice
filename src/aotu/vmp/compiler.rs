@@ -3,13 +3,16 @@ use crate::aotu::vmp::translator::IRConverter;
 use crate::config::VMPFlag;
 use amice_llvm::inkwell2::{InstructionExt, LLVMValueRefExt};
 use anyhow::anyhow;
+use bitflags::Flags;
 use llvm_plugin::FunctionAnalysisManager;
+use llvm_plugin::inkwell::llvm_sys::LLVMValueKind;
 use llvm_plugin::inkwell::llvm_sys::core::LLVMGetValueKind;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::values::{
     AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, InstructionValue,
 };
 use log::{Level, debug, log_enabled, warn};
+use rand::prelude::IndexedRandom;
 use sparse_list::SparseList;
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
@@ -29,6 +32,8 @@ pub struct AVMCompilerContext {
     vm_instructions: Vec<AVMOpcode>,
     /// 指令使用计数
     use_counts: BTreeMap<LLVMValueRef, InstUseCount>,
+    /// Global Variables used in the function
+    used_globals: Vec<LLVMValueRef>,
     /// VMP标志
     flags: VMPFlag,
 }
@@ -55,16 +60,42 @@ impl VarInfo {
 
 impl AVMCompilerContext {
     pub fn new(function: FunctionValue, flags: VMPFlag) -> anyhow::Result<Self> {
-        let use_counts = collect_inst_use_counts(function)?;
-        Ok(Self {
+        let use_counts = IRAnalyzer::collect_inst_use_counts(function)?;
+        let used_globals = IRAnalyzer::collect_global_variables(function);
+        let mut ctx = Self {
             vm_instructions: Vec::new(),
             variable_to_address: HashMap::new(),
             variable_to_register: HashMap::new(),
             next_address: 0x1000,
             next_register: SparseList::new(),
             use_counts,
+            used_globals: used_globals.clone(),
             flags,
-        })
+        };
+        if flags.contains(VMPFlag::RandomVRegMapping) {
+            for _ in 0..rand::random_range(10..10000) {
+                ctx.next_register.insert(LLVMValueRef::default());
+            }
+            ctx.next_register.clear();
+        }
+
+        for llvm_ref in used_globals {
+            let global_value = llvm_ref.into_global_value();
+            let var_info = ctx.get_or_allocate_register(llvm_ref, true);
+            ctx.emit(AVMOpcode::MetaGVar {
+                reg: var_info.value,
+                name: global_value.get_name().to_str()?.to_string(),
+            });
+
+            if log_enabled!(Level::Debug) {
+                debug!(
+                    "(VMP) Allocated register {} for global variable {}",
+                    var_info.value, global_value
+                );
+            }
+        }
+
+        Ok(ctx)
     }
 
     pub fn is_polymorphic_inst(&self) -> bool {
@@ -88,6 +119,15 @@ impl AVMCompilerContext {
 
     /// 分配新的寄存器
     fn allocate_register(&mut self, var: LLVMValueRef) -> u32 {
+        if self.flags.contains(VMPFlag::RandomVRegMapping) {
+            let free_indices = self.next_register.free_indices();
+            if !free_indices.is_empty() {
+                let &index = free_indices.choose(&mut rand::rng()).unwrap();
+                self.next_register.insert_at(index, var);
+                return index as u32;
+            }
+            // no free register, fall through to normal allocation
+        }
         let id = self.next_register.insert(var);
         id as u32
     }
@@ -116,11 +156,6 @@ impl AVMCompilerContext {
         }
     }
 
-    /// 获取变量对应的寄存器，如果不存在则返回None
-    pub fn get_register(&self, var: LLVMValueRef) -> Option<VarInfo> {
-        self.variable_to_register.get(&var).cloned()
-    }
-
     /// 销毁变量对应的寄存器
     pub fn destroy_register(&mut self, var: LLVMValueRef) -> Option<u32> {
         if let Some(info) = self.variable_to_register.remove(&var) {
@@ -131,6 +166,21 @@ impl AVMCompilerContext {
             return Some(info.value);
         }
         None
+    }
+
+    pub fn get_register(&mut self, val: LLVMValueRef) -> anyhow::Result<u32> {
+        if let Some(var_info) = self.variable_to_register.get(&val) {
+            return Ok(var_info.value);
+        };
+
+        for llvm_ref in &self.used_globals {
+            if *llvm_ref == val {
+                let var_info = self.get_or_allocate_register(*llvm_ref, true);
+                return Ok(var_info.value);
+            }
+        }
+
+        Err(anyhow!("No variable to register: {:?}", val))
     }
 
     pub fn translate<'a>(&mut self, inst: InstructionValue<'a>) -> anyhow::Result<()> {
@@ -152,13 +202,16 @@ impl AVMCompilerContext {
                 let load = inst.into_load_inst();
                 load.to_avm_ir(self)?;
             },
+            InstructionOpcode::Call => {
+                let call = inst.into_call_inst();
+                call.to_avm_ir(self)?;
+            },
             InstructionOpcode::And => {},
             InstructionOpcode::AShr => {},
             InstructionOpcode::AtomicCmpXchg => {},
             InstructionOpcode::AtomicRMW => {},
             InstructionOpcode::BitCast => {},
             InstructionOpcode::Br => {},
-            InstructionOpcode::Call => {},
             InstructionOpcode::CallBr => {},
             InstructionOpcode::CatchPad => {},
             InstructionOpcode::CatchRet => {},
@@ -197,7 +250,10 @@ impl AVMCompilerContext {
             InstructionOpcode::Phi => {},
             InstructionOpcode::PtrToInt => {},
             InstructionOpcode::Resume => {},
-            InstructionOpcode::Return => {},
+            InstructionOpcode::Return => {
+                let ret = inst.into_return_inst();
+                ret.to_avm_ir(self)?;
+            },
             InstructionOpcode::SDiv => {},
             InstructionOpcode::Select => {},
             InstructionOpcode::SExt => {},
@@ -297,74 +353,105 @@ struct InstUseCount {
     ssa_name: String,
 }
 
-fn collect_inst_use_counts(function: FunctionValue) -> anyhow::Result<BTreeMap<LLVMValueRef, InstUseCount>> {
-    let mut use_counts: BTreeMap<LLVMValueRef, InstUseCount> = BTreeMap::new();
-    for bb in function.get_basic_blocks() {
-        for inst in bb.get_instructions() {
-            // 拒绝很难被翻译的指令
-            if matches!(
-                inst.get_opcode(),
-                InstructionOpcode::IndirectBr
-                    | InstructionOpcode::Invoke
-                    | InstructionOpcode::CallBr
-                    | InstructionOpcode::Resume
-                    | InstructionOpcode::CatchPad
-                    | InstructionOpcode::CatchRet
-                    | InstructionOpcode::CatchSwitch
-                    | InstructionOpcode::CleanupPad
-                    | InstructionOpcode::CleanupRet
-            ) {
-                return Err(anyhow!("Unsupported instruction for VMP: {:?}", inst));
-            }
+struct IRAnalyzer;
 
-            // 只统计会产生值（非 void）的指令
-            let ty = inst.get_type();
-            if ty.is_void_type() {
-                continue;
-            }
+impl IRAnalyzer {
+    fn collect_inst_use_counts(function: FunctionValue) -> anyhow::Result<BTreeMap<LLVMValueRef, InstUseCount>> {
+        let mut use_counts: BTreeMap<LLVMValueRef, InstUseCount> = BTreeMap::new();
+        for bb in function.get_basic_blocks() {
+            for inst in bb.get_instructions() {
+                // 拒绝很难被翻译的指令
+                if matches!(
+                    inst.get_opcode(),
+                    InstructionOpcode::IndirectBr
+                        | InstructionOpcode::Invoke
+                        | InstructionOpcode::CallBr
+                        | InstructionOpcode::Resume
+                        | InstructionOpcode::CatchPad
+                        | InstructionOpcode::CatchRet
+                        | InstructionOpcode::CatchSwitch
+                        | InstructionOpcode::CleanupPad
+                        | InstructionOpcode::CleanupRet
+                ) {
+                    return Err(anyhow!("Unsupported instruction for VMP: {:?}", inst));
+                }
 
-            let mut cnt = 0usize;
-            let mut use_opt = inst.get_first_use();
-            while let Some(u) = use_opt {
-                cnt += 1;
-                use_opt = u.get_next_use();
-            }
+                // 只统计会产生值（非 void）的指令
+                let ty = inst.get_type();
+                if ty.is_void_type() {
+                    continue;
+                }
 
-            let key = ssa_name_of(&inst);
-            use_counts.insert(
-                inst.as_value_ref() as LLVMValueRef,
-                InstUseCount {
-                    inst: inst.as_value_ref() as LLVMValueRef,
-                    max_count: cnt as u32,
-                    current_count: cnt as u32,
-                    ssa_name: key,
-                },
-            );
-        }
-    }
+                let mut cnt = 0usize;
+                let mut use_opt = inst.get_first_use();
+                while let Some(u) = use_opt {
+                    cnt += 1;
+                    use_opt = u.get_next_use();
+                }
 
-    Ok(use_counts)
-}
-
-fn ssa_name_of(inst: &InstructionValue) -> String {
-    // 优先用显式名称
-    if let Some(name_cstr) = inst.get_name() {
-        if !name_cstr.to_bytes().is_empty() {
-            return format!("%{}", name_cstr.to_string_lossy());
-        }
-    }
-    // 没有显式名称时，尝试从 IR 文本提取 “%N = ” 前缀
-    let ir = inst.print_to_string().to_string();
-    // 形如： "  %1 = add i32 2, %0"
-    if let Some(eq_pos) = ir.find(" = ") {
-        let left = &ir[..eq_pos];
-        if let Some(percent_pos) = left.rfind('%') {
-            let name = left[percent_pos..].trim();
-            if !name.is_empty() {
-                return name.to_string();
+                let key = Self::ssa_name_of(&inst);
+                use_counts.insert(
+                    inst.as_value_ref() as LLVMValueRef,
+                    InstUseCount {
+                        inst: inst.as_value_ref() as LLVMValueRef,
+                        max_count: cnt as u32,
+                        current_count: cnt as u32,
+                        ssa_name: key,
+                    },
+                );
             }
         }
+
+        Ok(use_counts)
     }
-    // 实在没有就：用操作码+地址做区分（避免重名）
-    format!("<{:?}@{:p}>", inst.get_opcode(), inst.as_value_ref())
+
+    /// 收集函数体所有指令操作数中被使用到的全局变量（去重）
+    /// 返回全局变量对应的 LLVMValueRef 列表
+    fn collect_global_variables(function: FunctionValue) -> Vec<LLVMValueRef> {
+        use std::collections::BTreeSet;
+
+        let mut globals: BTreeSet<LLVMValueRef> = BTreeSet::new();
+
+        for bb in function.get_basic_blocks() {
+            for inst in bb.get_instructions() {
+                for operand in inst.get_operands() {
+                    if let Some(operand) = operand {
+                        if let Some(val) = operand.left() {
+                            let vref = val.as_value_ref() as LLVMValueRef;
+                            // 识别是否为全局变量
+                            let kind = unsafe { LLVMGetValueKind(vref) };
+                            if kind == LLVMValueKind::LLVMGlobalVariableValueKind {
+                                globals.insert(vref);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        globals.into_iter().collect()
+    }
+
+    fn ssa_name_of(inst: &InstructionValue) -> String {
+        // 优先用显式名称
+        if let Some(name_cstr) = inst.get_name() {
+            if !name_cstr.to_bytes().is_empty() {
+                return format!("%{}", name_cstr.to_string_lossy());
+            }
+        }
+        // 没有显式名称时，尝试从 IR 文本提取 “%N = ” 前缀
+        let ir = inst.print_to_string().to_string();
+        // 形如： "  %1 = add i32 2, %0"
+        if let Some(eq_pos) = ir.find(" = ") {
+            let left = &ir[..eq_pos];
+            if let Some(percent_pos) = left.rfind('%') {
+                let name = left[percent_pos..].trim();
+                if !name.is_empty() {
+                    return name.to_string();
+                }
+            }
+        }
+        // 实在没有就：用操作码+地址做区分（避免重名）
+        format!("<{:?}@{:p}>", inst.get_opcode(), inst.as_value_ref())
+    }
 }

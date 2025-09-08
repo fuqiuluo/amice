@@ -1,6 +1,6 @@
 use crate::inkwell2::LLVMValueRefExt;
 use inkwell::llvm_sys::prelude::LLVMValueRef;
-use inkwell::values::{AsValueRef, CallSiteValue, FunctionValue, InstructionOpcode, InstructionValue};
+use inkwell::values::{AsValueRef, BasicValueEnum, CallSiteValue, FunctionValue, InstructionOpcode, InstructionValue};
 use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Copy, Clone)]
@@ -16,6 +16,18 @@ impl<'ctx> CallInst<'ctx> {
 
     pub fn get_call_function(&self) -> Option<FunctionValue<'ctx>> {
         self.into_call_site_value().get_called_fn_value()
+    }
+
+    pub fn get_call_params(&self) -> Vec<BasicValueEnum<'ctx>> {
+        let mut params = Vec::new();
+        for i in 0..self.get_num_operands() - 1 {
+            if let Some(operand) = self.get_operand(i)
+                && let Some(param) = operand.left()
+            {
+                params.push(param);
+            }
+        }
+        params
     }
 
     pub fn into_call_site_value(self) -> CallSiteValue<'ctx> {

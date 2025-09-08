@@ -14,11 +14,11 @@ impl<'ctx> AddInst<'ctx> {
         Self { inst }
     }
 
-    pub fn lhs_value(&self) -> BasicValueEnum<'ctx> {
+    pub fn get_lhs_value(&self) -> BasicValueEnum<'ctx> {
         self.get_operand(0).unwrap().left().unwrap()
     }
 
-    pub fn rhs_value(&self) -> BasicValueEnum<'ctx> {
+    pub fn get_rhs_value(&self) -> BasicValueEnum<'ctx> {
         self.get_operand(1).unwrap().left().unwrap()
     }
 

@@ -1,6 +1,6 @@
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
-use inkwell::values::{BasicValueEnum, FunctionValue, InstructionValue, PhiValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue, InstructionValue, PhiValue};
 
 pub trait LLVMBasicBlockRefExt<'ctx> {
     fn into_basic_block(self) -> Option<BasicBlock<'ctx>>;
@@ -20,6 +20,8 @@ pub trait LLVMValueRefExt<'ctx> {
     fn into_function_value(self) -> Option<FunctionValue<'ctx>>;
 
     fn into_phi_value(self) -> PhiValue<'ctx>;
+
+    fn into_global_value(self) -> GlobalValue<'ctx>;
 }
 
 impl<'ctx> LLVMValueRefExt<'ctx> for LLVMValueRef {
@@ -37,5 +39,9 @@ impl<'ctx> LLVMValueRefExt<'ctx> for LLVMValueRef {
 
     fn into_phi_value(self) -> PhiValue<'ctx> {
         unsafe { PhiValue::new(self) }
+    }
+
+    fn into_global_value(self) -> GlobalValue<'ctx> {
+        unsafe { GlobalValue::new(self) }
     }
 }

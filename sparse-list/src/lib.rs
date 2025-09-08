@@ -23,6 +23,31 @@ impl<T> SparseList<T> {
         }
     }
 
+    pub fn insert_at(&mut self, index: usize, value: T) {
+        if index < self.data.len() {
+            if self.data[index].is_none() {
+                self.free_indices.retain(|&i| i != index);
+            }
+            self.data[index] = Some(value);
+        } else if index == self.data.len() {
+            self.data.push(Some(value));
+        } else {
+            panic!("Index out of bounds");
+        }
+    }
+
+    pub fn used_indices(&self) -> Vec<usize> {
+        self.data
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| if v.is_some() { Some(i) } else { None })
+            .collect()
+    }
+
+    pub fn free_indices(&self) -> Vec<usize> {
+        self.free_indices.iter().cloned().collect()
+    }
+
     pub fn remove(&mut self, index: usize) -> Option<T> {
         if index < self.data.len() {
             let ret = self.data[index].take();

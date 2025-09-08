@@ -1,9 +1,10 @@
 use crate::ffi::amice_gep_accumulate_constant_offset;
 use inkwell::data_layout::DataLayout;
-use inkwell::llvm_sys::core::LLVMGetNumIndices;
+use inkwell::llvm_sys::core::{LLVMGetElementType, LLVMGetNumIndices, LLVMIsInBounds};
 use inkwell::llvm_sys::prelude::LLVMValueRef;
 use inkwell::module::Module;
-use inkwell::values::{AsValueRef, BasicValueEnum, InstructionValue, PointerValue};
+use inkwell::types::{AsTypeRef, BasicTypeEnum};
+use inkwell::values::{AsValueRef, BasicValueEnum, InstructionOpcode, InstructionValue, PointerValue};
 use std::cell::Ref;
 use std::ops::{Deref, DerefMut};
 
@@ -14,7 +15,7 @@ pub struct GepInst<'ctx> {
 
 impl<'ctx> GepInst<'ctx> {
     pub fn new(inst: InstructionValue<'ctx>) -> Self {
-        assert_eq!(inst.get_opcode(), inkwell::values::InstructionOpcode::GetElementPtr);
+        assert_eq!(inst.get_opcode(), InstructionOpcode::GetElementPtr);
         assert!(!inst.as_value_ref().is_null());
         Self { inst }
     }
@@ -52,6 +53,30 @@ impl<'ctx> GepInst<'ctx> {
         let ptr = self.get_pointer_operand().unwrap();
         assert!(ptr.is_pointer_value(), "Expected pointer value, got {:?}", ptr);
         ptr.into_pointer_value()
+    }
+
+    pub fn is_inbounds(&self) -> bool {
+        unsafe { LLVMIsInBounds(self.as_value_ref()) == 1 }
+    }
+
+    pub fn get_element_type(&self) -> Option<BasicTypeEnum<'ctx>> {
+        #[cfg(not(any(
+            feature = "llvm11-0",
+            feature = "llvm12-0",
+            feature = "llvm13-0",
+            feature = "llvm14-0",
+        )))]
+        return self.get_gep_source_element_type().ok();
+        #[cfg(any(
+            feature = "llvm11-0",
+            feature = "llvm12-0",
+            feature = "llvm13-0",
+            feature = "llvm14-0",
+        ))]
+        {
+            let pointer_type = unsafe { LLVMGetElementType(self.get_pointer().get_type().as_type_ref()) };
+            return unsafe { BasicTypeEnum::new(pointer_type) };
+        }
     }
 }
 
