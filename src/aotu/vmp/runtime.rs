@@ -4,6 +4,66 @@ use log::debug;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_void};
 
+/// 对象头类型标识符
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TypeTag {
+    Undef = 0,
+    I1 = 1,
+    I8 = 2,
+    I16 = 3,
+    I32 = 4,
+    I64 = 5,
+    F32 = 6,
+    F64 = 7,
+    Ptr = 8,
+}
+
+impl TypeTag {
+    fn from_value(value: &AVMValue) -> Self {
+        match value {
+            AVMValue::Undef => TypeTag::Undef,
+            AVMValue::I1(_) => TypeTag::I1,
+            AVMValue::I8(_) => TypeTag::I8,
+            AVMValue::I16(_) => TypeTag::I16,
+            AVMValue::I32(_) => TypeTag::I32,
+            AVMValue::I64(_) => TypeTag::I64,
+            AVMValue::F32(_) => TypeTag::F32,
+            AVMValue::F64(_) => TypeTag::F64,
+            AVMValue::Ptr(_) => TypeTag::Ptr,
+        }
+    }
+
+    fn from_u8(tag: u8) -> Result<Self> {
+        match tag {
+            0 => Ok(TypeTag::Undef),
+            1 => Ok(TypeTag::I1),
+            2 => Ok(TypeTag::I8),
+            3 => Ok(TypeTag::I16),
+            4 => Ok(TypeTag::I32),
+            5 => Ok(TypeTag::I64),
+            6 => Ok(TypeTag::F32),
+            7 => Ok(TypeTag::F64),
+            8 => Ok(TypeTag::Ptr),
+            _ => Err(anyhow!("Invalid type tag: {}", tag)),
+        }
+    }
+
+    fn value_size(&self) -> usize {
+        match self {
+            TypeTag::Undef => 0,
+            TypeTag::I1 => 1,
+            TypeTag::I8 => 1,
+            TypeTag::I16 => 2,
+            TypeTag::I32 => 4,
+            TypeTag::I64 => 8,
+            TypeTag::F32 => 4,
+            TypeTag::F64 => 8,
+            TypeTag::Ptr => 8,
+        }
+    }
+}
+
 /// 完整的虚拟机运行时，支持跳转和控制流
 #[repr(C)]
 pub struct JustAVMRuntime {
@@ -15,8 +75,6 @@ pub struct JustAVMRuntime {
     memory: Vec<u8>,
     /// 内存分配器状态
     memory_allocator: MemoryAllocator,
-    /// 类型化内存（地址 -> 最近一次写入的值，保留类型信息）
-    typed_memory: HashMap<usize, AVMValue>,
     /// 函数调用表
     syscalls_table: HashMap<u64, Box<dyn Fn(&JustAVMRuntime) -> Result<AVMValue>>>,
     function_table: HashMap<String, Box<dyn Fn(&JustAVMRuntime) -> Result<AVMValue>>>,
@@ -64,7 +122,6 @@ impl JustAVMRuntime {
                 next_address: 0x1000,
                 allocations: HashMap::new(),
             },
-            typed_memory: HashMap::new(),
             syscalls_table: HashMap::new(),
             function_table: HashMap::new(),
             pc: 0,
@@ -118,7 +175,6 @@ impl JustAVMRuntime {
         self.labels.clear();
         self.call_stack.clear();
         self.stats = ExecutionStats::default();
-        self.typed_memory.clear();
     }
 
     /// 注册外部函数
@@ -264,7 +320,7 @@ impl JustAVMRuntime {
                     .stack
                     .pop()
                     .ok_or_else(|| anyhow!("Stack underflow on Store at PC {}", self.pc))?;
-                self.store_memory(*address, &value)?;
+                self.store_value_memory(*address, &value)?;
                 Ok(ControlFlow::Continue)
             },
 
@@ -281,12 +337,12 @@ impl JustAVMRuntime {
                     AVMValue::Ptr(addr) => addr,
                     _ => return Err(anyhow!("Invalid pointer type for StoreValue at PC {}", self.pc)),
                 };
-                self.store_memory(address, &value)?;
+                self.store_value_memory(address, &value)?;
                 Ok(ControlFlow::Continue)
             },
 
             AVMOpcode::Load { address } => {
-                let value = self.load_memory(*address)?;
+                let value = self.load_value_memory(*address)?;
                 self.stack.push(value);
                 Ok(ControlFlow::Continue)
             },
@@ -300,7 +356,7 @@ impl JustAVMRuntime {
                     AVMValue::Ptr(addr) => addr,
                     _ => return Err(anyhow!("Invalid pointer type for LoadValue at PC {}", self.pc)),
                 };
-                let value = self.load_memory(address)?;
+                let value = self.load_value_memory(address)?;
                 self.stack.push(value);
                 Ok(ControlFlow::Continue)
             },
@@ -598,7 +654,7 @@ impl JustAVMRuntime {
         }
     }
 
-    // 内存和算术操作方法保持不变
+    // 内存操作方法 - 使用对象头代替typed_memory
     fn allocate_memory(&mut self, size: usize) -> Result<usize> {
         let address = self.memory_allocator.next_address;
 
@@ -607,41 +663,108 @@ impl JustAVMRuntime {
             self.memory.resize(address + size + 1024, 0);
         }
 
-        self.memory_allocator.allocations.insert(address, size);
-        self.memory_allocator.next_address = address + size;
+        self.memory_allocator.allocations.insert(address, size + 1);
+        self.memory_allocator.next_address = address + size + 1; // +1 for type tag
 
         Ok(address)
     }
 
-    fn store_memory(&mut self, address: usize, value: &AVMValue) -> Result<()> {
-        let bytes = self.value_to_bytes(value);
+    // 存储值到内存，格式：[类型标签(1字节)] + [值数据]
+    fn store_value_memory(&mut self, address: usize, value: &AVMValue) -> Result<()> {
+        let type_tag = TypeTag::from_value(value);
+        let value_bytes = self.value_to_bytes(value);
+        let total_size = 1 + value_bytes.len(); // 1字节类型标签 + 值大小
 
-        if address + bytes.len() > self.memory.len() {
+        if address + total_size > self.memory.len() {
             return Err(anyhow!("Memory store out of bounds"));
         }
 
-        self.memory[address..address + bytes.len()].copy_from_slice(&bytes);
-        // 记录类型信息，确保后续 LoadValue 能以正确宽度和类型还原
-        self.typed_memory.insert(address, value.clone());
+        // 写入类型标签
+        self.memory[address] = type_tag as u8;
+
+        // 写入值数据
+        if !value_bytes.is_empty() {
+            self.memory[address + 1..address + 1 + value_bytes.len()].copy_from_slice(&value_bytes);
+        }
+
+        if self.debug_mode {
+            debug!(
+                "Stored {:?} at address {:#x} with type tag {:?}",
+                value, address, type_tag
+            );
+        }
+
         Ok(())
     }
 
-    fn load_memory(&self, address: usize) -> Result<AVMValue> {
-        // 优先使用类型化内存，保证与写入时的类型和宽度一致
-        if let Some(v) = self.typed_memory.get(&address) {
-            return Ok(v.clone());
+    // 从内存加载值，读取对象头确定类型
+    fn load_value_memory(&self, address: usize) -> Result<AVMValue> {
+        if address >= self.memory.len() {
+            return Err(anyhow!("Memory load out of bounds: address {:#x}", address));
         }
 
-        // 回退：保持原有的 8 字节读取（i64），用于兼容未记录类型的场景
-        if address + 8 > self.memory.len() {
-            return Err(anyhow!("Memory load out of bounds"));
+        // 读取类型标签
+        let type_tag = TypeTag::from_u8(self.memory[address])?;
+        let value_size = type_tag.value_size();
+
+        if address + 1 + value_size > self.memory.len() {
+            return Err(anyhow!(
+                "Memory load out of bounds: insufficient data for type {:?}",
+                type_tag
+            ));
         }
 
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&self.memory[address..address + 8]);
-        let value = i64::from_le_bytes(bytes);
+        // 根据类型标签读取相应大小的数据
+        let value = match type_tag {
+            TypeTag::Undef => AVMValue::Undef,
+            TypeTag::I1 => {
+                let byte = self.memory[address + 1];
+                AVMValue::I1(byte != 0)
+            },
+            TypeTag::I8 => {
+                let byte = self.memory[address + 1];
+                AVMValue::I8(byte as i8)
+            },
+            TypeTag::I16 => {
+                let mut bytes = [0u8; 2];
+                bytes.copy_from_slice(&self.memory[address + 1..address + 3]);
+                AVMValue::I16(i16::from_le_bytes(bytes))
+            },
+            TypeTag::I32 => {
+                let mut bytes = [0u8; 4];
+                bytes.copy_from_slice(&self.memory[address + 1..address + 5]);
+                AVMValue::I32(i32::from_le_bytes(bytes))
+            },
+            TypeTag::I64 => {
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&self.memory[address + 1..address + 9]);
+                AVMValue::I64(i64::from_le_bytes(bytes))
+            },
+            TypeTag::F32 => {
+                let mut bytes = [0u8; 4];
+                bytes.copy_from_slice(&self.memory[address + 1..address + 5]);
+                AVMValue::F32(f32::from_le_bytes(bytes))
+            },
+            TypeTag::F64 => {
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&self.memory[address + 1..address + 9]);
+                AVMValue::F64(f64::from_le_bytes(bytes))
+            },
+            TypeTag::Ptr => {
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&self.memory[address + 1..address + 9]);
+                AVMValue::Ptr(usize::from_le_bytes(bytes))
+            },
+        };
 
-        Ok(AVMValue::I64(value))
+        if self.debug_mode {
+            debug!(
+                "Loaded {:?} from address {:#x} with type tag {:?}",
+                value, address, type_tag
+            );
+        }
+
+        Ok(value)
     }
 
     fn value_to_bytes(&self, value: &AVMValue) -> Vec<u8> {
@@ -654,7 +777,7 @@ impl JustAVMRuntime {
             AVMValue::F32(v) => v.to_le_bytes().to_vec(),
             AVMValue::F64(v) => v.to_le_bytes().to_vec(),
             AVMValue::Ptr(v) => v.to_le_bytes().to_vec(),
-            AVMValue::Undef => vec![0u8; 8], // 未定义值用零填充
+            AVMValue::Undef => vec![], // 未定义值不需要数据
         }
     }
 
