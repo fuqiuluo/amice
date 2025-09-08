@@ -1,4 +1,5 @@
 mod avm;
+mod bytecode;
 mod codegen;
 mod compiler;
 mod runtime;
@@ -50,13 +51,13 @@ impl AmicePass for VMP {
             functions.push(function);
         }
 
-        let codegen = AVMCodeGenerator::new(module)?;
+        let mut codegen = AVMCodeGenerator::new(module)?;
 
         codegen.generate_runtime_init()?;
 
         // 处理每个函数
         for function in functions {
-            if let Err(e) = self.handle_function_with_vm(function, &codegen, self.default_config.flags) {
+            if let Err(e) = self.handle_function_with_vm(function, &mut codegen, self.default_config.flags) {
                 error!("failed to apply VMP to function {:?}: {}", function.get_name(), e);
             } else {
                 info!("successfully applied VMP to function {:?}", function.get_name());
@@ -72,7 +73,7 @@ impl VMP {
     fn handle_function_with_vm(
         &self,
         function: FunctionValue,
-        codegen: &AVMCodeGenerator,
+        codegen: &mut AVMCodeGenerator,
         flags: VMPFlag,
     ) -> anyhow::Result<()> {
         if log_enabled!(Level::Debug) {
@@ -87,18 +88,18 @@ impl VMP {
             function.get_name()
         );
 
-        let mut runtime = JustAVMRuntime::new();
-        let result = runtime.execute(&vm_instructions);
-        debug!("return => {:?}", result);
+        // let mut runtime = JustAVMRuntime::new();
+        // let result = runtime.execute(&vm_instructions);
+        // debug!("return => {:?}", result);
 
         // 将AVM指令编译为调用虚拟机运行时的LLVM IR
-        // codegen.compile_function_to_vm_call(function, &vm_instructions)?;
-        //
-        // info!(
-        //     "Function {:?} successfully virtualized with {} instructions",
-        //     function.get_name(),
-        //     vm_instructions.len()
-        // );
+        codegen.compile_function_to_vm_call(function, &vm_instructions)?;
+
+        info!(
+            "Function {:?} successfully virtualized with {} instructions",
+            function.get_name(),
+            vm_instructions.len()
+        );
 
         Ok(())
     }

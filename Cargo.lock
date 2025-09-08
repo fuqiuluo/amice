@@ -34,6 +34,8 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sparse-list",
+ "strum",
+ "strum_macros",
  "toml",
 ]
 

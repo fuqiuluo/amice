@@ -1,3 +1,4 @@
+use crate::aotu::vmp::bytecode::{BytecodeOp, BytecodeValueType};
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::values::FunctionValue;
 use serde::{Deserialize, Serialize};
@@ -160,6 +161,62 @@ pub enum AVMOpcode {
     },
 }
 
+impl AVMOpcode {
+    pub fn to_bytecode(&self) -> BytecodeOp {
+        match self {
+            AVMOpcode::Push { .. } => BytecodeOp::Push,
+            AVMOpcode::Pop => BytecodeOp::Pop,
+            AVMOpcode::PopToReg { .. } => BytecodeOp::PopToReg,
+            AVMOpcode::PushFromReg { .. } => BytecodeOp::PushFromReg,
+            AVMOpcode::ClearReg { .. } => BytecodeOp::ClearReg,
+            AVMOpcode::Alloca { .. } => BytecodeOp::Alloca,
+            AVMOpcode::Alloca2 => BytecodeOp::Alloca2,
+            AVMOpcode::Store { .. } => BytecodeOp::Store,
+            AVMOpcode::StoreValue => BytecodeOp::StoreValue,
+            AVMOpcode::Load { .. } => BytecodeOp::Load,
+            AVMOpcode::LoadValue => BytecodeOp::LoadValue,
+            AVMOpcode::Call { .. } => BytecodeOp::Call,
+            AVMOpcode::Add { .. } => BytecodeOp::Add,
+            AVMOpcode::Sub => BytecodeOp::Sub,
+            AVMOpcode::Mul => BytecodeOp::Mul,
+            AVMOpcode::Div => BytecodeOp::Div,
+            AVMOpcode::Ret => BytecodeOp::Ret,
+            AVMOpcode::Nop => BytecodeOp::Nop,
+            AVMOpcode::Swap => BytecodeOp::Swap,
+            AVMOpcode::Dup => BytecodeOp::Dup,
+            AVMOpcode::TypeCheckInt { .. } => BytecodeOp::TypeCheckInt,
+            AVMOpcode::Jump { .. } => BytecodeOp::Jump,
+            AVMOpcode::JumpIf { .. } => BytecodeOp::JumpIf,
+            AVMOpcode::JumpIfNot { .. } => BytecodeOp::JumpIfNot,
+            AVMOpcode::ICmpEq => BytecodeOp::ICmpEq,
+            AVMOpcode::ICmpNe => BytecodeOp::ICmpNe,
+            AVMOpcode::ICmpSlt => BytecodeOp::ICmpSlt,
+            AVMOpcode::ICmpSle => BytecodeOp::ICmpSle,
+            AVMOpcode::ICmpSgt => BytecodeOp::ICmpSgt,
+            AVMOpcode::ICmpSge => BytecodeOp::ICmpSge,
+            AVMOpcode::ICmpUlt => BytecodeOp::ICmpUlt,
+            AVMOpcode::ICmpUle => BytecodeOp::ICmpUle,
+            AVMOpcode::ICmpUgt => BytecodeOp::ICmpUgt,
+            AVMOpcode::ICmpUge => BytecodeOp::ICmpUge,
+            AVMOpcode::And => BytecodeOp::And,
+            AVMOpcode::Or => BytecodeOp::Or,
+            AVMOpcode::Xor => BytecodeOp::Xor,
+            AVMOpcode::Shl => BytecodeOp::Shl,
+            AVMOpcode::LShr => BytecodeOp::LShr,
+            AVMOpcode::AShr => BytecodeOp::AShr,
+            AVMOpcode::Trunc { .. } => BytecodeOp::Trunc,
+            AVMOpcode::ZExt { .. } => BytecodeOp::ZExt,
+            AVMOpcode::SExt { .. } => BytecodeOp::SExt,
+            AVMOpcode::FPToSI { .. } => BytecodeOp::FPToSI,
+            AVMOpcode::FPToUI { .. } => BytecodeOp::FPToUI,
+            AVMOpcode::SIToFP { .. } => BytecodeOp::SIToFP,
+            AVMOpcode::UIToFP { .. } => BytecodeOp::UIToFP,
+            AVMOpcode::Label { .. } => BytecodeOp::Label,
+            AVMOpcode::MetaGVar { .. } => BytecodeOp::MetaGVar,
+        }
+    }
+}
+
 impl Display for AVMOpcode {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -257,6 +314,20 @@ pub enum AVMValue {
 }
 
 impl AVMValue {
+    pub fn to_bytecode_value_type(&self) -> BytecodeValueType {
+        match self {
+            AVMValue::I1(_) => BytecodeValueType::I1,
+            AVMValue::I8(_) => BytecodeValueType::I8,
+            AVMValue::I16(_) => BytecodeValueType::I16,
+            AVMValue::I32(_) => BytecodeValueType::I32,
+            AVMValue::I64(_) => BytecodeValueType::I64,
+            AVMValue::F32(_) => BytecodeValueType::F32,
+            AVMValue::F64(_) => BytecodeValueType::F64,
+            AVMValue::Ptr(_) => BytecodeValueType::Ptr,
+            AVMValue::Undef => BytecodeValueType::Undef,
+        }
+    }
+
     pub fn size_in_bytes(&self) -> usize {
         match self {
             AVMValue::I1(_) => 1,

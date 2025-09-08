@@ -9,5 +9,8 @@ int __attribute__((annotate("+vmp"))) main(void) {
 
     printf("%d\n", a + b);
 
-    return a + b;
+    c[0] = 10;
+    d[1][2] = 20;
+
+    return a + b + c[0] + d[1][2];
 }
