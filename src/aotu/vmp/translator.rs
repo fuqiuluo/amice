@@ -1,5 +1,5 @@
-use crate::aotu::vmp::avm::{AVMOpcode, AVMValue};
-use crate::aotu::vmp::compiler::AVMCompilerContext;
+use crate::aotu::vmp::compiler::VMPCompilerContext;
+use crate::aotu::vmp::isa::{VMPOpcode, VMPValue};
 use amice_llvm::inkwell2::{AddInst, AllocaInst, CallInst, GepInst, LoadInst, ReturnInst, StoreInst};
 use anyhow::anyhow;
 use llvm_plugin::inkwell::llvm_sys::core::{LLVMGetElementType, LLVMGetGEPSourceElementType};
@@ -10,11 +10,11 @@ use log::{Level, debug, log_enabled, warn};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 pub trait IRConverter<'a> {
-    fn to_avm_ir(&self, ctx: &mut AVMCompilerContext) -> anyhow::Result<()>;
+    fn to_avm_ir(&self, ctx: &mut VMPCompilerContext) -> anyhow::Result<()>;
 }
 
 impl<'a> IRConverter<'a> for AddInst<'a> {
-    fn to_avm_ir(&self, ctx: &mut AVMCompilerContext) -> anyhow::Result<()> {
+    fn to_avm_ir(&self, ctx: &mut VMPCompilerContext) -> anyhow::Result<()> {
         let lhs = self.get_lhs_value();
         let rhs = self.get_rhs_value();
 
@@ -34,11 +34,11 @@ impl<'a> IRConverter<'a> for AddInst<'a> {
                             .get_sign_extended_constant()
                             .ok_or_else(|| anyhow!("Failed to get LHS constant value"))?;
                         let rhs_reg = ctx.get_register(rhs.as_value_ref() as LLVMValueRef)?;
-                        ctx.emit(AVMOpcode::Push {
-                            value: AVMValue::I64(lhs_value),
+                        ctx.emit(VMPOpcode::Push {
+                            value: VMPValue::I64(lhs_value),
                         });
-                        ctx.emit(AVMOpcode::PushFromReg { reg: rhs_reg });
-                        ctx.emit(AVMOpcode::Add {
+                        ctx.emit(VMPOpcode::PushFromReg { reg: rhs_reg });
+                        ctx.emit(VMPOpcode::Add {
                             nsw: self.has_nsw(),
                             nuw: self.has_nuw(),
                         })
@@ -48,11 +48,11 @@ impl<'a> IRConverter<'a> for AddInst<'a> {
                         let rhs_value = rhs
                             .get_sign_extended_constant()
                             .ok_or_else(|| anyhow!("Failed to get RHS constant value"))?;
-                        ctx.emit(AVMOpcode::PushFromReg { reg: lhs_reg });
-                        ctx.emit(AVMOpcode::Push {
-                            value: AVMValue::I64(rhs_value),
+                        ctx.emit(VMPOpcode::PushFromReg { reg: lhs_reg });
+                        ctx.emit(VMPOpcode::Push {
+                            value: VMPValue::I64(rhs_value),
                         });
-                        ctx.emit(AVMOpcode::Add {
+                        ctx.emit(VMPOpcode::Add {
                             nsw: self.has_nsw(),
                             nuw: self.has_nuw(),
                         })
@@ -66,16 +66,16 @@ impl<'a> IRConverter<'a> for AddInst<'a> {
                             .get_sign_extended_constant()
                             .ok_or_else(|| anyhow!("Failed to get RHS constant value"))?;
                         let result = lhs_value.wrapping_add(rhs_value);
-                        ctx.emit(AVMOpcode::Push {
-                            value: AVMValue::I64(result),
+                        ctx.emit(VMPOpcode::Push {
+                            value: VMPValue::I64(result),
                         });
                     },
                     (false, false) => {
                         let lhs_reg = ctx.get_register(lhs.as_value_ref() as LLVMValueRef)?;
                         let rhs_reg = ctx.get_register(rhs.as_value_ref() as LLVMValueRef)?;
-                        ctx.emit(AVMOpcode::PushFromReg { reg: lhs_reg });
-                        ctx.emit(AVMOpcode::PushFromReg { reg: rhs_reg });
-                        ctx.emit(AVMOpcode::Add {
+                        ctx.emit(VMPOpcode::PushFromReg { reg: lhs_reg });
+                        ctx.emit(VMPOpcode::PushFromReg { reg: rhs_reg });
+                        ctx.emit(VMPOpcode::Add {
                             nsw: self.has_nsw(),
                             nuw: self.has_nuw(),
                         })
@@ -88,14 +88,14 @@ impl<'a> IRConverter<'a> for AddInst<'a> {
             _ => panic!("failed to handle AddInst with lhs: {}, rhs: {}", lhs, rhs),
         }
         let result_reg = ctx.get_or_allocate_register(self.as_value_ref() as LLVMValueRef, false);
-        ctx.emit(AVMOpcode::PopToReg { reg: result_reg.value });
+        ctx.emit(VMPOpcode::PopToReg { reg: result_reg.value });
 
         Ok(())
     }
 }
 
 impl<'a> IRConverter<'a> for AllocaInst<'a> {
-    fn to_avm_ir(&self, ctx: &mut AVMCompilerContext) -> anyhow::Result<()> {
+    fn to_avm_ir(&self, ctx: &mut VMPCompilerContext) -> anyhow::Result<()> {
         let allocated_type = self.allocated_type();
         if log_enabled!(Level::Debug) {
             debug!("Allocated type: {}, inst: {:?}", allocated_type, self.get_name());
@@ -105,27 +105,27 @@ impl<'a> IRConverter<'a> for AllocaInst<'a> {
         let result_reg = ctx.get_or_allocate_register(self.as_value_ref() as LLVMValueRef, true);
 
         if !ctx.is_polymorphic_inst() {
-            ctx.emit(AVMOpcode::Alloca { size });
-            ctx.emit(AVMOpcode::PopToReg { reg: result_reg.value });
+            ctx.emit(VMPOpcode::Alloca { size });
+            ctx.emit(VMPOpcode::PopToReg { reg: result_reg.value });
             return Ok(());
         }
 
         if rand::random::<bool>() {
-            ctx.emit(AVMOpcode::Alloca { size });
+            ctx.emit(VMPOpcode::Alloca { size });
         } else {
-            ctx.emit(AVMOpcode::Push {
-                value: AVMValue::I64(size as i64),
+            ctx.emit(VMPOpcode::Push {
+                value: VMPValue::I64(size as i64),
             });
-            ctx.emit(AVMOpcode::Alloca2);
+            ctx.emit(VMPOpcode::Alloca2);
         }
 
-        ctx.emit(AVMOpcode::PopToReg { reg: result_reg.value });
+        ctx.emit(VMPOpcode::PopToReg { reg: result_reg.value });
         Ok(())
     }
 }
 
 impl<'a> IRConverter<'a> for StoreInst<'a> {
-    fn to_avm_ir(&self, ctx: &mut AVMCompilerContext) -> anyhow::Result<()> {
+    fn to_avm_ir(&self, ctx: &mut VMPCompilerContext) -> anyhow::Result<()> {
         let value = self.get_value();
         let pointer = self.get_pointer();
 
@@ -147,22 +147,22 @@ impl<'a> IRConverter<'a> for StoreInst<'a> {
 
                     // 根据整数宽度选择适当的AVMValue类型
                     let avm_value = match int.get_type().get_bit_width() {
-                        1 => AVMValue::I1(int_val != 0),
-                        8 => AVMValue::I8(int_val as i8),
-                        16 => AVMValue::I16(int_val as i16),
-                        32 => AVMValue::I32(int_val as i32),
-                        64 => AVMValue::I64(int_val),
+                        1 => VMPValue::I1(int_val != 0),
+                        8 => VMPValue::I8(int_val as i8),
+                        16 => VMPValue::I16(int_val as i16),
+                        32 => VMPValue::I32(int_val as i32),
+                        64 => VMPValue::I64(int_val),
                         w => return Err(anyhow!("Unsupported integer width: {}", w)),
                     };
 
-                    ctx.emit(AVMOpcode::PushFromReg { reg: pointer_reg });
-                    ctx.emit(AVMOpcode::Push { value: avm_value });
-                    ctx.emit(AVMOpcode::StoreValue);
+                    ctx.emit(VMPOpcode::PushFromReg { reg: pointer_reg });
+                    ctx.emit(VMPOpcode::Push { value: avm_value });
+                    ctx.emit(VMPOpcode::StoreValue);
                 } else {
                     let value_reg = ctx.get_register(int.as_value_ref() as LLVMValueRef)?;
-                    ctx.emit(AVMOpcode::PushFromReg { reg: pointer_reg });
-                    ctx.emit(AVMOpcode::PushFromReg { reg: value_reg });
-                    ctx.emit(AVMOpcode::StoreValue);
+                    ctx.emit(VMPOpcode::PushFromReg { reg: pointer_reg });
+                    ctx.emit(VMPOpcode::PushFromReg { reg: value_reg });
+                    ctx.emit(VMPOpcode::StoreValue);
                 }
             },
             BasicValueEnum::FloatValue(float) => {
@@ -181,36 +181,36 @@ impl<'a> IRConverter<'a> for StoreInst<'a> {
 }
 
 impl<'a> IRConverter<'a> for LoadInst<'a> {
-    fn to_avm_ir(&self, ctx: &mut AVMCompilerContext) -> anyhow::Result<()> {
+    fn to_avm_ir(&self, ctx: &mut VMPCompilerContext) -> anyhow::Result<()> {
         let pointer = self.get_pointer();
         let result_type = self.get_loaded_type();
 
         let pointer_reg = ctx.get_register(pointer.as_value_ref() as LLVMValueRef)?;
 
-        ctx.emit(AVMOpcode::PushFromReg { reg: pointer_reg });
-        ctx.emit(AVMOpcode::LoadValue);
+        ctx.emit(VMPOpcode::PushFromReg { reg: pointer_reg });
+        ctx.emit(VMPOpcode::LoadValue);
 
         let result_reg = ctx.get_or_allocate_register(self.as_value_ref() as LLVMValueRef, false);
-        ctx.emit(AVMOpcode::PopToReg { reg: result_reg.value });
+        ctx.emit(VMPOpcode::PopToReg { reg: result_reg.value });
 
         Ok(())
     }
 }
 
 impl<'a> IRConverter<'a> for GepInst<'a> {
-    fn to_avm_ir(&self, ctx: &mut AVMCompilerContext) -> anyhow::Result<()> {
+    fn to_avm_ir(&self, ctx: &mut VMPCompilerContext) -> anyhow::Result<()> {
         let indices = self.get_indices();
         let base_pointer = self.get_pointer();
 
         let base_pointer_reg = ctx.get_register(base_pointer.as_value_ref() as LLVMValueRef)?;
 
         // stack: [] -> [base_ptr]
-        ctx.emit(AVMOpcode::PushFromReg { reg: base_pointer_reg });
+        ctx.emit(VMPOpcode::PushFromReg { reg: base_pointer_reg });
 
         if indices.is_empty() {
             // 没有索引，直接返回基指针
             let result_reg = ctx.get_or_allocate_register(self.as_value_ref() as LLVMValueRef, false);
-            ctx.emit(AVMOpcode::PopToReg { reg: result_reg.value });
+            ctx.emit(VMPOpcode::PopToReg { reg: result_reg.value });
             return Ok(());
         }
 
@@ -236,19 +236,19 @@ impl<'a> IRConverter<'a> for GepInst<'a> {
                     .ok_or_else(|| anyhow!("Failed to get constant int value for GEP index {}", i))?;
                 let byte_offset = offset * element_size as i64;
 
-                ctx.emit(AVMOpcode::Push {
-                    value: AVMValue::I64(byte_offset),
+                ctx.emit(VMPOpcode::Push {
+                    value: VMPValue::I64(byte_offset),
                 });
-                ctx.emit(AVMOpcode::Add { nsw: false, nuw: false });
+                ctx.emit(VMPOpcode::Add { nsw: false, nuw: false });
             } else {
                 let index_reg = ctx.get_register(index.as_value_ref() as LLVMValueRef)?;
 
-                ctx.emit(AVMOpcode::PushFromReg { reg: index_reg });
-                ctx.emit(AVMOpcode::Push {
-                    value: AVMValue::I64(element_size as i64),
+                ctx.emit(VMPOpcode::PushFromReg { reg: index_reg });
+                ctx.emit(VMPOpcode::Push {
+                    value: VMPValue::I64(element_size as i64),
                 });
-                ctx.emit(AVMOpcode::Mul);
-                ctx.emit(AVMOpcode::Add { nsw: false, nuw: false });
+                ctx.emit(VMPOpcode::Mul);
+                ctx.emit(VMPOpcode::Add { nsw: false, nuw: false });
             }
 
             // 更新当前类型用于下一个索引
@@ -271,14 +271,14 @@ impl<'a> IRConverter<'a> for GepInst<'a> {
         }
 
         let result_reg = ctx.get_or_allocate_register(self.as_value_ref() as LLVMValueRef, false);
-        ctx.emit(AVMOpcode::PopToReg { reg: result_reg.value });
+        ctx.emit(VMPOpcode::PopToReg { reg: result_reg.value });
 
         Ok(())
     }
 }
 
 impl<'a> IRConverter<'a> for CallInst<'a> {
-    fn to_avm_ir(&self, ctx: &mut AVMCompilerContext) -> anyhow::Result<()> {
+    fn to_avm_ir(&self, ctx: &mut VMPCompilerContext) -> anyhow::Result<()> {
         let call_function = self
             .get_call_function()
             .ok_or_else(|| anyhow!("Failed to get called function in CallInst"))?;
@@ -292,25 +292,25 @@ impl<'a> IRConverter<'a> for CallInst<'a> {
                         .get_sign_extended_constant()
                         .ok_or_else(|| anyhow!("Failed to get constant parameter value"))?;
                     let avm_val = match int.get_type().get_bit_width() {
-                        1 => AVMValue::I1(val != 0),
-                        8 => AVMValue::I8(val as i8),
-                        16 => AVMValue::I16(val as i16),
-                        32 => AVMValue::I32(val as i32),
-                        64 => AVMValue::I64(val),
+                        1 => VMPValue::I1(val != 0),
+                        8 => VMPValue::I8(val as i8),
+                        16 => VMPValue::I16(val as i16),
+                        32 => VMPValue::I32(val as i32),
+                        64 => VMPValue::I64(val),
                         w => return Err(anyhow!("Unsupported parameter integer width: {}", w)),
                     };
-                    ctx.emit(AVMOpcode::Push { value: avm_val });
+                    ctx.emit(VMPOpcode::Push { value: avm_val });
                 },
                 BasicValueEnum::IntValue(int) if !int.is_constant_int() => {
                     let int_reg = ctx.get_register(int.as_value_ref() as LLVMValueRef)?;
-                    ctx.emit(AVMOpcode::PushFromReg { reg: int_reg });
+                    ctx.emit(VMPOpcode::PushFromReg { reg: int_reg });
                 },
                 BasicValueEnum::FloatValue(float) => {
                     unimplemented!()
                 },
                 BasicValueEnum::PointerValue(ptr) => {
                     let ptr_reg = ctx.get_register(ptr.as_value_ref() as LLVMValueRef)?;
-                    ctx.emit(AVMOpcode::PushFromReg { reg: ptr_reg });
+                    ctx.emit(VMPOpcode::PushFromReg { reg: ptr_reg });
                 },
                 _ => {
                     unimplemented!("param: {:?}", param)
@@ -318,7 +318,7 @@ impl<'a> IRConverter<'a> for CallInst<'a> {
             }
         }
 
-        let call = AVMOpcode::Call {
+        let call = VMPOpcode::Call {
             function_name: call_function.get_name().to_str()?.to_string(),
             function: Some(call_function.as_value_ref() as LLVMValueRef),
             is_void: call_function.get_type().get_return_type().is_none(),
@@ -329,7 +329,7 @@ impl<'a> IRConverter<'a> for CallInst<'a> {
 
         if call_function.get_type().get_return_type().is_some() {
             let result_reg = ctx.get_or_allocate_register(self.as_value_ref() as LLVMValueRef, false);
-            ctx.emit(AVMOpcode::PopToReg { reg: result_reg.value });
+            ctx.emit(VMPOpcode::PopToReg { reg: result_reg.value });
         }
 
         Ok(())
@@ -337,7 +337,7 @@ impl<'a> IRConverter<'a> for CallInst<'a> {
 }
 
 impl<'a> IRConverter<'a> for ReturnInst<'a> {
-    fn to_avm_ir(&self, ctx: &mut AVMCompilerContext) -> anyhow::Result<()> {
+    fn to_avm_ir(&self, ctx: &mut VMPCompilerContext) -> anyhow::Result<()> {
         if self.has_return_value() {
             if let Some(value) = self.get_return_value() {
                 match value {
@@ -347,22 +347,22 @@ impl<'a> IRConverter<'a> for ReturnInst<'a> {
                                 .get_sign_extended_constant()
                                 .ok_or_else(|| anyhow!("Failed to get constant int value: {}", int))?;
                             let avm_value = match int.get_type().get_bit_width() {
-                                1 => AVMValue::I1(int_val != 0),
-                                8 => AVMValue::I8(int_val as i8),
-                                16 => AVMValue::I16(int_val as i16),
-                                32 => AVMValue::I32(int_val as i32),
-                                64 => AVMValue::I64(int_val),
+                                1 => VMPValue::I1(int_val != 0),
+                                8 => VMPValue::I8(int_val as i8),
+                                16 => VMPValue::I16(int_val as i16),
+                                32 => VMPValue::I32(int_val as i32),
+                                64 => VMPValue::I64(int_val),
                                 w => return Err(anyhow!("Unsupported integer width: {}", w)),
                             };
-                            ctx.emit(AVMOpcode::Push { value: avm_value });
+                            ctx.emit(VMPOpcode::Push { value: avm_value });
                         } else {
                             let reg = ctx.get_register(int.as_value_ref() as LLVMValueRef)?;
-                            ctx.emit(AVMOpcode::PushFromReg { reg });
+                            ctx.emit(VMPOpcode::PushFromReg { reg });
                         }
                     },
                     BasicValueEnum::PointerValue(ptr) => {
                         let reg = ctx.get_register(ptr.as_value_ref() as LLVMValueRef)?;
-                        ctx.emit(AVMOpcode::PushFromReg { reg });
+                        ctx.emit(VMPOpcode::PushFromReg { reg });
                     },
                     BasicValueEnum::FloatValue(_float) => {
                         unimplemented!()
@@ -374,7 +374,7 @@ impl<'a> IRConverter<'a> for ReturnInst<'a> {
             }
         }
 
-        ctx.emit(AVMOpcode::Ret);
+        ctx.emit(VMPOpcode::Ret);
         Ok(())
     }
 }

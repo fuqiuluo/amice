@@ -1,5 +1,6 @@
-use crate::aotu::vmp::avm::AVMOpcode;
-use crate::aotu::vmp::bytecode::BytecodeEncoder;
+use crate::aotu::vmp::bytecode::VMPBytecodeEncoder;
+use crate::aotu::vmp::compiler::VMPCompilerContext;
+use crate::aotu::vmp::isa::VMPOpcode;
 use anyhow::{Result, anyhow};
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::builder::Builder;
@@ -7,13 +8,12 @@ use llvm_plugin::inkwell::context::ContextRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::BasicTypeEnum;
 use llvm_plugin::inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue};
-use log::debug;
+use log::{Level, debug, log_enabled};
 
-pub struct AVMCodeGenerator<'a, 'b> {
-    context: ContextRef<'a>,
+pub struct VMPCodeGenerator<'a, 'b> {
     module: &'b mut Module<'a>,
-    builder: Builder<'a>,
     runtime_functions: RuntimeFunctions<'a>,
+    encoder: VMPBytecodeEncoder,
 }
 
 struct RuntimeFunctions<'a> {
@@ -22,21 +22,20 @@ struct RuntimeFunctions<'a> {
     avm_runtime_execute: FunctionValue<'a>,
 }
 
-impl<'a, 'b> AVMCodeGenerator<'a, 'b> {
+impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
     pub fn new(module: &'b mut Module<'a>) -> Result<Self> {
-        let context = module.get_context();
-        let builder = context.create_builder();
-        let runtime_functions = Self::declare_runtime_functions(&context, module)?;
+        let runtime_functions = Self::declare_runtime_functions(module)?;
 
         Ok(Self {
-            context,
             module,
-            builder,
             runtime_functions,
+            encoder: VMPBytecodeEncoder::new(),
         })
     }
 
-    fn declare_runtime_functions<'l>(context: &ContextRef<'l>, module: &Module<'l>) -> Result<RuntimeFunctions<'l>> {
+    fn declare_runtime_functions<'l>(module: &Module<'l>) -> Result<RuntimeFunctions<'l>> {
+        let context = module.get_context();
+
         let i64_type = context.i64_type();
         let void_type = context.void_type();
         let ptr_type = context.ptr_type(AddressSpace::default());
@@ -62,44 +61,44 @@ impl<'a, 'b> AVMCodeGenerator<'a, 'b> {
         })
     }
 
-    pub(crate) fn generate_runtime_init(&self) -> anyhow::Result<()> {
-        debug!("Generating runtime initialization functions");
+    pub(crate) fn generate_runtime_init(&self) -> Result<()> {
+        if log_enabled!(Level::Debug) {
+            debug!("Generating runtime initialization functions");
+        }
         // 在这里我们只是声明了函数，实际的运行时实现需要在链接时提供
         // 或者可以在这里添加运行时构造函数的调用（如果需要）
         Ok(())
     }
 
     /// 将虚拟机指令序列编译成调用虚拟机运行时的LLVM IR
-    pub fn compile_function_to_vm_call(&self, function: FunctionValue, instructions: &[AVMOpcode]) -> Result<()> {
-        debug!(
-            "Compiling function {:?} to VM call with {} instructions",
-            function.get_name(),
-            instructions.len()
-        );
-
+    pub fn compile_function_to_vm_call(&mut self, function: FunctionValue, context: VMPCompilerContext) -> Result<()> {
         // 序列化指令数据到全局常量
-        let instructions_data = self.serialize_instructions_to_global(instructions)?;
+        let instructions_data = self.serialize_instructions_to_global(context)?;
 
         // 清空原函数体，重新生成调用虚拟机的代码
-        self.replace_function_body_with_vm_call(function, instructions_data, instructions.len())?;
+        self.replace_function_body_with_vm_call(function, instructions_data)?;
 
         Ok(())
     }
 
     /// 序列化指令数据到全局常量
-    fn serialize_instructions_to_global(&self, instructions: &[AVMOpcode]) -> Result<GlobalValue<'a>> {
+    fn serialize_instructions_to_global(&mut self, compiler_context: VMPCompilerContext) -> Result<GlobalValue<'a>> {
+        let context = self.module.get_context();
+
         // 使用字节码编码器
-        let mut encoder = BytecodeEncoder::new();
-        let bytecode_data = encoder
-            .encode_instructions(instructions)
+        let bytecode_data = self
+            .encoder
+            .encode_instructions(compiler_context.finalize())
             .map_err(|e| anyhow!("Failed to serialize instructions to bytecode: {}", e))?;
 
-        debug!("Serialized instructions to {} bytes of bytecode", bytecode_data.len());
+        if log_enabled!(Level::Debug) {
+            debug!("Serialized instructions to {} bytes of bytecode", bytecode_data.len());
+        }
 
         // 创建全局字节数组常量
         let global_name = format!("__avm_bytecode_{}", rand::random::<u32>());
         let global_value = self.module.add_global(
-            self.context.i8_type().array_type(bytecode_data.len() as u32),
+            context.i8_type().array_type(bytecode_data.len() as u32),
             Some(AddressSpace::default()),
             &global_name,
         );
@@ -107,9 +106,9 @@ impl<'a, 'b> AVMCodeGenerator<'a, 'b> {
         // 设置初始值
         let byte_values: Vec<_> = bytecode_data
             .iter()
-            .map(|&b| self.context.i8_type().const_int(b as u64, false))
+            .map(|&b| context.i8_type().const_int(b as u64, false))
             .collect();
-        let array_value = self.context.i8_type().const_array(&byte_values);
+        let array_value = context.i8_type().const_array(&byte_values);
         global_value.set_initializer(&array_value);
         global_value.set_constant(true);
         global_value.set_linkage(Linkage::Private);
@@ -122,65 +121,8 @@ impl<'a, 'b> AVMCodeGenerator<'a, 'b> {
         &self,
         function: FunctionValue,
         instructions_data: GlobalValue<'a>,
-        _instruction_count: usize,
     ) -> Result<()> {
         // todo
-        Ok(())
-    }
-
-    /// 处理函数返回值
-    fn handle_function_return(&self, function: FunctionValue, vm_result: BasicValueEnum) -> Result<()> {
-        let return_type = function.get_type().get_return_type();
-
-        match return_type {
-            Some(ret_type) => {
-                // 函数有返回值，需要从vm_result转换
-                match ret_type {
-                    BasicTypeEnum::IntType(int_type) => {
-                        // 将i64结果转换为目标整数类型
-                        let casted_result = if int_type.get_bit_width() == 64 {
-                            vm_result.into_int_value()
-                        } else {
-                            self.builder
-                                .build_int_truncate(vm_result.into_int_value(), int_type, "result_cast")
-                                .map_err(|e| anyhow!("Failed to truncate int: {}", e))?
-                        };
-
-                        self.builder
-                            .build_return(Some(&casted_result))
-                            .map_err(|e| anyhow!("Failed to build return: {}", e))?;
-                    },
-                    BasicTypeEnum::FloatType(_) => {
-                        // 浮点数需要特殊处理，这里简化为返回0
-                        let zero = ret_type.const_zero();
-                        self.builder
-                            .build_return(Some(&zero))
-                            .map_err(|e| anyhow!("Failed to build return: {}", e))?;
-                    },
-                    BasicTypeEnum::PointerType(ptr_type) => {
-                        // 指针类型，将i64转换为指针
-                        let casted_result = self
-                            .builder
-                            .build_int_to_ptr(vm_result.into_int_value(), ptr_type, "result_ptr")
-                            .map_err(|e| anyhow!("Failed to cast int to ptr: {}", e))?;
-
-                        self.builder
-                            .build_return(Some(&casted_result))
-                            .map_err(|e| anyhow!("Failed to build return: {}", e))?;
-                    },
-                    _ => {
-                        return Err(anyhow!("Unsupported return type: {:?}", ret_type));
-                    },
-                }
-            },
-            None => {
-                // void函数，直接返回
-                self.builder
-                    .build_return(None)
-                    .map_err(|e| anyhow!("Failed to build void return: {}", e))?;
-            },
-        }
-
         Ok(())
     }
 }

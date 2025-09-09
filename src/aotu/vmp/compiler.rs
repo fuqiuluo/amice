@@ -1,4 +1,4 @@
-use crate::aotu::vmp::avm::AVMOpcode;
+use crate::aotu::vmp::isa::VMPOpcode;
 use crate::aotu::vmp::translator::IRConverter;
 use crate::config::VMPFlag;
 use amice_llvm::inkwell2::{InstructionExt, LLVMValueRefExt};
@@ -19,17 +19,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
 use std::process::id;
 
-pub struct AVMCompilerContext {
-    /// 变量到内存地址的映射
-    variable_to_address: HashMap<LLVMValueRef, VarInfo>,
+pub struct VMPCompilerContext {
     /// 变量到寄存器的映射
     variable_to_register: HashMap<LLVMValueRef, VarInfo>,
-    /// 下一个可用的内存地址
-    next_address: u32,
     /// 下一个可用的寄存器
     next_register: SparseList<LLVMValueRef>,
+    /// 已分配的最大寄存器编号
+    max_register: u32,
     /// 生成的VM指令
-    vm_instructions: Vec<AVMOpcode>,
+    vm_instructions: Vec<VMPOpcode>,
     /// 指令使用计数
     use_counts: BTreeMap<LLVMValueRef, InstUseCount>,
     /// Global Variables used in the function
@@ -58,31 +56,30 @@ impl VarInfo {
     }
 }
 
-impl AVMCompilerContext {
+impl VMPCompilerContext {
     pub fn new(function: FunctionValue, flags: VMPFlag) -> anyhow::Result<Self> {
         let use_counts = IRAnalyzer::collect_inst_use_counts(function)?;
         let used_globals = IRAnalyzer::collect_global_variables(function);
         let mut ctx = Self {
             vm_instructions: Vec::new(),
-            variable_to_address: HashMap::new(),
             variable_to_register: HashMap::new(),
-            next_address: 0x1000,
             next_register: SparseList::new(),
+            max_register: 0,
             use_counts,
             used_globals: used_globals.clone(),
             flags,
         };
-        if flags.contains(VMPFlag::RandomVRegMapping) {
-            for _ in 0..rand::random_range(10..10000) {
-                ctx.next_register.insert(LLVMValueRef::default());
-            }
-            ctx.next_register.clear();
-        }
+        // if flags.contains(VMPFlag::RandomVRegMapping) {
+        //     for _ in 0..rand::random_range(10..10000) {
+        //         ctx.next_register.insert(LLVMValueRef::default());
+        //     }
+        //     ctx.next_register.clear();
+        // }
 
         for llvm_ref in used_globals {
             let global_value = llvm_ref.into_global_value();
             let var_info = ctx.get_or_allocate_register(llvm_ref, true);
-            ctx.emit(AVMOpcode::MetaGVar {
+            ctx.emit(VMPOpcode::MetaGVar {
                 reg: var_info.value,
                 name: global_value.get_name().to_str()?.to_string(),
             });
@@ -106,43 +103,29 @@ impl AVMCompilerContext {
         self.flags.contains(VMPFlag::TypeCheck)
     }
 
-    pub fn emit(&mut self, opcode: AVMOpcode) {
+    pub fn emit(&mut self, opcode: VMPOpcode) {
         self.vm_instructions.push(opcode);
-    }
-
-    /// 分配新的内存地址
-    fn allocate_address(&mut self) -> u32 {
-        let addr = self.next_address;
-        self.next_address += 8; // 假设每个变量占8字节
-        addr
     }
 
     /// 分配新的寄存器
     fn allocate_register(&mut self, var: LLVMValueRef) -> u32 {
-        if self.flags.contains(VMPFlag::RandomVRegMapping) {
-            let free_indices = self.next_register.free_indices();
-            if !free_indices.is_empty() {
-                let &index = free_indices.choose(&mut rand::rng()).unwrap();
-                self.next_register.insert_at(index, var);
-                return index as u32;
-            }
-            // no free register, fall through to normal allocation
-        }
+        // if self.flags.contains(VMPFlag::RandomVRegMapping) {
+        //     let free_indices = self.next_register.free_indices();
+        //     if !free_indices.is_empty() {
+        //         let &index = free_indices.choose(&mut rand::rng()).unwrap();
+        //         self.next_register.insert_at(index, var);
+        //         return index as u32;
+        //     }
+        //     // no free register, fall through to normal allocation
+        // }
         let id = self.next_register.insert(var);
+
+        if id as u32 > self.max_register {
+            self.max_register = id as u32;
+        }
+
         id as u32
     }
-
-    /// 获取变量对应的地址，如果不存在则分配新地址
-    // pub fn get_or_allocate_address(&mut self, var: LLVMValueRef) -> VarInfo {
-    //     if let Some(addr) = self.variable_to_address.get(&var) {
-    //         addr.clone()
-    //     } else {
-    //         let addr = self.allocate_address();
-    //         let info = VarInfo::new(var, false, addr);
-    //         self.variable_to_address.insert(var, info.clone());
-    //         info
-    //     }
-    // }
 
     /// 获取变量对应的寄存器，如果不存在则分配新寄存器
     pub fn get_or_allocate_register(&mut self, var: LLVMValueRef, is_persistent: bool) -> VarInfo {
@@ -181,6 +164,10 @@ impl AVMCompilerContext {
         }
 
         Err(anyhow!("No variable to register: {:?}", val))
+    }
+
+    pub fn get_max_register(&self) -> u32 {
+        self.max_register
     }
 
     pub fn translate<'a>(&mut self, inst: InstructionValue<'a>) -> anyhow::Result<()> {
@@ -323,19 +310,19 @@ impl AVMCompilerContext {
             if let Some(reg) = self.destroy_register(var.inst)
                 && self.flags.contains(VMPFlag::AutoCleanupRegister)
             {
-                self.emit(AVMOpcode::ClearReg { reg })
+                self.emit(VMPOpcode::ClearReg { reg })
             }
         }
 
         Ok(())
     }
 
-    pub fn finalize(&self) -> &Vec<AVMOpcode> {
+    pub fn finalize(&self) -> &Vec<VMPOpcode> {
         &self.vm_instructions
     }
 }
 
-impl Display for AVMCompilerContext {
+impl Display for VMPCompilerContext {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "inst[\n")?;
         for opcode in self.finalize() {

@@ -1,6 +1,6 @@
 /// VMP 字节码编码器
 /// 将 AVM 指令序列编码为二进制字节码
-use crate::aotu::vmp::avm::{AVMOpcode, AVMValue};
+use crate::aotu::vmp::isa::{VMPOpcode, VMPValue};
 use anyhow::Result;
 use log::{Level, debug, log_enabled};
 use std::collections::HashMap;
@@ -92,14 +92,14 @@ pub enum BytecodeValueType {
 }
 
 /// 字节码编码器
-pub struct BytecodeEncoder {
+pub struct VMPBytecodeEncoder {
     opcode_map: HashMap<BytecodeOp, u16>,
     value_type_map: HashMap<BytecodeValueType, u8>,
     /// 标签到位置的映射（用于跳转指令）
     label_positions: HashMap<String, u32>,
 }
 
-impl BytecodeEncoder {
+impl VMPBytecodeEncoder {
     pub fn new() -> Self {
         let mut encoder = Self {
             opcode_map: HashMap::new(),
@@ -120,7 +120,7 @@ impl BytecodeEncoder {
     }
 
     /// 将指令序列编码为字节码
-    pub fn encode_instructions(&mut self, instructions: &[AVMOpcode]) -> Result<Vec<u8>> {
+    pub fn encode_instructions(&mut self, instructions: &[VMPOpcode]) -> Result<Vec<u8>> {
         if log_enabled!(Level::Debug) {
             debug!("Encoding {} instructions to bytecode", instructions.len());
         }
@@ -156,11 +156,11 @@ impl BytecodeEncoder {
     }
 
     /// 收集所有标签位置
-    fn collect_labels(&mut self, instructions: &[AVMOpcode]) -> Result<()> {
+    fn collect_labels(&mut self, instructions: &[VMPOpcode]) -> Result<()> {
         let mut position = (size_of_val(&VMP_VERSION) + VMP_NAME.len()) as u32; // 从文件头大小开始计算
 
         for instruction in instructions {
-            if let AVMOpcode::Label { name } = instruction {
+            if let VMPOpcode::Label { name } = instruction {
                 self.label_positions.insert(name.clone(), position);
             }
             position += self.calculate_instruction_size(instruction)?;
@@ -174,88 +174,86 @@ impl BytecodeEncoder {
     }
 
     /// 计算指令的字节码大小
-    fn calculate_instruction_size(&self, instruction: &AVMOpcode) -> Result<u32> {
-        let size = match instruction {
-            AVMOpcode::Push { value } => 1 + 1 + self.calculate_value_size(value)?, // opcode + type + value
-            AVMOpcode::Pop => 1,
-            AVMOpcode::PopToReg { .. } => 1 + 4, // opcode + reg(u32)
-            AVMOpcode::PushFromReg { .. } => 1 + 4,
-            AVMOpcode::ClearReg { .. } => 1 + 4,
+    fn calculate_instruction_size(&self, instruction: &VMPOpcode) -> Result<u32> {
+        let size = 2 + match instruction {
+            VMPOpcode::Push { value } => 1 + self.calculate_value_size(value)?, // opcode + type + value
+            VMPOpcode::Pop => 0,
+            VMPOpcode::PopToReg { reg } => size_of_val(reg), // opcode + reg(u32)
+            VMPOpcode::PushFromReg { reg } => size_of_val(reg),
+            VMPOpcode::ClearReg { reg } => size_of_val(reg),
 
-            AVMOpcode::Alloca { .. } => 1 + 8, // opcode + size(u64)
-            AVMOpcode::Alloca2 => 1,
-            AVMOpcode::Store { .. } => 1 + 8, // opcode + address(u64)
-            AVMOpcode::StoreValue => 1,
-            AVMOpcode::Load { .. } => 1 + 8,
-            AVMOpcode::LoadValue => 1,
+            VMPOpcode::Alloca { size } => size_of_val(size), // opcode + size(u64)
+            VMPOpcode::Alloca2 => 0,
+            VMPOpcode::Store { address } => size_of_val(address), // opcode + address(u64)
+            VMPOpcode::StoreValue => 0,
+            VMPOpcode::Load { address } => size_of_val(address),
+            VMPOpcode::LoadValue => 0,
 
-            AVMOpcode::Call {
-                function_name, arg_num, ..
-            } => {
-                1 + 4 + function_name.len() + 1 + 4 // opcode + name_len + name + is_void + arg_num
+            VMPOpcode::Call { arg_num, is_void, .. } => {
+                size_of::<u64>() + size_of_val(is_void) + size_of_val(arg_num) // opcode + hash(name) + is_void + arg_num
             },
 
-            AVMOpcode::Add { .. } => 1 + 2, // opcode + flags
-            AVMOpcode::Sub => 1,
-            AVMOpcode::Mul => 1,
-            AVMOpcode::Div => 1,
+            VMPOpcode::Add { .. } => 2, // opcode + flags
+            VMPOpcode::Sub => 0,
+            VMPOpcode::Mul => 0,
+            VMPOpcode::Div => 0,
 
-            AVMOpcode::Ret => 1,
+            VMPOpcode::Ret => 0,
 
-            AVMOpcode::Nop => 1,
-            AVMOpcode::Swap => 1,
-            AVMOpcode::Dup => 1,
-            AVMOpcode::TypeCheckInt { .. } => 1 + 4, // opcode + width
+            VMPOpcode::Nop => 0,
+            VMPOpcode::Swap => 0,
+            VMPOpcode::Dup => 0,
+            VMPOpcode::TypeCheckInt { width } => size_of_val(width), // opcode + width
 
-            AVMOpcode::Jump { target } => 1 + 4 + target.len(), // opcode + name_len + name
-            AVMOpcode::JumpIf { target } => 1 + 4 + target.len(),
-            AVMOpcode::JumpIfNot { target } => 1 + 4 + target.len(),
+            VMPOpcode::Jump { target } => size_of::<u64>(), // opcode + hash(target)
+            VMPOpcode::JumpIf { target } => size_of::<u64>(),
+            VMPOpcode::JumpIfNot { target } => size_of::<u64>(),
 
-            AVMOpcode::ICmpEq => 1,
-            AVMOpcode::ICmpNe => 1,
-            AVMOpcode::ICmpSlt => 1,
-            AVMOpcode::ICmpSle => 1,
-            AVMOpcode::ICmpSgt => 1,
-            AVMOpcode::ICmpSge => 1,
-            AVMOpcode::ICmpUlt => 1,
-            AVMOpcode::ICmpUle => 1,
-            AVMOpcode::ICmpUgt => 1,
-            AVMOpcode::ICmpUge => 1,
+            VMPOpcode::ICmpEq => 0,
+            VMPOpcode::ICmpNe => 0,
+            VMPOpcode::ICmpSlt => 0,
+            VMPOpcode::ICmpSle => 0,
+            VMPOpcode::ICmpSgt => 0,
+            VMPOpcode::ICmpSge => 0,
+            VMPOpcode::ICmpUlt => 0,
+            VMPOpcode::ICmpUle => 0,
+            VMPOpcode::ICmpUgt => 0,
+            VMPOpcode::ICmpUge => 0,
 
-            AVMOpcode::And => 1,
-            AVMOpcode::Or => 1,
-            AVMOpcode::Xor => 1,
-            AVMOpcode::Shl => 1,
-            AVMOpcode::LShr => 1,
-            AVMOpcode::AShr => 1,
+            VMPOpcode::And => 0,
+            VMPOpcode::Or => 0,
+            VMPOpcode::Xor => 0,
+            VMPOpcode::Shl => 0,
+            VMPOpcode::LShr => 0,
+            VMPOpcode::AShr => 0,
 
-            AVMOpcode::Trunc { .. } => 1 + 4, // opcode + target_width
-            AVMOpcode::ZExt { .. } => 1 + 4,
-            AVMOpcode::SExt { .. } => 1 + 4,
-            AVMOpcode::FPToSI { .. } => 1 + 4,
-            AVMOpcode::FPToUI { .. } => 1 + 4,
-            AVMOpcode::SIToFP { .. } => 1 + 1, // opcode + is_double
-            AVMOpcode::UIToFP { .. } => 1 + 1,
+            VMPOpcode::Trunc { target_width } => size_of_val(target_width), // opcode + target_width
+            VMPOpcode::ZExt { target_width } => size_of_val(target_width),
+            VMPOpcode::SExt { target_width } => size_of_val(target_width),
+            VMPOpcode::FPToSI { target_width } => size_of_val(target_width),
+            VMPOpcode::FPToUI { target_width } => size_of_val(target_width),
+            VMPOpcode::SIToFP { is_double } => size_of_val(is_double), // opcode + is_double
+            VMPOpcode::UIToFP { is_double } => size_of_val(is_double),
 
-            AVMOpcode::Label { name } => 1 + 4 + name.len(), // opcode + name_len + name
-            AVMOpcode::MetaGVar { name, .. } => 1 + 4 + 4 + name.len(), // opcode + reg + name_len + name
+            VMPOpcode::Label { name } => size_of::<u64>(), // opcode + hash(name)
+            VMPOpcode::MetaGVar { name, .. } => 0,
         };
 
         Ok(size as u32)
     }
 
     /// 计算值的字节码大小
-    fn calculate_value_size(&self, value: &AVMValue) -> Result<usize> {
+    fn calculate_value_size(&self, value: &VMPValue) -> Result<usize> {
         let size = match value {
-            AVMValue::Undef => 0,
-            AVMValue::I1(_) => 1,
-            AVMValue::I8(_) => 1,
-            AVMValue::I16(_) => 2,
-            AVMValue::I32(_) => 4,
-            AVMValue::I64(_) => 8,
-            AVMValue::F32(_) => 4,
-            AVMValue::F64(_) => 8,
-            AVMValue::Ptr(_) => 8,
+            VMPValue::Undef => 0,
+            VMPValue::I1(_) => 1,
+            VMPValue::I8(_) => 1,
+            VMPValue::I16(_) => 2,
+            VMPValue::I32(_) => 4,
+            VMPValue::I64(_) => 8,
+            VMPValue::F32(_) => 4,
+            VMPValue::F64(_) => 8,
+            VMPValue::Ptr(_) => 8,
         };
         Ok(size)
     }
@@ -270,178 +268,182 @@ impl BytecodeEncoder {
     }
 
     /// 编码单条指令
-    fn encode_instruction(&self, cursor: &mut Cursor<&mut Vec<u8>>, instruction: &AVMOpcode) -> Result<()> {
+    fn encode_instruction(&self, cursor: &mut Cursor<&mut Vec<u8>>, instruction: &VMPOpcode) -> Result<()> {
         let bytecode = instruction.to_bytecode();
         cursor.write_all(&self.opcode_map[&bytecode].to_le_bytes())?;
         match instruction {
-            AVMOpcode::Push { value } => {
+            VMPOpcode::Push { value } => {
                 self.encode_value(cursor, value)?;
             },
 
-            AVMOpcode::Pop => {
+            VMPOpcode::Pop => {
                 // no additional data
             },
 
-            AVMOpcode::PopToReg { reg } => {
+            VMPOpcode::PopToReg { reg } => {
                 cursor.write_all(&reg.to_le_bytes())?;
             },
 
-            AVMOpcode::PushFromReg { reg } => {
+            VMPOpcode::PushFromReg { reg } => {
                 cursor.write_all(&reg.to_le_bytes())?;
             },
 
-            AVMOpcode::ClearReg { reg } => {
+            VMPOpcode::ClearReg { reg } => {
                 cursor.write_all(&reg.to_le_bytes())?;
             },
 
-            AVMOpcode::Alloca { size } => {
-                cursor.write_all(&(*size as u64).to_le_bytes())?;
+            VMPOpcode::Alloca { size } => {
+                cursor.write_all(&size.to_le_bytes())?;
             },
 
-            AVMOpcode::Alloca2 => {},
+            VMPOpcode::Alloca2 => {},
 
-            AVMOpcode::Store { address } => {
-                cursor.write_all(&(*address as u64).to_le_bytes())?;
+            VMPOpcode::Store { address } => {
+                cursor.write_all(&address.to_le_bytes())?;
             },
 
-            AVMOpcode::StoreValue => {},
+            VMPOpcode::StoreValue => {},
 
-            AVMOpcode::Load { address } => {
-                cursor.write_all(&(*address as u64).to_le_bytes())?;
+            VMPOpcode::Load { address } => {
+                cursor.write_all(&address.to_le_bytes())?;
             },
 
-            AVMOpcode::LoadValue => {},
+            VMPOpcode::LoadValue => {},
 
-            AVMOpcode::Call {
+            VMPOpcode::Call {
                 function_name,
                 is_void,
                 arg_num,
                 ..
             } => {
-                // 函数名长度和内容
-                cursor.write_all(&(function_name.len() as u32).to_le_bytes())?;
-                cursor.write_all(function_name.as_bytes())?;
+                // function hash
+                let hash = Self::siphash_u64(function_name);
+                cursor.write_all(&hash.to_le_bytes())?;
                 // 是否为void函数
                 cursor.write_all(&[if *is_void { 1 } else { 0 }])?;
                 // 参数数量
                 cursor.write_all(&arg_num.to_le_bytes())?;
             },
 
-            AVMOpcode::Add { nsw, nuw } => {
+            VMPOpcode::Add { nsw, nuw } => {
                 let flags = (if *nsw { 1u8 } else { 0u8 }) | (if *nuw { 2u8 } else { 0u8 });
                 cursor.write_all(&[flags])?;
                 cursor.write_all(&[0])?; // 填充到2字节
             },
 
-            AVMOpcode::Sub => {},
-            AVMOpcode::Mul => {},
-            AVMOpcode::Div => {},
+            VMPOpcode::Sub => {},
+            VMPOpcode::Mul => {},
+            VMPOpcode::Div => {},
 
-            AVMOpcode::Ret => {},
+            VMPOpcode::Ret => {},
 
-            AVMOpcode::Nop => {},
-            AVMOpcode::Swap => {},
-            AVMOpcode::Dup => {},
+            VMPOpcode::Nop => {},
+            VMPOpcode::Swap => {},
+            VMPOpcode::Dup => {},
 
-            AVMOpcode::TypeCheckInt { width } => {
+            VMPOpcode::TypeCheckInt { width } => {
                 cursor.write_all(&width.to_le_bytes())?;
             },
 
-            AVMOpcode::Jump { target } => {
-                self.encode_string(cursor, target)?;
+            VMPOpcode::Jump { target } => {
+                let target_hash = Self::siphash_u64(target);
+                cursor.write_all(&target_hash.to_le_bytes())?;
             },
 
-            AVMOpcode::JumpIf { target } => {
-                self.encode_string(cursor, target)?;
+            VMPOpcode::JumpIf { target } => {
+                let target_hash = Self::siphash_u64(target);
+                cursor.write_all(&target_hash.to_le_bytes())?;
             },
 
-            AVMOpcode::JumpIfNot { target } => {
-                self.encode_string(cursor, target)?;
+            VMPOpcode::JumpIfNot { target } => {
+                let target_hash = Self::siphash_u64(target);
+                cursor.write_all(&target_hash.to_le_bytes())?;
             },
 
             // 比较指令
-            AVMOpcode::ICmpEq => {},
-            AVMOpcode::ICmpNe => {},
-            AVMOpcode::ICmpSlt => {},
-            AVMOpcode::ICmpSle => {},
-            AVMOpcode::ICmpSgt => {},
-            AVMOpcode::ICmpSge => {},
-            AVMOpcode::ICmpUlt => {},
-            AVMOpcode::ICmpUle => {},
-            AVMOpcode::ICmpUgt => {},
-            AVMOpcode::ICmpUge => {},
+            VMPOpcode::ICmpEq => {},
+            VMPOpcode::ICmpNe => {},
+            VMPOpcode::ICmpSlt => {},
+            VMPOpcode::ICmpSle => {},
+            VMPOpcode::ICmpSgt => {},
+            VMPOpcode::ICmpSge => {},
+            VMPOpcode::ICmpUlt => {},
+            VMPOpcode::ICmpUle => {},
+            VMPOpcode::ICmpUgt => {},
+            VMPOpcode::ICmpUge => {},
 
             // 位运算指令
-            AVMOpcode::And => {},
-            AVMOpcode::Or => {},
-            AVMOpcode::Xor => {},
-            AVMOpcode::Shl => {},
-            AVMOpcode::LShr => {},
-            AVMOpcode::AShr => {},
+            VMPOpcode::And => {},
+            VMPOpcode::Or => {},
+            VMPOpcode::Xor => {},
+            VMPOpcode::Shl => {},
+            VMPOpcode::LShr => {},
+            VMPOpcode::AShr => {},
 
             // 类型转换指令
-            AVMOpcode::Trunc { target_width } => {
+            VMPOpcode::Trunc { target_width } => {
                 cursor.write_all(&target_width.to_le_bytes())?;
             },
-            AVMOpcode::ZExt { target_width } => {
+            VMPOpcode::ZExt { target_width } => {
                 cursor.write_all(&target_width.to_le_bytes())?;
             },
-            AVMOpcode::SExt { target_width } => {
+            VMPOpcode::SExt { target_width } => {
                 cursor.write_all(&target_width.to_le_bytes())?;
             },
-            AVMOpcode::FPToSI { target_width } => {
+            VMPOpcode::FPToSI { target_width } => {
                 cursor.write_all(&target_width.to_le_bytes())?;
             },
-            AVMOpcode::FPToUI { target_width } => {
+            VMPOpcode::FPToUI { target_width } => {
                 cursor.write_all(&target_width.to_le_bytes())?;
             },
-            AVMOpcode::SIToFP { is_double } => {
+            VMPOpcode::SIToFP { is_double } => {
                 cursor.write_all(&[if *is_double { 1 } else { 0 }])?;
             },
-            AVMOpcode::UIToFP { is_double } => {
+            VMPOpcode::UIToFP { is_double } => {
                 cursor.write_all(&[if *is_double { 1 } else { 0 }])?;
             },
 
-            AVMOpcode::Label { name } => {
-                self.encode_string(cursor, name)?;
+            VMPOpcode::Label { name } => {
+                let hash = Self::siphash_u64(name);
+                cursor.write_all(&hash.to_le_bytes())?;
             },
 
-            AVMOpcode::MetaGVar { .. } => {},
+            VMPOpcode::MetaGVar { .. } => {},
         }
 
         Ok(())
     }
 
     /// 编码值
-    fn encode_value(&self, cursor: &mut Cursor<&mut Vec<u8>>, value: &AVMValue) -> Result<()> {
+    fn encode_value(&self, cursor: &mut Cursor<&mut Vec<u8>>, value: &VMPValue) -> Result<()> {
         let bytecode_value_type = value.to_bytecode_value_type();
         cursor.write_all(&self.value_type_map[&bytecode_value_type].to_le_bytes())?;
         match value {
-            AVMValue::Undef => {
+            VMPValue::Undef => {
                 // no additional data
             },
-            AVMValue::I1(v) => {
+            VMPValue::I1(v) => {
                 cursor.write_all(&[if *v { 1 } else { 0 }])?;
             },
-            AVMValue::I8(v) => {
+            VMPValue::I8(v) => {
                 cursor.write_all(&v.to_le_bytes())?;
             },
-            AVMValue::I16(v) => {
+            VMPValue::I16(v) => {
                 cursor.write_all(&v.to_le_bytes())?;
             },
-            AVMValue::I32(v) => {
+            VMPValue::I32(v) => {
                 cursor.write_all(&v.to_le_bytes())?;
             },
-            AVMValue::I64(v) => {
+            VMPValue::I64(v) => {
                 cursor.write_all(&v.to_le_bytes())?;
             },
-            AVMValue::F32(v) => {
+            VMPValue::F32(v) => {
                 cursor.write_all(&v.to_le_bytes())?;
             },
-            AVMValue::F64(v) => {
+            VMPValue::F64(v) => {
                 cursor.write_all(&v.to_le_bytes())?;
             },
-            AVMValue::Ptr(v) => {
+            VMPValue::Ptr(v) => {
                 cursor.write_all(&v.to_le_bytes())?;
             },
         }
@@ -456,7 +458,7 @@ impl BytecodeEncoder {
     }
 }
 
-impl Default for BytecodeEncoder {
+impl Default for VMPBytecodeEncoder {
     fn default() -> Self {
         Self::new()
     }

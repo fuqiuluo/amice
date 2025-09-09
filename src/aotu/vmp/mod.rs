@@ -1,19 +1,18 @@
-mod avm;
 mod bytecode;
 mod codegen;
 mod compiler;
+mod isa;
 mod runtime;
 mod translator;
 
-use crate::aotu::vmp::codegen::AVMCodeGenerator;
-use crate::aotu::vmp::compiler::AVMCompilerContext;
-use crate::aotu::vmp::runtime::JustAVMRuntime;
+use crate::aotu::vmp::codegen::VMPCodeGenerator;
+use crate::aotu::vmp::compiler::VMPCompilerContext;
+use crate::aotu::vmp::runtime::VMPRuntime;
 use crate::aotu::vmp::translator::IRConverter;
 use crate::config::{Config, VMPConfig, VMPFlag};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{FunctionExt, InstructionExt};
 use amice_macro::amice;
-use avm::AVMOpcode;
 use llvm_plugin::PreservedAnalyses;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::Module;
@@ -51,7 +50,7 @@ impl AmicePass for VMP {
             functions.push(function);
         }
 
-        let mut codegen = AVMCodeGenerator::new(module)?;
+        let mut codegen = VMPCodeGenerator::new(module)?;
 
         codegen.generate_runtime_init()?;
 
@@ -73,40 +72,28 @@ impl VMP {
     fn handle_function_with_vm(
         &self,
         function: FunctionValue,
-        codegen: &mut AVMCodeGenerator,
+        codegen: &mut VMPCodeGenerator,
         flags: VMPFlag,
     ) -> anyhow::Result<()> {
         if log_enabled!(Level::Debug) {
             debug!("translating function {:?} to VM instructions", function.get_name());
         }
 
-        let vm_instructions = self.translate_function_to_vm(function, flags)?;
-
-        debug!(
-            "Generated {} VM instructions for function {:?}",
-            vm_instructions.len(),
-            function.get_name()
-        );
+        let context = self.translate_function_to_vm(function, flags)?;
 
         // let mut runtime = JustAVMRuntime::new();
         // let result = runtime.execute(&vm_instructions);
         // debug!("return => {:?}", result);
 
         // 将AVM指令编译为调用虚拟机运行时的LLVM IR
-        codegen.compile_function_to_vm_call(function, &vm_instructions)?;
-
-        info!(
-            "Function {:?} successfully virtualized with {} instructions",
-            function.get_name(),
-            vm_instructions.len()
-        );
+        codegen.compile_function_to_vm_call(function, context)?;
 
         Ok(())
     }
 
     /// 将函数翻译为虚拟机指令序列
-    fn translate_function_to_vm(&self, function: FunctionValue, flags: VMPFlag) -> anyhow::Result<Vec<AVMOpcode>> {
-        let mut context = AVMCompilerContext::new(function, flags)?;
+    fn translate_function_to_vm(&self, function: FunctionValue, flags: VMPFlag) -> anyhow::Result<VMPCompilerContext> {
+        let mut context = VMPCompilerContext::new(function, flags)?;
 
         if function.count_params() > 0 {
             if log_enabled!(Level::Debug) {
@@ -137,35 +124,7 @@ impl VMP {
             }
         }
 
-        // 确保函数有返回指令
-        let instructions = context.finalize();
-        let mut final_instructions = instructions.clone();
-
-        // 如果最后一条指令不是返回指令，添加一个
-        if let Some(last_inst) = final_instructions.last() {
-            if !matches!(last_inst, AVMOpcode::Ret) {
-                final_instructions.push(AVMOpcode::Ret);
-            }
-        } else {
-            // 空函数，添加返回指令
-            final_instructions.push(AVMOpcode::Ret);
-        }
-
-        if log_enabled!(Level::Debug) {
-            debug!(
-                "Function translation completed with {} instructions",
-                final_instructions.len()
-            );
-        }
-
-        if log_enabled!(Level::Debug) {
-            debug!("Generated VM instructions:");
-            for (i, inst) in final_instructions.iter().enumerate() {
-                debug!("  {}: {}", i, inst);
-            }
-        }
-
-        Ok(final_instructions)
+        Ok(context)
     }
 }
 

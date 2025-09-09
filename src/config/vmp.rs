@@ -24,8 +24,6 @@ bitflags! {
         const AutoCleanupRegister =         0b00000010;
         /// Type checking
         const TypeCheck =                   0b00000100;
-        /// Random Virtual Register Mapping
-        const RandomVRegMapping =           0b00001000;
     }
 }
 
@@ -40,7 +38,6 @@ fn parse_vmp_flags(value: &str) -> VMPFlag {
             "poly_inst" => flags |= VMPFlag::PolyInstruction,
             "auto_cleanup_reg" => flags |= VMPFlag::AutoCleanupRegister,
             "type_check" => flags |= VMPFlag::TypeCheck,
-            "random_vreg_mapping" => flags |= VMPFlag::RandomVRegMapping,
             _ => warn!("Unknown AMICE_VMP_FLAGS: \"{x}\" , ignoring"),
         }
     }
@@ -98,10 +95,6 @@ impl FunctionAnnotationsOverlay for VMPConfig {
         parser
             .get_bool("vmp_type_check")
             .map(|v| cfg.flags |= VMPFlag::TypeCheck);
-
-        parser
-            .get_bool("vmp_random_vreg_mapping")
-            .map(|v| cfg.flags |= VMPFlag::RandomVRegMapping);
 
         Ok(cfg)
     }

@@ -1,4 +1,4 @@
-use crate::aotu::vmp::avm::{AVMOpcode, AVMProgram, AVMValue};
+use crate::aotu::vmp::isa::{VMPOpcode, VMPProgram, VMPValue};
 use anyhow::{Result, anyhow};
 use log::debug;
 use std::collections::HashMap;
@@ -20,17 +20,17 @@ enum TypeTag {
 }
 
 impl TypeTag {
-    fn from_value(value: &AVMValue) -> Self {
+    fn from_value(value: &VMPValue) -> Self {
         match value {
-            AVMValue::Undef => TypeTag::Undef,
-            AVMValue::I1(_) => TypeTag::I1,
-            AVMValue::I8(_) => TypeTag::I8,
-            AVMValue::I16(_) => TypeTag::I16,
-            AVMValue::I32(_) => TypeTag::I32,
-            AVMValue::I64(_) => TypeTag::I64,
-            AVMValue::F32(_) => TypeTag::F32,
-            AVMValue::F64(_) => TypeTag::F64,
-            AVMValue::Ptr(_) => TypeTag::Ptr,
+            VMPValue::Undef => TypeTag::Undef,
+            VMPValue::I1(_) => TypeTag::I1,
+            VMPValue::I8(_) => TypeTag::I8,
+            VMPValue::I16(_) => TypeTag::I16,
+            VMPValue::I32(_) => TypeTag::I32,
+            VMPValue::I64(_) => TypeTag::I64,
+            VMPValue::F32(_) => TypeTag::F32,
+            VMPValue::F64(_) => TypeTag::F64,
+            VMPValue::Ptr(_) => TypeTag::Ptr,
         }
     }
 
@@ -66,18 +66,18 @@ impl TypeTag {
 
 /// 完整的虚拟机运行时，支持跳转和控制流
 #[repr(C)]
-pub struct JustAVMRuntime {
+pub struct VMPRuntime {
     /// 虚拟栈
-    stack: Vec<AVMValue>,
+    stack: Vec<VMPValue>,
     /// 寄存器组（稀疏存储）
-    registers: HashMap<u32, AVMValue>,
+    registers: HashMap<u32, VMPValue>,
     /// 内存堆
     memory: Vec<u8>,
     /// 内存分配器状态
     memory_allocator: MemoryAllocator,
     /// 函数调用表
-    syscalls_table: HashMap<u64, Box<dyn Fn(&JustAVMRuntime) -> Result<AVMValue>>>,
-    function_table: HashMap<String, Box<dyn Fn(&JustAVMRuntime) -> Result<AVMValue>>>,
+    syscalls_table: HashMap<u64, Box<dyn Fn(&VMPRuntime) -> Result<VMPValue>>>,
+    function_table: HashMap<String, Box<dyn Fn(&VMPRuntime) -> Result<VMPValue>>>,
     /// 程序计数器
     pc: usize,
     /// 标签映射表（标签名 -> 指令索引）
@@ -99,7 +99,7 @@ struct MemoryAllocator {
 #[derive(Debug, Clone)]
 struct CallFrame {
     return_pc: usize,
-    saved_registers: HashMap<u32, AVMValue>,
+    saved_registers: HashMap<u32, VMPValue>,
     frame_pointer: usize,
 }
 
@@ -112,7 +112,7 @@ pub struct ExecutionStats {
     pub execution_time_ns: u64,
 }
 
-impl JustAVMRuntime {
+impl VMPRuntime {
     pub fn new() -> Self {
         let mut this = Self {
             stack: Vec::new(),
@@ -142,23 +142,23 @@ impl JustAVMRuntime {
     /// 注册内置函数（如 printf）
     fn register_builtins(&mut self) {
         self.function_table
-            .insert("printf".to_string(), Box::new(|runtime| Ok(AVMValue::Undef)));
+            .insert("printf".to_string(), Box::new(|runtime| Ok(VMPValue::Undef)));
     }
 
-    pub fn push_stack(&mut self, value: AVMValue) {
+    pub fn push_stack(&mut self, value: VMPValue) {
         self.stack.push(value);
         self.stats.stack_max_depth = self.stats.stack_max_depth.max(self.stack.len());
     }
 
-    pub fn pop_stack(&mut self) -> Option<AVMValue> {
+    pub fn pop_stack(&mut self) -> Option<VMPValue> {
         self.stack.pop()
     }
 
-    pub fn peek_stack(&self) -> Result<&AVMValue> {
+    pub fn peek_stack(&self) -> Result<&VMPValue> {
         self.stack.last().ok_or_else(|| anyhow!("Stack underflow"))
     }
 
-    pub fn set_register(&mut self, reg: u32, value: AVMValue) {
+    pub fn set_register(&mut self, reg: u32, value: VMPValue) {
         self.registers.insert(reg, value);
     }
 
@@ -178,16 +178,16 @@ impl JustAVMRuntime {
     }
 
     /// 注册外部函数
-    pub fn register_function(&mut self, id: u64, func: Box<dyn Fn(&JustAVMRuntime) -> Result<AVMValue>>) {
+    pub fn register_function(&mut self, id: u64, func: Box<dyn Fn(&VMPRuntime) -> Result<VMPValue>>) {
         self.syscalls_table.insert(id, func);
     }
 
     /// 预处理指令序列，建立标签映射
-    fn preprocess_instructions(&mut self, instructions: &[AVMOpcode]) -> Result<()> {
+    fn preprocess_instructions(&mut self, instructions: &[VMPOpcode]) -> Result<()> {
         self.labels.clear();
 
         for (i, inst) in instructions.iter().enumerate() {
-            if let AVMOpcode::Label { name } = inst {
+            if let VMPOpcode::Label { name } = inst {
                 if self.labels.contains_key(name) {
                     return Err(anyhow!("Duplicate label: {}", name));
                 }
@@ -203,7 +203,7 @@ impl JustAVMRuntime {
     }
 
     /// 执行指令序列
-    pub fn execute(&mut self, instructions: &[AVMOpcode]) -> Result<Option<AVMValue>> {
+    pub fn execute(&mut self, instructions: &[VMPOpcode]) -> Result<Option<VMPValue>> {
         let start_time = std::time::Instant::now();
 
         // 预处理指令建立标签映射
@@ -253,14 +253,14 @@ impl JustAVMRuntime {
     }
 
     /// 执行单条指令
-    fn execute_instruction(&mut self, inst: &AVMOpcode, instructions: &[AVMOpcode]) -> Result<ControlFlow> {
+    fn execute_instruction(&mut self, inst: &VMPOpcode, instructions: &[VMPOpcode]) -> Result<ControlFlow> {
         match inst {
-            AVMOpcode::Push { value } => {
+            VMPOpcode::Push { value } => {
                 self.stack.push(value.clone());
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Pop => {
+            VMPOpcode::Pop => {
                 if self.stack.is_empty() {
                     return Err(anyhow!("Stack underflow on POP at PC {}", self.pc));
                 }
@@ -268,7 +268,7 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::PopToReg { reg } => {
+            VMPOpcode::PopToReg { reg } => {
                 let value = self
                     .stack
                     .pop()
@@ -277,7 +277,7 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::PushFromReg { reg } => {
+            VMPOpcode::PushFromReg { reg } => {
                 let value = self
                     .registers
                     .get(reg)
@@ -287,35 +287,35 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::ClearReg { reg } => {
+            VMPOpcode::ClearReg { reg } => {
                 self.registers.remove(reg);
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Alloca { size } => {
+            VMPOpcode::Alloca { size } => {
                 let address = self.allocate_memory(*size)?;
-                self.stack.push(AVMValue::Ptr(address));
+                self.stack.push(VMPValue::Ptr(address));
                 self.stats.memory_allocations += 1;
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Alloca2 => {
+            VMPOpcode::Alloca2 => {
                 let size_val = self
                     .stack
                     .pop()
                     .ok_or_else(|| anyhow!("Stack underflow on Alloca2 at PC {}", self.pc))?;
                 let size = match size_val {
-                    AVMValue::I64(s) => s as usize,
-                    AVMValue::I32(s) => s as usize,
+                    VMPValue::I64(s) => s as usize,
+                    VMPValue::I32(s) => s as usize,
                     _ => return Err(anyhow!("Invalid size type for Alloca2 at PC {}", self.pc)),
                 };
                 let address = self.allocate_memory(size)?;
-                self.stack.push(AVMValue::Ptr(address));
+                self.stack.push(VMPValue::Ptr(address));
                 self.stats.memory_allocations += 1;
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Store { address } => {
+            VMPOpcode::Store { address } => {
                 let value = self
                     .stack
                     .pop()
@@ -324,7 +324,7 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::StoreValue => {
+            VMPOpcode::StoreValue => {
                 let value = self
                     .stack
                     .pop()
@@ -334,26 +334,26 @@ impl JustAVMRuntime {
                     .pop()
                     .ok_or_else(|| anyhow!("Stack underflow on StoreValue at PC {}", self.pc))?;
                 let address = match ptr {
-                    AVMValue::Ptr(addr) => addr,
+                    VMPValue::Ptr(addr) => addr,
                     _ => return Err(anyhow!("Invalid pointer type for StoreValue at PC {}", self.pc)),
                 };
                 self.store_value_memory(address, &value)?;
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Load { address } => {
+            VMPOpcode::Load { address } => {
                 let value = self.load_value_memory(*address)?;
                 self.stack.push(value);
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::LoadValue => {
+            VMPOpcode::LoadValue => {
                 let ptr = self
                     .stack
                     .pop()
                     .ok_or_else(|| anyhow!("Stack underflow on LoadValue at PC {}", self.pc))?;
                 let address = match ptr {
-                    AVMValue::Ptr(addr) => addr,
+                    VMPValue::Ptr(addr) => addr,
                     _ => return Err(anyhow!("Invalid pointer type for LoadValue at PC {}", self.pc)),
                 };
                 let value = self.load_value_memory(address)?;
@@ -362,7 +362,7 @@ impl JustAVMRuntime {
             },
 
             // 算术运算
-            AVMOpcode::Add { nsw: _, nuw: _ } => {
+            VMPOpcode::Add { nsw: _, nuw: _ } => {
                 let rhs = self
                     .stack
                     .pop()
@@ -376,7 +376,7 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Sub => {
+            VMPOpcode::Sub => {
                 let rhs = self
                     .stack
                     .pop()
@@ -390,7 +390,7 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Mul => {
+            VMPOpcode::Mul => {
                 let rhs = self
                     .stack
                     .pop()
@@ -404,7 +404,7 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Div => {
+            VMPOpcode::Div => {
                 let rhs = self
                     .stack
                     .pop()
@@ -419,7 +419,7 @@ impl JustAVMRuntime {
             },
 
             // 跳转指令
-            AVMOpcode::Jump { target } => {
+            VMPOpcode::Jump { target } => {
                 let target_pc = self
                     .labels
                     .get(target)
@@ -427,7 +427,7 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Jump(*target_pc))
             },
 
-            AVMOpcode::JumpIf { target } => {
+            VMPOpcode::JumpIf { target } => {
                 let condition = self
                     .stack
                     .pop()
@@ -443,7 +443,7 @@ impl JustAVMRuntime {
                 }
             },
 
-            AVMOpcode::JumpIfNot { target } => {
+            VMPOpcode::JumpIfNot { target } => {
                 let condition = self
                     .stack
                     .pop()
@@ -460,101 +460,101 @@ impl JustAVMRuntime {
             },
 
             // 比较指令
-            AVMOpcode::ICmpEq => {
+            VMPOpcode::ICmpEq => {
                 unimplemented!()
             },
 
-            AVMOpcode::ICmpNe => {
+            VMPOpcode::ICmpNe => {
                 unimplemented!()
             },
 
-            AVMOpcode::ICmpSlt => {
+            VMPOpcode::ICmpSlt => {
                 unimplemented!()
             },
 
-            AVMOpcode::ICmpSle => {
+            VMPOpcode::ICmpSle => {
                 unimplemented!()
             },
 
-            AVMOpcode::ICmpSgt => {
+            VMPOpcode::ICmpSgt => {
                 unimplemented!()
             },
 
-            AVMOpcode::ICmpSge => {
+            VMPOpcode::ICmpSge => {
                 unimplemented!()
             },
 
-            AVMOpcode::ICmpUlt => {
+            VMPOpcode::ICmpUlt => {
                 unimplemented!()
             },
 
-            AVMOpcode::ICmpUle => {
+            VMPOpcode::ICmpUle => {
                 unimplemented!()
             },
 
-            AVMOpcode::ICmpUgt => {
+            VMPOpcode::ICmpUgt => {
                 unimplemented!()
             },
 
-            AVMOpcode::ICmpUge => {
+            VMPOpcode::ICmpUge => {
                 unimplemented!()
             },
 
             // 位运算指令
-            AVMOpcode::And => {
+            VMPOpcode::And => {
                 unimplemented!()
             },
 
-            AVMOpcode::Or => {
+            VMPOpcode::Or => {
                 unimplemented!()
             },
 
-            AVMOpcode::Xor => {
+            VMPOpcode::Xor => {
                 unimplemented!()
             },
 
-            AVMOpcode::Shl => {
+            VMPOpcode::Shl => {
                 unimplemented!()
             },
 
-            AVMOpcode::LShr => {
+            VMPOpcode::LShr => {
                 unimplemented!()
             },
 
-            AVMOpcode::AShr => {
+            VMPOpcode::AShr => {
                 unimplemented!()
             },
 
             // 类型转换指令
-            AVMOpcode::Trunc { target_width } => {
+            VMPOpcode::Trunc { target_width } => {
                 unimplemented!()
             },
 
-            AVMOpcode::ZExt { target_width } => {
+            VMPOpcode::ZExt { target_width } => {
                 unimplemented!()
             },
 
-            AVMOpcode::SExt { target_width } => {
+            VMPOpcode::SExt { target_width } => {
                 unimplemented!()
             },
 
-            AVMOpcode::FPToSI { target_width } => {
+            VMPOpcode::FPToSI { target_width } => {
                 unimplemented!()
             },
 
-            AVMOpcode::FPToUI { target_width } => {
+            VMPOpcode::FPToUI { target_width } => {
                 unimplemented!()
             },
 
-            AVMOpcode::SIToFP { is_double } => {
+            VMPOpcode::SIToFP { is_double } => {
                 unimplemented!()
             },
 
-            AVMOpcode::UIToFP { is_double } => {
+            VMPOpcode::UIToFP { is_double } => {
                 unimplemented!()
             },
 
-            AVMOpcode::Call {
+            VMPOpcode::Call {
                 function_name,
                 is_void,
                 arg_num,
@@ -575,7 +575,7 @@ impl JustAVMRuntime {
                 //     func();
                 //     if !*is_void {
                 //         // 假设函数返回 i32 0（简化处理）
-                //         self.stack.push(AVMValue::I32(0));
+                //         self.stack.push(VMPValue::I32(0));
                 //     }
                 // } else {
                 //     return Err(anyhow!("Function {} not found at PC {}", function_name, self.pc));
@@ -585,7 +585,7 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Ret => {
+            VMPOpcode::Ret => {
                 let ret_val = if self.stack.is_empty() {
                     None
                 } else {
@@ -603,9 +603,9 @@ impl JustAVMRuntime {
                 }
             },
 
-            AVMOpcode::Nop => Ok(ControlFlow::Continue),
+            VMPOpcode::Nop => Ok(ControlFlow::Continue),
 
-            AVMOpcode::Swap => {
+            VMPOpcode::Swap => {
                 if self.stack.len() < 2 {
                     return Err(anyhow!("Stack underflow on Swap at PC {}", self.pc));
                 }
@@ -614,7 +614,7 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Dup => {
+            VMPOpcode::Dup => {
                 let top = self
                     .stack
                     .last()
@@ -624,7 +624,7 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::TypeCheckInt { width } => {
+            VMPOpcode::TypeCheckInt { width } => {
                 let top = self
                     .stack
                     .last()
@@ -641,14 +641,14 @@ impl JustAVMRuntime {
                 Ok(ControlFlow::Continue)
             },
 
-            AVMOpcode::Label { name: _ } => {
+            VMPOpcode::Label { name: _ } => {
                 // 标签不需要执行任何操作
                 Ok(ControlFlow::Continue)
             },
-            AVMOpcode::MetaGVar { reg, name } => {
+            VMPOpcode::MetaGVar { reg, name } => {
                 // 全局变量元信息不需要执行任何操作
                 println!("[RT] MetaGVar {} {}", reg, name);
-                self.set_register(*reg, AVMValue::Undef);
+                self.set_register(*reg, VMPValue::Undef);
                 Ok(ControlFlow::Continue)
             },
         }
@@ -670,7 +670,7 @@ impl JustAVMRuntime {
     }
 
     // 存储值到内存，格式：[类型标签(1字节)] + [值数据]
-    fn store_value_memory(&mut self, address: usize, value: &AVMValue) -> Result<()> {
+    fn store_value_memory(&mut self, address: usize, value: &VMPValue) -> Result<()> {
         let type_tag = TypeTag::from_value(value);
         let value_bytes = self.value_to_bytes(value);
         let total_size = 1 + value_bytes.len(); // 1字节类型标签 + 值大小
@@ -698,7 +698,7 @@ impl JustAVMRuntime {
     }
 
     // 从内存加载值，读取对象头确定类型
-    fn load_value_memory(&self, address: usize) -> Result<AVMValue> {
+    fn load_value_memory(&self, address: usize) -> Result<VMPValue> {
         if address >= self.memory.len() {
             return Err(anyhow!("Memory load out of bounds: address {:#x}", address));
         }
@@ -716,44 +716,44 @@ impl JustAVMRuntime {
 
         // 根据类型标签读取相应大小的数据
         let value = match type_tag {
-            TypeTag::Undef => AVMValue::Undef,
+            TypeTag::Undef => VMPValue::Undef,
             TypeTag::I1 => {
                 let byte = self.memory[address + 1];
-                AVMValue::I1(byte != 0)
+                VMPValue::I1(byte != 0)
             },
             TypeTag::I8 => {
                 let byte = self.memory[address + 1];
-                AVMValue::I8(byte as i8)
+                VMPValue::I8(byte as i8)
             },
             TypeTag::I16 => {
                 let mut bytes = [0u8; 2];
                 bytes.copy_from_slice(&self.memory[address + 1..address + 3]);
-                AVMValue::I16(i16::from_le_bytes(bytes))
+                VMPValue::I16(i16::from_le_bytes(bytes))
             },
             TypeTag::I32 => {
                 let mut bytes = [0u8; 4];
                 bytes.copy_from_slice(&self.memory[address + 1..address + 5]);
-                AVMValue::I32(i32::from_le_bytes(bytes))
+                VMPValue::I32(i32::from_le_bytes(bytes))
             },
             TypeTag::I64 => {
                 let mut bytes = [0u8; 8];
                 bytes.copy_from_slice(&self.memory[address + 1..address + 9]);
-                AVMValue::I64(i64::from_le_bytes(bytes))
+                VMPValue::I64(i64::from_le_bytes(bytes))
             },
             TypeTag::F32 => {
                 let mut bytes = [0u8; 4];
                 bytes.copy_from_slice(&self.memory[address + 1..address + 5]);
-                AVMValue::F32(f32::from_le_bytes(bytes))
+                VMPValue::F32(f32::from_le_bytes(bytes))
             },
             TypeTag::F64 => {
                 let mut bytes = [0u8; 8];
                 bytes.copy_from_slice(&self.memory[address + 1..address + 9]);
-                AVMValue::F64(f64::from_le_bytes(bytes))
+                VMPValue::F64(f64::from_le_bytes(bytes))
             },
             TypeTag::Ptr => {
                 let mut bytes = [0u8; 8];
                 bytes.copy_from_slice(&self.memory[address + 1..address + 9]);
-                AVMValue::Ptr(usize::from_le_bytes(bytes))
+                VMPValue::Ptr(usize::from_le_bytes(bytes))
             },
         };
 
@@ -767,67 +767,67 @@ impl JustAVMRuntime {
         Ok(value)
     }
 
-    fn value_to_bytes(&self, value: &AVMValue) -> Vec<u8> {
+    fn value_to_bytes(&self, value: &VMPValue) -> Vec<u8> {
         match value {
-            AVMValue::I1(v) => vec![if *v { 1 } else { 0 }],
-            AVMValue::I8(v) => v.to_le_bytes().to_vec(),
-            AVMValue::I16(v) => v.to_le_bytes().to_vec(),
-            AVMValue::I32(v) => v.to_le_bytes().to_vec(),
-            AVMValue::I64(v) => v.to_le_bytes().to_vec(),
-            AVMValue::F32(v) => v.to_le_bytes().to_vec(),
-            AVMValue::F64(v) => v.to_le_bytes().to_vec(),
-            AVMValue::Ptr(v) => v.to_le_bytes().to_vec(),
-            AVMValue::Undef => vec![], // 未定义值不需要数据
+            VMPValue::I1(v) => vec![if *v { 1 } else { 0 }],
+            VMPValue::I8(v) => v.to_le_bytes().to_vec(),
+            VMPValue::I16(v) => v.to_le_bytes().to_vec(),
+            VMPValue::I32(v) => v.to_le_bytes().to_vec(),
+            VMPValue::I64(v) => v.to_le_bytes().to_vec(),
+            VMPValue::F32(v) => v.to_le_bytes().to_vec(),
+            VMPValue::F64(v) => v.to_le_bytes().to_vec(),
+            VMPValue::Ptr(v) => v.to_le_bytes().to_vec(),
+            VMPValue::Undef => vec![], // 未定义值不需要数据
         }
     }
 
-    fn add_values(&self, lhs: &AVMValue, rhs: &AVMValue) -> Result<AVMValue> {
+    fn add_values(&self, lhs: &VMPValue, rhs: &VMPValue) -> Result<VMPValue> {
         match (lhs, rhs) {
-            (AVMValue::I32(l), AVMValue::I32(r)) => Ok(AVMValue::I32(l.wrapping_add(*r))),
-            (AVMValue::I64(l), AVMValue::I64(r)) => Ok(AVMValue::I64(l.wrapping_add(*r))),
-            (AVMValue::F32(l), AVMValue::F32(r)) => Ok(AVMValue::F32(l + r)),
-            (AVMValue::F64(l), AVMValue::F64(r)) => Ok(AVMValue::F64(l + r)),
-            (AVMValue::Ptr(l), AVMValue::I64(r)) => Ok(AVMValue::Ptr(l.wrapping_add(*r as usize))),
+            (VMPValue::I32(l), VMPValue::I32(r)) => Ok(VMPValue::I32(l.wrapping_add(*r))),
+            (VMPValue::I64(l), VMPValue::I64(r)) => Ok(VMPValue::I64(l.wrapping_add(*r))),
+            (VMPValue::F32(l), VMPValue::F32(r)) => Ok(VMPValue::F32(l + r)),
+            (VMPValue::F64(l), VMPValue::F64(r)) => Ok(VMPValue::F64(l + r)),
+            (VMPValue::Ptr(l), VMPValue::I64(r)) => Ok(VMPValue::Ptr(l.wrapping_add(*r as usize))),
             _ => Err(anyhow!("Incompatible types for addition: {:?} + {:?}", lhs, rhs)),
         }
     }
 
-    fn sub_values(&self, lhs: &AVMValue, rhs: &AVMValue) -> Result<AVMValue> {
+    fn sub_values(&self, lhs: &VMPValue, rhs: &VMPValue) -> Result<VMPValue> {
         match (lhs, rhs) {
-            (AVMValue::I32(l), AVMValue::I32(r)) => Ok(AVMValue::I32(l.wrapping_sub(*r))),
-            (AVMValue::I64(l), AVMValue::I64(r)) => Ok(AVMValue::I64(l.wrapping_sub(*r))),
-            (AVMValue::F32(l), AVMValue::F32(r)) => Ok(AVMValue::F32(l - r)),
-            (AVMValue::F64(l), AVMValue::F64(r)) => Ok(AVMValue::F64(l - r)),
+            (VMPValue::I32(l), VMPValue::I32(r)) => Ok(VMPValue::I32(l.wrapping_sub(*r))),
+            (VMPValue::I64(l), VMPValue::I64(r)) => Ok(VMPValue::I64(l.wrapping_sub(*r))),
+            (VMPValue::F32(l), VMPValue::F32(r)) => Ok(VMPValue::F32(l - r)),
+            (VMPValue::F64(l), VMPValue::F64(r)) => Ok(VMPValue::F64(l - r)),
             _ => Err(anyhow!("Incompatible types for subtraction: {:?} - {:?}", lhs, rhs)),
         }
     }
 
-    fn mul_values(&self, lhs: &AVMValue, rhs: &AVMValue) -> Result<AVMValue> {
+    fn mul_values(&self, lhs: &VMPValue, rhs: &VMPValue) -> Result<VMPValue> {
         match (lhs, rhs) {
-            (AVMValue::I32(l), AVMValue::I32(r)) => Ok(AVMValue::I32(l.wrapping_mul(*r))),
-            (AVMValue::I64(l), AVMValue::I64(r)) => Ok(AVMValue::I64(l.wrapping_mul(*r))),
-            (AVMValue::F32(l), AVMValue::F32(r)) => Ok(AVMValue::F32(l * r)),
-            (AVMValue::F64(l), AVMValue::F64(r)) => Ok(AVMValue::F64(l * r)),
+            (VMPValue::I32(l), VMPValue::I32(r)) => Ok(VMPValue::I32(l.wrapping_mul(*r))),
+            (VMPValue::I64(l), VMPValue::I64(r)) => Ok(VMPValue::I64(l.wrapping_mul(*r))),
+            (VMPValue::F32(l), VMPValue::F32(r)) => Ok(VMPValue::F32(l * r)),
+            (VMPValue::F64(l), VMPValue::F64(r)) => Ok(VMPValue::F64(l * r)),
             _ => Err(anyhow!("Incompatible types for multiplication: {:?} * {:?}", lhs, rhs)),
         }
     }
 
-    fn div_values(&self, lhs: &AVMValue, rhs: &AVMValue) -> Result<AVMValue> {
+    fn div_values(&self, lhs: &VMPValue, rhs: &VMPValue) -> Result<VMPValue> {
         match (lhs, rhs) {
-            (AVMValue::I32(l), AVMValue::I32(r)) => {
+            (VMPValue::I32(l), VMPValue::I32(r)) => {
                 if *r == 0 {
                     return Err(anyhow!("Division by zero"));
                 }
-                Ok(AVMValue::I32(l / r))
+                Ok(VMPValue::I32(l / r))
             },
-            (AVMValue::I64(l), AVMValue::I64(r)) => {
+            (VMPValue::I64(l), VMPValue::I64(r)) => {
                 if *r == 0 {
                     return Err(anyhow!("Division by zero"));
                 }
-                Ok(AVMValue::I64(l / r))
+                Ok(VMPValue::I64(l / r))
             },
-            (AVMValue::F32(l), AVMValue::F32(r)) => Ok(AVMValue::F32(l / r)),
-            (AVMValue::F64(l), AVMValue::F64(r)) => Ok(AVMValue::F64(l / r)),
+            (VMPValue::F32(l), VMPValue::F32(r)) => Ok(VMPValue::F32(l / r)),
+            (VMPValue::F64(l), VMPValue::F64(r)) => Ok(VMPValue::F64(l / r)),
             _ => Err(anyhow!("Incompatible types for division: {:?} / {:?}", lhs, rhs)),
         }
     }
@@ -839,7 +839,7 @@ enum ControlFlow {
     Continue,
     Jump(usize),
     Call(usize, usize), // target_pc, return_pc
-    Return(Option<AVMValue>),
+    Return(Option<VMPValue>),
 }
 
 impl ExecutionStats {
