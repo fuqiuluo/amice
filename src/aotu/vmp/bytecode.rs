@@ -135,16 +135,17 @@ impl VMPBytecodeEncoder {
         // 写入文件头
         self.write_header(&mut cursor)?;
 
+        let mut inst = "".to_string();
         // 编码每条指令
         for (index, instruction) in instructions.iter().enumerate() {
             if log_enabled!(Level::Debug) {
-                debug!("Encoding instruction {}: {}", index, instruction);
+                inst = format!("{}\n {}: {}", inst, index, instruction);
             }
             self.encode_instruction(&mut cursor, instruction)?;
         }
 
         if log_enabled!(Level::Debug) {
-            debug!("Generated {} bytes of bytecode", bytecode.len());
+            debug!("Generated {} bytes of bytecode: {}", bytecode.len(), inst);
         }
         Ok(bytecode)
     }

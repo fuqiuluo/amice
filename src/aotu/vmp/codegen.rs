@@ -9,6 +9,7 @@ use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::BasicTypeEnum;
 use llvm_plugin::inkwell::values::{BasicValueEnum, FunctionValue, GlobalValue};
 use log::{Level, debug, log_enabled};
+use std::path::PathBuf;
 
 pub struct VMPCodeGenerator<'a, 'b> {
     module: &'b mut Module<'a>,
@@ -90,6 +91,8 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
             .encoder
             .encode_instructions(compiler_context.finalize())
             .map_err(|e| anyhow!("Failed to serialize instructions to bytecode: {}", e))?;
+
+        //std::fs::write(PathBuf::from("avm_bytecode.bin"), &bytecode_data)?;
 
         if log_enabled!(Level::Debug) {
             debug!("Serialized instructions to {} bytes of bytecode", bytecode_data.len());

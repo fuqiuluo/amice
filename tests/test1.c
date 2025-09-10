@@ -7,7 +7,7 @@ int __attribute__((annotate("+vmp"))) main(void) {
     int a = 10;
     int b = 20;
 
-    printf("%d\n", a + b);
+    //printf("%d\n", a + b);
 
     c[0] = 10;
     d[1][2] = 20;
