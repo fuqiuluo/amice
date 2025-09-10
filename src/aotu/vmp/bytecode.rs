@@ -119,6 +119,14 @@ impl VMPBytecodeEncoder {
         });
     }
 
+    pub fn get_value_type_map(&self) -> &HashMap<BytecodeValueType, u8> {
+        &self.value_type_map
+    }
+
+    pub fn get_opcode_map(&self) -> &HashMap<BytecodeOp, u16> {
+        &self.opcode_map
+    }
+
     /// 将指令序列编码为字节码
     pub fn encode_instructions(&mut self, instructions: &[VMPOpcode]) -> Result<Vec<u8>> {
         if log_enabled!(Level::Debug) {

@@ -52,8 +52,6 @@ impl AmicePass for VMP {
 
         let mut codegen = VMPCodeGenerator::new(module)?;
 
-        codegen.generate_runtime_init()?;
-
         // 处理每个函数
         for function in functions {
             if let Err(e) = self.handle_function_with_vm(function, &mut codegen, self.default_config.flags) {

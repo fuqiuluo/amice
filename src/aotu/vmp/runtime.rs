@@ -293,8 +293,8 @@ impl VMPRuntime {
             },
 
             VMPOpcode::Alloca { size } => {
-                let address = self.allocate_memory(*size)?;
-                self.stack.push(VMPValue::Ptr(address));
+                let address = self.allocate_memory(*size + 1)?;
+                self.stack.push(VMPValue::Ptr(address - 1));
                 self.stats.memory_allocations += 1;
                 Ok(ControlFlow::Continue)
             },
@@ -309,8 +309,8 @@ impl VMPRuntime {
                     VMPValue::I32(s) => s as usize,
                     _ => return Err(anyhow!("Invalid size type for Alloca2 at PC {}", self.pc)),
                 };
-                let address = self.allocate_memory(size)?;
-                self.stack.push(VMPValue::Ptr(address));
+                let address = self.allocate_memory(size + 1)?;
+                self.stack.push(VMPValue::Ptr(address - 1));
                 self.stats.memory_allocations += 1;
                 Ok(ControlFlow::Continue)
             },
@@ -663,8 +663,8 @@ impl VMPRuntime {
             self.memory.resize(address + size + 1024, 0);
         }
 
-        self.memory_allocator.allocations.insert(address, size + 1);
-        self.memory_allocator.next_address = address + size + 1; // +1 for type tag
+        self.memory_allocator.allocations.insert(address, size);
+        self.memory_allocator.next_address = address + size;
 
         Ok(address)
     }
@@ -680,11 +680,11 @@ impl VMPRuntime {
         }
 
         // 写入类型标签
-        self.memory[address] = type_tag as u8;
+        self.memory[address - 1] = type_tag as u8;
 
         // 写入值数据
         if !value_bytes.is_empty() {
-            self.memory[address + 1..address + 1 + value_bytes.len()].copy_from_slice(&value_bytes);
+            self.memory[address..address + value_bytes.len()].copy_from_slice(&value_bytes);
         }
 
         if self.debug_mode {
@@ -704,10 +704,10 @@ impl VMPRuntime {
         }
 
         // 读取类型标签
-        let type_tag = TypeTag::from_u8(self.memory[address])?;
+        let type_tag = TypeTag::from_u8(self.memory[address - 1])?;
         let value_size = type_tag.value_size();
 
-        if address + 1 + value_size > self.memory.len() {
+        if address + value_size > self.memory.len() {
             return Err(anyhow!(
                 "Memory load out of bounds: insufficient data for type {:?}",
                 type_tag
@@ -718,41 +718,41 @@ impl VMPRuntime {
         let value = match type_tag {
             TypeTag::Undef => VMPValue::Undef,
             TypeTag::I1 => {
-                let byte = self.memory[address + 1];
+                let byte = self.memory[address];
                 VMPValue::I1(byte != 0)
             },
             TypeTag::I8 => {
-                let byte = self.memory[address + 1];
+                let byte = self.memory[address];
                 VMPValue::I8(byte as i8)
             },
             TypeTag::I16 => {
                 let mut bytes = [0u8; 2];
-                bytes.copy_from_slice(&self.memory[address + 1..address + 3]);
+                bytes.copy_from_slice(&self.memory[address..address + type_tag.value_size()]);
                 VMPValue::I16(i16::from_le_bytes(bytes))
             },
             TypeTag::I32 => {
                 let mut bytes = [0u8; 4];
-                bytes.copy_from_slice(&self.memory[address + 1..address + 5]);
+                bytes.copy_from_slice(&self.memory[address..address + type_tag.value_size()]);
                 VMPValue::I32(i32::from_le_bytes(bytes))
             },
             TypeTag::I64 => {
                 let mut bytes = [0u8; 8];
-                bytes.copy_from_slice(&self.memory[address + 1..address + 9]);
+                bytes.copy_from_slice(&self.memory[address..address + type_tag.value_size()]);
                 VMPValue::I64(i64::from_le_bytes(bytes))
             },
             TypeTag::F32 => {
                 let mut bytes = [0u8; 4];
-                bytes.copy_from_slice(&self.memory[address + 1..address + 5]);
+                bytes.copy_from_slice(&self.memory[address..address + type_tag.value_size()]);
                 VMPValue::F32(f32::from_le_bytes(bytes))
             },
             TypeTag::F64 => {
                 let mut bytes = [0u8; 8];
-                bytes.copy_from_slice(&self.memory[address + 1..address + 9]);
+                bytes.copy_from_slice(&self.memory[address..address + type_tag.value_size()]);
                 VMPValue::F64(f64::from_le_bytes(bytes))
             },
             TypeTag::Ptr => {
                 let mut bytes = [0u8; 8];
-                bytes.copy_from_slice(&self.memory[address + 1..address + 9]);
+                bytes.copy_from_slice(&self.memory[address..address + type_tag.value_size()]);
                 VMPValue::Ptr(usize::from_le_bytes(bytes))
             },
         };
