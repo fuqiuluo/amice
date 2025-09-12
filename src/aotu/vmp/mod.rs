@@ -4,6 +4,7 @@ mod compiler;
 mod isa;
 mod runtime;
 mod translator;
+mod codegen2;
 
 use crate::aotu::vmp::codegen::VMPCodeGenerator;
 use crate::aotu::vmp::compiler::VMPCompilerContext;

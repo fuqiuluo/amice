@@ -91,6 +91,22 @@ pub enum BytecodeValueType {
     Ptr,
 }
 
+impl BytecodeValueType {
+    pub fn size(&self) -> usize {
+        match self {
+            BytecodeValueType::Undef => 0,
+            BytecodeValueType::I1 => 1,
+            BytecodeValueType::I8 => 1,
+            BytecodeValueType::I16 => 2,
+            BytecodeValueType::I32 => 4,
+            BytecodeValueType::I64 => 8,
+            BytecodeValueType::F32 => 4,
+            BytecodeValueType::F64 => 8,
+            BytecodeValueType::Ptr => 8,
+        }
+    }
+}
+
 /// 字节码编码器
 pub struct VMPBytecodeEncoder {
     opcode_map: HashMap<BytecodeOp, u16>,

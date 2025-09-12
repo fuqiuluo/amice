@@ -1,22 +1,20 @@
-use crate::aotu::vmp::bytecode::VMPBytecodeEncoder;
+use crate::aotu::vmp::bytecode::{BytecodeValueType, VMPBytecodeEncoder};
 use crate::aotu::vmp::compiler::VMPCompilerContext;
-use crate::aotu::vmp::isa::VMPOpcode;
 use crate::aotu::vmp::translator::BasicTypeEnumSized;
 use amice_llvm::inkwell2::{BuilderExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
-use llvm_plugin::inkwell::builder::Builder;
-use llvm_plugin::inkwell::context::ContextRef;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
-use llvm_plugin::inkwell::module::Linkage::LinkerPrivate;
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::types::{ArrayType, BasicType, BasicTypeEnum, StringRadix, StructType};
-use llvm_plugin::inkwell::values::{AsValueRef, BasicValueEnum, FunctionValue, GlobalValue};
+use llvm_plugin::inkwell::types::{ArrayType, BasicType, StringRadix, StructType};
+use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, GlobalValue};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
-use log::{Level, debug, log_enabled};
-use std::future::poll_fn;
-use std::path::PathBuf;
+use log::{debug, log_enabled, Level};
+
+const AVM_MEM_DEFAULT_SIZE: u64 = 1024 * 1024;
+const AVM_PAGE_SIZE: u64 = 4096;
+const AVM_ALLOC_SLACK: u64 = 1024;
 
 pub struct VMPCodeGenerator<'a, 'b> {
     module: &'b mut Module<'a>,
@@ -110,9 +108,6 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
     }
 
     fn declare_runtime_functions(&self, vmp_context: VMPCompilerContext) -> Result<RuntimeFunctions<'a>> {
-        let value_tag_map = self.encoder.get_value_type_map().clone();
-        let opcode_map = self.encoder.get_opcode_map().clone();
-
         let context = self.module.get_context();
 
         let inline_attr = context.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
@@ -132,7 +127,7 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
 
         let vm_register_module = self.gen_vm_register_module(vm_value_type, vmp_context.get_max_register())?;
         let vm_stack_module = self.gen_vm_stack_module(vm_value_type)?;
-        let vm_memory_module = self.gen_vm_memory_module()?;
+        let vm_memory_module = self.gen_vm_memory_module(vm_value_type)?;
 
         let builder = context.create_builder();
 
@@ -165,7 +160,7 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
 
             builder.build_return(None)?;
 
-            avm_runtime_destroy
+            avm_runtime_execute
         };
 
         Ok(RuntimeFunctions {
@@ -412,7 +407,7 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
             let entry = context.append_basic_block(avm_stack_push, "entry");
             builder.position_at_end(entry);
 
-            let val_ptr = builder.build_alloca(value_stack_type, "val_ptr")?;
+            let val_ptr = builder.build_alloca(vm_value_type, "val_ptr")?;
             builder.build_store(val_ptr, param_value)?;
             let len_gep = builder.build_struct_gep2(value_stack_type, param_stack, 1, "len_ptr")?;
             let len_value = builder.build_load2(i64_type, len_gep, "len")?.into_int_value();
@@ -645,7 +640,7 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
         })
     }
 
-    fn gen_vm_memory_module(&self) -> Result<VMMemoryModule<'a>> {
+    fn gen_vm_memory_module(&self, vm_value_type: StructType<'a>) -> Result<VMMemoryModule<'a>> {
         let context = self.module.get_context();
 
         let inline_attr = context.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
@@ -657,6 +652,7 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
         let i8_ptr = ptr_type!(context, i8_type);
 
         let i32_zero = i32_type.const_zero();
+        let i64_one = i64_type.const_int(1, false);
 
         let memory_type = context.struct_type(
             &[
@@ -667,6 +663,8 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
             false,
         );
         let memory_ptr = memory_type.ptr_type(AddressSpace::default());
+
+        let vm_value_ptr = vm_value_type.ptr_type(AddressSpace::default());
 
         let function_type = void_type.fn_type(&[memory_ptr.into()], false);
         let avm_mem_init = self
@@ -689,10 +687,14 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
             let size_gep = builder.build_struct_gep2(memory_type, param_memory, 1, "size_ptr")?;
             let next_addr_gep = builder.build_struct_gep2(memory_type, param_memory, 2, "next_addr_ptr")?;
 
-            let data_ptr = builder.build_array_malloc(i8_type, i32_type.const_int(1024 * 1024, false), "data_ptr")?;
+            let data_ptr = builder.build_array_malloc(
+                i8_type,
+                i32_type.const_int(AVM_MEM_DEFAULT_SIZE as u64, false),
+                "data_ptr",
+            )?;
 
             builder.build_store(data_gep, data_ptr)?;
-            builder.build_store(size_gep, i64_type.const_int(1024 * 1024, false))?;
+            builder.build_store(size_gep, i64_type.const_int(AVM_MEM_DEFAULT_SIZE as u64, false))?;
             builder.build_store(next_addr_gep, i64_type.const_int(0x1000, false))?;
             builder.build_return(None)?;
         }
@@ -776,7 +778,7 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
 
             builder.position_at_end(while_body_bb);
             let div = builder.build_int_unsigned_div(new_size_value, i64_type.const_int(2, false), "")?;
-            let add = builder.build_int_add(div, i64_type.const_int(4096, false), "add")?;
+            let add = builder.build_int_add(div, i64_type.const_int(AVM_PAGE_SIZE as u64, false), "add")?;
             let add = builder.build_int_add(new_size_value, add, "add")?;
             builder.build_store(new_size_ptr, add)?;
             builder.build_unconditional_branch(while_cond_bb)?;
@@ -800,7 +802,9 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
         }
 
         let function_type = i64_type.fn_type(&[memory_ptr.into(), i64_type.into()], false);
-        let avm_mem_alloc = self.module.add_function("avm_mem_alloc", function_type, None);
+        let avm_mem_alloc = self
+            .module
+            .add_function("avm_mem_alloc", function_type, Some(Linkage::Private));
         {
             avm_mem_alloc.add_attribute(AttributeLoc::Function, inline_attr);
 
@@ -822,8 +826,11 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
                 .build_load2(i64_type, next_addr_gep, "next_addr")?
                 .into_int_value();
             let need = builder.build_int_add(next_addr_value, param_payload_size, "need")?;
-            let need_plus_1024 =
-                builder.build_int_add(next_addr_value, i64_type.const_int(1024, false), "need_plus_1024")?;
+            let need_plus_1024 = builder.build_int_add(
+                next_addr_value,
+                i64_type.const_int(AVM_ALLOC_SLACK as u64, false),
+                "need_plus_1024",
+            )?;
 
             builder.build_call(
                 avm_mem_ensure,
@@ -836,12 +843,191 @@ impl<'a, 'b> VMPCodeGenerator<'a, 'b> {
             builder.build_return(Some(&next_addr_value))?;
         }
 
+        let function_type = void_type.fn_type(&[memory_ptr.into(), i64_type.into(), vm_value_ptr.into()], false);
+        let avm_mem_store_value = self.module.add_function("avm_mem_store_value", function_type, None);
+        {
+            avm_mem_store_value.add_attribute(AttributeLoc::Function, inline_attr);
+
+            let builder = context.create_builder();
+
+            let param_memory = avm_mem_store_value
+                .get_nth_param(0)
+                .ok_or_else(|| anyhow!("Missing parameter 0"))?
+                .into_pointer_value();
+            let param_addr = avm_mem_store_value
+                .get_nth_param(1)
+                .ok_or_else(|| anyhow!("Missing parameter 1"))?
+                .into_int_value();
+            let param_value = avm_mem_store_value
+                .get_nth_param(2)
+                .ok_or_else(|| anyhow!("Missing parameter 2"))?
+                .into_pointer_value();
+
+            let entry = context.append_basic_block(avm_mem_store_value, "entry");
+            let default_bb = context.append_basic_block(avm_mem_store_value, "sw.default");
+
+            builder.position_at_end(entry);
+
+            // GEP 到结构体字段时必须传入结构体类型
+            let tag = builder.build_struct_gep2(vm_value_type, param_value, 0, "tag_ptr")?;
+            let tag_value = builder.build_load2(i8_type, tag, "tag")?.into_int_value();
+            let value_size_in_bytes = builder.build_alloca(i32_type, "value_size_in_bytes")?;
+
+            let mut cases = Vec::new();
+            for x in self.encoder.get_value_type_map() {
+                let value_type_bb = context.append_basic_block(avm_mem_store_value, &format!("sw.{:?}", x.0));
+                let int = i8_type.const_int(*x.1 as u64, false);
+                cases.push((int, value_type_bb));
+                builder.position_at_end(value_type_bb);
+                match x.0 {
+                    BytecodeValueType::Undef => {
+                        builder.build_store(value_size_in_bytes, i32_type.const_zero())?;
+                    },
+                    BytecodeValueType::I1 => {
+                        builder.build_store(value_size_in_bytes, i32_type.const_int(1, false))?;
+                    },
+                    BytecodeValueType::I8 => {
+                        builder.build_store(value_size_in_bytes, i32_type.const_int(1, false))?;
+                    },
+                    BytecodeValueType::I16 => {
+                        builder.build_store(value_size_in_bytes, i32_type.const_int(2, false))?;
+                    },
+                    BytecodeValueType::I32 => {
+                        builder.build_store(value_size_in_bytes, i32_type.const_int(4, false))?;
+                    },
+                    BytecodeValueType::I64 => {
+                        builder.build_store(value_size_in_bytes, i32_type.const_int(8, false))?;
+                    },
+                    BytecodeValueType::F32 => {
+                        builder.build_store(value_size_in_bytes, i32_type.const_int(4, false))?;
+                    },
+                    BytecodeValueType::F64 => {
+                        builder.build_store(value_size_in_bytes, i32_type.const_int(8, false))?;
+                    },
+                    BytecodeValueType::Ptr => {
+                        builder.build_store(value_size_in_bytes, i32_type.const_int(8, false))?;
+                    },
+                }
+                builder.build_unconditional_branch(default_bb)?;
+            }
+
+            builder.position_at_end(entry);
+            builder.build_switch(tag_value, default_bb, &cases)?;
+
+            builder.position_at_end(default_bb);
+            let value_size_in_bytes = builder
+                .build_load2(i32_type, value_size_in_bytes, "value_size")?
+                .into_int_value();
+            // i32 -> i64，避免与 param_addr 相加时位宽不匹配
+            let value_size_in_bytes_i64 =
+                builder.build_int_z_extend(value_size_in_bytes, i64_type, "value_size_i64")?;
+            builder.build_call(
+                avm_mem_ensure,
+                &[
+                    param_memory.into(),
+                    builder
+                        .build_int_add(
+                            builder.build_int_add(param_addr, value_size_in_bytes_i64, "need")?,
+                            i64_one,
+                            "",
+                        )?
+                        .into(),
+                ],
+                "",
+            )?;
+            let data_gep = builder.build_struct_gep2(memory_type, param_memory, 0, "data_ptr")?;
+            let data_value = builder.build_load2(i8_ptr, data_gep, "data")?.into_pointer_value();
+            let tag_off = builder.build_int_sub(param_addr, i64_one, "")?;
+            let dest_tag_ptr = builder.build_in_bounds_gep2(i8_type, data_value, &[tag_off], "dest_ptr")?;
+            builder.build_store(dest_tag_ptr, tag_value)?;
+
+            let copy_mem_bb = context.append_basic_block(avm_mem_store_value, "copy.mem");
+            let return_bb = context.append_basic_block(avm_mem_store_value, "return");
+
+            let cmp = builder.build_int_compare(IntPredicate::EQ, value_size_in_bytes, i32_zero, "cmp")?;
+            builder.build_conditional_branch(cmp, return_bb, copy_mem_bb)?;
+
+            builder.position_at_end(copy_mem_bb);
+            let mut cases = Vec::new();
+            let default_bb = context.append_basic_block(avm_mem_store_value, "sw.mem_cpy_default");
+            for x in self.encoder.get_value_type_map() {
+                let value_type_bb = context.append_basic_block(avm_mem_store_value, &format!("sw.mem_cpy_{:?}", x.0));
+                let int = i8_type.const_int(*x.1 as u64, false);
+                cases.push((int, value_type_bb));
+                builder.position_at_end(value_type_bb);
+                // GEP 使用结构体类型，随后 bitcast 为 i8*
+                let src_value_gep = builder.build_struct_gep2(vm_value_type, param_value, 1, "value_ptr")?;
+                let src_value_ptr = builder
+                    .build_bit_cast(src_value_gep, i8_ptr, "src_value_ptr_i8")?
+                    .into_pointer_value();
+                let dest_value_ptr =
+                    builder.build_in_bounds_gep2(i8_type, data_value, &[param_addr], "dest_value_ptr")?;
+                match x.0 {
+                    BytecodeValueType::Undef => {
+                        // do nothing
+                        builder.build_unconditional_branch(return_bb)?;
+                        continue;
+                    },
+                    BytecodeValueType::I1 => {
+                        // 按字节读取再归一化为 0/1 存储
+                        let value_data = builder
+                            .build_load2(i8_type, src_value_ptr, "value_data")?
+                            .into_int_value();
+                        let conv = builder.build_int_z_extend(value_data, i32_type, "conv")?;
+                        let is_nonzero =
+                            builder.build_int_compare(IntPredicate::NE, conv, i32_type.const_zero(), "is_nonzero")?;
+                        let value_to_store = builder
+                            .build_select(
+                                is_nonzero,
+                                i8_type.const_int(1, false),
+                                i8_type.const_int(0, false),
+                                "value_to_store",
+                            )?
+                            .into_int_value();
+                        builder.build_store(dest_value_ptr, value_to_store)?;
+                    },
+                    BytecodeValueType::I8 => {
+                        builder.build_memcpy(dest_value_ptr, 1, src_value_ptr, 8, value_size_in_bytes)?;
+                    },
+                    BytecodeValueType::I16 => {
+                        builder.build_memcpy(dest_value_ptr, 2, src_value_ptr, 8, value_size_in_bytes)?;
+                    },
+                    BytecodeValueType::I32 => {
+                        builder.build_memcpy(dest_value_ptr, 4, src_value_ptr, 8, value_size_in_bytes)?;
+                    },
+                    BytecodeValueType::I64 => {
+                        builder.build_memcpy(dest_value_ptr, 8, src_value_ptr, 8, value_size_in_bytes)?;
+                    },
+                    BytecodeValueType::F32 => {
+                        builder.build_memcpy(dest_value_ptr, 4, src_value_ptr, 8, value_size_in_bytes)?;
+                    },
+                    BytecodeValueType::F64 => {
+                        builder.build_memcpy(dest_value_ptr, 8, src_value_ptr, 8, value_size_in_bytes)?;
+                    },
+                    BytecodeValueType::Ptr => {
+                        builder.build_memcpy(dest_value_ptr, 8, src_value_ptr, 8, value_size_in_bytes)?;
+                    },
+                }
+                builder.build_unconditional_branch(default_bb)?;
+            }
+
+            builder.position_at_end(copy_mem_bb);
+            builder.build_switch(tag_value, default_bb, &cases)?;
+
+            builder.position_at_end(default_bb);
+            builder.build_unconditional_branch(return_bb)?;
+
+            builder.position_at_end(return_bb);
+            builder.build_return(None)?;
+        }
+
         Ok(VMMemoryModule {
             memory_type,
             mem_init: avm_mem_init,
             mem_destroy: avm_mem_destroy,
             mem_ensure: avm_mem_ensure,
             mem_alloc: avm_mem_alloc,
+            mem_store_value: avm_mem_store_value,
         })
     }
 }
@@ -867,4 +1053,5 @@ struct VMMemoryModule<'a> {
     mem_destroy: FunctionValue<'a>,
     mem_ensure: FunctionValue<'a>,
     mem_alloc: FunctionValue<'a>,
+    mem_store_value: FunctionValue<'a>,
 }
