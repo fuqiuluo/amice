@@ -15,3 +15,4 @@ pub mod shuffle_blocks;
 pub mod split_basic_block;
 pub mod string_encryption;
 pub mod vm_flatten;
+pub mod vmp;

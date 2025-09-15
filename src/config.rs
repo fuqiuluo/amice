@@ -25,6 +25,7 @@ use std::fs;
 use std::path::Path;
 pub use string_encryption::*;
 pub use vm_flatten::*;
+pub use vmp::*;
 
 mod alias_access;
 mod basic_block_outlining;
@@ -45,6 +46,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
+mod vmp;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
@@ -76,6 +78,7 @@ pub struct Config {
     pub delay_offset_loading: DelayOffsetLoadingConfig,
     pub param_aggregate: ParamAggregateConfig,
     pub basic_block_outlining: BasicBlockOutliningConfig,
+    pub vmp: VMPConfig,
 }
 
 fn is_truthy(value: &str) -> bool {

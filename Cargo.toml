@@ -32,6 +32,7 @@ llvm20-1 = ["llvm-plugin/llvm20-1", "amice-llvm/llvm20-1"]
 [dependencies]
 amice-llvm = { path = "amice-llvm", default-features = false }
 amice-macro = { path = "amice-macro", default-features = false }
+sparse-list = { path = "sparse-list", default-features = false }
 llvm-plugin = { version = "0.6", features = ["default"] }
 log = "0.4.27"
 env_logger = "0.11.8"
@@ -46,6 +47,8 @@ serde_yaml = "0.9"
 toml = "0.9.5"
 serde_json = "1"
 ctor = "0.5.0"
+strum = "0.27"
+strum_macros = "0.27"
 
 [build-dependencies]
 cc = "1"
