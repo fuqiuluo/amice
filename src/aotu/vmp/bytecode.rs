@@ -260,7 +260,7 @@ impl VMPBytecodeEncoder {
             VMPOpcode::SIToFP { is_double } => size_of_val(is_double), // opcode + is_double
             VMPOpcode::UIToFP { is_double } => size_of_val(is_double),
 
-            VMPOpcode::Label { name } => size_of::<u64>(), // opcode + hash(name)
+            VMPOpcode::Label { name } => 0,
             VMPOpcode::MetaGVar { name, .. } => 0,
         };
 
@@ -371,18 +371,15 @@ impl VMPBytecodeEncoder {
             },
 
             VMPOpcode::Jump { target } => {
-                let target_hash = Self::siphash_u64(target);
-                cursor.write_all(&target_hash.to_le_bytes())?;
+                unimplemented!()
             },
 
             VMPOpcode::JumpIf { target } => {
-                let target_hash = Self::siphash_u64(target);
-                cursor.write_all(&target_hash.to_le_bytes())?;
+                unimplemented!()
             },
 
             VMPOpcode::JumpIfNot { target } => {
-                let target_hash = Self::siphash_u64(target);
-                cursor.write_all(&target_hash.to_le_bytes())?;
+                unimplemented!()
             },
 
             // 比较指令
@@ -429,8 +426,7 @@ impl VMPBytecodeEncoder {
             },
 
             VMPOpcode::Label { name } => {
-                let hash = Self::siphash_u64(name);
-                cursor.write_all(&hash.to_le_bytes())?;
+                // 标签不编码任何数据
             },
 
             VMPOpcode::MetaGVar { .. } => {},

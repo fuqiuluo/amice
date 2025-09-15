@@ -1,12 +1,10 @@
 mod bytecode;
-mod codegen;
 mod compiler;
 mod isa;
 mod runtime;
 mod translator;
 mod codegen2;
 
-use crate::aotu::vmp::codegen::VMPCodeGenerator;
 use crate::aotu::vmp::compiler::VMPCompilerContext;
 use crate::aotu::vmp::runtime::VMPRuntime;
 use crate::aotu::vmp::translator::IRConverter;
@@ -19,6 +17,7 @@ use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode};
 use log::{Level, log_enabled};
+use crate::aotu::vmp::codegen2::VMPCodeGenerator;
 
 #[amice(
     priority = 800,
