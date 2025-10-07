@@ -1,0 +1,162 @@
+name: Linux/macOS X64 Build For Android NDK
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: "LLVM/OPT ${{ matrix.llvm-version[0] }} ${{ matrix.os }} For Android NDK"
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version:
+          - ["14", "14-0", "140", "r25c", "r450784d1"]
+          - ["18", "18-1", "181", "r27d", "r522817d"]
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      BUILD_OUTPUT_PATH: target/release
+    
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Cache Rust Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}-android-ndk-${{ matrix.llvm-version[3] }}
+          restore-keys: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}-android-ndk-${{ matrix.llvm-version[3] }}
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
+
+      - name: Install Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt update
+          sudo apt install -y libtinfo6
+          sudo apt install -y clang
+
+      - name: Install Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euxo pipefail
+          echo "macOS: 使用预编译的 Android LLVM/Clang，跳过 apt 依赖安装"
+
+      - name: Install LLVM and Clang
+        run: |
+          set -euxo pipefail
+
+          mkdir -p "$HOME/llvm"
+          echo "$HOME/llvm/bin" >> "$GITHUB_PATH"
+
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            HOST_DIR="linux-x86"
+            LIB_EXT="so"
+          else
+            # macOS runners can be x86_64 (macos-13) or arm64 (macos-14)
+            HOST_DIR="darwin-x86"
+            LIB_EXT="dylib"
+          fi
+
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/${HOST_DIR}/+archive/refs/tags/ndk-${{ matrix.llvm-version[3] }}/clang-${{ matrix.llvm-version[4] }}.tar.gz"
+          echo "Downloading: ${CLANG_URL}"
+          curl -L -o llvm.tar.gz "${CLANG_URL}"
+          tar -C "$HOME/llvm" -xf llvm.tar.gz
+
+          env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
+          echo "${env_name}=$HOME/llvm" >> "$GITHUB_ENV"
+          # Set both to be safe on different OS
+          echo "LD_LIBRARY_PATH=$HOME/llvm/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$HOME/llvm/lib" >> "$GITHUB_ENV"
+          echo "CC=$HOME/llvm/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$HOME/llvm/bin/clang++" >> "$GITHUB_ENV"
+          echo "CXXFLAGS=-stdlib=libc++ -I$HOME/llvm/include/c++/v1" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-stdlib=libc++ -L$HOME/llvm/lib" >> "$GITHUB_ENV"
+
+          ver=${{ matrix.llvm-version[1] }}
+          if [ "${LIB_EXT}" = "so" ]; then
+            if [ ! -e "$HOME/llvm/lib/libLLVM.so" ]; then
+              if [ -e "$HOME/llvm/lib/libLLVM-${ver}.so" ]; then
+                ln -s "$HOME/llvm/lib/libLLVM-${ver}.so" "$HOME/llvm/lib/libLLVM.so"
+              elif [ -e "$HOME/llvm/lib/libLLVM-${ver}.so.1" ]; then
+                ln -s "$HOME/llvm/lib/libLLVM-${ver}.so.1" "$HOME/llvm/lib/libLLVM.so"
+              fi
+            fi
+          else
+            if [ ! -e "$HOME/llvm/lib/libLLVM.dylib" ]; then
+              if [ -e "$HOME/llvm/lib/libLLVM-${ver}.dylib" ]; then
+                ln -s "$HOME/llvm/lib/libLLVM-${ver}.dylib" "$HOME/llvm/lib/libLLVM.dylib"
+              elif [ -e "$HOME/llvm/lib/libLLVM-${ver}.dylib.1" ]; then
+                ln -s "$HOME/llvm/lib/libLLVM-${ver}.dylib.1" "$HOME/llvm/lib/libLLVM.dylib"
+              fi
+            fi
+          fi
+
+      - name: Build libamice (Release)
+        run: |
+          set -euxo pipefail
+          cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }},android-ndk
+          
+          # Determine extension by OS
+          if [ "${RUNNER_OS}" = "macOS" ]; then EXT="dylib"; else EXT="so"; fi
+
+          # Verify the built library exists
+          if [ ! -f "${{ env.BUILD_OUTPUT_PATH }}/libamice.${EXT}" ]; then
+            echo "Error: libamice.${EXT} not found in expected location"
+            ls -la "${{ env.BUILD_OUTPUT_PATH }}/"
+            exit 1
+          fi
+
+          # Show library info
+          file "${{ env.BUILD_OUTPUT_PATH }}/libamice.${EXT}"
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            otool -L "${{ env.BUILD_OUTPUT_PATH }}/libamice.${EXT}" || true
+          else
+            ldd "${{ env.BUILD_OUTPUT_PATH }}/libamice.${EXT}" || true
+          fi
+
+      - name: Upload Build Artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: libamice-llvm${{ matrix.llvm-version[0] }}-linux-x64-android-ndk
+          path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.so
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload Build Artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: libamice-llvm${{ matrix.llvm-version[0] }}-macos-x64-android-ndk
+          path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.dylib
+          retention-days: 30
+          if-no-files-found: error
