@@ -190,12 +190,7 @@ fn do_handle(
     builder.build_memset(visited_array, 1, i8_zero, block_count)?;
     let key_ptr = builder.build_bit_cast(key_array, i8_ptr, "key_ptr")?;
     let key_array_size = builder.build_int_mul(block_count, i64_type.size_of(), "key_array_size")?;
-    builder.build_memset(
-        key_ptr.into_pointer_value(),
-        8,
-        i8_zero,
-        key_array_size,
-    )?;
+    builder.build_memset(key_ptr.into_pointer_value(), 8, i8_zero, key_array_size)?;
 
     let dominators = DominatorTree::from_function(function)
         .map_err(|err| anyhow::anyhow!("failed to build dominator tree: {}", err))?;
