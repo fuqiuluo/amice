@@ -83,21 +83,21 @@ jobs:
           fi
 
           # Prefer lib64 if present, otherwise use lib
-          if [ -d "$LLVM_HOME/lib64" ]; then
-            LIBDIR="$LLVM_HOME/lib64"
+          if [ -d "${LLVM_HOME}/lib64" ]; then
+            LIBDIR="${LLVM_HOME}/lib64"
           else
-            LIBDIR="$LLVM_HOME/lib"
+            LIBDIR="${LLVM_HOME}/lib"
           fi
           echo "LLVM_LIBDIR=${LIBDIR}" >> "$GITHUB_ENV"
 
           # Compiler env
-          echo "CC=$LLVM_HOME/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=$LLVM_HOME/bin/clang++" >> "$GITHUB_ENV"
+          echo "CC=${LLVM_HOME}/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=${LLVM_HOME}/bin/clang++" >> "$GITHUB_ENV"
 
           # OS-specific library search env to avoid DYLD conflicts on macOS
           if [ "${RUNNER_OS}" = "Linux" ]; then
             echo "LD_LIBRARY_PATH=${LIBDIR}" >> "$GITHUB_ENV"
-            echo "CXXFLAGS=-stdlib=libc++ -I$LLVM_HOME/include/c++/v1" >> "$GITHUB_ENV"
+            echo "CXXFLAGS=-stdlib=libc++ -I${LLVM_HOME}/include/c++/v1" >> "$GITHUB_ENV"
             echo "LDFLAGS=-stdlib=libc++ -L${LIBDIR}" >> "$GITHUB_ENV"
           else
             # Do NOT export DYLD_LIBRARY_PATH to avoid overriding system libc++/c++abi
@@ -107,7 +107,7 @@ jobs:
             SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
             echo "SDKROOT=${SDKROOT}" >> "$GITHUB_ENV"
             echo "CFLAGS=-isysroot ${SDKROOT}" >> "$GITHUB_ENV"
-            echo "CXXFLAGS=-isysroot ${SDKROOT} -stdlib=libc++ -I$LLVM_HOME/include/c++/v1" >> "$GITHUB_ENV"
+            echo "CXXFLAGS=-isysroot ${SDKROOT} -stdlib=libc++ -I${LLVM_HOME}/include/c++/v1" >> "$GITHUB_ENV"
             # Baseline deployment target
             echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
           fi
