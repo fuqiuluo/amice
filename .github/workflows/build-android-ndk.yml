@@ -159,7 +159,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: libamice-llvm${{ matrix.llvm-version[0] }}-linux-x64-android-ndk
+          name: libamice-linux-x64-android-ndk-${{ matrix.llvm-version[3] }}
           path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.so
           retention-days: 30
           if-no-files-found: error
@@ -168,7 +168,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: libamice-llvm${{ matrix.llvm-version[0] }}-macos-x64-android-ndk
+          name: libamice-macos-x64-android-ndk-${{ matrix.llvm-version[3] }}
           path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.dylib
           retention-days: 30
           if-no-files-found: error
