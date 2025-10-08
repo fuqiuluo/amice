@@ -26,7 +26,7 @@ env:
 
 jobs:
   build:
-    name: "LLVM/OPT ${{ matrix.llvm-version[0] }} ${{ matrix.os }} For Android NDK"
+    name: "LLVM/OPT ${{ matrix.llvm-version[0] }} ${{ matrix.os }} For Android NDK ${{ matrix.llvm-version[3] }}"
     strategy:
       fail-fast: false
       matrix:

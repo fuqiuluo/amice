@@ -213,7 +213,7 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 18)
         ENUM_CASE(llvm::Attribute::DeadOnUnwind, DeadOnUnwind) // llvm 18
 #endif
-#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 21)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 21) && (LLVM_VERSION_MINOR >= 1)
         ENUM_CASE(llvm::Attribute::DeadOnReturn, DeadOnReturn)
 #endif
         ENUM_CASE(llvm::Attribute::NoImplicitFloat, NoImplicitFloat)
