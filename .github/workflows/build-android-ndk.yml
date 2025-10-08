@@ -1,4 +1,4 @@
-name: Linux/macOS X64 Build For Android NDK
+name: Linux/macOS Build For Android NDK
 
 on:
   push:
@@ -95,29 +95,45 @@ jobs:
 
           env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
           echo "${env_name}=$HOME/llvm" >> "$GITHUB_ENV"
-          # Set both to be safe on different OS
-          echo "LD_LIBRARY_PATH=$HOME/llvm/lib" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=$HOME/llvm/lib" >> "$GITHUB_ENV"
+
+          # Prefer lib64 if present, otherwise use lib
+          if [ -d "$HOME/llvm/lib64" ]; then
+            LIBDIR="$HOME/llvm/lib64"
+          else
+            LIBDIR="$HOME/llvm/lib"
+          fi
+          echo "LLVM_LIBDIR=${LIBDIR}" >> "$GITHUB_ENV"
+
+          # Compiler env
           echo "CC=$HOME/llvm/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=$HOME/llvm/bin/clang++" >> "$GITHUB_ENV"
-          echo "CXXFLAGS=-stdlib=libc++ -I$HOME/llvm/include/c++/v1" >> "$GITHUB_ENV"
-          echo "LDFLAGS=-stdlib=libc++ -L$HOME/llvm/lib" >> "$GITHUB_ENV"
 
-          ver=${{ matrix.llvm-version[1] }}
+          # OS-specific library search env to avoid DYLD conflicts on macOS
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            echo "LD_LIBRARY_PATH=${LIBDIR}" >> "$GITHUB_ENV"
+            echo "CXXFLAGS=-stdlib=libc++ -I$HOME/llvm/include/c++/v1" >> "$GITHUB_ENV"
+            echo "LDFLAGS=-stdlib=libc++ -L${LIBDIR}" >> "$GITHUB_ENV"
+          else
+            # Do NOT export DYLD_LIBRARY_PATH to avoid overriding system libc++/c++abi
+            # Optionally set rpath for produced artifacts to locate libLLVM at runtime
+            echo "RUSTFLAGS=-C link-args=-Wl,-rpath,${LIBDIR}" >> "$GITHUB_ENV"
+          fi
+
+          # Discover actual libLLVM filename and create a generic symlink under ${LIBDIR}
           if [ "${LIB_EXT}" = "so" ]; then
-            if [ ! -e "$HOME/llvm/lib/libLLVM.so" ]; then
-              if [ -e "$HOME/llvm/lib/libLLVM-${ver}.so" ]; then
-                ln -s "$HOME/llvm/lib/libLLVM-${ver}.so" "$HOME/llvm/lib/libLLVM.so"
-              elif [ -e "$HOME/llvm/lib/libLLVM-${ver}.so.1" ]; then
-                ln -s "$HOME/llvm/lib/libLLVM-${ver}.so.1" "$HOME/llvm/lib/libLLVM.so"
+            if [ ! -e "${LIBDIR}/libLLVM.so" ]; then
+              ls -al "${LIBDIR}" || true
+              CANDIDATE=$( (ls "${LIBDIR}"/libLLVM*.so* 2>/dev/null || true) | head -n 1 || true)
+              if [ -n "$CANDIDATE" ]; then
+                ln -s "$CANDIDATE" "${LIBDIR}/libLLVM.so" 2>/dev/null || true
               fi
             fi
           else
-            if [ ! -e "$HOME/llvm/lib/libLLVM.dylib" ]; then
-              if [ -e "$HOME/llvm/lib/libLLVM-${ver}.dylib" ]; then
-                ln -s "$HOME/llvm/lib/libLLVM-${ver}.dylib" "$HOME/llvm/lib/libLLVM.dylib"
-              elif [ -e "$HOME/llvm/lib/libLLVM-${ver}.dylib.1" ]; then
-                ln -s "$HOME/llvm/lib/libLLVM-${ver}.dylib.1" "$HOME/llvm/lib/libLLVM.dylib"
+            if [ ! -e "${LIBDIR}/libLLVM.dylib" ]; then
+              ls -al "${LIBDIR}" || true
+              CANDIDATE=$( (ls "${LIBDIR}"/libLLVM*.dylib* 2>/dev/null || true) | head -n 1 || true)
+              if [ -n "$CANDIDATE" ]; then
+                ln -s "$CANDIDATE" "${LIBDIR}/libLLVM.dylib" || true
               fi
             fi
           fi
