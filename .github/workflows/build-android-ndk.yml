@@ -115,8 +115,15 @@ jobs:
             echo "LDFLAGS=-stdlib=libc++ -L${LIBDIR}" >> "$GITHUB_ENV"
           else
             # Do NOT export DYLD_LIBRARY_PATH to avoid overriding system libc++/c++abi
-            # Optionally set rpath for produced artifacts to locate libLLVM at runtime
+            # Inject rpath for produced artifacts to locate libLLVM at runtime
             echo "RUSTFLAGS=-C link-args=-Wl,-rpath,${LIBDIR}" >> "$GITHUB_ENV"
+            # Use macOS SDK with NDK clang so standard headers are found
+            SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
+            echo "SDKROOT=${SDKROOT}" >> "$GITHUB_ENV"
+            echo "CFLAGS=-isysroot ${SDKROOT}" >> "$GITHUB_ENV"
+            echo "CXXFLAGS=-isysroot ${SDKROOT} -stdlib=libc++ -I$HOME/llvm/include/c++/v1" >> "$GITHUB_ENV"
+            # Baseline deployment target
+            echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
           fi
 
           # Discover actual libLLVM filename and create a generic symlink under ${LIBDIR}
