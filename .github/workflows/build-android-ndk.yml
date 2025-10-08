@@ -58,20 +58,11 @@ jobs:
         with:
           toolchain: '1.89.0'
 
-      - name: Install Dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          set -euxo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt update
-          sudo apt install -y libtinfo6
-          sudo apt install -y clang
-
-      - name: Install Dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          set -euxo pipefail
-          echo "macOS: 使用预编译的 Android LLVM/Clang，跳过 apt 依赖安装"
+      - name: Install Android NDK Clang
+        id: ndk-clang
+        uses: Ylarod/setup-ndk-clang@v1
+        with:
+          ndk-version: ${{ matrix.llvm-version[3] }}
 
       - name: Install LLVM and Clang
         run: |
@@ -89,13 +80,8 @@ jobs:
             LIB_EXT="dylib"
           fi
 
-          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/${HOST_DIR}/+archive/refs/tags/ndk-${{ matrix.llvm-version[3] }}/clang-${{ matrix.llvm-version[4] }}.tar.gz"
-          echo "Downloading: ${CLANG_URL}"
-          curl -L -o llvm.tar.gz "${CLANG_URL}"
-          tar -C "$HOME/llvm" -xf llvm.tar.gz
-
           env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
-          echo "${env_name}=$HOME/llvm" >> "$GITHUB_ENV"
+          echo "${env_name}=${{ steps.ndk-clang.outputs.clang-path }}" >> "$GITHUB_ENV"
 
           # Prefer lib64 if present, otherwise use lib
           if [ -d "$HOME/llvm/lib64" ]; then
