@@ -9,7 +9,7 @@ name = "amice"
 crate-type = ["cdylib"]
 
 [features]
-default = ["llvm20-1"]
+default = ["llvm21-1"]
 
 android-ndk = ["amice-llvm/android-ndk"]
 
@@ -28,6 +28,7 @@ llvm17-0 = ["llvm-plugin/llvm17-0", "amice-llvm/llvm17-0"]
 llvm18-1 = ["llvm-plugin/llvm18-1", "amice-llvm/llvm18-1"]
 llvm19-1 = ["llvm-plugin/llvm19-1", "amice-llvm/llvm19-1"]
 llvm20-1 = ["llvm-plugin/llvm20-1", "amice-llvm/llvm20-1"]
+llvm21-1 = ["llvm-plugin/llvm21-1", "amice-llvm/llvm21-1"]
 
 [dependencies]
 amice-llvm = { path = "amice-llvm", default-features = false }
@@ -54,6 +55,6 @@ regex = "1"
 semver = "1"
 
 [patch.crates-io]
-inkwell = { git = "https://github.com/TheDan64/inkwell" }
-llvm-plugin = { git = "https://github.com/fuqiuluo/llvm-plugin-rs", rev = "3e8ef8f4e17e1079871db72cd30a3620af4d5977" }
+inkwell = { git = "https://github.com/Ylarod/inkwell" }
+llvm-plugin = { git = "https://github.com/fuqiuluo/llvm-plugin-rs", rev = "3a6ab04beb36602aa5050af7335940cc600a5b50" }
 

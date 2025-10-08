@@ -1,8 +1,6 @@
 use crate::analysis::dominators::LLVMDominatorTreeRef;
-use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMUseRef, LLVMValueRef};
-use inkwell::values::InstructionValue;
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{c_char, c_void};
 use crate::code_extractor::LLVMCodeExtractorRef;
 
 #[link(name = "amice-llvm-ffi")]
@@ -17,6 +15,7 @@ unsafe extern "C" {
         feature = "llvm18-1",
         feature = "llvm19-1",
         feature = "llvm20-1",
+        feature = "llvm21-1",
     ))]
     pub(crate) fn amice_append_to_global_ctors(module: LLVMModuleRef, function: LLVMValueRef, priority: i32);
 

@@ -50,6 +50,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm18-1",
             feature = "llvm19-1",
             feature = "llvm20-1",
+            feature = "llvm21-1",
         )))]
         return unsafe { self.build_gep(ptr, ordered_indexes, name) };
 
@@ -60,10 +61,9 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm18-1",
             feature = "llvm19-1",
             feature = "llvm20-1",
+            feature = "llvm21-1",
         ))]
         return unsafe { self.build_gep(pointee_ty, ptr, ordered_indexes, name) };
-
-        panic!("Unsupported LLVM version");
     }
 
     fn build_load2<T: BasicType<'ctx>>(
@@ -79,6 +79,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm18-1",
             feature = "llvm19-1",
             feature = "llvm20-1",
+            feature = "llvm21-1",
         )))]
         return self.build_load(ptr, name);
 
@@ -89,10 +90,9 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm18-1",
             feature = "llvm19-1",
             feature = "llvm20-1",
+            feature = "llvm21-1",
         ))]
         return self.build_load(pointee_ty, ptr, name);
-
-        panic!("Unsupported LLVM version");
     }
 
     fn build_in_bounds_gep2<T: BasicType<'ctx>>(
@@ -109,6 +109,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm18-1",
             feature = "llvm19-1",
             feature = "llvm20-1",
+            feature = "llvm21-1",
         )))]
         return unsafe { self.build_in_bounds_gep(ptr, ordered_indexes, name) };
 
@@ -119,10 +120,9 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm18-1",
             feature = "llvm19-1",
             feature = "llvm20-1",
+            feature = "llvm21-1",
         ))]
         return unsafe { self.build_in_bounds_gep(pointee_ty, ptr, ordered_indexes, name) };
-
-        panic!("Unsupported LLVM version");
     }
 
     fn build_struct_gep2<T: BasicType<'ctx>>(
@@ -147,7 +147,5 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm14-0"
         )))]
         return self.build_struct_gep(pointee_ty, ptr, index, name);
-
-        panic!("Unsupported LLVM version");
     }
 }

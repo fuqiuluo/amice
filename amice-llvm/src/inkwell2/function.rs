@@ -1,5 +1,5 @@
 use crate::ffi;
-use crate::inkwell2::{LLVMBasicBlockRefExt, LLVMValueRefExt};
+use crate::inkwell2::LLVMBasicBlockRefExt;
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::core::{LLVMGetEntryBasicBlock, LLVMIsABasicBlock};
 use inkwell::llvm_sys::prelude::LLVMValueRef;
@@ -86,14 +86,14 @@ impl<'ctx> FunctionExt<'ctx> for FunctionValue<'ctx> {
     }
 
     unsafe fn fix_stack(&self) {
-        ffi::amice_fix_stack(self.as_value_ref() as LLVMValueRef, 0, 0)
+        unsafe { ffi::amice_fix_stack(self.as_value_ref() as LLVMValueRef, 0, 0) }
     }
 
     unsafe fn fix_stack_at_terminator(&self) {
-        ffi::amice_fix_stack(self.as_value_ref() as LLVMValueRef, 1, 0)
+        unsafe { ffi::amice_fix_stack(self.as_value_ref() as LLVMValueRef, 1, 0) }
     }
 
     unsafe fn fix_stack_with_max_iterations(&self, max_iterations: usize) {
-        ffi::amice_fix_stack(self.as_value_ref() as LLVMValueRef, 0, max_iterations as i32)
+        unsafe { ffi::amice_fix_stack(self.as_value_ref() as LLVMValueRef, 0, max_iterations as i32) }
     }
 }

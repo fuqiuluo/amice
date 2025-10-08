@@ -1,5 +1,3 @@
-use crate::inkwell2::LLVMValueRefExt;
-use inkwell::llvm_sys::prelude::LLVMValueRef;
 use inkwell::values::{AsValueRef, CallSiteValue, FunctionValue, InstructionOpcode, InstructionValue};
 use std::ops::{Deref, DerefMut};
 

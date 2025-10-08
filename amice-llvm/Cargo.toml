@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["llvm20-1"]
+default = ["llvm21-1"]
 
 android-ndk = []
 
@@ -23,6 +23,7 @@ llvm17-0 = ["inkwell/llvm17-0-no-llvm-linking"]
 llvm18-1 = ["inkwell/llvm18-1-no-llvm-linking"]
 llvm19-1 = ["inkwell/llvm19-1-no-llvm-linking"]
 llvm20-1 = ["inkwell/llvm20-1-no-llvm-linking"]
+llvm21-1 = ["inkwell/llvm21-1-no-llvm-linking"]
 
 [dependencies]
 lazy_static = "1.5.0"
@@ -37,5 +38,5 @@ regex = "1"
 semver = "1"
 
 [patch.crates-io]
-inkwell = { git = "https://github.com/TheDan64/inkwell" }
+inkwell = { git = "https://github.com/Ylarod/inkwell" }
 

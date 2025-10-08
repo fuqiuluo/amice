@@ -1,11 +1,9 @@
-use inkwell::attributes::AttributeLoc;
-use inkwell::llvm_sys::core::{LLVMGetAsString, LLVMGetNumOperands, LLVMGetOperand, LLVMGetSection, LLVMHasMetadata};
+use inkwell::llvm_sys::core::{LLVMGetAsString, LLVMGetNumOperands, LLVMGetOperand, LLVMGetSection};
 use inkwell::llvm_sys::prelude::LLVMValueRef;
-use inkwell::values::{AsValueRef, BasicValue, BasicValueEnum, GlobalValue, MetadataValue, StructValue};
+use inkwell::values::{AsValueRef, BasicValueEnum, GlobalValue, StructValue};
 use inkwell::{
-    context::Context,
     module::Module,
-    values::{AnyValue, FunctionValue},
+    values::FunctionValue,
 };
 use std::ffi::{CStr, CString, c_uint};
 

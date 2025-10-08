@@ -1,10 +1,8 @@
 use crate::ffi::amice_gep_accumulate_constant_offset;
-use inkwell::data_layout::DataLayout;
 use inkwell::llvm_sys::core::LLVMGetNumIndices;
 use inkwell::llvm_sys::prelude::LLVMValueRef;
 use inkwell::module::Module;
 use inkwell::values::{AsValueRef, BasicValueEnum, InstructionValue};
-use std::cell::Ref;
 use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Copy, Clone)]
