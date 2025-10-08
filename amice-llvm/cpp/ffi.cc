@@ -190,7 +190,7 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 15)
         ENUM_CASE(llvm::Attribute::FnRetThunkExtern, FnRetThunkExtern) // llvm 15
 #endif
-#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 19)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 19) && (LLVM_VERSION_MINOR >= 1)
         ENUM_CASE(llvm::Attribute::HybridPatchable, HybridPatchable) // llvm 19
 #endif
         ENUM_CASE(llvm::Attribute::InlineHint, InlineHint)
@@ -265,7 +265,7 @@ char* amice_attribute_enum_kind_to_str(llvm::Attribute::AttrKind kind) {
         ENUM_CASE(llvm::Attribute::SanitizeMemory, SanitizeMemory)
         ENUM_CASE(llvm::Attribute::SanitizeHWAddress, SanitizeHWAddress)
         ENUM_CASE(llvm::Attribute::SanitizeMemTag, SanitizeMemTag)
-#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 19)
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 19) && (LLVM_VERSION_MINOR >= 1)
         ENUM_CASE(llvm::Attribute::SanitizeNumericalStability, SanitizeNumericalStability) // llvm 19
 #endif
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 20)
