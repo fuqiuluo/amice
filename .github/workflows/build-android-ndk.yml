@@ -9,6 +9,7 @@ on:
       - '**/Cargo.lock'
       - '**/build.rs'
       - 'rust-toolchain*'
+      - '.github/workflows/build-android-ndk.yml'
   pull_request:
     branches: [ master ]
     paths:
@@ -17,6 +18,7 @@ on:
       - '**/Cargo.lock'
       - '**/build.rs'
       - 'rust-toolchain*'
+      - '.github/workflows/build-android-ndk.yml'
   workflow_dispatch:
 
 env:

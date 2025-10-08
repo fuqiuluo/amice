@@ -9,6 +9,7 @@ on:
       - '**/Cargo.lock'
       - '**/build.rs'
       - 'rust-toolchain*'
+      - '.github/workflows/linux-x64-build.yml'
   pull_request:
     branches: [ master ]
     paths:
@@ -17,6 +18,7 @@ on:
       - '**/Cargo.lock'
       - '**/build.rs'
       - 'rust-toolchain*'
+      - '.github/workflows/linux-x64-build.yml'
   workflow_dispatch:
 
 env:
