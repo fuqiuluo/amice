@@ -71,7 +71,8 @@ jobs:
           env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
           echo "${env_name}=${{ steps.ndk-clang.outputs.clang-path }}" >> "$GITHUB_ENV"
           echo "${{ steps.ndk-clang.outputs.clang-path }}" >> "$GITHUB_PATH"
-          echo "LLVM_HOME=${{ steps.ndk-clang.outputs.clang-path }}" >> "$GITHUB_ENV"
+          LLVM_HOME="${{ steps.ndk-clang.outputs.clang-path }}"
+          echo "LLVM_HOME=${LLVM_HOME}" >> "$GITHUB_ENV"
 
           if [ "${RUNNER_OS}" = "Linux" ]; then
             HOST_DIR="linux-x86"
