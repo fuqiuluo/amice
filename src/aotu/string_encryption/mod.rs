@@ -10,7 +10,9 @@ use amice_macro::amice;
 use inkwell::llvm_sys::core::LLVMGetAsString;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{AnyValueEnum, ArrayValue, AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, PointerValue};
+use llvm_plugin::inkwell::values::{
+    AnyValueEnum, ArrayValue, AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, PointerValue,
+};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use std::ptr::NonNull;
 
@@ -227,7 +229,7 @@ pub(crate) fn collect_insert_points<'a>(
                 } else {
                     error!("(strenc) unexpected StructValue user: {v:?}");
                 }
-            }
+            },
             // 其他类型：目前未覆盖，打印日志
             _ => error!("(strenc) unexpected user type: {curr:?}"),
         }

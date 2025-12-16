@@ -10,7 +10,9 @@ use llvm_plugin::inkwell;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode};
+use llvm_plugin::inkwell::values::{
+    ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
+};
 use log::{debug, error, warn};
 use rand::Rng;
 
@@ -130,7 +132,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                     for (value_ref, _) in &temp_user {
                         let inst = value_ref.into_instruction_value();
                         if inst.get_opcode() == InstructionOpcode::Phi {
-                            debug!("(strenc) string '{}' is referenced by PHI node, disabling stack allocation", unique_name);
+                            debug!(
+                                "(strenc) string '{}' is referenced by PHI node, disabling stack allocation",
+                                unique_name
+                            );
                             should_use_stack = false;
                             break;
                         }

@@ -125,7 +125,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
                     for (value_ref, _) in &temp_user {
                         let inst = value_ref.into_instruction_value();
                         if inst.get_opcode() == InstructionOpcode::Phi {
-                            debug!("(strenc) string '{}' is referenced by PHI node, disabling stack allocation", unique_name);
+                            debug!(
+                                "(strenc) string '{}' is referenced by PHI node, disabling stack allocation",
+                                unique_name
+                            );
                             should_use_stack = false;
                             break;
                         }
