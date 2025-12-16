@@ -1,36 +1,45 @@
 # Amice 集成测试
 
-本目录包含 Amice LLVM 混淆插件的集成测试。
+本目录包含 Amice LLVM 混淆插件的集成测试，支持 C/C++ 和 Rust 两种语言。
 
 ## 目录结构
 
 ```
 tests/
-├── common/                 # 公共测试工具模块
-│   └── mod.rs
+├── common/                     # 公共测试工具模块
+│   └── mod.rs                  # Language enum, CompileBuilder, RustCompileBuilder 等
 │
-├── fixtures/               # 测试用的 C/C++ 源文件
-│   ├── string_encryption/  # 字符串加密测试源码
-│   ├── indirect_branch/    # 间接分支测试源码
-│   ├── indirect_call/      # 间接调用测试源码
-│   ├── control_flow/       # 控制流混淆测试源码
-│   ├── shuffle_blocks/     # 基本块重排测试源码
-│   ├── function_wrapper/   # 函数包装测试源码
-│   ├── mba/                # MBA 混淆测试源码
-│   └── integration/        # 综合测试源码 (MD5 等)
+├── c/                          # C/C++ 测试
+│   ├── fixtures/               # C/C++ 测试源文件
+│   │   ├── string_encryption/  # 字符串加密测试源码
+│   │   ├── indirect_branch/    # 间接分支测试源码
+│   │   ├── indirect_call/      # 间接调用测试源码
+│   │   ├── control_flow/       # 控制流混淆测试源码
+│   │   ├── shuffle_blocks/     # 基本块重排测试源码
+│   │   ├── function_wrapper/   # 函数包装测试源码
+│   │   ├── mba/                # MBA 混淆测试源码
+│   │   └── integration/        # 综合测试源码 (MD5 等)
+│   └── .gitignore
 │
-├── scripts/                # 测试运行脚本
-│   ├── run_tests.sh        # Linux/macOS
-│   └── run_tests.ps1       # Windows
+├── rust/                       # Rust 测试
+│   └── string_encryption/      # Rust 字符串加密测试项目
+│       ├── Cargo.toml
+│       └── src/
+│           └── main.rs
 │
-├── string_encryption.rs    # 字符串加密测试
-├── indirect_branch.rs      # 间接分支测试
-├── indirect_call.rs        # 间接调用测试
-├── control_flow.rs         # 控制流混淆测试 (BCF/Flatten/VM)
-├── shuffle_blocks.rs       # 基本块重排测试
-├── function_wrapper.rs     # 函数包装测试
-├── mba.rs                  # MBA 混淆测试
-└── integration.rs          # 综合测试
+├── scripts/                    # 测试运行脚本
+│   ├── run_tests.sh            # Linux/macOS
+│   └── run_tests.ps1           # Windows
+│
+├── string_encryption.rs        # C/C++ 字符串加密测试
+├── indirect_branch.rs          # 间接分支测试
+├── indirect_call.rs            # 间接调用测试
+├── control_flow.rs             # 控制流混淆测试 (BCF/Flatten/VM)
+├── shuffle_blocks.rs           # 基本块重排测试
+├── function_wrapper.rs         # 函数包装测试
+├── mba.rs                      # MBA 混淆测试
+├── integration.rs              # 综合测试
+└── rust_string_encryption.rs   # Rust 字符串加密测试
 ```
 
 ## 快速开始

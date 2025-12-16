@@ -4,11 +4,13 @@ pub(crate) mod pass_registry;
 
 use crate::config::CONFIG;
 use crate::pass_registry::AmicePassFlag;
-use log::info;
+use log::{info, warn};
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1.2")]
 fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
-    env_logger::builder().init();
+    if let Err(e) = env_logger::builder().try_init() {
+        warn!("amice init logger failed: {e:?}");
+    }
 
     info!(
         "amice plugin initializing, version: {}, author: {}, llvm-sys: {}.{}",
@@ -62,6 +64,7 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         feature = "llvm18-1",
         feature = "llvm19-1",
         feature = "llvm20-1",
+        feature = "llvm21-1",
     ))]
     builder.add_full_lto_last_ep_callback(|manager, opt| {
         info!("amice plugin full lto last callback, level: {opt:?}");

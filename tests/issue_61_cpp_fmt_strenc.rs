@@ -10,6 +10,7 @@
 mod common;
 
 use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use crate::common::Language;
 
 fn string_config_lazy_xor() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -39,7 +40,7 @@ fn test_issue_61_cpp_fmt_strenc() {
     let fmt_include = project_root().join("tests/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/include");
 
     let result = CompileBuilder::new(
-        fixture_path("issues/issue_61_cpp_fmt_strenc", "main.cpp"),
+        fixture_path("issues/issue_61_cpp_fmt_strenc", "main.cpp", Language::Cpp),
         "issue_61_cpp_fmt",
     )
     .config(string_config_lazy_xor())
@@ -72,7 +73,7 @@ fn test_issue_61_cpp_fmt_baseline() {
     let fmt_include = project_root().join("tests/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/include");
 
     let result = CompileBuilder::new(
-        fixture_path("issues/issue_61_cpp_fmt_strenc", "main.cpp"),
+        fixture_path("issues/issue_61_cpp_fmt_strenc", "main.cpp", Language::Cpp),
         "issue_61_cpp_fmt_baseline",
     )
     .without_plugin()

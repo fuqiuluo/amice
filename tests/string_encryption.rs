@@ -9,6 +9,7 @@
 mod common;
 
 use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use crate::common::Language;
 
 /// Expected output for const_strings.c test
 fn expected_const_strings_output() -> Vec<&'static str> {
@@ -106,7 +107,7 @@ fn test_const_strings_lazy_xor() {
     ensure_plugin_built();
 
     let result = CompileBuilder::new(
-        fixture_path("string_encryption", "const_strings.c"),
+        fixture_path("string_encryption", "const_strings.c", Language::C),
         "const_strings_lazy_xor",
     )
     .config(string_config_lazy_xor())
@@ -125,7 +126,7 @@ fn test_const_strings_lazy_xor_stack() {
     ensure_plugin_built();
 
     let result = CompileBuilder::new(
-        fixture_path("string_encryption", "const_strings.c"),
+        fixture_path("string_encryption", "const_strings.c", Language::C),
         "const_strings_lazy_xor_stack",
     )
     .config(string_config_lazy_xor_stack())
@@ -147,7 +148,7 @@ fn test_const_strings_lazy_xor_stack_multi() {
     config.string_max_encryption_count = Some(2);
 
     let result = CompileBuilder::new(
-        fixture_path("string_encryption", "const_strings.c"),
+        fixture_path("string_encryption", "const_strings.c", Language::C),
         "const_strings_lazy_xor_stack_multi",
     )
     .config(config)
@@ -166,7 +167,7 @@ fn test_const_strings_global_xor() {
     ensure_plugin_built();
 
     let result = CompileBuilder::new(
-        fixture_path("string_encryption", "const_strings.c"),
+        fixture_path("string_encryption", "const_strings.c", Language::C),
         "const_strings_global_xor",
     )
     .config(string_config_global_xor())
@@ -185,7 +186,7 @@ fn test_const_strings_lazy_simd_xor() {
     ensure_plugin_built();
 
     let result = CompileBuilder::new(
-        fixture_path("string_encryption", "const_strings.c"),
+        fixture_path("string_encryption", "const_strings.c", Language::C),
         "const_strings_lazy_simd_xor",
     )
     .config(string_config_lazy_simd_xor())
@@ -204,7 +205,7 @@ fn test_const_strings_global_simd_xor() {
     ensure_plugin_built();
 
     let result = CompileBuilder::new(
-        fixture_path("string_encryption", "const_strings.c"),
+        fixture_path("string_encryption", "const_strings.c", Language::C),
         "const_strings_global_simd_xor",
     )
     .config(string_config_global_simd_xor())

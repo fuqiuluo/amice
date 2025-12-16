@@ -12,6 +12,7 @@
 mod common;
 
 use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use crate::common::Language;
 
 #[test]
 fn test_cpp_exception_with_bcf() {
@@ -20,7 +21,7 @@ fn test_cpp_exception_with_bcf() {
     // This is a CRITICAL test - BCF currently does NOT check for exception handling
     // This test will likely FAIL or produce incorrect results
     let result = CompileBuilder::new(
-        fixture_path("exception_handling", "cpp_exception_bcf.cpp"),
+        fixture_path("exception_handling", "cpp_exception_bcf.cpp", Language::Cpp),
         "cpp_exception_bcf",
     )
     .config(ObfuscationConfig {
@@ -39,7 +40,7 @@ fn test_cpp_exception_with_bcf_optimized() {
     ensure_plugin_built();
 
     let result = CompileBuilder::new(
-        fixture_path("exception_handling", "cpp_exception_bcf.cpp"),
+        fixture_path("exception_handling", "cpp_exception_bcf.cpp", Language::Cpp),
         "cpp_exception_bcf_o2",
     )
     .config(ObfuscationConfig {
@@ -60,7 +61,7 @@ fn test_cpp_exception_with_flatten() {
 
     // Flatten should properly detect exception handling and skip the function
     let result = CompileBuilder::new(
-        fixture_path("exception_handling", "cpp_exception_flatten.cpp"),
+        fixture_path("exception_handling", "cpp_exception_flatten.cpp", Language::Cpp),
         "cpp_exception_flatten",
     )
     .config(ObfuscationConfig {
@@ -79,7 +80,7 @@ fn test_cpp_exception_with_flatten_optimized() {
     ensure_plugin_built();
 
     let result = CompileBuilder::new(
-        fixture_path("exception_handling", "cpp_exception_flatten.cpp"),
+        fixture_path("exception_handling", "cpp_exception_flatten.cpp", Language::Cpp),
         "cpp_exception_flatten_o2",
     )
     .config(ObfuscationConfig {
@@ -100,7 +101,7 @@ fn test_cpp_exception_with_indirect_branch() {
 
     // Indirect branch has partial EH detection - should handle this correctly
     let result = CompileBuilder::new(
-        fixture_path("exception_handling", "cpp_exception_indirect_branch.cpp"),
+        fixture_path("exception_handling", "cpp_exception_indirect_branch.cpp", Language::Cpp),
         "cpp_exception_indirect_branch",
     )
     .config(ObfuscationConfig {
@@ -120,7 +121,7 @@ fn test_cpp_exception_combined() {
 
     // Test multiple passes with exception handling
     let result = CompileBuilder::new(
-        fixture_path("exception_handling", "cpp_exception_bcf.cpp"),
+        fixture_path("exception_handling", "cpp_exception_bcf.cpp", Language::Cpp),
         "cpp_exception_combined",
     )
     .config(ObfuscationConfig {

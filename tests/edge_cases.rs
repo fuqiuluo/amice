@@ -9,6 +9,7 @@
 mod common;
 
 use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use crate::common::Language;
 
 fn all_passes_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -24,7 +25,7 @@ fn all_passes_config() -> ObfuscationConfig {
 fn test_empty_function() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("edge_cases", "empty_function.c"), "empty_function")
+    let result = CompileBuilder::new(fixture_path("edge_cases", "empty_function.c", Language::C), "empty_function")
         .config(all_passes_config())
         .compile();
 
@@ -37,7 +38,7 @@ fn test_empty_function() {
 fn test_empty_function_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("edge_cases", "empty_function.c"), "empty_function_o2")
+    let result = CompileBuilder::new(fixture_path("edge_cases", "empty_function.c", Language::C), "empty_function_o2")
         .config(ObfuscationConfig {
             flatten: Some(false),
             bogus_control_flow: Some(true),
@@ -57,7 +58,7 @@ fn test_empty_function_optimized() {
 fn test_large_function_flatten() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("edge_cases", "large_function.c"), "large_function")
+    let result = CompileBuilder::new(fixture_path("edge_cases", "large_function.c", Language::C), "large_function")
         .config(ObfuscationConfig {
             flatten: Some(true),
             ..ObfuscationConfig::disabled()
@@ -73,7 +74,7 @@ fn test_large_function_flatten() {
 fn test_single_block_with_bcf() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("edge_cases", "empty_function.c"), "single_block_bcf")
+    let result = CompileBuilder::new(fixture_path("edge_cases", "empty_function.c", Language::C), "single_block_bcf")
         .config(ObfuscationConfig {
             bogus_control_flow: Some(true),
             ..ObfuscationConfig::disabled()
@@ -89,7 +90,7 @@ fn test_single_block_with_bcf() {
 fn test_single_block_with_flatten() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("edge_cases", "empty_function.c"), "single_block_flatten")
+    let result = CompileBuilder::new(fixture_path("edge_cases", "empty_function.c", Language::C), "single_block_flatten")
         .config(ObfuscationConfig {
             flatten: Some(true),
             ..ObfuscationConfig::disabled()
@@ -106,7 +107,7 @@ fn test_single_block_with_indirect_branch() {
     ensure_plugin_built();
 
     let result = CompileBuilder::new(
-        fixture_path("edge_cases", "empty_function.c"),
+        fixture_path("edge_cases", "empty_function.c", Language::C),
         "single_block_indirect_branch",
     )
     .config(ObfuscationConfig {

@@ -1,0 +1,12 @@
+[package]
+name = "string_encryption_test"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+opt-level = 2
+debug = true
+strip = false
+lto = false
+
+[dependencies]

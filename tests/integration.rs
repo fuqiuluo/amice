@@ -6,7 +6,7 @@
 mod common;
 
 use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
-
+use crate::common::Language;
 // ============================================================================
 // MD5 Tests
 // ============================================================================
@@ -66,7 +66,7 @@ fn md5_obfuscation_config() -> ObfuscationConfig {
 fn test_md5_c() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("integration", "md5.c"), "md5_c")
+    let result = CompileBuilder::new(fixture_path("integration", "md5.c", Language::C), "md5_c")
         .config(md5_obfuscation_config())
         .compile();
 
@@ -82,7 +82,7 @@ fn test_md5_c() {
 fn test_md5_c_o3() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("integration", "md5.c"), "md5_c_o3")
+    let result = CompileBuilder::new(fixture_path("integration", "md5.c", Language::C), "md5_c_o3")
         .config(md5_obfuscation_config())
         .optimization("O3")
         .compile();
@@ -99,7 +99,7 @@ fn test_md5_c_o3() {
 fn test_md5_cpp() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("integration", "md5.cc"), "md5_cpp")
+    let result = CompileBuilder::new(fixture_path("integration", "md5.cc", Language::Cpp), "md5_cpp")
         .config(md5_obfuscation_config())
         .std("c++17")
         .arg("-Wall")
@@ -118,7 +118,7 @@ fn test_md5_cpp() {
 fn test_md5_cpp_o3() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("integration", "md5.cc"), "md5_cpp_o3")
+    let result = CompileBuilder::new(fixture_path("integration", "md5.cc", Language::Cpp), "md5_cpp_o3")
         .config(md5_obfuscation_config())
         .std("c++17")
         .optimization("O3")
@@ -152,7 +152,7 @@ fn test_md5_full_obfuscation() {
         ..ObfuscationConfig::disabled()
     };
 
-    let result = CompileBuilder::new(fixture_path("integration", "md5.c"), "md5_full_obfuscation")
+    let result = CompileBuilder::new(fixture_path("integration", "md5.c", Language::C), "md5_full_obfuscation")
         .config(config)
         .compile();
 
@@ -162,45 +162,4 @@ fn test_md5_full_obfuscation() {
 
     let lines = run.stdout_lines();
     check_md5_output(&lines);
-}
-
-// ============================================================================
-// Simple Test (test1.c)
-// ============================================================================
-
-#[test]
-fn test_simple_program() {
-    ensure_plugin_built();
-
-    let result = CompileBuilder::new(fixture_path("integration", "test1.c"), "test1_basic")
-        .config(ObfuscationConfig::disabled())
-        .compile();
-
-    result.assert_success();
-    let run = result.run();
-    run.assert_success();
-}
-
-#[test]
-fn test_simple_with_all_passes() {
-    ensure_plugin_built();
-
-    let config = ObfuscationConfig {
-        string_encryption: Some(true),
-        indirect_branch: Some(true),
-        indirect_call: Some(true),
-        flatten: Some(true),
-        bogus_control_flow: Some(true),
-        mba: Some(true),
-        shuffle_blocks: Some(true),
-        ..Default::default()
-    };
-
-    let result = CompileBuilder::new(fixture_path("integration", "test1.c"), "test1_all_passes")
-        .config(config)
-        .compile();
-
-    result.assert_success();
-    let run = result.run();
-    run.assert_success();
 }

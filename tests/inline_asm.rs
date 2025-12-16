@@ -10,13 +10,14 @@
 mod common;
 
 use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use crate::common::Language;
 
 #[test]
 fn test_inline_asm_with_flatten() {
     ensure_plugin_built();
 
     // Inline asm detection test - should skip functions with inline asm
-    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c"), "inline_asm_flatten")
+    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c", Language::C), "inline_asm_flatten")
         .config(ObfuscationConfig {
             flatten: Some(true),
             ..ObfuscationConfig::disabled()
@@ -33,7 +34,7 @@ fn test_inline_asm_with_bcf() {
     ensure_plugin_built();
 
     // BCF should detect inline asm (currently does NOT)
-    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c"), "inline_asm_bcf")
+    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c", Language::C), "inline_asm_bcf")
         .config(ObfuscationConfig {
             bogus_control_flow: Some(true),
             ..ObfuscationConfig::disabled()
@@ -50,7 +51,7 @@ fn test_inline_asm_with_indirect_branch() {
     ensure_plugin_built();
 
     let result = CompileBuilder::new(
-        fixture_path("inline_asm", "inline_asm_basic.c"),
+        fixture_path("inline_asm", "inline_asm_basic.c", Language::C),
         "inline_asm_indirect_branch",
     )
     .config(ObfuscationConfig {
@@ -68,7 +69,7 @@ fn test_inline_asm_with_indirect_branch() {
 fn test_inline_asm_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c"), "inline_asm_o2")
+    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c", Language::C), "inline_asm_o2")
         .config(ObfuscationConfig {
             flatten: Some(true),
             bogus_control_flow: Some(true),
@@ -87,7 +88,7 @@ fn test_inline_asm_combined() {
     ensure_plugin_built();
 
     // Test all control flow passes with inline asm
-    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c"), "inline_asm_combined")
+    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c", Language::C), "inline_asm_combined")
         .config(ObfuscationConfig {
             flatten: Some(true),
             bogus_control_flow: Some(true),
