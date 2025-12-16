@@ -11,3 +11,7 @@ shells/
 /amice-llvm/.llvm-prefix-path
 
 /amice-macro/target
+
+# Claude Code
+CLAUDE.md
+.claude/

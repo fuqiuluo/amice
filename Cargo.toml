@@ -34,17 +34,17 @@ llvm21-1 = ["llvm-plugin/llvm21-1", "amice-llvm/llvm21-1"]
 amice-llvm = { path = "amice-llvm", default-features = false }
 amice-macro = { path = "amice-macro", default-features = false }
 llvm-plugin = { version = "0.6", features = ["default"] }
-log = "0.4.27"
+log = "0.4.28"
 env_logger = "0.11.8"
-bitflags = { version = "2.9.1", features = ["serde"] }
-anyhow = "1.0.98"
+bitflags = { version = "2.9.4", features = ["serde"] }
+anyhow = "1.0.100"
 rand = { version = "0.9.2", features = ["default"] }
 hex = "0.4.3"
 num-traits = "0.2"
 lazy_static = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
-toml = "0.9.5"
+toml = "0.9.7"
 serde_json = "1"
 ctor = "0.5.0"
 

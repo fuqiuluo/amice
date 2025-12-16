@@ -25,6 +25,7 @@ mod tests {
     fn detect_llvm_config() -> Option<(String, String)> {
         // Check for specific LLVM environment variables in order of preference
         let llvm_versions = [
+            ("LLVM_SYS_210_PREFIX", "llvm21-1"),
             ("LLVM_SYS_201_PREFIX", "llvm20-1"),
             ("LLVM_SYS_191_PREFIX", "llvm19-1"),
             ("LLVM_SYS_181_PREFIX", "llvm18-1"),

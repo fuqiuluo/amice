@@ -86,6 +86,8 @@ export PATH="$PATH:$HOME/llvm/bin"
 export LLVM_SYS_140_PREFIX="$HOME/llvm"
 ```
 
+#### [问题排查](docs/Troubleshooting.md) | [LLVM 安装指南](docs/LLVMSetup.md)
+
 ### 2. Windows
 
 官方预编译的 LLVM 无法启用动态插件，需**自行编译**或使用社区版本：  
