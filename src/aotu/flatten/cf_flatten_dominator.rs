@@ -359,7 +359,7 @@ fn do_handle(
                 "",
             )?;
             let key = builder.build_load2(i64_type, key_gep, "")?.into_int_value();
-            let cond = terminator.get_operand(0).unwrap().left().unwrap().into_int_value();
+            let cond = terminator.get_operand(0).unwrap().value().unwrap().into_int_value();
             let dest_dispatch_id = builder
                 .build_select(
                     cond,

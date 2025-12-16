@@ -294,7 +294,7 @@ fn do_alias_access_pointer_chain(
         for instr in bb.get_instructions() {
             for i in 0..instr.get_num_operands() {
                 if let Some(opnd) = instr.get_operand(i)
-                    && let Some(op_left) = opnd.left()
+                    && let Some(op_left) = opnd.value()
                     && op_left.is_pointer_value()
                 {
                     let op_ptr = op_left.into_pointer_value();

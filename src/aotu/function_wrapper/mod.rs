@@ -7,10 +7,8 @@ use llvm_plugin::inkwell::attributes::AttributeLoc;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::BasicTypeEnum;
-use llvm_plugin::inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
-};
-use llvm_plugin::inkwell::{Either::Left, Either::Right, context::ContextRef};
+use llvm_plugin::inkwell::values::{AsValueRef, BasicMetadataValueEnum, FunctionValue, InstructionOpcode, InstructionValue, ValueKind};
+use llvm_plugin::inkwell::{context::ContextRef};
 use rand::Rng;
 
 #[amice(
@@ -110,7 +108,7 @@ fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<
 
             // The last operand of a call instruction is typically the called function
             if let Some(operand) = inst.get_operand(operand_num - 1) {
-                if let Some(callee) = operand.left() {
+                if let Some(callee) = operand.value() {
                     let callee_ptr = callee.into_pointer_value();
                     if let Some(func_val) = unsafe { FunctionValue::new(callee_ptr.as_value_ref()) } {
                         return Some(func_val);
@@ -254,10 +252,10 @@ fn create_wrapper_body<'a>(
             | BasicTypeEnum::StructType(_)
             | BasicTypeEnum::VectorType(_)
             | BasicTypeEnum::ScalableVectorType(_) => match call_result.try_as_basic_value() {
-                Left(basic_value) => {
+                ValueKind::Basic(basic_value) => {
                     builder.build_return(Some(&basic_value))?;
                 },
-                Right(_) => {
+                ValueKind::Instruction(_) => {
                     builder.build_return(None)?;
                 },
             },
@@ -286,7 +284,7 @@ fn replace_call_with_wrapper<'a>(
 
     // Skip the last operand which is the function being called
     for i in 0..num_operands.saturating_sub(1) {
-        if let Some(arg) = call_inst.get_operand(i).unwrap().left() {
+        if let Some(arg) = call_inst.get_operand(i).unwrap().value() {
             args.push(arg.into());
         }
     }

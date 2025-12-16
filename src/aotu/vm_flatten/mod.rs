@@ -221,7 +221,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
                 first_basic_block = entry_terminator_inst
                     .get_operand(0)
                     .ok_or(anyhow!("expected operand for unconditional br"))?
-                    .right()
+                    .block()
                     .ok_or(anyhow!("expected right operand for unconditional br"))?
                     .into();
             }
@@ -325,7 +325,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
                     let left = inst
                         .get_operand(0)
                         .ok_or(anyhow!("expected left operand for conditional br: {:?}", inst))?
-                        .right()
+                        .block()
                         .ok_or(anyhow!("expected left operand for is not a block"))?;
 
                     node.set_left(left);
@@ -538,7 +538,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
                         let result = inst
                             .get_operand(0)
                             .ok_or(anyhow!("inst.get_operand(inst.get_num_operands() - 1)"))?
-                            .left()
+                            .value()
                             .ok_or(anyhow!("expected left operand is basic value: {:?}", inst))?
                             .into_int_value();
                         let flag_value = builder

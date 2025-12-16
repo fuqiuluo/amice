@@ -37,6 +37,4 @@ lazy_static = "1"
 regex = "1"
 semver = "1"
 
-[patch.crates-io]
-inkwell = { git = "https://github.com/Ylarod/inkwell" }
 

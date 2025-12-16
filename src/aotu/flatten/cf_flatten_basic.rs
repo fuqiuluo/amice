@@ -190,7 +190,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
         let dispatch_id_false = basic_block_mapping[&successor_false.as_mut_ptr()];
         let dispatch_id_true = i32_ty.const_int(dispatch_id_true as u64, false);
         let dispatch_id_false = i32_ty.const_int(dispatch_id_false as u64, false);
-        let cond = terminator.get_operand(0).unwrap().left().unwrap().into_int_value();
+        let cond = terminator.get_operand(0).unwrap().value().unwrap().into_int_value();
         builder.position_before(&terminator);
         let successor_id = builder
             .build_select(cond, dispatch_id_true, dispatch_id_false, "")?

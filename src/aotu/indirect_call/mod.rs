@@ -72,7 +72,7 @@ impl AmicePass for IndirectCall {
                             continue;
                         }
 
-                        let callee = inst.get_operand(operand_num - 1).unwrap().left();
+                        let callee = inst.get_operand(operand_num - 1).unwrap().value();
                         let Some(callee) = callee else {
                             warn!("indirect call instruction with no callee found: {inst:?}");
                             continue;

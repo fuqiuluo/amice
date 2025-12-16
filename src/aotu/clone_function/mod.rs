@@ -69,7 +69,7 @@ impl AmicePass for CloneFunction {
                 for i in 0..call.get_num_operands() {
                     let operand = call.get_operand(i);
                     if let Some(operand) = operand
-                        && let Some(operand_value) = operand.left()
+                        && let Some(operand_value) = operand.value()
                         && (operand_value.is_int_value() || operand_value.is_float_value())
                     {
                         let is_const = match operand_value {
@@ -158,7 +158,7 @@ fn do_replace_call_with_call_to_specialized_function<'a>(
             continue;
         }
         if let Some(op) = call_inst.get_operand(i) {
-            if let Some(val) = op.left() {
+            if let Some(val) = op.value() {
                 new_call_args.push(val.into());
             } else {
                 return Err(anyhow!("operand {} of call is not a value", i));
@@ -196,7 +196,7 @@ fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<
 
             // The last operand of a call instruction is typically the called function
             if let Some(operand) = inst.get_operand(operand_num - 1) {
-                if let Some(callee) = operand.left() {
+                if let Some(callee) = operand.value() {
                     let callee_ptr = callee.into_pointer_value();
                     if let Some(func_val) = unsafe { FunctionValue::new(callee_ptr.as_value_ref()) } {
                         return Some(func_val);

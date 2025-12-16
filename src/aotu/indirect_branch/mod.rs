@@ -196,7 +196,7 @@ impl AmicePass for IndirectBranch {
                 };
                 // 获取一下下标，如果是条件跳转，就把i8扩展成i32就好了
                 let index = if br_inst.is_conditional() {
-                    let cond = br_inst.get_operand(0).unwrap().left().unwrap().into_int_value();
+                    let cond = br_inst.get_operand(0).unwrap().value().unwrap().into_int_value();
                     builder
                         .build_int_z_extend(cond, i32_type, "")
                         .map_err(|e| warn!("build_int_z_extend failed: {e}"))

@@ -225,10 +225,10 @@ pub(crate) fn collect_insert_points<'a>(
         if let Some(inst) = target_inst {
             for i in 0..inst.get_num_operands() {
                 if let Some(op) = inst.get_operand(i) {
-                    if let Some(operand) = op.left() {
+                    if let Some(operand) = op.value() {
                         // 只收集直接引用的插入点
                         if operand.as_value_ref() == string_global.as_value_ref() {
-                            output.push((inst.as_value_ref(), i));
+                            output.push((inst.as_value_ref() as _, i));
                         }
                     }
                 }

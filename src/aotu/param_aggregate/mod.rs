@@ -139,7 +139,7 @@ fn replace_function_call<'a>(
         let mut args = Vec::new();
         let num_operands = call_inst.get_num_operands();
         for i in 0..num_operands.saturating_sub(1) {
-            if let Some(arg) = call_inst.get_operand(i).unwrap().left() {
+            if let Some(arg) = call_inst.get_operand(i).unwrap().value() {
                 args.push(arg);
             }
         }
@@ -328,7 +328,7 @@ fn create_param_aggregated_function<'a>(
     if let Some(_) = function_type.get_return_type() {
         let ret = ret
             .try_as_basic_value()
-            .left()
+            .basic()
             .ok_or(anyhow!("failed cast to basic value"))?;
         builder.build_return(Some(&ret))?;
     } else {

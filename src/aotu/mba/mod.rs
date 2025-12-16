@@ -137,7 +137,7 @@ impl AmicePass for Mba {
                             for i in 0..inst.get_num_operands() {
                                 let op = inst.get_operand(i);
                                 if let Some(operand) = op
-                                    && let Some(basic_value) = operand.left()
+                                    && let Some(basic_value) = operand.value()
                                     && basic_value.is_int_value()
                                 {
                                     let int_value = basic_value.into_int_value();
@@ -260,14 +260,14 @@ fn rewrite_binop_with_mba<'a>(
     let Some(lhs) = binop_inst
         .get_operand(0)
         .ok_or(anyhow::anyhow!("failed to get lhs"))?
-        .left()
+        .value()
     else {
         return Ok(());
     };
     let Some(rhs) = binop_inst
         .get_operand(1)
         .ok_or(anyhow::anyhow!("failed to get rhs"))?
-        .left()
+        .value()
     else {
         return Ok(());
     };

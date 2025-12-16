@@ -1,47 +1,89 @@
-#[cfg(test)]
-mod tests {
-    use std::process::Command;
+//! Integration tests for indirect branch obfuscation.
 
-    fn build_amice() {
-        let output = Command::new("cargo")
-            .arg("build")
-            .arg("--release")
-            .output()
-            .expect("Failed to execute cargo build command");
-        assert!(output.status.success(), "Cargo build failed");
+mod common;
+
+use common::{ensure_plugin_built, fixture_path, CompileBuilder, ObfuscationConfig};
+
+fn indirect_branch_config() -> ObfuscationConfig {
+    ObfuscationConfig {
+        indirect_branch: Some(true),
+        ..ObfuscationConfig::disabled()
     }
+}
 
-    fn check_output() {
-        let output = Command::new("./target/indirect_branch")
-            .output()
-            .expect("Failed to execute indirect_branch binary");
-        assert!(output.status.success(), "Const strings test failed");
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        let stdout = stdout.split('\n').collect::<Vec<&str>>();
-
-        assert_eq!(stdout[0], "Running control flow test suite...");
-        assert_eq!(stdout[1], "All tests completed. sink = 1");
+fn indirect_branch_config_chained() -> ObfuscationConfig {
+    ObfuscationConfig {
+        indirect_branch: Some(true),
+        indirect_branch_flags: Some("chained_dummy_block".to_string()),
+        ..ObfuscationConfig::disabled()
     }
+}
 
-    #[test]
-    fn test_const_strings_lazy_xor_stack() {
-        build_amice();
+#[test]
+fn test_indirect_branch_basic() {
+    ensure_plugin_built();
 
-        let output = Command::new("clang")
-            .env("AMICE_STRING_STACK_ALLOC", "true")
-            .env("AMICE_STRING_ALGORITHM", "xor")
-            .env("AMICE_STRING_DECRYPT_TIMING", "lazy")
-            .env("AMICE_INDIRECT_BRANCH", "true")
-            .arg("-fpass-plugin=target/release/libamice.so")
-            .arg("tests/indirect_branch.c")
-            .arg("-o")
-            .arg("target/indirect_branch")
-            .output()
-            .expect("Failed to execute clang command");
-        assert!(output.status.success(), "Clang command failed");
+    let result = CompileBuilder::new(
+        fixture_path("indirect_branch", "indirect_branch.c"),
+        "indirect_branch_basic",
+    )
+    .config(indirect_branch_config())
+    .compile();
 
-        check_output();
-    }
+    result.assert_success();
+    let run = result.run();
+    run.assert_success();
+
+    let lines = run.stdout_lines();
+    assert_eq!(lines[0], "Running control flow test suite...");
+    assert_eq!(lines[1], "All tests completed. sink = 1");
+}
+
+#[test]
+fn test_indirect_branch_chained() {
+    ensure_plugin_built();
+
+    let result = CompileBuilder::new(
+        fixture_path("indirect_branch", "indirect_branch.c"),
+        "indirect_branch_chained",
+    )
+    .config(indirect_branch_config_chained())
+    .compile();
+
+    result.assert_success();
+    let run = result.run();
+    run.assert_success();
+
+    let lines = run.stdout_lines();
+    assert_eq!(lines[0], "Running control flow test suite...");
+    assert_eq!(lines[1], "All tests completed. sink = 1");
+}
+
+#[test]
+fn test_indirect_branch_with_string_encryption() {
+    ensure_plugin_built();
+
+    let config = ObfuscationConfig {
+        string_encryption: Some(true),
+        string_algorithm: Some("xor".to_string()),
+        string_decrypt_timing: Some("lazy".to_string()),
+        string_stack_alloc: Some(true),
+        indirect_branch: Some(true),
+        ..ObfuscationConfig::disabled()
+    };
+
+    let result = CompileBuilder::new(
+        fixture_path("indirect_branch", "indirect_branch.c"),
+        "indirect_branch_with_strings",
+    )
+    .config(config)
+    .compile();
+
+    result.assert_success();
+    let run = result.run();
+    run.assert_success();
+
+    let lines = run.stdout_lines();
+    assert_eq!(lines[0], "Running control flow test suite...");
+    assert_eq!(lines[1], "All tests completed. sink = 1");
 }

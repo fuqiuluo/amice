@@ -125,7 +125,7 @@ fn split_entry_block_for_flatten<'a>(
                 first_basic_block = entry_terminator
                     .get_operand(0)
                     .ok_or(anyhow!("expected operand for unconditional br"))?
-                    .right()
+                    .block()
                     .ok_or(anyhow!("expected right operand for unconditional br"))?
                     .into();
             }
