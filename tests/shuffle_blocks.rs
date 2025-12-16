@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{ensure_plugin_built, fixture_path, CompileBuilder, ObfuscationConfig};
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn shuffle_config(flags: &str) -> ObfuscationConfig {
     ObfuscationConfig {
@@ -36,23 +36,16 @@ fn test_shuffle_blocks_random() {
 
     let baseline = get_baseline_output("random");
 
-    let result = CompileBuilder::new(
-        fixture_path("shuffle_blocks", "shuffle_test.c"),
-        "shuffle_random",
-    )
-    .config(shuffle_config("random"))
-    .compile();
+    let result = CompileBuilder::new(fixture_path("shuffle_blocks", "shuffle_test.c"), "shuffle_random")
+        .config(shuffle_config("random"))
+        .compile();
 
     result.assert_success();
     let run = result.run();
     run.assert_success();
 
     // Output should be identical despite block shuffling
-    assert_eq!(
-        run.stdout(),
-        baseline,
-        "Random shuffle changed program behavior"
-    );
+    assert_eq!(run.stdout(), baseline, "Random shuffle changed program behavior");
 }
 
 #[test]
@@ -61,22 +54,15 @@ fn test_shuffle_blocks_reverse() {
 
     let baseline = get_baseline_output("reverse");
 
-    let result = CompileBuilder::new(
-        fixture_path("shuffle_blocks", "shuffle_test.c"),
-        "shuffle_reverse",
-    )
-    .config(shuffle_config("reverse"))
-    .compile();
+    let result = CompileBuilder::new(fixture_path("shuffle_blocks", "shuffle_test.c"), "shuffle_reverse")
+        .config(shuffle_config("reverse"))
+        .compile();
 
     result.assert_success();
     let run = result.run();
     run.assert_success();
 
-    assert_eq!(
-        run.stdout(),
-        baseline,
-        "Reverse shuffle changed program behavior"
-    );
+    assert_eq!(run.stdout(), baseline, "Reverse shuffle changed program behavior");
 }
 
 #[test]
@@ -85,22 +71,15 @@ fn test_shuffle_blocks_rotate() {
 
     let baseline = get_baseline_output("rotate");
 
-    let result = CompileBuilder::new(
-        fixture_path("shuffle_blocks", "shuffle_test.c"),
-        "shuffle_rotate",
-    )
-    .config(shuffle_config("rotate"))
-    .compile();
+    let result = CompileBuilder::new(fixture_path("shuffle_blocks", "shuffle_test.c"), "shuffle_rotate")
+        .config(shuffle_config("rotate"))
+        .compile();
 
     result.assert_success();
     let run = result.run();
     run.assert_success();
 
-    assert_eq!(
-        run.stdout(),
-        baseline,
-        "Rotate shuffle changed program behavior"
-    );
+    assert_eq!(run.stdout(), baseline, "Rotate shuffle changed program behavior");
 }
 
 #[test]
@@ -109,22 +88,15 @@ fn test_shuffle_blocks_combined() {
 
     let baseline = get_baseline_output("combined");
 
-    let result = CompileBuilder::new(
-        fixture_path("shuffle_blocks", "shuffle_test.c"),
-        "shuffle_combined",
-    )
-    .config(shuffle_config("reverse,rotate"))
-    .compile();
+    let result = CompileBuilder::new(fixture_path("shuffle_blocks", "shuffle_test.c"), "shuffle_combined")
+        .config(shuffle_config("reverse,rotate"))
+        .compile();
 
     result.assert_success();
     let run = result.run();
     run.assert_success();
 
-    assert_eq!(
-        run.stdout(),
-        baseline,
-        "Combined shuffle changed program behavior"
-    );
+    assert_eq!(run.stdout(), baseline, "Combined shuffle changed program behavior");
 }
 
 #[test]
@@ -140,20 +112,13 @@ fn test_shuffle_with_split_basic_block() {
         ..ObfuscationConfig::disabled()
     };
 
-    let result = CompileBuilder::new(
-        fixture_path("shuffle_blocks", "shuffle_test.c"),
-        "shuffle_with_split",
-    )
-    .config(config)
-    .compile();
+    let result = CompileBuilder::new(fixture_path("shuffle_blocks", "shuffle_test.c"), "shuffle_with_split")
+        .config(config)
+        .compile();
 
     result.assert_success();
     let run = result.run();
     run.assert_success();
 
-    assert_eq!(
-        run.stdout(),
-        baseline,
-        "Shuffle with split changed program behavior"
-    );
+    assert_eq!(run.stdout(), baseline, "Shuffle with split changed program behavior");
 }

@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{ensure_plugin_built, fixture_path, CompileBuilder, ObfuscationConfig};
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn indirect_call_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -15,12 +15,9 @@ fn indirect_call_config() -> ObfuscationConfig {
 fn test_indirect_call_basic() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
-        fixture_path("indirect_call", "indirect_call.c"),
-        "indirect_call_basic",
-    )
-    .config(indirect_call_config())
-    .compile();
+    let result = CompileBuilder::new(fixture_path("indirect_call", "indirect_call.c"), "indirect_call_basic")
+        .config(indirect_call_config())
+        .compile();
 
     result.assert_success();
     let run = result.run();
@@ -42,13 +39,10 @@ fn test_indirect_call_basic() {
 fn test_indirect_call_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
-        fixture_path("indirect_call", "indirect_call.c"),
-        "indirect_call_o2",
-    )
-    .config(indirect_call_config())
-    .optimization("O2")
-    .compile();
+    let result = CompileBuilder::new(fixture_path("indirect_call", "indirect_call.c"), "indirect_call_o2")
+        .config(indirect_call_config())
+        .optimization("O2")
+        .compile();
 
     result.assert_success();
     let run = result.run();

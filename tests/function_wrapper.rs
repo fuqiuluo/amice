@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{ensure_plugin_built, fixture_path, CompileBuilder, ObfuscationConfig};
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn function_wrapper_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -59,12 +59,9 @@ fn test_clone_function() {
     ensure_plugin_built();
 
     // clone_function.c tests constant argument specialization
-    let result = CompileBuilder::new(
-        fixture_path("function_wrapper", "clone_function.c"),
-        "clone_function",
-    )
-    .config(ObfuscationConfig::disabled())
-    .compile();
+    let result = CompileBuilder::new(fixture_path("function_wrapper", "clone_function.c"), "clone_function")
+        .config(ObfuscationConfig::disabled())
+        .compile();
 
     result.assert_success();
     let run = result.run();

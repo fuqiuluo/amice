@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{ensure_plugin_built, fixture_path, CompileBuilder, ObfuscationConfig};
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 // ============================================================================
 // MD5 Tests

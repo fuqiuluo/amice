@@ -88,9 +88,7 @@ pub fn build_amice() {
     // Apply LLVM-specific configuration if detected
     if let Some(config) = detect_llvm_config() {
         cmd.env(&config.env_var, &config.prefix);
-        cmd.arg("--no-default-features")
-            .arg("--features")
-            .arg(&config.feature);
+        cmd.arg("--no-default-features").arg("--features").arg(&config.feature);
 
         // Add Windows-specific link features if needed
         #[cfg(target_os = "windows")]
@@ -214,7 +212,11 @@ impl ObfuscationConfig {
         set_env_str!(cmd, "AMICE_STRING_DECRYPT_TIMING", self.string_decrypt_timing);
         set_env_bool!(cmd, "AMICE_STRING_STACK_ALLOC", self.string_stack_alloc);
         set_env_bool!(cmd, "AMICE_STRING_INLINE_DECRYPT_FN", self.string_inline_decrypt_fn);
-        set_env_num!(cmd, "AMICE_STRING_MAX_ENCRYPTION_COUNT", self.string_max_encryption_count);
+        set_env_num!(
+            cmd,
+            "AMICE_STRING_MAX_ENCRYPTION_COUNT",
+            self.string_max_encryption_count
+        );
 
         // Indirect branch
         set_env_bool!(cmd, "AMICE_INDIRECT_BRANCH", self.indirect_branch);
@@ -277,7 +279,11 @@ impl CompileBuilder {
         Self {
             source,
             output,
-            compiler: if is_cpp { "clang++".to_string() } else { "clang".to_string() },
+            compiler: if is_cpp {
+                "clang++".to_string()
+            } else {
+                "clang".to_string()
+            },
             config: ObfuscationConfig::default(),
             optimization: None,
             std: if is_cpp { Some("c++17".to_string()) } else { None },
@@ -461,12 +467,9 @@ macro_rules! compile_run_test {
         #[test]
         fn $name() {
             common::ensure_plugin_built();
-            let result = common::CompileBuilder::new(
-                common::fixture_path($fixture.0, $fixture.1),
-                stringify!($name),
-            )
-            .config($config)
-            .compile();
+            let result = common::CompileBuilder::new(common::fixture_path($fixture.0, $fixture.1), stringify!($name))
+                .config($config)
+                .compile();
             result.assert_success();
             let run = result.run();
             run.assert_success();
@@ -481,12 +484,9 @@ macro_rules! compile_compare_test {
         #[test]
         fn $name() {
             common::ensure_plugin_built();
-            let result = common::CompileBuilder::new(
-                common::fixture_path($fixture.0, $fixture.1),
-                stringify!($name),
-            )
-            .config($config)
-            .compile();
+            let result = common::CompileBuilder::new(common::fixture_path($fixture.0, $fixture.1), stringify!($name))
+                .config($config)
+                .compile();
             result.assert_success();
             let run = result.run();
             run.assert_success();

@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{ensure_plugin_built, fixture_path, CompileBuilder, ObfuscationConfig};
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 /// Expected output for const_strings.c test
 fn expected_const_strings_output() -> Vec<&'static str> {

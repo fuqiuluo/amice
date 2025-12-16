@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{ensure_plugin_built, fixture_path, CompileBuilder, ObfuscationConfig};
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn mba_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -30,23 +30,16 @@ fn test_mba_basic() {
 
     let baseline = get_baseline_output("basic");
 
-    let result = CompileBuilder::new(
-        fixture_path("mba", "mba_constants_demo.c"),
-        "mba_basic",
-    )
-    .config(mba_config())
-    .compile();
+    let result = CompileBuilder::new(fixture_path("mba", "mba_constants_demo.c"), "mba_basic")
+        .config(mba_config())
+        .compile();
 
     result.assert_success();
     let run = result.run();
     run.assert_success();
 
     // MBA should not change program output
-    assert_eq!(
-        run.stdout(),
-        baseline,
-        "MBA obfuscation changed program output"
-    );
+    assert_eq!(run.stdout(), baseline, "MBA obfuscation changed program output");
 }
 
 #[test]
@@ -55,23 +48,16 @@ fn test_mba_optimized() {
 
     let baseline = get_baseline_output("optimized");
 
-    let result = CompileBuilder::new(
-        fixture_path("mba", "mba_constants_demo.c"),
-        "mba_o2",
-    )
-    .config(mba_config())
-    .optimization("O2")
-    .compile();
+    let result = CompileBuilder::new(fixture_path("mba", "mba_constants_demo.c"), "mba_o2")
+        .config(mba_config())
+        .optimization("O2")
+        .compile();
 
     result.assert_success();
     let run = result.run();
     run.assert_success();
 
-    assert_eq!(
-        run.stdout(),
-        baseline,
-        "MBA with O2 changed program output"
-    );
+    assert_eq!(run.stdout(), baseline, "MBA with O2 changed program output");
 }
 
 #[test]
@@ -86,20 +72,13 @@ fn test_mba_with_bcf() {
         ..ObfuscationConfig::disabled()
     };
 
-    let result = CompileBuilder::new(
-        fixture_path("mba", "mba_constants_demo.c"),
-        "mba_with_bcf",
-    )
-    .config(config)
-    .compile();
+    let result = CompileBuilder::new(fixture_path("mba", "mba_constants_demo.c"), "mba_with_bcf")
+        .config(config)
+        .compile();
 
     result.assert_success();
     let run = result.run();
     run.assert_success();
 
-    assert_eq!(
-        run.stdout(),
-        baseline,
-        "MBA with BCF changed program output"
-    );
+    assert_eq!(run.stdout(), baseline, "MBA with BCF changed program output");
 }

@@ -4,11 +4,13 @@ use amice_llvm::inkwell2::{FunctionExt, InstructionExt, LLVMValueRefExt, ModuleE
 use amice_macro::amice;
 use llvm_plugin::PreservedAnalyses;
 use llvm_plugin::inkwell::attributes::AttributeLoc;
+use llvm_plugin::inkwell::context::ContextRef;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::BasicTypeEnum;
-use llvm_plugin::inkwell::values::{AsValueRef, BasicMetadataValueEnum, FunctionValue, InstructionOpcode, InstructionValue, ValueKind};
-use llvm_plugin::inkwell::{context::ContextRef};
+use llvm_plugin::inkwell::values::{
+    AsValueRef, BasicMetadataValueEnum, FunctionValue, InstructionOpcode, InstructionValue, ValueKind,
+};
 use rand::Rng;
 
 #[amice(

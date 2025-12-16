@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{ensure_plugin_built, fixture_path, CompileBuilder, ObfuscationConfig};
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn indirect_branch_config() -> ObfuscationConfig {
     ObfuscationConfig {
