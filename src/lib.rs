@@ -10,6 +10,7 @@ use log::{info, warn};
 fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
     if let Err(e) = env_logger::builder().try_init() {
         warn!("amice init logger failed: {e:?}");
+        return;
     }
 
     info!(

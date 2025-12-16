@@ -12,7 +12,7 @@ use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{BasicValue, BasicValueEnum};
-use log::{debug, error, warn};
+use log::{debug, error, log_enabled, warn, Level};
 
 #[derive(Default)]
 pub(super) struct XorAlgo;
@@ -174,6 +174,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
             EncryptedGlobalValue::new(global, string_len, flag, should_use_stack, users)
         })
         .collect();
+
+    if log_enabled!(Level::Debug) {
+        debug!("strings count: {}", string_global_values.len());
+    }
 
     // 统一解密函数
     let decrypt_fn = add_decrypt_function(
