@@ -155,5 +155,5 @@ Download: [android-ndk-r25c Linux X64](https://github.com/fuqiuluo/amice/release
 
 ---
 
-> © 2025 Fuqiuluo & Contributors.  
+> © 2025-2026 Fuqiuluo & Contributors.  
 > 使用遵循本仓库 LICENSE。

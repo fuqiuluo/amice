@@ -219,7 +219,7 @@ fn do_handle<'a>(
             let get_operand = inst
                 .get_operand(i)
                 .ok_or_else(|| anyhow::anyhow!("Indirect call instruction has no operand at index {i}"))?
-                .left()
+                .value()
                 .ok_or_else(|| anyhow::anyhow!("Indirect call instruction operand at index {i} is not a pointer"))?;
             args.push(get_operand);
         }
