@@ -144,6 +144,11 @@ fn handle_call_instruction<'a>(
         return Ok(None);
     }
 
+    if called_function.get_type().is_var_arg() {
+        debug!("skipping varargs function: {:?}", called_function.get_name());
+        return Ok(None);
+    }
+
     // Create wrapper function
     create_wrapper_function(module, &call_inst, called_function)
 }

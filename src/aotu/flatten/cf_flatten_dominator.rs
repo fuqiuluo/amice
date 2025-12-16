@@ -90,26 +90,32 @@ fn do_handle(
         return Ok(());
     }
 
-    let mut has_eh_or_invoke_in_entry = false;
-    for inst in entry_block.get_instructions() {
-        if matches!(
-            inst.get_opcode(),
-            InstructionOpcode::Invoke
-                | InstructionOpcode::LandingPad
-                | InstructionOpcode::CatchSwitch
-                | InstructionOpcode::CatchPad
-                | InstructionOpcode::CatchRet
-                | InstructionOpcode::CleanupPad
-                | InstructionOpcode::CallBr
-        ) {
-            has_eh_or_invoke_in_entry = true;
+    // Check all basic blocks for exception handling instructions
+    let mut has_exception_handling = false;
+    for bb in function.get_basic_blocks() {
+        for inst in bb.get_instructions() {
+            if matches!(
+                inst.get_opcode(),
+                InstructionOpcode::Invoke
+                    | InstructionOpcode::LandingPad
+                    | InstructionOpcode::CatchSwitch
+                    | InstructionOpcode::CatchPad
+                    | InstructionOpcode::CatchRet
+                    | InstructionOpcode::CleanupPad
+                    | InstructionOpcode::CallBr
+            ) {
+                has_exception_handling = true;
+                break;
+            }
+        }
+        if has_exception_handling {
             break;
         }
     }
-    if has_eh_or_invoke_in_entry {
+    if has_exception_handling {
         // 跳过该函数，不做扁平化
         warn!(
-            "(flatten-enhanced) function {:?} has exception handling or invoke in entry block, skipping",
+            "(flatten-enhanced) function {:?} has exception handling instructions, skipping",
             function.get_name()
         );
         return Ok(());

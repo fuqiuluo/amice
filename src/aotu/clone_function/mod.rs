@@ -35,6 +35,7 @@ impl AmicePass for CloneFunction {
                     continue;
                 }
 
+
                 let cfg = self.parse_function_annotations(module, function)?;
                 if !cfg.enable {
                     continue;
@@ -48,6 +49,11 @@ impl AmicePass for CloneFunction {
                                     || called_func.is_undef_function()
                                     || called_func.is_inline_marked()
                                 {
+                                    continue;
+                                }
+
+                                if called_func.get_type().is_var_arg() {
+                                    debug!("skipping varargs function: {:?}", called_func.get_name());
                                     continue;
                                 }
 

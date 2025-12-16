@@ -156,6 +156,9 @@ pub struct ObfuscationConfig {
 
     // Function wrapper
     pub function_wrapper: Option<bool>,
+
+    // Clone function
+    pub clone_function: Option<bool>,
 }
 
 impl ObfuscationConfig {
@@ -176,6 +179,7 @@ impl ObfuscationConfig {
             split_basic_block: Some(false),
             mba: Some(false),
             function_wrapper: Some(false),
+            clone_function: Some(false),
             ..Default::default()
         }
     }
@@ -242,6 +246,9 @@ impl ObfuscationConfig {
 
         // Function wrapper
         set_env_bool!(cmd, "AMICE_FUNCTION_WRAPPER", self.function_wrapper);
+
+        // Clone function
+        set_env_bool!(cmd, "AMICE_CLONE_FUNCTION", self.clone_function);
     }
 }
 
@@ -427,7 +434,7 @@ impl RunResult {
             eprintln!("=== Execution failed ===");
             eprintln!("STDOUT:\n{}", self.stdout());
             eprintln!("STDERR:\n{}", self.stderr());
-            panic!("Execution failed with status: {:?}", self.output.status);
+            panic!("Execution failed with status: {:?}", self.output.status.code());
         }
     }
 

@@ -10,6 +10,7 @@ use llvm_plugin::inkwell::types::{AsTypeRef, IntType};
 use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use rand::prelude::SliceRandom;
 use rand::Rng;
 
 const INDIRECT_BRANCH_TABLE_NAME: &str = "global_indirect_branch_table";
@@ -74,11 +75,14 @@ impl AmicePass for IndirectBranch {
             return Ok(PreservedAnalyses::All);
         }
 
-        let non_entry_bb_addrs = non_entry_basic_blocks
+        let mut non_entry_bb_addrs = non_entry_basic_blocks
             .iter()
             .filter_map(|bb| unsafe { bb.get_address() })
             .map(|addr| addr.as_value_ref())
             .collect::<Vec<_>>();
+
+        let mut rng = rand::rng();
+        non_entry_bb_addrs.shuffle(&mut rng);
 
         let non_entry_bb_array_ty = ptr_type.array_type(non_entry_basic_blocks.len() as u32);
         let non_entry_bb_initializer =
@@ -369,6 +373,14 @@ fn collect_basic_block<'a>(funcs: &Vec<(FunctionValue<'a>, IndirectBranchConfig)
             if bb == entry_block {
                 continue;
             }
+
+            // Skip blocks that end with unreachable (e.g., fake blocks from BCF)
+            // if let Some(terminator) = bb.get_terminator() {
+            //     if terminator.get_opcode() == InstructionOpcode::Unreachable {
+            //         continue;
+            //     }
+            // }
+
             basic_blocks.push(bb);
         }
     }
