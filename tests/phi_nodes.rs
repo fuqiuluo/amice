@@ -20,7 +20,7 @@ fn test_phi_with_split_basic_block() {
     // This test will likely FAIL or produce incorrect results
     let result = CompileBuilder::new(
         fixture_path("phi_nodes", "phi_split_basic_block.c"),
-        "phi_split_basic_block"
+        "phi_split_basic_block",
     )
     .config(ObfuscationConfig {
         split_basic_block: Some(true),
@@ -39,7 +39,7 @@ fn test_phi_with_split_basic_block_optimized() {
 
     let result = CompileBuilder::new(
         fixture_path("phi_nodes", "phi_split_basic_block.c"),
-        "phi_split_basic_block_o2"
+        "phi_split_basic_block_o2",
     )
     .config(ObfuscationConfig {
         split_basic_block: Some(true),
@@ -58,15 +58,12 @@ fn test_phi_with_flatten() {
     ensure_plugin_built();
 
     // Flatten should properly fix PHI nodes
-    let result = CompileBuilder::new(
-        fixture_path("phi_nodes", "phi_flatten.c"),
-        "phi_flatten"
-    )
-    .config(ObfuscationConfig {
-        flatten: Some(true),
-        ..ObfuscationConfig::disabled()
-    })
-    .compile();
+    let result = CompileBuilder::new(fixture_path("phi_nodes", "phi_flatten.c"), "phi_flatten")
+        .config(ObfuscationConfig {
+            flatten: Some(true),
+            ..ObfuscationConfig::disabled()
+        })
+        .compile();
 
     result.assert_success();
     let run = result.run();
@@ -77,16 +74,13 @@ fn test_phi_with_flatten() {
 fn test_phi_with_flatten_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
-        fixture_path("phi_nodes", "phi_flatten.c"),
-        "phi_flatten_o2"
-    )
-    .config(ObfuscationConfig {
-        flatten: Some(true),
-        ..ObfuscationConfig::disabled()
-    })
-    .optimization("O2")
-    .compile();
+    let result = CompileBuilder::new(fixture_path("phi_nodes", "phi_flatten.c"), "phi_flatten_o2")
+        .config(ObfuscationConfig {
+            flatten: Some(true),
+            ..ObfuscationConfig::disabled()
+        })
+        .optimization("O2")
+        .compile();
 
     result.assert_success();
     let run = result.run();
@@ -100,7 +94,7 @@ fn test_phi_with_split_and_flatten() {
     // Test combination of split_basic_block and flatten
     let result = CompileBuilder::new(
         fixture_path("phi_nodes", "phi_split_basic_block.c"),
-        "phi_split_and_flatten"
+        "phi_split_and_flatten",
     )
     .config(ObfuscationConfig {
         split_basic_block: Some(true),
@@ -119,15 +113,12 @@ fn test_phi_with_bcf() {
     ensure_plugin_built();
 
     // BCF should properly fix PHI nodes
-    let result = CompileBuilder::new(
-        fixture_path("phi_nodes", "phi_split_basic_block.c"),
-        "phi_bcf"
-    )
-    .config(ObfuscationConfig {
-        bogus_control_flow: Some(true),
-        ..ObfuscationConfig::disabled()
-    })
-    .compile();
+    let result = CompileBuilder::new(fixture_path("phi_nodes", "phi_split_basic_block.c"), "phi_bcf")
+        .config(ObfuscationConfig {
+            bogus_control_flow: Some(true),
+            ..ObfuscationConfig::disabled()
+        })
+        .compile();
 
     result.assert_success();
     let run = result.run();
@@ -139,18 +130,15 @@ fn test_phi_combined_passes() {
     ensure_plugin_built();
 
     // Test all control flow passes with PHI nodes
-    let result = CompileBuilder::new(
-        fixture_path("phi_nodes", "phi_split_basic_block.c"),
-        "phi_combined"
-    )
-    .config(ObfuscationConfig {
-        flatten: Some(true),
-        bogus_control_flow: Some(true),
-        split_basic_block: Some(true),
-        shuffle_blocks: Some(true),
-        ..ObfuscationConfig::disabled()
-    })
-    .compile();
+    let result = CompileBuilder::new(fixture_path("phi_nodes", "phi_split_basic_block.c"), "phi_combined")
+        .config(ObfuscationConfig {
+            flatten: Some(true),
+            bogus_control_flow: Some(true),
+            split_basic_block: Some(true),
+            shuffle_blocks: Some(true),
+            ..ObfuscationConfig::disabled()
+        })
+        .compile();
 
     result.assert_success();
     let run = result.run();
