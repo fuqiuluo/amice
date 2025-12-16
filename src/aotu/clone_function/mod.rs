@@ -35,7 +35,6 @@ impl AmicePass for CloneFunction {
                     continue;
                 }
 
-
                 let cfg = self.parse_function_annotations(module, function)?;
                 if !cfg.enable {
                     continue;

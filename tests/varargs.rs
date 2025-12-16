@@ -22,7 +22,7 @@ fn test_varargs_with_indirect_call() {
     // This test will likely FAIL or produce incorrect printf output
     let result = CompileBuilder::new(
         fixture_path("varargs", "varargs_indirect_call.c"),
-        "varargs_indirect_call"
+        "varargs_indirect_call",
     )
     .config(ObfuscationConfig {
         indirect_call: Some(true),
@@ -41,7 +41,7 @@ fn test_varargs_with_indirect_call_optimized() {
 
     let result = CompileBuilder::new(
         fixture_path("varargs", "varargs_indirect_call.c"),
-        "varargs_indirect_call_o2"
+        "varargs_indirect_call_o2",
     )
     .config(ObfuscationConfig {
         indirect_call: Some(true),
@@ -62,7 +62,7 @@ fn test_varargs_with_function_wrapper() {
     // function_wrapper should detect varargs and skip wrapping
     let result = CompileBuilder::new(
         fixture_path("varargs", "varargs_function_wrapper.c"),
-        "varargs_function_wrapper"
+        "varargs_function_wrapper",
     )
     .config(ObfuscationConfig {
         function_wrapper: Some(true),
@@ -81,7 +81,7 @@ fn test_varargs_with_function_wrapper_optimized() {
 
     let result = CompileBuilder::new(
         fixture_path("varargs", "varargs_function_wrapper.c"),
-        "varargs_function_wrapper_o2"
+        "varargs_function_wrapper_o2",
     )
     .config(ObfuscationConfig {
         function_wrapper: Some(true),
@@ -102,7 +102,7 @@ fn test_varargs_with_clone_function() {
     // clone_function should detect varargs and skip cloning
     let result = CompileBuilder::new(
         fixture_path("varargs", "varargs_clone_function.c"),
-        "varargs_clone_function"
+        "varargs_clone_function",
     )
     .config(ObfuscationConfig {
         clone_function: Some(true),
@@ -120,17 +120,14 @@ fn test_varargs_combined_passes() {
     ensure_plugin_built();
 
     // Test multiple passes with varargs
-    let result = CompileBuilder::new(
-        fixture_path("varargs", "varargs_indirect_call.c"),
-        "varargs_combined"
-    )
-    .config(ObfuscationConfig {
-        indirect_call: Some(true),
-        function_wrapper: Some(true),
-        flatten: Some(true),
-        ..ObfuscationConfig::disabled()
-    })
-    .compile();
+    let result = CompileBuilder::new(fixture_path("varargs", "varargs_indirect_call.c"), "varargs_combined")
+        .config(ObfuscationConfig {
+            indirect_call: Some(true),
+            function_wrapper: Some(true),
+            flatten: Some(true),
+            ..ObfuscationConfig::disabled()
+        })
+        .compile();
 
     result.assert_success();
     let run = result.run();

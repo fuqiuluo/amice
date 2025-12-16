@@ -21,7 +21,7 @@ fn test_cpp_exception_with_bcf() {
     // This test will likely FAIL or produce incorrect results
     let result = CompileBuilder::new(
         fixture_path("exception_handling", "cpp_exception_bcf.cpp"),
-        "cpp_exception_bcf"
+        "cpp_exception_bcf",
     )
     .config(ObfuscationConfig {
         bogus_control_flow: Some(true),
@@ -40,7 +40,7 @@ fn test_cpp_exception_with_bcf_optimized() {
 
     let result = CompileBuilder::new(
         fixture_path("exception_handling", "cpp_exception_bcf.cpp"),
-        "cpp_exception_bcf_o2"
+        "cpp_exception_bcf_o2",
     )
     .config(ObfuscationConfig {
         bogus_control_flow: Some(true),
@@ -61,7 +61,7 @@ fn test_cpp_exception_with_flatten() {
     // Flatten should properly detect exception handling and skip the function
     let result = CompileBuilder::new(
         fixture_path("exception_handling", "cpp_exception_flatten.cpp"),
-        "cpp_exception_flatten"
+        "cpp_exception_flatten",
     )
     .config(ObfuscationConfig {
         flatten: Some(true),
@@ -80,7 +80,7 @@ fn test_cpp_exception_with_flatten_optimized() {
 
     let result = CompileBuilder::new(
         fixture_path("exception_handling", "cpp_exception_flatten.cpp"),
-        "cpp_exception_flatten_o2"
+        "cpp_exception_flatten_o2",
     )
     .config(ObfuscationConfig {
         flatten: Some(true),
@@ -101,7 +101,7 @@ fn test_cpp_exception_with_indirect_branch() {
     // Indirect branch has partial EH detection - should handle this correctly
     let result = CompileBuilder::new(
         fixture_path("exception_handling", "cpp_exception_indirect_branch.cpp"),
-        "cpp_exception_indirect_branch"
+        "cpp_exception_indirect_branch",
     )
     .config(ObfuscationConfig {
         indirect_branch: Some(true),
@@ -121,7 +121,7 @@ fn test_cpp_exception_combined() {
     // Test multiple passes with exception handling
     let result = CompileBuilder::new(
         fixture_path("exception_handling", "cpp_exception_bcf.cpp"),
-        "cpp_exception_combined"
+        "cpp_exception_combined",
     )
     .config(ObfuscationConfig {
         flatten: Some(true),

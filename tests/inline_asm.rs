@@ -16,15 +16,12 @@ fn test_inline_asm_with_flatten() {
     ensure_plugin_built();
 
     // Inline asm detection test - should skip functions with inline asm
-    let result = CompileBuilder::new(
-        fixture_path("inline_asm", "inline_asm_basic.c"),
-        "inline_asm_flatten"
-    )
-    .config(ObfuscationConfig {
-        flatten: Some(true),
-        ..ObfuscationConfig::disabled()
-    })
-    .compile();
+    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c"), "inline_asm_flatten")
+        .config(ObfuscationConfig {
+            flatten: Some(true),
+            ..ObfuscationConfig::disabled()
+        })
+        .compile();
 
     result.assert_success();
     let run = result.run();
@@ -36,15 +33,12 @@ fn test_inline_asm_with_bcf() {
     ensure_plugin_built();
 
     // BCF should detect inline asm (currently does NOT)
-    let result = CompileBuilder::new(
-        fixture_path("inline_asm", "inline_asm_basic.c"),
-        "inline_asm_bcf"
-    )
-    .config(ObfuscationConfig {
-        bogus_control_flow: Some(true),
-        ..ObfuscationConfig::disabled()
-    })
-    .compile();
+    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c"), "inline_asm_bcf")
+        .config(ObfuscationConfig {
+            bogus_control_flow: Some(true),
+            ..ObfuscationConfig::disabled()
+        })
+        .compile();
 
     result.assert_success();
     let run = result.run();
@@ -57,7 +51,7 @@ fn test_inline_asm_with_indirect_branch() {
 
     let result = CompileBuilder::new(
         fixture_path("inline_asm", "inline_asm_basic.c"),
-        "inline_asm_indirect_branch"
+        "inline_asm_indirect_branch",
     )
     .config(ObfuscationConfig {
         indirect_branch: Some(true),
@@ -74,17 +68,14 @@ fn test_inline_asm_with_indirect_branch() {
 fn test_inline_asm_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
-        fixture_path("inline_asm", "inline_asm_basic.c"),
-        "inline_asm_o2"
-    )
-    .config(ObfuscationConfig {
-        flatten: Some(true),
-        bogus_control_flow: Some(true),
-        ..ObfuscationConfig::disabled()
-    })
-    .optimization("O2")
-    .compile();
+    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c"), "inline_asm_o2")
+        .config(ObfuscationConfig {
+            flatten: Some(true),
+            bogus_control_flow: Some(true),
+            ..ObfuscationConfig::disabled()
+        })
+        .optimization("O2")
+        .compile();
 
     result.assert_success();
     let run = result.run();
@@ -96,18 +87,15 @@ fn test_inline_asm_combined() {
     ensure_plugin_built();
 
     // Test all control flow passes with inline asm
-    let result = CompileBuilder::new(
-        fixture_path("inline_asm", "inline_asm_basic.c"),
-        "inline_asm_combined"
-    )
-    .config(ObfuscationConfig {
-        flatten: Some(true),
-        bogus_control_flow: Some(true),
-        indirect_branch: Some(true),
-        split_basic_block: Some(true),
-        ..ObfuscationConfig::disabled()
-    })
-    .compile();
+    let result = CompileBuilder::new(fixture_path("inline_asm", "inline_asm_basic.c"), "inline_asm_combined")
+        .config(ObfuscationConfig {
+            flatten: Some(true),
+            bogus_control_flow: Some(true),
+            indirect_branch: Some(true),
+            split_basic_block: Some(true),
+            ..ObfuscationConfig::disabled()
+        })
+        .compile();
 
     result.assert_success();
     let run = result.run();
