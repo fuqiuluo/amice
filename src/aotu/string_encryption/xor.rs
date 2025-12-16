@@ -3,10 +3,10 @@ use crate::aotu::string_encryption::{
     array_as_const_string, collect_insert_points,
 };
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
-use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use inkwell::module::Module;
-use inkwell::values::FunctionValue;
+use inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::inkwell;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -120,6 +120,17 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
                         break;
                     }
 
+                    // 检查是否有PHI节点引用此字符串
+                    // PHI节点的操作数必须在前驱块中定义，无法使用栈分配模式，必须降级到回写模式
+                    for (value_ref, _) in &temp_user {
+                        let inst = value_ref.into_instruction_value();
+                        if inst.get_opcode() == InstructionOpcode::Phi {
+                            debug!("(strenc) string '{}' is referenced by PHI node, disabling stack allocation", unique_name);
+                            should_use_stack = false;
+                            break;
+                        }
+                    }
+
                     users.append(&mut temp_user);
                 }
 
@@ -226,7 +237,26 @@ fn emit_decrypt_before_inst<'a>(
 
         if !user_slice.is_empty() {
             for (inst, op_index) in user_slice {
-                builder.position_before(inst);
+                // 如果指令是PHI节点，需要在基本块的第一个非PHI指令位置插入解密代码
+                // PHI节点必须在基本块开头，不能在PHI节点前插入任何非PHI指令
+                let insert_point = if inst.get_opcode() == InstructionOpcode::Phi {
+                    // 一般来说没有问题吧? (((有没有可能出现这种情况呢？
+                    // %1 = phi ....
+                    // call void xxx(%1)
+                    // %2 = phi ....
+                    // 不能吧? 那就真不能，出现了那就真倒糙了
+                    if let Some(parent_bb) = inst.get_parent() {
+                        parent_bb.get_first_insertion_pt()
+                    } else {
+                        error!("(strenc) PHI instruction has no parent block: {inst:?}");
+                        *inst
+                    }
+                } else {
+                    *inst
+                };
+
+                // 去到梦开始的地方!!!
+                builder.position_before(&insert_point);
 
                 let ptr = string.global.as_pointer_value();
                 let len_val = i32_ty.const_int(string.str_len as u64, false);
@@ -243,6 +273,16 @@ fn emit_decrypt_before_inst<'a>(
                         "",
                     )?;
 
+                    // 如果是phi，那就没办法替换了，因为这样会出现因果倒置
+                    // %1 = phi @.str -> %1 = phi %2 这样生命周期就不对了喵
+                    // %2 = alloc 1000000TB
+                    // call void dec_str(@.str, %2)
+                    // printf(%1)
+                    // 这个时候我们有两个解决方案：
+                    // ----- 如果字符串有phi user，不允许该字符串使用栈分配
+                    // ----- phi指令的字符串，把phi调用点全replace了，但是貌似不可行，因为会出现一个极端情况：
+                    // ---------- 有二货把phi出来的指针保存全局变量？栈分内存不能保存全局的！！
+
                     if !inst.set_operand(*op_index, dst) {
                         error!("(strenc) failed to set operand: {inst:?}");
                     }
@@ -250,7 +290,7 @@ fn emit_decrypt_before_inst<'a>(
                     // 回写模式，需要保证字符串非常量
                     string.global.set_constant(false);
                     let flag_ptr = string.flag.unwrap_or_else(|| {
-                        // 居然没有flag？？？？？？现场生成一个，防止崩溃
+                        // 居然没有flag? wtf? 现场生成一个，防止崩溃?
                         let value = module.add_global(i32_ty, None, ".amice_tmp_dec_flag");
                         value.set_linkage(Linkage::Private);
                         value.set_initializer(&i32_ty.const_zero());

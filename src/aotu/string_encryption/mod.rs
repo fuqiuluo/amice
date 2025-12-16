@@ -5,14 +5,12 @@ use crate::aotu::string_encryption::simd_xor::SimdXorAlgo;
 use crate::aotu::string_encryption::xor::XorAlgo;
 use crate::config::{Config, StringAlgorithm, StringDecryptTiming, StringEncryptionConfig};
 use crate::pass_registry::{AmicePass, AmicePassFlag};
-use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, VerifyResult};
+use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, LLVMValueRefExt, VerifyResult};
 use amice_macro::amice;
 use inkwell::llvm_sys::core::LLVMGetAsString;
 use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{
-    AnyValueEnum, ArrayValue, AsValueRef, BasicValue, GlobalValue, InstructionValue, PointerValue,
-};
+use llvm_plugin::inkwell::values::{AnyValueEnum, ArrayValue, AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, PointerValue};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use std::ptr::NonNull;
 
@@ -144,7 +142,7 @@ pub(crate) fn array_as_rust_string(arr: &ArrayValue) -> Option<String> {
 
 pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]> {
     let mut len = 0;
-    let ptr = unsafe { LLVMGetAsString(arr.as_value_ref(), &mut len) };
+    let ptr = unsafe { LLVMGetAsString(arr.as_value_ref() as _, &mut len) };
     if ptr.is_null() {
         None
     } else {
@@ -217,6 +215,19 @@ pub(crate) fn collect_insert_points<'a>(
                     error!("(strenc) unexpected ArrayValue user (no uses): {v:?}");
                 }
             },
+            AnyValueEnum::StructValue(v) => {
+                // %3 = call { ptr, i64 } @_ZN3fmt3v1112vformat_to_nIPcJETnNSt9enable_ifIXsr6detail18is_output_iteratorIT_cEE5valueEiE4typeELi0EEENS0_18format_to_n_resultIS4_EES4_mNS0_17basic_string_viewIcEENS0_17basic_format_argsINS0_7contextEEE(ptr noundef nonnull %2, i64 noundef 1023, ptr nonnull @.str, i64 2, i64 12, ptr nonnull %1)
+                // { ptr, i64 } 是一个匿名结构体类型，包含两个字段：
+                // 调用这个函数返回匿名结构体，很明显这个是一条指令，但是没有走InstructionValue！为什么呢？
+                // 因为inkwell的安全封装设计，解决办法旧很简单了，直接复用inst的逻辑，llvm兜底
+                // ---- 作为指令：它是一条 call 指令（Instruction）
+                // ---- 作为值：它产生一个 { ptr, i64 } 类型的值（Value）
+                if let Some(inst) = v.as_instruction_value() {
+                    target_inst = Some(inst);
+                } else {
+                    error!("(strenc) unexpected StructValue user: {v:?}");
+                }
+            }
             // 其他类型：目前未覆盖，打印日志
             _ => error!("(strenc) unexpected user type: {curr:?}"),
         }
@@ -255,7 +266,19 @@ fn alloc_stack_string<'a>(
         // 在非入口块分配，许多LLVM优化pass假设所有 alloca 都在入口块
         // 可能阻止某些优化的进行
         // 寄存器提升等优化可能受影响
-        builder.position_before(inst);
+
+        // 如果指令是PHI节点，需要在基本块的第一个非PHI指令位置分配
+        let insert_point = if inst.get_opcode() == InstructionOpcode::Phi {
+            if let Some(parent_bb) = inst.get_parent() {
+                parent_bb.get_first_insertion_pt()
+            } else {
+                *inst
+            }
+        } else {
+            *inst
+        };
+
+        builder.position_before(&insert_point);
         let container = builder.build_array_alloca(i8_ty, string_len, "string_container")?;
         return Ok(container);
     }

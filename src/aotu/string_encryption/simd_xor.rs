@@ -3,15 +3,15 @@ use crate::aotu::string_encryption::{
     array_as_const_string, collect_insert_points,
 };
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
-use amice_llvm::inkwell2::{BuilderExt, ModuleExt};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue};
-use log::{error, warn};
+use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode};
+use log::{debug, error, warn};
 use rand::Rng;
 
 #[derive(Default)]
@@ -125,6 +125,17 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                         break;
                     }
 
+                    // 检查是否有PHI节点引用此字符串
+                    // PHI节点的操作数必须在前驱块中定义，无法使用栈分配模式，必须降级到回写模式
+                    for (value_ref, _) in &temp_user {
+                        let inst = value_ref.into_instruction_value();
+                        if inst.get_opcode() == InstructionOpcode::Phi {
+                            debug!("(strenc) string '{}' is referenced by PHI node, disabling stack allocation", unique_name);
+                            should_use_stack = false;
+                            break;
+                        }
+                    }
+
                     users.append(&mut temp_user);
                 }
 
@@ -228,7 +239,20 @@ fn emit_decrypt_before_inst<'a>(
 
         if !user_slice.is_empty() {
             for (inst, op_index) in user_slice {
-                builder.position_before(inst);
+                // 如果指令是PHI节点，需要在基本块的第一个非PHI指令位置插入解密代码
+                // PHI节点必须在基本块开头，不能在PHI节点前插入任何非PHI指令
+                let insert_point = if inst.get_opcode() == InstructionOpcode::Phi {
+                    if let Some(parent_bb) = inst.get_parent() {
+                        parent_bb.get_first_insertion_pt()
+                    } else {
+                        error!("(strenc) PHI instruction has no parent block: {inst:?}");
+                        *inst
+                    }
+                } else {
+                    *inst
+                };
+
+                builder.position_before(&insert_point);
 
                 let ptr = string.global.as_pointer_value();
                 let len_val = i32_ty.const_int(string.str_len as u64, false);

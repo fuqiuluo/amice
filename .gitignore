@@ -12,6 +12,9 @@ shells/
 
 /amice-macro/target
 
+# Test fixtures - external dependencies
+tests/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/
+
 # Claude Code
 CLAUDE.md
 .claude/
