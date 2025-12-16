@@ -81,8 +81,11 @@ impl AmicePass for IndirectBranch {
             .map(|addr| addr.as_value_ref())
             .collect::<Vec<_>>();
 
-        let mut rng = rand::rng();
-        non_entry_bb_addrs.shuffle(&mut rng);
+        // Shuffle the jump table if requested
+        if self.default_config.flags.contains(IndirectBranchFlags::ShuffleTable) {
+            let mut rng = rand::rng();
+            non_entry_bb_addrs.shuffle(&mut rng);
+        }
 
         let non_entry_bb_array_ty = ptr_type.array_type(non_entry_basic_blocks.len() as u32);
         let non_entry_bb_initializer =

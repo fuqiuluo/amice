@@ -21,6 +21,8 @@ bitflags! {
         const EncryptBlockIndex = 0b00001000;
         /// Insert junk instructions in dummy blocks
         const DummyJunk =         0b00010000;
+        /// Shuffle the jump table to randomize basic block order
+        const ShuffleTable =      0b00100000;
     }
 }
 
@@ -55,6 +57,7 @@ fn parse_indirect_branch_flags(value: &str) -> IndirectBranchFlags {
             "chained_dummy_blocks" => flags |= IndirectBranchFlags::ChainedDummyBlock,
             "encrypt_block_index" => flags |= IndirectBranchFlags::EncryptBlockIndex,
             "dummy_junk" => flags |= IndirectBranchFlags::DummyJunk,
+            "shuffle_table" => flags |= IndirectBranchFlags::ShuffleTable,
             _ => warn!("Unknown AMICE_INDIRECT_BRANCH_FLAGS: \"{x}\" , ignoring"),
         }
     }
