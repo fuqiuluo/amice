@@ -9,8 +9,8 @@
 
 mod common;
 
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 use crate::common::Language;
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn string_config_lazy_xor() -> ObfuscationConfig {
     ObfuscationConfig {

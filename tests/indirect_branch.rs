@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 use crate::common::Language;
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn indirect_branch_config() -> ObfuscationConfig {
     ObfuscationConfig {

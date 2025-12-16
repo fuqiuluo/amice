@@ -11,8 +11,8 @@
 
 mod common;
 
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 use crate::common::Language;
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 #[test]
 fn test_cpp_exception_with_bcf() {

@@ -5,8 +5,8 @@
 
 mod common;
 
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 use crate::common::Language;
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 // ============================================================================
 // MD5 Tests
 // ============================================================================
@@ -152,9 +152,12 @@ fn test_md5_full_obfuscation() {
         ..ObfuscationConfig::disabled()
     };
 
-    let result = CompileBuilder::new(fixture_path("integration", "md5.c", Language::C), "md5_full_obfuscation")
-        .config(config)
-        .compile();
+    let result = CompileBuilder::new(
+        fixture_path("integration", "md5.c", Language::C),
+        "md5_full_obfuscation",
+    )
+    .config(config)
+    .compile();
 
     result.assert_success();
     let run = result.run();

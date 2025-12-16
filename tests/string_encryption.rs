@@ -8,8 +8,8 @@
 
 mod common;
 
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 use crate::common::Language;
+use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 /// Expected output for const_strings.c test
 fn expected_const_strings_output() -> Vec<&'static str> {
