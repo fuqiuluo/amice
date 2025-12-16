@@ -20,7 +20,7 @@ dependencies = [
  "anyhow",
  "bitflags",
  "cc",
- "ctor",
+ "ctor 0.6.3",
  "env_logger",
  "hex",
  "lazy_static",
@@ -53,7 +53,7 @@ dependencies = [
 name = "amice-macro"
 version = "0.1.0"
 dependencies = [
- "ctor",
+ "ctor 0.5.0",
  "lazy_static",
  "proc-macro2",
  "quote",
@@ -124,11 +124,11 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "bitflags"
-version = "2.9.4"
+version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2261d10cca569e4643e526d8dc2e62e433cc8aba21ab764233731f8d369bf394"
+checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 dependencies = [
- "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -159,7 +159,17 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67773048316103656a637612c4a62477603b777d91d9c62ff2290f9cde178fdb"
 dependencies = [
- "ctor-proc-macro",
+ "ctor-proc-macro 0.0.6",
+ "dtor",
+]
+
+[[package]]
+name = "ctor"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "424e0138278faeb2b401f174ad17e715c829512d74f3d1e81eb43365c2e0590e"
+dependencies = [
+ "ctor-proc-macro 0.0.7",
  "dtor",
 ]
 
@@ -168,6 +178,12 @@ name = "ctor-proc-macro"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
+
+[[package]]
+name = "ctor-proc-macro"
+version = "0.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
 name = "dtor"
@@ -183,12 +199,6 @@ name = "dtor-proc-macro"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f678cf4a922c215c63e0de95eb1ff08a958a81d47e485cf9da1e27bf6305cfa5"
-
-[[package]]
-name = "either"
-version = "1.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "env_filter"
@@ -267,10 +277,10 @@ dependencies = [
 
 [[package]]
 name = "inkwell"
-version = "0.6.0"
-source = "git+https://github.com/Ylarod/inkwell#4188c781d23313f6eaec769ce8007967d62609c3"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39457e8611219cf690f862a470575f5c06862910d03ea3c3b187ad7abc44b4e2"
 dependencies = [
- "either",
  "inkwell_internals",
  "libc",
  "llvm-sys 110.0.4",
@@ -290,8 +300,9 @@ dependencies = [
 
 [[package]]
 name = "inkwell_internals"
-version = "0.11.0"
-source = "git+https://github.com/Ylarod/inkwell#4188c781d23313f6eaec769ce8007967d62609c3"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad9a7dd586b00f2b20e0b9ae3c6faa351fbfd56d15d63bbce35b13bece682eda"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -349,7 +360,7 @@ checksum = "58f929b4d672ea937a23a1ab494143d968337a5f47e56d0815df1e0890ddf174"
 [[package]]
 name = "llvm-plugin"
 version = "0.6.0"
-source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=3a6ab04beb36602aa5050af7335940cc600a5b50#3a6ab04beb36602aa5050af7335940cc600a5b50"
+source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=fda28a6ccc6bf0f4be5ada3a94c12bade6421e93#fda28a6ccc6bf0f4be5ada3a94c12bade6421e93"
 dependencies = [
  "cc",
  "inkwell",
@@ -362,7 +373,7 @@ dependencies = [
 [[package]]
 name = "llvm-plugin-macros"
 version = "0.2.0"
-source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=3a6ab04beb36602aa5050af7335940cc600a5b50#3a6ab04beb36602aa5050af7335940cc600a5b50"
+source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=fda28a6ccc6bf0f4be5ada3a94c12bade6421e93#fda28a6ccc6bf0f4be5ada3a94c12bade6421e93"
 dependencies = [
  "proc-macro2",
  "quote",

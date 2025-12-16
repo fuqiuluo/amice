@@ -23,7 +23,7 @@ impl<'ctx> GepInst<'ctx> {
 
     pub fn get_indices(&self) -> Vec<Option<BasicValueEnum<'ctx>>> {
         (0..self.get_num_indices())
-            .map(|i| self.get_operand(i + 1).unwrap().left())
+            .map(|i| self.get_operand(i + 1).unwrap().value())
             .collect()
     }
 
@@ -43,7 +43,7 @@ impl<'ctx> GepInst<'ctx> {
 
     pub fn get_pointer_operand(&self) -> Option<BasicValueEnum<'ctx>> {
         assert!(self.get_num_operands() > 0);
-        self.get_operand(0).unwrap().left()
+        self.get_operand(0).unwrap().value()
     }
 }
 

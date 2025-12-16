@@ -28,19 +28,19 @@ impl<'ctx> SwitchInst<'ctx> {
             assert!(case_value.is_some());
             assert!(case_block.is_some());
             cases.push((
-                case_value.unwrap().left().unwrap(),
-                case_block.unwrap().right().unwrap(),
+                case_value.unwrap().value().unwrap(),
+                case_block.unwrap().block().unwrap(),
             ));
         }
         cases
     }
 
     pub fn get_condition(&self) -> BasicValueEnum<'ctx> {
-        self.inst.get_operand(0).unwrap().left().unwrap()
+        self.inst.get_operand(0).unwrap().value().unwrap()
     }
 
     pub fn get_default_block(&self) -> BasicBlock<'ctx> {
-        self.inst.get_operand(1).unwrap().right().unwrap()
+        self.inst.get_operand(1).unwrap().block().unwrap()
     }
 
     pub fn find_case_dest<'a>(&self, basic_block: BasicBlock) -> Option<BasicValueEnum<'a>> {

@@ -4,8 +4,8 @@
 
 The environment variable format is `LLVM_SYS_<MAJOR><MINOR>_PREFIX`:
 
-| LLVM Version | Environment Variable |
-|--------------|---------------------|
+| LLVM Version | Environment Variable  |
+|--------------|-----------------------|
 | 21.1         | `LLVM_SYS_211_PREFIX` |
 | 20.1         | `LLVM_SYS_201_PREFIX` |
 | 19.1         | `LLVM_SYS_191_PREFIX` |
