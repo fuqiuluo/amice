@@ -2,9 +2,9 @@ pub(crate) mod aotu;
 pub(crate) mod config;
 pub(crate) mod pass_registry;
 
-use llvm_plugin::PipelineParsing;
 use crate::config::CONFIG;
 use crate::pass_registry::AmicePassFlag;
+use llvm_plugin::PipelineParsing;
 use log::{error, info, warn};
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1.2")]

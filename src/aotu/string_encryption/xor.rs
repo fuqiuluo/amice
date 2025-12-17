@@ -12,7 +12,7 @@ use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{BasicValue, BasicValueEnum};
-use log::{Level, debug, error, log_enabled, warn, info};
+use log::{Level, debug, error, info, log_enabled, warn};
 
 #[derive(Default)]
 pub(super) struct XorAlgo;

@@ -1,8 +1,8 @@
 mod common;
 
-use std::fs;
 use common::{ObfuscationConfig, RustCompileBuilder};
 use serial_test::serial;
+use std::fs;
 
 #[test]
 #[serial]
