@@ -13,7 +13,7 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 #[test]
 fn test_varargs_with_indirect_call() {
@@ -21,7 +21,7 @@ fn test_varargs_with_indirect_call() {
 
     // This is a CRITICAL test - indirect_call currently does NOT properly handle varargs
     // This test will likely FAIL or produce incorrect printf output
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("varargs", "varargs_indirect_call.c", Language::C),
         "varargs_indirect_call",
     )
@@ -40,7 +40,7 @@ fn test_varargs_with_indirect_call() {
 fn test_varargs_with_indirect_call_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("varargs", "varargs_indirect_call.c", Language::C),
         "varargs_indirect_call_o2",
     )
@@ -61,7 +61,7 @@ fn test_varargs_with_function_wrapper() {
     ensure_plugin_built();
 
     // function_wrapper should detect varargs and skip wrapping
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("varargs", "varargs_function_wrapper.c", Language::C),
         "varargs_function_wrapper",
     )
@@ -80,7 +80,7 @@ fn test_varargs_with_function_wrapper() {
 fn test_varargs_with_function_wrapper_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("varargs", "varargs_function_wrapper.c", Language::C),
         "varargs_function_wrapper_o2",
     )
@@ -101,7 +101,7 @@ fn test_varargs_with_clone_function() {
     ensure_plugin_built();
 
     // clone_function should detect varargs and skip cloning
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("varargs", "varargs_clone_function.c", Language::C),
         "varargs_clone_function",
     )
@@ -121,7 +121,7 @@ fn test_varargs_combined_passes() {
     ensure_plugin_built();
 
     // Test multiple passes with varargs
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("varargs", "varargs_indirect_call.c", Language::C),
         "varargs_combined",
     )

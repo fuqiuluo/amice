@@ -3,7 +3,7 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn mba_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -14,7 +14,7 @@ fn mba_config() -> ObfuscationConfig {
 
 /// Get expected output from non-obfuscated baseline
 fn get_baseline_output(test_name: &str) -> String {
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("mba", "mba_constants_demo.c", Language::C),
         &format!("mba_baseline_{}", test_name),
     )
@@ -31,7 +31,7 @@ fn test_mba_basic() {
 
     let baseline = get_baseline_output("basic");
 
-    let result = CompileBuilder::new(fixture_path("mba", "mba_constants_demo.c", Language::C), "mba_basic")
+    let result = CppCompileBuilder::new(fixture_path("mba", "mba_constants_demo.c", Language::C), "mba_basic")
         .config(mba_config())
         .compile();
 
@@ -49,7 +49,7 @@ fn test_mba_optimized() {
 
     let baseline = get_baseline_output("optimized");
 
-    let result = CompileBuilder::new(fixture_path("mba", "mba_constants_demo.c", Language::C), "mba_o2")
+    let result = CppCompileBuilder::new(fixture_path("mba", "mba_constants_demo.c", Language::C), "mba_o2")
         .config(mba_config())
         .optimization("O2")
         .compile();
@@ -73,7 +73,7 @@ fn test_mba_with_bcf() {
         ..ObfuscationConfig::disabled()
     };
 
-    let result = CompileBuilder::new(fixture_path("mba", "mba_constants_demo.c", Language::C), "mba_with_bcf")
+    let result = CppCompileBuilder::new(fixture_path("mba", "mba_constants_demo.c", Language::C), "mba_with_bcf")
         .config(config)
         .compile();
 

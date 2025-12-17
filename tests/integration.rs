@@ -6,7 +6,7 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 // ============================================================================
 // MD5 Tests
 // ============================================================================
@@ -66,7 +66,7 @@ fn md5_obfuscation_config() -> ObfuscationConfig {
 fn test_md5_c() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("integration", "md5.c", Language::C), "md5_c")
+    let result = CppCompileBuilder::new(fixture_path("integration", "md5.c", Language::C), "md5_c")
         .config(md5_obfuscation_config())
         .compile();
 
@@ -82,7 +82,7 @@ fn test_md5_c() {
 fn test_md5_c_o3() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("integration", "md5.c", Language::C), "md5_c_o3")
+    let result = CppCompileBuilder::new(fixture_path("integration", "md5.c", Language::C), "md5_c_o3")
         .config(md5_obfuscation_config())
         .optimization("O3")
         .compile();
@@ -99,7 +99,7 @@ fn test_md5_c_o3() {
 fn test_md5_cpp() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("integration", "md5.cc", Language::Cpp), "md5_cpp")
+    let result = CppCompileBuilder::new(fixture_path("integration", "md5.cc", Language::Cpp), "md5_cpp")
         .config(md5_obfuscation_config())
         .std("c++17")
         .arg("-Wall")
@@ -118,7 +118,7 @@ fn test_md5_cpp() {
 fn test_md5_cpp_o3() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(fixture_path("integration", "md5.cc", Language::Cpp), "md5_cpp_o3")
+    let result = CppCompileBuilder::new(fixture_path("integration", "md5.cc", Language::Cpp), "md5_cpp_o3")
         .config(md5_obfuscation_config())
         .std("c++17")
         .optimization("O3")
@@ -152,7 +152,7 @@ fn test_md5_full_obfuscation() {
         ..ObfuscationConfig::disabled()
     };
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("integration", "md5.c", Language::C),
         "md5_full_obfuscation",
     )

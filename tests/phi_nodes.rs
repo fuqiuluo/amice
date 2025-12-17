@@ -11,7 +11,7 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 #[test]
 fn test_phi_with_split_basic_block() {
@@ -19,7 +19,7 @@ fn test_phi_with_split_basic_block() {
 
     // This is a CRITICAL test - split_basic_block currently does NOT fix PHI nodes
     // This test will likely FAIL or produce incorrect results
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("phi_nodes", "phi_split_basic_block.c", Language::C),
         "phi_split_basic_block",
     )
@@ -38,7 +38,7 @@ fn test_phi_with_split_basic_block() {
 fn test_phi_with_split_basic_block_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("phi_nodes", "phi_split_basic_block.c", Language::C),
         "phi_split_basic_block_o2",
     )
@@ -59,7 +59,7 @@ fn test_phi_with_flatten() {
     ensure_plugin_built();
 
     // Flatten should properly fix PHI nodes
-    let result = CompileBuilder::new(fixture_path("phi_nodes", "phi_flatten.c", Language::C), "phi_flatten")
+    let result = CppCompileBuilder::new(fixture_path("phi_nodes", "phi_flatten.c", Language::C), "phi_flatten")
         .config(ObfuscationConfig {
             flatten: Some(true),
             ..ObfuscationConfig::disabled()
@@ -75,7 +75,7 @@ fn test_phi_with_flatten() {
 fn test_phi_with_flatten_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("phi_nodes", "phi_flatten.c", Language::C),
         "phi_flatten_o2",
     )
@@ -96,7 +96,7 @@ fn test_phi_with_split_and_flatten() {
     ensure_plugin_built();
 
     // Test combination of split_basic_block and flatten
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("phi_nodes", "phi_split_basic_block.c", Language::C),
         "phi_split_and_flatten",
     )
@@ -117,7 +117,7 @@ fn test_phi_with_bcf() {
     ensure_plugin_built();
 
     // BCF should properly fix PHI nodes
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("phi_nodes", "phi_split_basic_block.c", Language::C),
         "phi_bcf",
     )
@@ -137,7 +137,7 @@ fn test_phi_combined_passes() {
     ensure_plugin_built();
 
     // Test all control flow passes with PHI nodes
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("phi_nodes", "phi_split_basic_block.c", Language::C),
         "phi_combined",
     )

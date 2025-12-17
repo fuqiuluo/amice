@@ -157,6 +157,7 @@ pub fn ensure_plugin_built() {
 pub struct ObfuscationConfig {
     // String encryption
     pub string_encryption: Option<bool>,
+    pub string_only_llvm_string: Option<bool>,
     pub string_algorithm: Option<String>,
     pub string_decrypt_timing: Option<String>,
     pub string_stack_alloc: Option<bool>,
@@ -201,6 +202,7 @@ impl ObfuscationConfig {
     pub fn disabled() -> Self {
         Self {
             string_encryption: Some(false),
+            string_only_llvm_string: Some(true),
             indirect_branch: Some(false),
             indirect_call: Some(false),
             flatten: Some(false),
@@ -243,6 +245,7 @@ impl ObfuscationConfig {
 
         // String encryption
         set_env_bool!(cmd, "AMICE_STRING_ENCRYPTION", self.string_encryption);
+        set_env_bool!(cmd, "AMICE_STRING_ONLY_LLVM_STRING", self.string_only_llvm_string);
         set_env_str!(cmd, "AMICE_STRING_ALGORITHM", self.string_algorithm);
         set_env_str!(cmd, "AMICE_STRING_DECRYPT_TIMING", self.string_decrypt_timing);
         set_env_bool!(cmd, "AMICE_STRING_STACK_ALLOC", self.string_stack_alloc);
@@ -285,7 +288,7 @@ impl ObfuscationConfig {
 
 /// Builder for compiling C/C++ test files with the amice plugin
 #[derive(Debug)]
-pub struct CompileBuilder {
+pub struct CppCompileBuilder {
     source: PathBuf,
     output: PathBuf,
     compiler: String,
@@ -296,7 +299,7 @@ pub struct CompileBuilder {
     use_plugin: bool,
 }
 
-impl CompileBuilder {
+impl CppCompileBuilder {
     /// Create a new compile builder for the given source file
     pub fn new(source: impl AsRef<Path>, output_name: &str) -> Self {
         let source = source.as_ref().to_path_buf();
@@ -626,6 +629,7 @@ impl RustCompileBuilder {
             let plugin = plugin_path();
             cmd.arg("--");
             cmd.arg(format!("-Zllvm-plugins={}", plugin.display()));
+            cmd.arg("-Cpasses=");
         }
 
         // Set working directory

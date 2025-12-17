@@ -3,7 +3,7 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn indirect_branch_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -24,7 +24,7 @@ fn indirect_branch_config_chained() -> ObfuscationConfig {
 fn test_indirect_branch_basic() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("indirect_branch", "indirect_branch.c", Language::C),
         "indirect_branch_basic",
     )
@@ -44,7 +44,7 @@ fn test_indirect_branch_basic() {
 fn test_indirect_branch_chained() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("indirect_branch", "indirect_branch.c", Language::C),
         "indirect_branch_chained",
     )
@@ -73,7 +73,7 @@ fn test_indirect_branch_with_string_encryption() {
         ..ObfuscationConfig::disabled()
     };
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("indirect_branch", "indirect_branch.c", Language::C),
         "indirect_branch_with_strings",
     )

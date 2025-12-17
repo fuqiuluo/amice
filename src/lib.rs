@@ -2,9 +2,10 @@ pub(crate) mod aotu;
 pub(crate) mod config;
 pub(crate) mod pass_registry;
 
+use llvm_plugin::PipelineParsing;
 use crate::config::CONFIG;
 use crate::pass_registry::AmicePassFlag;
-use log::{info, warn};
+use log::{error, info, warn};
 
 #[llvm_plugin::plugin(name = "amice", version = "0.1.2")]
 fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
@@ -22,7 +23,9 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
     );
 
     builder.add_module_pipeline_parsing_callback(|name, _manager| {
-        panic!("amice plugin module pipeline parsing callback, name: {}", name);
+        error!("amice plugin module pipeline parsing callback, name: {}", name);
+
+        PipelineParsing::NotParsed
     });
 
     builder.add_pipeline_start_ep_callback(|manager, opt| {

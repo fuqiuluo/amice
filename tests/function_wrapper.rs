@@ -3,7 +3,7 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn function_wrapper_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -16,7 +16,7 @@ fn function_wrapper_config() -> ObfuscationConfig {
 fn test_function_wrapper_basic() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("function_wrapper", "function_wrapper_test.c", Language::C),
         "function_wrapper_basic",
     )
@@ -42,7 +42,7 @@ fn test_function_wrapper_basic() {
 fn test_function_wrapper_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("function_wrapper", "function_wrapper_test.c", Language::C),
         "function_wrapper_o2",
     )
@@ -60,7 +60,7 @@ fn test_clone_function() {
     ensure_plugin_built();
 
     // clone_function.c tests constant argument specialization
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("function_wrapper", "clone_function.c", Language::C),
         "clone_function",
     )

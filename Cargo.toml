@@ -54,6 +54,9 @@ lazy_static = "1"
 regex = "1"
 semver = "1"
 
+[dev-dependencies]
+serial_test = "3.2"
+
 [patch.crates-io]
 # inkwell = { git = "https://github.com/Ylarod/inkwell" }
 llvm-plugin = { git = "https://github.com/fuqiuluo/llvm-plugin-rs", rev = "fda28a6ccc6bf0f4be5ada3a94c12bade6421e93" }

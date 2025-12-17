@@ -3,7 +3,7 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn indirect_call_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -16,7 +16,7 @@ fn indirect_call_config() -> ObfuscationConfig {
 fn test_indirect_call_basic() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("indirect_call", "indirect_call.c", Language::C),
         "indirect_call_basic",
     )
@@ -43,7 +43,7 @@ fn test_indirect_call_basic() {
 fn test_indirect_call_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("indirect_call", "indirect_call.c", Language::C),
         "indirect_call_o2",
     )

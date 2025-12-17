@@ -9,7 +9,7 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn all_passes_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -25,7 +25,7 @@ fn all_passes_config() -> ObfuscationConfig {
 fn test_empty_function() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("edge_cases", "empty_function.c", Language::C),
         "empty_function",
     )
@@ -41,7 +41,7 @@ fn test_empty_function() {
 fn test_empty_function_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("edge_cases", "empty_function.c", Language::C),
         "empty_function_o2",
     )
@@ -64,7 +64,7 @@ fn test_empty_function_optimized() {
 fn test_large_function_flatten() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("edge_cases", "large_function.c", Language::C),
         "large_function",
     )
@@ -83,7 +83,7 @@ fn test_large_function_flatten() {
 fn test_single_block_with_bcf() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("edge_cases", "empty_function.c", Language::C),
         "single_block_bcf",
     )
@@ -102,7 +102,7 @@ fn test_single_block_with_bcf() {
 fn test_single_block_with_flatten() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("edge_cases", "empty_function.c", Language::C),
         "single_block_flatten",
     )
@@ -121,7 +121,7 @@ fn test_single_block_with_flatten() {
 fn test_single_block_with_indirect_branch() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("edge_cases", "empty_function.c", Language::C),
         "single_block_indirect_branch",
     )

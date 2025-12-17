@@ -9,7 +9,7 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn shuffle_config(flags: &str) -> ObfuscationConfig {
     ObfuscationConfig {
@@ -20,7 +20,7 @@ fn shuffle_config(flags: &str) -> ObfuscationConfig {
 }
 
 fn get_baseline_output(name: &str) -> String {
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("shuffle_blocks", "shuffle_test.c", Language::C),
         &format!("shuffle_baseline_{}", name),
     )
@@ -37,7 +37,7 @@ fn test_shuffle_blocks_random() {
 
     let baseline = get_baseline_output("random");
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("shuffle_blocks", "shuffle_test.c", Language::C),
         "shuffle_random",
     )
@@ -58,7 +58,7 @@ fn test_shuffle_blocks_reverse() {
 
     let baseline = get_baseline_output("reverse");
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("shuffle_blocks", "shuffle_test.c", Language::C),
         "shuffle_reverse",
     )
@@ -78,7 +78,7 @@ fn test_shuffle_blocks_rotate() {
 
     let baseline = get_baseline_output("rotate");
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("shuffle_blocks", "shuffle_test.c", Language::C),
         "shuffle_rotate",
     )
@@ -98,7 +98,7 @@ fn test_shuffle_blocks_combined() {
 
     let baseline = get_baseline_output("combined");
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("shuffle_blocks", "shuffle_test.c", Language::C),
         "shuffle_combined",
     )
@@ -125,7 +125,7 @@ fn test_shuffle_with_split_basic_block() {
         ..ObfuscationConfig::disabled()
     };
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("shuffle_blocks", "shuffle_test.c", Language::C),
         "shuffle_with_split",
     )

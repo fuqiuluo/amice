@@ -12,7 +12,7 @@ use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{BasicValue, BasicValueEnum};
-use log::{Level, debug, error, log_enabled, warn};
+use log::{Level, debug, error, log_enabled, warn, info};
 
 #[derive(Default)]
 pub(super) struct XorAlgo;
@@ -64,6 +64,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
         .filter_map(|(global, stru, arr)| {
             // we ignore non-UTF8 strings, since they are probably not human-readable
             let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
+
+            if log_enabled!(Level::Debug) {
+                info!("Will process string {:?}: {}", global, s)
+            }
 
             let mut encoded_str = s.bytes().collect::<Vec<_>>();
             for byte in encoded_str.iter_mut() {

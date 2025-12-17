@@ -10,14 +10,14 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 #[test]
 fn test_inline_asm_with_flatten() {
     ensure_plugin_built();
 
     // Inline asm detection test - should skip functions with inline asm
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("inline_asm", "inline_asm_basic.c", Language::C),
         "inline_asm_flatten",
     )
@@ -37,7 +37,7 @@ fn test_inline_asm_with_bcf() {
     ensure_plugin_built();
 
     // BCF should detect inline asm (currently does NOT)
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("inline_asm", "inline_asm_basic.c", Language::C),
         "inline_asm_bcf",
     )
@@ -56,7 +56,7 @@ fn test_inline_asm_with_bcf() {
 fn test_inline_asm_with_indirect_branch() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("inline_asm", "inline_asm_basic.c", Language::C),
         "inline_asm_indirect_branch",
     )
@@ -75,7 +75,7 @@ fn test_inline_asm_with_indirect_branch() {
 fn test_inline_asm_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("inline_asm", "inline_asm_basic.c", Language::C),
         "inline_asm_o2",
     )
@@ -97,7 +97,7 @@ fn test_inline_asm_combined() {
     ensure_plugin_built();
 
     // Test all control flow passes with inline asm
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("inline_asm", "inline_asm_basic.c", Language::C),
         "inline_asm_combined",
     )

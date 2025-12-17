@@ -8,7 +8,7 @@
 mod common;
 
 use crate::common::Language;
-use common::{CompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
 
 fn bcf_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -21,7 +21,7 @@ fn bcf_config() -> ObfuscationConfig {
 fn test_bogus_control_flow_basic() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("control_flow", "bogus_control_flow.c", Language::C),
         "bcf_basic",
     )
@@ -43,7 +43,7 @@ fn test_bogus_control_flow_basic() {
 fn test_bogus_control_flow_optimized() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("control_flow", "bogus_control_flow.c", Language::C),
         "bcf_o2",
     )
@@ -71,7 +71,7 @@ fn flatten_config() -> ObfuscationConfig {
 fn test_flatten_basic() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("control_flow", "bogus_control_flow.c", Language::C),
         "flatten_basic",
     )
@@ -102,7 +102,7 @@ fn vm_flatten_config() -> ObfuscationConfig {
 fn test_vm_flatten_basic() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("control_flow", "vm_flatten.c", Language::C),
         "vm_flatten_basic",
     )
@@ -123,7 +123,7 @@ fn test_vm_flatten_basic() {
 fn test_vm_flatten_complex() {
     ensure_plugin_built();
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("control_flow", "vm_flatten.c", Language::C),
         "vm_flatten_complex",
     )
@@ -150,7 +150,7 @@ fn test_bcf_with_flatten() {
         ..ObfuscationConfig::disabled()
     };
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("control_flow", "bogus_control_flow.c", Language::C),
         "bcf_flatten_combined",
     )
@@ -173,7 +173,7 @@ fn test_all_control_flow_combined() {
         ..ObfuscationConfig::disabled()
     };
 
-    let result = CompileBuilder::new(
+    let result = CppCompileBuilder::new(
         fixture_path("control_flow", "bogus_control_flow.c", Language::C),
         "all_cf_combined",
     )
