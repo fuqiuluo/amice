@@ -106,6 +106,8 @@ impl RustCompileBuilder {
             cmd.arg("--");
             cmd.arg(format!("-Zllvm-plugins={}", plugin.display()));
             cmd.arg("-Cpasses=");
+            // Always emit LLVM IR for debugging/analysis
+            cmd.arg("--emit=llvm-ir,link");
         }
 
         // Set working directory

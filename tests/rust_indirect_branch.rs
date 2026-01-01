@@ -25,6 +25,19 @@ fn indirect_branch_config_all_flags() -> ObfuscationConfig {
     config
 }
 
+fn split_basic_block_config() -> ObfuscationConfig {
+    let mut config = ObfuscationConfig::disabled();
+    config.split_basic_block = Some(true);
+    config
+}
+
+fn split_and_indirect_branch_config() -> ObfuscationConfig {
+    let mut config = ObfuscationConfig::disabled();
+    config.split_basic_block = Some(true);
+    config.indirect_branch = Some(true);
+    config
+}
+
 #[test]
 #[serial]
 fn test_rust_indirect_branch_basic() {
@@ -144,4 +157,51 @@ fn test_rust_indirect_branch_vs_baseline() {
         baseline_output, obfuscated_output,
         "Baseline and obfuscated outputs differ"
     );
+}
+
+#[test]
+#[serial]
+fn test_rust_split_basic_block() {
+    common::ensure_plugin_built();
+
+    let project_dir = common::project_root()
+        .join("tests")
+        .join("rust")
+        .join("indirect_branch");
+
+    let result = RustCompileBuilder::new(&project_dir, "indirect_branch_test")
+        .config(split_basic_block_config())
+        .compile();
+
+    result.assert_success();
+
+    let run_result = result.run();
+    run_result.assert_success();
+
+    let output = run_result.stdout();
+    assert!(output.contains("=== All tests completed!"));
+}
+
+#[test]
+#[serial]
+fn test_rust_split_and_indirect_branch() {
+    common::ensure_plugin_built();
+
+    let project_dir = common::project_root()
+        .join("tests")
+        .join("rust")
+        .join("indirect_branch");
+
+    // SplitBasicBlock (priority 980) runs before IndirectBranch (priority 800)
+    let result = RustCompileBuilder::new(&project_dir, "indirect_branch_test")
+        .config(split_and_indirect_branch_config())
+        .compile();
+
+    result.assert_success();
+
+    let run_result = result.run();
+    run_result.assert_success();
+
+    let output = run_result.stdout();
+    assert!(output.contains("=== All tests completed!"));
 }
