@@ -177,6 +177,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
         is_lazy_mode,
         cfg.inline_decrypt,
         cfg.stack_alloc,
+        cfg.null_terminated,
     )?;
 
     match cfg.timing {
@@ -369,6 +370,7 @@ fn add_decrypt_function<'a>(
     has_flag: bool,
     inline_fn: bool,
     stack_alloc: bool,
+    null_terminated: bool,
 ) -> anyhow::Result<FunctionValue<'a>> {
     // 密钥总是32字节的！必须是32字节的！
     // void @simd_xor_cipher(i8* src, i8* dst, i32 len, i8* key, i32* flag)
@@ -515,9 +517,11 @@ fn add_decrypt_function<'a>(
     builder.build_unconditional_branch(check_rest)?;
 
     builder.position_at_end(exit);
-    let index = builder.build_int_sub(len, i32_one, "")?;
-    let null_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "null_gep")?;
-    builder.build_store(null_gep, i8_ty.const_zero())?;
+    if null_terminated {
+        let index = builder.build_int_sub(len, i32_one, "")?;
+        let null_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "null_gep")?;
+        builder.build_store(null_gep, i8_ty.const_zero())?;
+    }
     builder.build_return(Some(&dst_ptr))?;
 
     Ok(decrypt_fn)

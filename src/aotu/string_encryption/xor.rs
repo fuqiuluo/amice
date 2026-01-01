@@ -189,6 +189,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
         &format!("__amice__decrypt_strings_{}__", rand::random::<u32>()),
         is_lazy_mode,
         cfg.inline_decrypt, // 这个inline虽然是设置`总是`，但是不一定成功？
+        cfg.null_terminated,
     )?;
 
     match cfg.timing {
@@ -378,6 +379,7 @@ fn add_decrypt_function<'a>(
     name: &str,
     has_flag: bool,
     inline_fn: bool,
+    null_terminated: bool,
 ) -> anyhow::Result<FunctionValue<'a>> {
     let ctx = module.get_context();
     let i8_ty = ctx.i8_type();
@@ -486,9 +488,11 @@ fn add_decrypt_function<'a>(
     builder.build_unconditional_branch(body)?;
 
     builder.position_at_end(exit);
-    let index = builder.build_int_sub(len, i32_one, "")?;
-    let null_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "null_gep")?;
-    builder.build_store(null_gep, i8_ty.const_zero())?;
+    if null_terminated {
+        let index = builder.build_int_sub(len, i32_one, "")?;
+        let null_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "null_gep")?;
+        builder.build_store(null_gep, i8_ty.const_zero())?;
+    }
     builder.build_return(None)?;
 
     Ok(decrypt_fn)

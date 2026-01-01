@@ -1,1 +1,5 @@
 target
+/src/main_obfuscated.ll
+/src/main_obfuscated_rust.ll
+/src/main_original.ll
+/src/main.ll

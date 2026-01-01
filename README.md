@@ -1,5 +1,7 @@
 # Amice
 
+[English](README_en_US.md) | 简体中文
+
 Amice 是一个基于 **llvm-plugin-rs** 构建的 LLVM Pass 插件项目，可通过 `clang -fpass-plugin` 方式注入到编译流程中。
 
 ---
@@ -27,7 +29,7 @@ Amice 是一个基于 **llvm-plugin-rs** 构建的 LLVM Pass 插件项目，可�
 
 | 混淆             | C/C++ | Rust | ObjC |
 |:---------------|:-----:|:----:|:----:|
-| 字符串加密          |   ✅   |  ⏳   |  ⏳   |
+| 字符串加密          |   ✅   |  ✅   |  ⏳   |
 | 间接调用混淆         |   ✅   |  ⏳   |  ❌   |
 | 间接跳转混淆         |   ✅   |  ⏳   |  ❌   |
 | 切割基本块          |   ✅   |  ⏳   |  ❌   |
@@ -86,7 +88,7 @@ export PATH="$PATH:$HOME/llvm/bin"
 export LLVM_SYS_140_PREFIX="$HOME/llvm"
 ```
 
-#### [问题排查](docs/Troubleshooting.md) | [LLVM 安装指南](docs/LLVMSetup.md)
+#### [问题排查](docs/Troubleshooting_zh_CN.md) | [LLVM 安装指南](docs/LLVMSetup_zh_CN.md)
 
 ### 2. Windows
 
