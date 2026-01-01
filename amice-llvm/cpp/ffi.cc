@@ -41,6 +41,7 @@
 #include "llvm/Transforms/Utils.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/IR/Attributes.h"
+#include "llvm-c/Core.h"
 
 #if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 14)
 #include <llvm/Passes/OptimizationLevel.h>
@@ -308,6 +309,13 @@ int amice_free_msg(char* err) {
         return 0;
     }
     return -1;
+}
+
+LLVMValueRef amice_const_array(LLVMTypeRef element_ty, LLVMValueRef *values, uint64_t len) {
+    llvm::Type *ElemTy = llvm::unwrap(element_ty);
+    llvm::ArrayRef<llvm::Constant*> Vals(llvm::unwrap<llvm::Constant>(values, len), len);
+    llvm::ArrayType *ArrayTy = llvm::ArrayType::get(ElemTy, len);
+    return llvm::wrap(llvm::ConstantArray::get(ArrayTy, Vals));
 }
 
 }

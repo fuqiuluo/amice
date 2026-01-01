@@ -1,5 +1,6 @@
 use crate::config::{Config, IndirectBranchConfig, IndirectBranchFlags};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
+use amice_llvm::amice_const_array;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
@@ -7,7 +8,7 @@ use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::{AsTypeRef, IntType};
-use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode};
+use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use rand::Rng;
@@ -78,7 +79,6 @@ impl AmicePass for IndirectBranch {
         let mut non_entry_bb_addrs = non_entry_basic_blocks
             .iter()
             .filter_map(|bb| unsafe { bb.get_address() })
-            .map(|addr| addr.as_value_ref())
             .collect::<Vec<_>>();
 
         // Shuffle the jump table if requested
@@ -87,9 +87,11 @@ impl AmicePass for IndirectBranch {
             non_entry_bb_addrs.shuffle(&mut rng);
         }
 
-        let non_entry_bb_array_ty = ptr_type.array_type(non_entry_basic_blocks.len() as u32);
-        let non_entry_bb_initializer =
-            unsafe { ArrayValue::new_raw_const_array(non_entry_bb_array_ty.as_type_ref(), &non_entry_bb_addrs) };
+        // Keep LLVMValueRef version for later lookup
+        let non_entry_bb_addrs_refs: Vec<_> = non_entry_bb_addrs.iter().map(|addr| addr.as_value_ref()).collect();
+
+        let non_entry_bb_array_ty = ptr_type.array_type(non_entry_bb_addrs.len() as u32);
+        let non_entry_bb_initializer = create_ptr_const_array(ptr_type, &non_entry_bb_addrs);
         let global_indirect_branch_table = module.add_global(non_entry_bb_array_ty, None, INDIRECT_BRANCH_TABLE_NAME);
         global_indirect_branch_table.set_initializer(&non_entry_bb_initializer);
         global_indirect_branch_table.set_linkage(Linkage::Internal);
@@ -102,15 +104,14 @@ impl AmicePass for IndirectBranch {
             .flags
             .contains(IndirectBranchFlags::EncryptBlockIndex)
         {
-            let xor_key = self
+            let xor_key_values: Vec<_> = self
                 .xor_key
                 .as_ref()
                 .iter()
                 .map(|x| i32_type.const_int(*x as u64, false))
-                .map(|addr| addr.as_value_ref())
-                .collect::<Vec<_>>();
-            let xor_key_array_ty = i32_type.array_type(xor_key.len() as u32);
-            let initializer = unsafe { ArrayValue::new_raw_const_array(xor_key_array_ty.as_type_ref(), &xor_key) };
+                .collect();
+            let xor_key_array_ty = i32_type.array_type(xor_key_values.len() as u32);
+            let initializer = i32_type.const_array(&xor_key_values);
             let table = module.add_global(xor_key_array_ty, None, ".amice.indirect_branch_key");
             table.set_initializer(&initializer);
             table.set_linkage(Linkage::Private);
@@ -163,14 +164,13 @@ impl AmicePass for IndirectBranch {
 
                 // 如果是条件跳转或者是没有被收集的基本块（why？），构建局部跳转表
                 let indirect_branch_table =
-                    if br_inst.is_conditional() || !non_entry_bb_addrs.contains(&future_branches_address[0]) {
-                        let basic_block_array_ty = ptr_type.array_type(future_branches_address.len() as u32);
-                        let array_values = future_branches_address
+                    if br_inst.is_conditional() || !non_entry_bb_addrs_refs.contains(&future_branches_address[0]) {
+                        let future_branches_ptrs: Vec<_> = successors
                             .iter()
-                            .map(|v| unsafe { ArrayValue::new(*v) })
-                            .collect::<Vec<_>>();
-
-                        let initializer = basic_block_array_ty.const_array(&array_values);
+                            .filter_map(|next_basic_block| unsafe { next_basic_block.get_address() })
+                            .collect();
+                        let basic_block_array_ty = ptr_type.array_type(future_branches_ptrs.len() as u32);
+                        let initializer = create_ptr_const_array(ptr_type, &future_branches_ptrs);
                         let local_indirect_branch_table =
                             module.add_global(basic_block_array_ty, None, ".amice.indirect_branch");
                         local_indirect_branch_table.set_initializer(&initializer);
@@ -209,7 +209,7 @@ impl AmicePass for IndirectBranch {
                         .map_err(|e| warn!("build_int_z_extend failed: {e}"))
                         .ok()
                 } else {
-                    let index = non_entry_bb_addrs.iter().position(|&x| x == future_branches_address[0]);
+                    let index = non_entry_bb_addrs_refs.iter().position(|&x| x == future_branches_address[0]);
                     let Some(mut index) = index else {
                         warn!("index is None, skipping this branch, branch: {br_inst:?}");
                         continue;
@@ -389,4 +389,20 @@ fn collect_basic_block<'a>(funcs: &Vec<(FunctionValue<'a>, IndirectBranchConfig)
     }
 
     basic_blocks
+}
+
+/// Creates a constant array of pointer values using LLVM C++ API directly.
+/// This is needed because inkwell's const_array has issues with blockaddress constants.
+fn create_ptr_const_array<'ctx>(
+    element_type: impl AsTypeRef,
+    values: &[PointerValue<'ctx>],
+) -> ArrayValue<'ctx> {
+    let mut value_refs: Vec<_> = values.iter().map(|v| v.as_value_ref()).collect();
+    unsafe {
+        ArrayValue::new(amice_const_array(
+            element_type.as_type_ref(),
+            value_refs.as_mut_ptr(),
+            value_refs.len() as u64,
+        ))
+    }
 }

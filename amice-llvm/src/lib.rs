@@ -9,6 +9,9 @@ pub mod code_extractor;
 mod ffi;
 pub mod inkwell2;
 
+// fix
+pub use ffi::amice_const_array;
+
 pub fn get_llvm_version_major() -> i32 {
     unsafe { ffi::amice_get_llvm_version_major() }
 }
@@ -34,7 +37,8 @@ pub fn to_c_str(mut s: &str) -> Cow<'_, CStr> {
     feature = "llvm17-0",
     feature = "llvm18-1",
     feature = "llvm19-1",
-    feature = "llvm20-1"
+    feature = "llvm20-1",
+    feature = "llvm21-1",
 )))]
 #[macro_export]
 macro_rules! ptr_type {
@@ -47,7 +51,8 @@ macro_rules! ptr_type {
     feature = "llvm17-0",
     feature = "llvm18-1",
     feature = "llvm19-1",
-    feature = "llvm20-1"
+    feature = "llvm20-1",
+    feature = "llvm21-1",
 ))]
 #[macro_export]
 macro_rules! ptr_type {

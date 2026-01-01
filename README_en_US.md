@@ -31,7 +31,7 @@ Amice is an LLVM Pass plugin project built on **llvm-plugin-rs**, injectable int
 |:--------------------------------------|:-----:|:----:|:----:|
 | String Encryption                     |   ✅   |  ✅   |  ⏳   |
 | Indirect Call Obfuscation             |   ✅   |  ✅   |  ❌   |
-| Indirect Branch Obfuscation           |   ✅   |  ⏳   |  ❌   |
+| Indirect Branch Obfuscation           |   ✅   |  ✅   |  ❌   |
 | Split Basic Block                     |   ✅   |  ⏳   |  ❌   |
 | Switch Lowering                       |   ✅   |  ⏳   |  ❌   |
 | VM Flatten                            |   ✅   |  ⏳   |  ❌   |

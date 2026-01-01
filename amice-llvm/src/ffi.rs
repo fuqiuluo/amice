@@ -1,5 +1,5 @@
 use crate::analysis::dominators::LLVMDominatorTreeRef;
-use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMUseRef, LLVMValueRef};
+use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMModuleRef, LLVMTypeRef, LLVMUseRef, LLVMValueRef};
 use std::ffi::{c_char, c_void};
 use crate::code_extractor::LLVMCodeExtractorRef;
 
@@ -88,6 +88,8 @@ unsafe extern "C" {
     pub(crate) fn amice_get_llvm_version_major() -> i32;
 
     pub(crate) fn amice_get_llvm_version_minor() -> i32;
+
+    pub fn amice_const_array(element_ty: LLVMTypeRef, values: *mut LLVMValueRef, len: u64) -> LLVMValueRef;
 }
 
 #[repr(C)]

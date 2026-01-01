@@ -19,3 +19,4 @@ tests/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/
 CLAUDE.md
 .claude/
 /tests/rust/indirect_call/target/
+/tests/rust/indirect_branch/target/
