@@ -42,6 +42,8 @@ impl AmicePass for IndirectCall {
     }
 
     fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        debug!("default_config.enable = {}", self.default_config.enable);
+
         let mut functions = Vec::new();
         for function in module.get_functions() {
             if function.is_undef_function() || function.is_llvm_function() {
@@ -55,6 +57,8 @@ impl AmicePass for IndirectCall {
 
             functions.push(function);
         }
+
+        debug!("found {} functions to process", functions.len());
 
         if functions.is_empty() {
             return Ok(PreservedAnalyses::All);
@@ -98,6 +102,8 @@ impl AmicePass for IndirectCall {
             }
         }
 
+        debug!("found {} likely functions and {} call instructions", likely_functions.len(), call_instructions.len());
+
         let ctx = module.get_context();
         let i32_type = ctx.i32_type();
         let ptr_type = ptr_type!(ctx, i8_type);
@@ -127,6 +133,7 @@ impl AmicePass for IndirectCall {
         };
 
         #[cfg(any(
+            feature = "llvm21-1",
             feature = "llvm20-1",
             feature = "llvm19-1",
             feature = "llvm18-1",
@@ -146,6 +153,7 @@ impl AmicePass for IndirectCall {
         }
 
         #[cfg(not(any(
+            feature = "llvm21-1",
             feature = "llvm20-1",
             feature = "llvm19-1",
             feature = "llvm18-1",
@@ -167,6 +175,7 @@ impl AmicePass for IndirectCall {
 
 // Only handle type 1 and 3
 #[cfg(any(
+    feature = "llvm21-1",
     feature = "llvm20-1",
     feature = "llvm19-1",
     feature = "llvm18-1",
@@ -229,7 +238,7 @@ fn do_handle<'a>(
 
         let new_call_site = builder.build_indirect_call(function.get_type(), addr, &args, "")?;
         new_call_site.set_call_convention(call_site.get_call_convention());
-        #[cfg(any(feature = "llvm20-1", feature = "llvm19-1", feature = "llvm18-1"))]
+        #[cfg(any(feature = "llvm21-1", feature = "llvm20-1", feature = "llvm19-1", feature = "llvm18-1"))]
         {
             new_call_site.set_tail_call(call_site.is_tail_call());
             new_call_site.set_tail_call_kind(call_site.get_tail_call_kind());
