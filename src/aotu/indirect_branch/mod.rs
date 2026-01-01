@@ -8,7 +8,9 @@ use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::types::{AsTypeRef, IntType};
-use llvm_plugin::inkwell::values::{ArrayValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
+use llvm_plugin::inkwell::values::{
+    ArrayValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue,
+};
 use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use rand::Rng;
@@ -209,7 +211,9 @@ impl AmicePass for IndirectBranch {
                         .map_err(|e| warn!("build_int_z_extend failed: {e}"))
                         .ok()
                 } else {
-                    let index = non_entry_bb_addrs_refs.iter().position(|&x| x == future_branches_address[0]);
+                    let index = non_entry_bb_addrs_refs
+                        .iter()
+                        .position(|&x| x == future_branches_address[0]);
                     let Some(mut index) = index else {
                         warn!("index is None, skipping this branch, branch: {br_inst:?}");
                         continue;
@@ -393,10 +397,7 @@ fn collect_basic_block<'a>(funcs: &Vec<(FunctionValue<'a>, IndirectBranchConfig)
 
 /// Creates a constant array of pointer values using LLVM C++ API directly.
 /// This is needed because inkwell's const_array has issues with blockaddress constants.
-fn create_ptr_const_array<'ctx>(
-    element_type: impl AsTypeRef,
-    values: &[PointerValue<'ctx>],
-) -> ArrayValue<'ctx> {
+fn create_ptr_const_array<'ctx>(element_type: impl AsTypeRef, values: &[PointerValue<'ctx>]) -> ArrayValue<'ctx> {
     let mut value_refs: Vec<_> = values.iter().map(|v| v.as_value_ref()).collect();
     unsafe {
         ArrayValue::new(amice_const_array(

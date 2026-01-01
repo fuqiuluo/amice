@@ -21,8 +21,7 @@ fn indirect_branch_config_chained() -> ObfuscationConfig {
 fn indirect_branch_config_all_flags() -> ObfuscationConfig {
     let mut config = ObfuscationConfig::disabled();
     config.indirect_branch = Some(true);
-    config.indirect_branch_flags =
-        Some("chained_dummy_blocks,encrypt_block_index,shuffle_table".to_string());
+    config.indirect_branch_flags = Some("chained_dummy_blocks,encrypt_block_index,shuffle_table".to_string());
     config
 }
 
