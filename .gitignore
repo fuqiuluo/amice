@@ -21,3 +21,4 @@ CLAUDE.md
 /tests/rust/indirect_call/target/
 /tests/rust/indirect_branch/target/
 /tests/rust/switch_lowering/target/
+/tests/rust/vm_flatten/target/
