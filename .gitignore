@@ -20,3 +20,4 @@ CLAUDE.md
 .claude/
 /tests/rust/indirect_call/target/
 /tests/rust/indirect_branch/target/
+/tests/rust/switch_lowering/target/

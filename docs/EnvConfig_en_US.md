@@ -60,10 +60,10 @@ Source code: `src/aotu/split_basic_block`
 
 Source code: `src/aotu/lower_switch`
 
-| Variable                           | Description                                                                                | Default |
-|------------------------------------|--------------------------------------------------------------------------------------------|---------|
-| AMICE_LOWER_SWITCH                 | Enable switch lowering:<br/>- `true` — enabled<br/>- `false` — disabled                    | false   |
-| AMICE_LOWER_SWITCH_WITH_DUMMY_CODE | Insert dummy code after lowering (may fail module verification causing `-O1` etc. to fail) | false   |
+| Variable                               | Description                                                                                | Default |
+|----------------------------------------|--------------------------------------------------------------------------------------------|---------|
+| AMICE_LOWER_SWITCH                     | Enable switch lowering:<br/>- `true` — enabled<br/>- `false` — disabled                    | false   |
+| ~~AMICE_LOWER_SWITCH_WITH_DUMMY_CODE~~ | Insert dummy code after lowering (may fail module verification causing `-O1` etc. to fail) | false   |
 
 ## VM Flatten
 
