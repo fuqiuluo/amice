@@ -311,7 +311,11 @@ impl ObfuscationConfig {
 
         // Lower switch
         set_env_bool!(cmd, "AMICE_LOWER_SWITCH", self.lower_switch);
-        set_env_bool!(cmd, "AMICE_LOWER_SWITCH_WITH_DUMMY_CODE", self.lower_switch_with_dummy_code);
+        set_env_bool!(
+            cmd,
+            "AMICE_LOWER_SWITCH_WITH_DUMMY_CODE",
+            self.lower_switch_with_dummy_code
+        );
     }
 }
 
