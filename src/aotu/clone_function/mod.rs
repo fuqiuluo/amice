@@ -27,16 +27,21 @@ impl AmicePass for CloneFunction {
     }
 
     fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        debug!("default_config.enable = {}", self.default_config.enable);
+
         #[cfg(not(feature = "android-ndk"))]
         {
             let mut call_instructions = Vec::new();
+            let mut func_count = 0;
             for function in module.get_functions() {
                 if function.is_llvm_function() || function.is_undef_function() {
                     continue;
                 }
+                func_count += 1;
 
                 let cfg = self.parse_function_annotations(module, function)?;
                 if !cfg.enable {
+                    debug!("function {:?} skipped: enable=false", function.get_name());
                     continue;
                 }
 
@@ -44,10 +49,16 @@ impl AmicePass for CloneFunction {
                     for inst in bb.get_instructions() {
                         if matches!(inst.get_opcode(), InstructionOpcode::Call) {
                             if let Some(called_func) = get_called_function(&inst) {
-                                if called_func.is_llvm_function()
-                                    || called_func.is_undef_function()
-                                    || called_func.is_inline_marked()
-                                {
+                                if called_func.is_llvm_function() {
+                                    debug!("skip llvm function call: {:?}", called_func.get_name());
+                                    continue;
+                                }
+                                if called_func.is_undef_function() {
+                                    debug!("skip undef function call: {:?}", called_func.get_name());
+                                    continue;
+                                }
+                                if called_func.is_inline_marked() {
+                                    debug!("skip inline function call: {:?}", called_func.get_name());
                                     continue;
                                 }
 
@@ -65,6 +76,7 @@ impl AmicePass for CloneFunction {
             }
 
             if call_instructions.is_empty() {
+                debug!("no call instructions found, func_count={}", func_count);
                 return Ok(PreservedAnalyses::All);
             }
 
@@ -94,10 +106,14 @@ impl AmicePass for CloneFunction {
             }
 
             if call_instructions_with_constant_args.is_empty() {
+                debug!("no call instructions with constant args found");
                 return Ok(PreservedAnalyses::All);
             }
 
+            debug!("found {} call sites with constant args", call_instructions_with_constant_args.len());
+
             for (inst, call_func, args) in call_instructions_with_constant_args {
+                debug!("specializing function {:?} with {} constant args", call_func.get_name(), args.len());
                 if let Err(e) = do_replace_call_with_call_to_specialized_function(module, inst, call_func, args) {
                     error!("failed to replace call with specialized function: {}", e);
                 }
