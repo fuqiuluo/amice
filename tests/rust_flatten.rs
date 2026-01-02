@@ -2,9 +2,9 @@
 
 mod common;
 
-use std::env;
 use common::{ObfuscationConfig, RustCompileBuilder};
 use serial_test::serial;
+use std::env;
 
 fn flatten_config() -> ObfuscationConfig {
     let mut config = ObfuscationConfig::disabled();

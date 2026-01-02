@@ -153,7 +153,7 @@ fn split_entry_block_for_flatten<'a>(
         _ => {
             debug!("Unknown terminator opcode: {:?}", entry_terminator.get_opcode());
             return Ok(None);
-        }
+        },
     }
 
     // 确保这个块包含在待处理列表中
