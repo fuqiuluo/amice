@@ -25,3 +25,4 @@ CLAUDE.md
 /tests/rust/flatten/target/
 /tests/rust/mba/target/
 /tests/rust/bcf/target/
+/tests/rust/function_wrapper/target/

@@ -38,7 +38,7 @@ Amice is an LLVM Pass plugin project built on **llvm-plugin-rs**, injectable int
 | Control Flow Flattening               |   ✅   |  ✅   |  ❌   |
 | MBA Arithmetic Obfuscation            |   ✅   |  ✅   |  ❌   |
 | Bogus Control Flow                    |   ✅   |  ✅   |  ❌   |
-| Function Wrapper                      |   ✅   |  ⏳   |  ❌   |
+| Function Wrapper                      |   ✅   |  ✅   |  ❌   |
 | Clone Function (Const Specialization) |   ✅   |  ⏳   |  ❌   |
 | Alias Access Obfuscation              |   ✅   |  ⏳   |  ❌   |
 | Custom Calling Convention             |   ⏳   |  ⏳   |  ❌   |

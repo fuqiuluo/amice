@@ -30,15 +30,31 @@ impl AmicePass for FunctionWrapper {
     }
 
     fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
+        debug!("default_config.enable = {}", self.default_config.enable);
+
         // Collect call sites that need to be wrapped
         let mut call_instructions = Vec::new();
+        let mut func_count = 0;
+        let mut total_funcs = 0;
         for function in module.get_functions() {
-            if function.is_llvm_function() || function.is_inline_marked() || function.is_undef_function() {
+            total_funcs += 1;
+            if function.is_llvm_function() {
+                debug!("skip llvm function: {:?}", function.get_name());
                 continue;
             }
+            if function.is_inline_marked() {
+                debug!("skip inline function: {:?}", function.get_name());
+                continue;
+            }
+            if function.is_undef_function() {
+                debug!("skip undef function: {:?}", function.get_name());
+                continue;
+            }
+            func_count += 1;
 
             let cfg = self.parse_function_annotations(module, function)?;
             if !cfg.enable {
+                debug!("function {:?} skipped: enable=false", function.get_name());
                 continue;
             }
 
@@ -58,6 +74,7 @@ impl AmicePass for FunctionWrapper {
         }
 
         if call_instructions.is_empty() {
+            debug!("no call instructions found, total_funcs={}, valid_funcs={}", total_funcs, func_count);
             return Ok(PreservedAnalyses::All);
         }
 
@@ -166,6 +183,12 @@ fn create_wrapper_function<'a>(
 
     // Generate random wrapper function name
     let wrapper_name = generate_wrapper_name();
+
+    debug!(
+        "(FunctionWrapper) creating wrapper '{}' for function '{:?}'",
+        wrapper_name,
+        called_function.get_name()
+    );
 
     // Create the wrapper function with the same signature as the called function
     let wrapper_function = module.add_function(&wrapper_name, called_fn_type, Some(Linkage::Internal));
