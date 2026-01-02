@@ -87,15 +87,16 @@ pub(super) trait FlattenAlgo {
     ) -> anyhow::Result<()>;
 }
 
+// LLVM 会自动在 A 的末尾插入一条 无条件跳转指令 (Unconditional Branch)，目标指向 B
 fn split_entry_block_for_flatten<'a>(
     function: FunctionValue<'a>,
     entry_block: BasicBlock<'a>,
     basic_blocks: &mut Vec<BasicBlock<'a>>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<BasicBlock<'a>>> {
     let Some(entry_terminator) = entry_block.get_terminator() else {
         // 没有终结指令，居然还能通过上一层的基本块数量大于2的校验？！
         // 估计是别的Pass干的好事！
-        return Ok(false);
+        return Ok(None);
     };
 
     // 调试一下入口块的终结指令
@@ -147,17 +148,21 @@ fn split_entry_block_for_flatten<'a>(
         },
         InstructionOpcode::Return | InstructionOpcode::Unreachable => {
             // 无后继，不需要做 flatten
-            return Ok(false);
+            return Ok(None);
         },
-        _ => return Ok(false),
+        _ => {
+            debug!("Unknown terminator opcode: {:?}", entry_terminator.get_opcode());
+            return Ok(None);
+        }
     }
 
-    let Some(first_basic_block) = first_basic_block.take() else {
-        return Err(anyhow::anyhow!("failed to get first basic block: {entry_terminator}"));
-    };
-    if !basic_blocks.contains(&first_basic_block) {
-        basic_blocks.insert(0, first_basic_block);
+    // 确保这个块包含在待处理列表中
+    if let Some(start_block) = first_basic_block {
+        if !basic_blocks.contains(&start_block) {
+            basic_blocks.push(start_block);
+        }
+        // 不需要在这里强制 insert(0)，因为我们已经通过返回值告诉调用者是谁了
     }
 
-    Ok(true)
+    Ok(first_basic_block)
 }

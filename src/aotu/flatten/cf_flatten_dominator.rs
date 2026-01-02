@@ -140,16 +140,18 @@ fn do_handle(
 
     let mut basic_blocks = function.get_basic_blocks();
     basic_blocks.retain(|bb| bb != &entry_block); // 去除入口块
-    if !split_entry_block_for_flatten(function, entry_block, &mut basic_blocks)? {
-        // 切割失败，未知的终结指令！？或者是可忽略的
-        // 这并不是错误，是可预期的！
+
+    // 这里是如果是无条件跳转，这个就是跳转到的块
+    // 如果是条件跳转，这个是被切割后包含条件跳转命令的新块
+    let Some(dispatcher_entry) = split_entry_block_for_flatten(function, entry_block, &mut basic_blocks)? else {
+        // 如果没有后继（比如直接 ret），则不需要混淆
         return Ok(());
-    }
+    };
 
     // 每个块自己的密钥，用于更新key array
     let mut block_key_map = HashMap::<BasicBlock, u64>::new();
-    // 子块的最终密钥结果，如果程序密钥按正确的路径执行也就是被篡改了，运行时的密钥和这里保存的就会不一致
-    let mut block_valid_key_map = HashMap::<BasicBlock, u64>::new();
+    // 子块的最终密钥结果，如果程序密钥[没有]按正确的路径执行(也就是被篡改了)，运行时的密钥和这里保存的就会不一致(不符合支配关系)
+    let mut block_final_key_map = HashMap::<BasicBlock, u64>::new();
     // 分发块使用的唯一数字ID
     let mut block_magic_map = HashMap::<BasicBlock, u64>::new();
     let mut basic_block_index_map = HashMap::<BasicBlock, usize>::new();
@@ -171,7 +173,7 @@ fn do_handle(
         values.shuffle(&mut rng); // 打乱！
         for (index, bb) in basic_blocks.iter().enumerate() {
             block_key_map.insert(*bb, values[index]);
-            block_valid_key_map.insert(*bb, 0);
+            block_final_key_map.insert(*bb, 0);
             basic_block_index_map.insert(*bb, index);
         }
     }
@@ -188,14 +190,19 @@ fn do_handle(
     let builder = ctx.create_builder();
 
     let block_count = i32_type.const_int(basic_blocks.len() as u64, false);
+    let block_count_64 = i64_type.const_int(basic_blocks.len() as u64, false);
 
     let first_insertion_pt = entry_block.get_first_insertion_pt();
     builder.position_before(&first_insertion_pt);
+
+    // 已经访问过的基本块（基本单位是i8）
     let visited_array = builder.build_array_alloca(i8_type, block_count, "visited")?;
-    let key_array = builder.build_array_alloca(i64_type, block_count, "key_array")?;
     builder.build_memset(visited_array, 1, i8_zero, block_count)?;
+
+    let key_array = builder.build_array_alloca(i64_type, block_count, "key_array")?;
     let key_ptr = builder.build_bit_cast(key_array, i8_ptr, "key_ptr")?;
-    let key_array_size = builder.build_int_mul(block_count, i64_type.size_of(), "key_array_size")?;
+    // let key_array_size = builder.build_int_mul(block_count, i64_type.size_of(), "key_array_size")?;
+    let key_array_size = builder.build_int_mul(block_count_64, i64_type.size_of(), "key_array_size")?;
     builder.build_memset(key_ptr.into_pointer_value(), 8, i8_zero, key_array_size)?;
 
     let dominators = DominatorTree::from_function(function)
@@ -205,22 +212,28 @@ fn do_handle(
         for child in &basic_blocks {
             if *bb != *child && dominators.dominate(*bb, *child) {
                 dominator_blocks.push(*child);
-                let new_key = block_valid_key_map[child] ^ block_key_map[bb];
-                block_valid_key_map.insert(*child, new_key);
+                // 根据支配关系，更新最终块密钥
+                let new_key = block_final_key_map[child] ^ block_key_map[bb];
+                block_final_key_map.insert(*child, new_key);
             }
         }
 
-        let Some(terminator) = bb.get_terminator() else {
-            return Err(anyhow::anyhow!("block {:?} has no terminator", bb.get_name()));
-        };
-        builder.position_before(&terminator);
+        // let Some(terminator) = bb.get_terminator() else {
+        //     return Err(anyhow::anyhow!("block {:?} has no terminator", bb.get_name()));
+        // };
+        // 在终结指令之前插入
+        // builder.position_before(&terminator);
+        // 换个位置插入call更新key_arr，避免一些magic
+        let first_insertion_pt = bb.get_first_insertion_pt();
+        builder.position_before(&first_insertion_pt);
 
+        // 当前bb在basic_blocks的下标，不过为什么不直接iter().enumerate()呢?
         let current_block_index = i32_type.const_int(basic_block_index_map[bb] as u64, false);
         if !dominator_blocks.is_empty() {
             let dominator_count = i32_type.const_int(dominator_blocks.len() as u64, false);
             let dominator_index_array = dominator_blocks
                 .iter()
-                .map(|bb| basic_block_index_map[bb])
+                .map(|sub_bb| basic_block_index_map[sub_bb]) // 这个数组里面装的是bb支配的块所在basic_blocks的下标
                 .map(|index| i32_type.const_int(index as u64, false))
                 .collect::<Vec<_>>();
             let dominator_index_array = i32_type.const_array(&dominator_index_array);
@@ -241,6 +254,9 @@ fn do_handle(
             .map(|arg| arg.into());
             builder.build_call(update_key_fn, &args, "")?;
         } else {
+            // 如果当前块不支配任何块，更新一下visited_array，这种块有什么情况？
+            // - 最后一个块
+            // - 不可达块
             let visited_gep = builder.build_in_bounds_gep2(i8_type, visited_array, &[current_block_index], "")?;
             builder.build_store(visited_gep, i8_one)?;
         }
@@ -256,9 +272,9 @@ fn do_handle(
         .move_after(bb_dispatcher)
         .map_err(|_| anyhow::anyhow!("failed to move dispatcher default block after dispatcher block"))?;
 
-    let dispatcher_entry = basic_blocks[0];
     let dispatcher_entry_id = block_magic_map[&dispatcher_entry];
 
+    // entry_block当终结指令是switch或者条件跳转的时候会被切割
     let Some(terminator) = entry_block.get_terminator() else {
         return Err(anyhow::anyhow!(
             "block {:?} has no terminator",
@@ -269,7 +285,7 @@ fn do_handle(
     let start_dispatch_id = i64_type.const_int(dispatcher_entry_id, false);
     let dispatch_id = builder.build_alloca(i64_type, "dispatch_id")?;
     builder.build_store(dispatch_id, start_dispatch_id)?;
-    builder.build_unconditional_branch(bb_dispatcher)?;
+    builder.build_unconditional_branch(bb_dispatcher)?; // 直接进入分发块
     terminator.erase_from_basic_block();
 
     builder.position_at_end(bb_dispatcher);
@@ -307,9 +323,11 @@ fn do_handle(
                     successor
                 ));
             };
+            // successor基本块的分发id
             let dispatch_id_val = dispatch_id_val.into_int_value().get_zero_extended_constant().unwrap();
-            let encrypted_dispatch_id = dispatch_id_val ^ block_valid_key_map[&bb];
-            let encrypted_dispatch_id = i64_type.const_int(encrypted_dispatch_id, fix_stack);
+            let encrypted_dispatch_id = dispatch_id_val ^ block_final_key_map[&bb];
+            // 分发id加密一下，运行时拿去和最终密钥xor，得到正确的分发id
+            let encrypted_dispatch_id = i64_type.const_int(encrypted_dispatch_id, true);
             let key_gep = builder.build_in_bounds_gep2(
                 i64_type,
                 key_array,
@@ -354,10 +372,10 @@ fn do_handle(
                 .into_int_value()
                 .get_zero_extended_constant()
                 .unwrap();
-            let encrypted_true_dispatch_id = true_dispatch_id_val ^ block_valid_key_map[&bb];
-            let encrypted_false_dispatch_id = false_dispatch_id_val ^ block_valid_key_map[&bb];
-            let encrypted_true_dispatch_id = i64_type.const_int(encrypted_true_dispatch_id, fix_stack);
-            let encrypted_false_dispatch_id = i64_type.const_int(encrypted_false_dispatch_id, fix_stack);
+            let encrypted_true_dispatch_id = true_dispatch_id_val ^ block_final_key_map[&bb];
+            let encrypted_false_dispatch_id = false_dispatch_id_val ^ block_final_key_map[&bb];
+            let encrypted_true_dispatch_id = i64_type.const_int(encrypted_true_dispatch_id, true);
+            let encrypted_false_dispatch_id = i64_type.const_int(encrypted_false_dispatch_id, true);
             let key_gep = builder.build_in_bounds_gep2(
                 i64_type,
                 key_array,
@@ -382,7 +400,8 @@ fn do_handle(
     }
 
     builder.position_at_end(bb_dispatcher_default);
-    builder.build_unconditional_branch(bb_dispatcher)?;
+    builder.build_unreachable()?;
+    //builder.build_unconditional_branch(bb_dispatcher)?;
 
     if fix_stack {
         unsafe { function.fix_stack() }
@@ -429,6 +448,10 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
     if inline_fn {
         let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
         update_fn.add_attribute(AttributeLoc::Function, inlinehint_attr);
+    } else {
+        // Prevent LLVM from inlining this function, which can break control flow
+        let noinline_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0);
+        update_fn.add_attribute(AttributeLoc::Function, noinline_attr);
     }
 
     let bb_update_key_arr_entry = ctx.append_basic_block(update_fn, "update_fn.entry");
@@ -438,10 +461,13 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
     let bb_update_key_arr_end = ctx.append_basic_block(update_fn, "update_fn.for.end");
     let bb_update_key_arr_ret = ctx.append_basic_block(update_fn, "update_fn.ret");
 
+    // void update_key_arr(i32* dom_index_arr, i32 dom_index_arr_size, i64 *key_arr, i64 key, i8* visited_arr, i32 current_block_index)
+    // 被支配块的数组
     let dom_index_arr = update_fn
         .get_nth_param(0)
         .map(|param| param.into_pointer_value())
         .ok_or_else(|| anyhow!("Failed to get dom_index_arr parameter"))?;
+    // 数组大小
     let dominator_index_array_size = update_fn
         .get_nth_param(1)
         .map(|param| param.into_int_value())
@@ -463,6 +489,41 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
         .map(|param| param.into_int_value())
         .ok_or_else(|| anyhow!("Failed to get current_block_index parameter"))?;
 
+    // void update_key_arr(
+    //     int32_t* dom_index_arr,      // 参数 0: 受支配块的索引数组
+    //     int32_t  dom_index_arr_size, // 参数 1: 数组大小
+    //     int64_t* key_arr,            // 参数 2: 存储 Key 的数组
+    //     int64_t  block_key,          // 参数 3: 当前块的 Key
+    //     int8_t*  visited_arr,        // 参数 4: 访问标记数组
+    //     int32_t  current_block_index // 参数 5: 当前块的索引
+    // ) {
+    //     // 检查当前块是否已经访问过
+    //     int8_t visited = visited_arr[current_block_index];
+    //
+    //     // 如果 visited != 0 (即已访问)，直接返回
+    //     if (visited != 0) {
+    //         return;
+    //     }
+    //
+    //     // 如果未访问，遍历 dom_index_arr
+    //     for (int32_t index = 0; index < dom_index_arr_size; index++) {
+    //         // 获取受支配块在全局列表中的索引
+    //         int32_t dom_block_index = dom_index_arr[index];
+    //
+    //         // 获取该受支配块当前的 Key
+    //         int64_t dom_key_val = key_arr[dom_block_index];
+    //
+    //         // 计算新的 Key：原 Key 与 当前块 Key 进行异或 (XOR)
+    //         int64_t updated_key = dom_key_val ^ block_key;
+    //
+    //         // 更新回 key_arr
+    //         key_arr[dom_block_index] = updated_key;
+    //     }
+    //
+    //     // 标记当前块为已访问
+    //     visited_arr[current_block_index] = 1;
+    // }
+
     builder.position_at_end(bb_update_key_arr_entry);
     let visited_gep = builder.build_in_bounds_gep2(i8_type, visited_array, &[current_block_index], "")?;
     let visited = builder.build_load2(i8_type, visited_gep, "visited")?.into_int_value();
@@ -471,6 +532,7 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
     let cond = builder.build_int_compare(IntPredicate::EQ, visited, i8_zero, "visited_cond")?;
     builder.build_conditional_branch(cond, bb_update_key_arr_cond, bb_update_key_arr_ret)?;
 
+    // 如果这个块之前没有被访问过，需要更新key_array
     builder.position_at_end(bb_update_key_arr_cond);
     let index_val = builder.build_load2(i32_type, index, "loop_i")?.into_int_value();
     let cond = builder.build_int_compare(IntPredicate::SLT, index_val, dominator_index_array_size, "loop_cond")?; // dom_index < dom_size

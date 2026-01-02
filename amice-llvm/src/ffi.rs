@@ -52,6 +52,12 @@ unsafe extern "C" {
         u: LLVMUseRef,
     ) -> bool;
 
+    pub(crate) fn llvm_dominator_tree_dominate_BB(
+        dt: LLVMDominatorTreeRef,
+        a: LLVMBasicBlockRef,
+        b: LLVMBasicBlockRef,
+    ) -> bool;
+
     pub(crate) fn amice_switch_find_case_dest(inst: LLVMValueRef, b: LLVMBasicBlockRef) -> LLVMValueRef;
 
     pub(crate) fn amice_is_inline_marked_function(function: LLVMValueRef) -> bool;

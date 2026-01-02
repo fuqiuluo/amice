@@ -191,6 +191,7 @@ pub struct ObfuscationConfig {
 
     // Control flow
     pub flatten: Option<bool>,
+    pub flatten_mode: Option<String>,
     pub bogus_control_flow: Option<bool>,
     pub vm_flatten: Option<bool>,
 
@@ -290,6 +291,7 @@ impl ObfuscationConfig {
 
         // Control flow
         set_env_bool!(cmd, "AMICE_FLATTEN", self.flatten);
+        set_env_str!(cmd, "AMICE_FLATTEN_MODE", self.flatten_mode);
         set_env_bool!(cmd, "AMICE_BOGUS_CONTROL_FLOW", self.bogus_control_flow);
         set_env_bool!(cmd, "AMICE_VM_FLATTEN", self.vm_flatten);
 

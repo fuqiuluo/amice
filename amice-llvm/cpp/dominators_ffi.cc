@@ -44,4 +44,9 @@ bool llvm_dominator_tree_dominate_BU(llvm::DominatorTree* dt, llvm::BasicBlock* 
 #endif
 }
 
+bool llvm_dominator_tree_dominate_BB(llvm::DominatorTree* dt, llvm::BasicBlock* A, llvm::BasicBlock* B) {
+    if (!dt || !A || !B) return false;
+    return dt->dominates(A, B);
+}
+
 } // extern "C"

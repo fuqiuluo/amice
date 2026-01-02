@@ -35,7 +35,7 @@ Amice is an LLVM Pass plugin project built on **llvm-plugin-rs**, injectable int
 | Split Basic Block                     |   ✅   |  ✅   |  ❌   |
 | Switch Lowering                       |   ✅   |  ✅   |  ❌   |
 | VM Flatten                            |   ✅   |  ✅   |  ❌   |
-| Control Flow Flattening               |   ✅   |  ⏳   |  ❌   |
+| Control Flow Flattening               |   ✅   |  ✅   |  ❌   |
 | MBA Arithmetic Obfuscation            |   ✅   |  ⏳   |  ❌   |
 | Bogus Control Flow                    |   ✅   |  ⏳   |  ❌   |
 | Function Wrapper                      |   ✅   |  ⏳   |  ❌   |

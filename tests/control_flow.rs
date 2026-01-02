@@ -67,6 +67,13 @@ fn flatten_config() -> ObfuscationConfig {
     }
 }
 
+fn flatten_config_dominator() -> ObfuscationConfig {
+    let mut config = ObfuscationConfig::disabled();
+    config.flatten = Some(true);
+    config.flatten_mode = Some("dominator".to_owned());
+    config
+}
+
 #[test]
 fn test_flatten_basic() {
     ensure_plugin_built();
@@ -85,6 +92,28 @@ fn test_flatten_basic() {
     // Same expected output as non-flattened version
     let lines = run.stdout_lines();
     assert!(lines[0].contains("Testing bogus control flow"));
+}
+
+#[test]
+fn test_flatten_dominator() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("control_flow", "bogus_control_flow.c", Language::C),
+        "flatten_dominator",
+    )
+    .config(flatten_config_dominator())
+    .compile();
+
+    result.assert_success();
+    let run = result.run();
+    run.assert_success();
+
+    // Same expected output as non-flattened version
+    let lines = run.stdout_lines();
+    assert!(lines[0].contains("Testing bogus control flow"));
+
+    println!("{:?}", lines);
 }
 
 // ============================================================================
