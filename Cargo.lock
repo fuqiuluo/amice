@@ -438,7 +438,7 @@ checksum = "58f929b4d672ea937a23a1ab494143d968337a5f47e56d0815df1e0890ddf174"
 [[package]]
 name = "llvm-plugin"
 version = "0.6.0"
-source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=7fdc3ebca8b072983ca083c13aa39699bc09be34#7fdc3ebca8b072983ca083c13aa39699bc09be34"
+source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=43fff11b3d58b787244c463d9b6624d59bc20307#43fff11b3d58b787244c463d9b6624d59bc20307"
 dependencies = [
  "cc",
  "inkwell",
@@ -451,7 +451,7 @@ dependencies = [
 [[package]]
 name = "llvm-plugin-macros"
 version = "0.2.0"
-source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=7fdc3ebca8b072983ca083c13aa39699bc09be34#7fdc3ebca8b072983ca083c13aa39699bc09be34"
+source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=43fff11b3d58b787244c463d9b6624d59bc20307#43fff11b3d58b787244c463d9b6624d59bc20307"
 dependencies = [
  "proc-macro2",
  "quote",
