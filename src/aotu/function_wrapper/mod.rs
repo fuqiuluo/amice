@@ -74,7 +74,10 @@ impl AmicePass for FunctionWrapper {
         }
 
         if call_instructions.is_empty() {
-            debug!("no call instructions found, total_funcs={}, valid_funcs={}", total_funcs, func_count);
+            debug!(
+                "no call instructions found, total_funcs={}, valid_funcs={}",
+                total_funcs, func_count
+            );
             return Ok(PreservedAnalyses::All);
         }
 
