@@ -59,4 +59,4 @@ serial_test = "3.2"
 
 [patch.crates-io]
 # inkwell = { git = "https://github.com/Ylarod/inkwell" }
-llvm-plugin = { git = "https://github.com/fuqiuluo/llvm-plugin-rs", rev = "7fdc3ebca8b072983ca083c13aa39699bc09be34" }
+llvm-plugin = { git = "https://github.com/fuqiuluo/llvm-plugin-rs", rev = "43fff11b3d58b787244c463d9b6624d59bc20307" }
