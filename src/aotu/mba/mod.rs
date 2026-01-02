@@ -10,7 +10,7 @@ use crate::aotu::mba::constant_mba::{generate_const_mba, verify_const_mba};
 use crate::aotu::mba::expr::Expr;
 use crate::config::{Config, MbaConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
-use amice_llvm::inkwell2::{BuilderExt, FunctionExt};
+use amice_llvm::inkwell2::{BuilderExt, FunctionExt, InstructionExt};
 use amice_macro::amice;
 use llvm_plugin::PreservedAnalyses;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -131,6 +131,17 @@ impl AmicePass for Mba {
                                     | InstructionOpcode::VAArg
                             ) {
                                 continue;
+                            }
+
+                            // Skip LLVM intrinsic calls (they may have immarg parameters)
+                            if inst.get_opcode() == InstructionOpcode::Call {
+                                let call_inst = inst.into_call_inst();
+                                if let Some(called_fn) = call_inst.get_call_function() {
+                                    let fn_name = called_fn.get_name().to_string_lossy();
+                                    if fn_name.starts_with("llvm.") {
+                                        continue;
+                                    }
+                                }
                             }
 
                             let mut const_operands = Vec::new();

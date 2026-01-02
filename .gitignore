@@ -23,3 +23,4 @@ CLAUDE.md
 /tests/rust/switch_lowering/target/
 /tests/rust/vm_flatten/target/
 /tests/rust/flatten/target/
+/tests/rust/mba/target/

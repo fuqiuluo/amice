@@ -53,7 +53,7 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         pass_registry::install_all(cfg, manager, AmicePassFlag::OptimizerLast);
     });
 
-    #[cfg(any(doc, feature = "llvm20-1"))]
+    #[cfg(any(doc, feature = "llvm20-1", feature = "llvm21-1"))]
     builder.add_optimizer_last_ep_callback(|manager, opt, phase| {
         info!("amice plugin optimizer last callback, level: {opt:?}, phase: {phase:?}");
         let cfg = &*CONFIG;
