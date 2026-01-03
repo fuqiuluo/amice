@@ -231,7 +231,7 @@ fn do_alias_access_pointer_chain(
     for _ in 0..meta_box_count {
         let meta_box_alloca = builder.build_alloca(meta_box_ty, "")?;
         // 随机选择使用多少分支
-        let bn = rand::random_range(0..META_BOX_COUNT);
+        let bn = rand::random_range(1..META_BOX_COUNT);
         let idxs = get_random_no_repeat(META_BOX_COUNT, bn);
 
         let mut edges = HashMap::new();

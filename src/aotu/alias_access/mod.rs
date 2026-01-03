@@ -30,6 +30,14 @@ impl AmicePass for AliasAccess {
                 continue;
             }
 
+            if function.is_inline_marked() {
+                continue;
+            }
+
+            if function.is_undef_function() {
+                continue;
+            }
+
             let cfg = self.parse_function_annotations(module, function)?;
             if !cfg.enable {
                 continue;

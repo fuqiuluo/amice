@@ -76,10 +76,10 @@ tests/
 
 ```bash
 # 运行所有集成测试（需要 --release 模式）
-cargo test --release --no-default-features --features llvm18-1
+cargo test --release --no-default-features --features llvm21-1
 
 # 仅运行单元测试（不包含集成测试）
-cargo test --no-default-features --features llvm18-1 --lib
+cargo test --no-default-features --features llvm21-1 --lib
 ```
 
 **注意：** 集成测试必须使用 `--release` 模式运行，因为测试依赖于 release 构建的 FFI 库。
@@ -229,7 +229,7 @@ target/test-outputs/
 确保先构建了 release 版本：
 
 ```bash
-cargo build --release --no-default-features --features llvm18-1
+cargo build --release --no-default-features --features llvm21-1
 ```
 
 或使用测试脚本的 `--build` 选项。
@@ -239,7 +239,7 @@ cargo build --release --no-default-features --features llvm18-1
 Windows 需要额外的链接特性：
 
 ```bash
-cargo build --release --no-default-features --features llvm18-1,win-link-lld
+cargo build --release --no-default-features --features llvm21-1,win-link-lld
 ```
 
 ### Q: 如何只运行特定测试

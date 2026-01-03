@@ -211,6 +211,9 @@ pub struct ObfuscationConfig {
     // Clone function
     pub clone_function: Option<bool>,
 
+    // Alias access
+    pub alias_access: Option<bool>,
+
     // Lower switch
     pub lower_switch: Option<bool>,
     pub lower_switch_with_dummy_code: Option<bool>,
@@ -236,6 +239,7 @@ impl ObfuscationConfig {
             mba: Some(false),
             function_wrapper: Some(false),
             clone_function: Some(false),
+            alias_access: Some(false),
             lower_switch: Some(false),
             lower_switch_with_dummy_code: Some(false),
             ..Default::default()
@@ -310,6 +314,9 @@ impl ObfuscationConfig {
 
         // Clone function
         set_env_bool!(cmd, "AMICE_CLONE_FUNCTION", self.clone_function);
+
+        // Alias access
+        set_env_bool!(cmd, "AMICE_ALIAS_ACCESS", self.alias_access);
 
         // Lower switch
         set_env_bool!(cmd, "AMICE_LOWER_SWITCH", self.lower_switch);

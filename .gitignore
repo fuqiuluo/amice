@@ -27,3 +27,4 @@ CLAUDE.md
 /tests/rust/bcf/target/
 /tests/rust/function_wrapper/target/
 /tests/rust/clone_function/target/
+/tests/rust/alias_access/target/

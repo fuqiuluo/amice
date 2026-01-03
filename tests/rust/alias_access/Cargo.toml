@@ -1,0 +1,19 @@
+[package]
+name = "alias_access_test"
+version = "0.1.0"
+edition = "2021"
+
+[profile.dev]
+opt-level = 0
+debug = true
+codegen-units = 1
+incremental = false
+
+[profile.release]
+opt-level = 1
+debug = true
+strip = false
+lto = false
+codegen-units = 1
+
+[dependencies]
