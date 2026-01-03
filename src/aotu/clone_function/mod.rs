@@ -110,10 +110,17 @@ impl AmicePass for CloneFunction {
                 return Ok(PreservedAnalyses::All);
             }
 
-            debug!("found {} call sites with constant args", call_instructions_with_constant_args.len());
+            debug!(
+                "found {} call sites with constant args",
+                call_instructions_with_constant_args.len()
+            );
 
             for (inst, call_func, args) in call_instructions_with_constant_args {
-                debug!("specializing function {:?} with {} constant args", call_func.get_name(), args.len());
+                debug!(
+                    "specializing function {:?} with {} constant args",
+                    call_func.get_name(),
+                    args.len()
+                );
                 if let Err(e) = do_replace_call_with_call_to_specialized_function(module, inst, call_func, args) {
                     error!("failed to replace call with specialized function: {}", e);
                 }
