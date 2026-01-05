@@ -144,6 +144,9 @@ pub(crate) fn array_as_rust_string(arr: &ArrayValue) -> Option<String> {
 
 pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]> {
     let mut len = 0;
+    if arr.is_null() {
+        return None;
+    }
     let ptr = unsafe { LLVMGetAsString(arr.as_value_ref() as _, &mut len) };
     if ptr.is_null() {
         None
