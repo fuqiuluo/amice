@@ -29,6 +29,16 @@ impl AmicePass for CloneFunction {
     fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
         debug!("default_config.enable = {}", self.default_config.enable);
 
+        if !self.default_config.enable {
+            return Ok(PreservedAnalyses::All);
+        }
+
+        #[cfg(feature = "android-ndk")]
+        {
+            error!("clone-function pass is not supported on android-ndk");
+            return Ok(PreservedAnalyses::All);
+        }
+
         #[cfg(not(feature = "android-ndk"))]
         {
             let mut call_instructions = Vec::new();
@@ -125,15 +135,9 @@ impl AmicePass for CloneFunction {
                     error!("failed to replace call with specialized function: {}", e);
                 }
             }
-        }
 
-        #[cfg(feature = "android-ndk")]
-        {
-            error!("not support android-ndk");
-            return Ok(PreservedAnalyses::All);
+            return Ok(PreservedAnalyses::None);
         }
-
-        Ok(PreservedAnalyses::None)
     }
 }
 
