@@ -444,6 +444,7 @@ fn build_update_key_function<'a>(module: &mut Module<'a>, inline_fn: bool) -> an
         false,
     );
     let update_fn = module.add_function(".amice.flatten_dominator.update_key_arr", fn_type, None);
+    update_fn.set_linkage(Linkage::Internal);
 
     if inline_fn {
         let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
