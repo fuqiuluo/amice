@@ -48,8 +48,22 @@ impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
         let var0 = builder.build_alloca(i64_ty, "var0")?;
         let var1 = builder.build_alloca(i64_ty, "var1")?;
 
-        let module = 0x100000000u64 - rand::random::<u32>() as u64;
-        let x = PRIMES[rand::random_range(0..PRIMES.len())] % module;
+        let (module, x) = loop {
+            let m = 0x100000000u64 - rand::random::<u32>() as u64;
+            if m == 0 {
+                continue;
+            }
+
+            let p = PRIMES[rand::random_range(0..PRIMES.len())];
+            let x = p % m;
+            if x == 0 {
+                continue;
+            }
+
+            if gcd(x, m) == 1 {
+                break (m, x);
+            }
+        };
 
         builder.build_store(var0, i64_ty.const_int(x, false))?;
         builder.build_store(var1, i64_ty.const_int(x, false))?;
@@ -332,7 +346,7 @@ fn mod_exp(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
         if exponent % 2 == 1 {
             result = (result * base) % modulus;
         }
-        exponent = exponent >> 1;
+        exponent >>= 1;
         base = (base * base) % modulus;
     }
     result
@@ -369,9 +383,20 @@ mod tests {
         let mut var0 = 0;
         let mut var1 = 0;
 
-        let module = 0x100000000u64 - rand::random::<u32>() as u64;
-        // PRIMES.max() = 9973
-        let x = PRIMES[rand::random_range(0..PRIMES.len())] % module;
+        let (module, x) = loop {
+            let m = 0x100000000u64 - rand::random::<u32>() as u64;
+            if m == 0 {
+                continue;
+            }
+            let p = PRIMES[rand::random_range(0..PRIMES.len())];
+            let x = p % m;
+            if x == 0 {
+                continue;
+            }
+            if gcd(x, m) == 1 {
+                break (m, x);
+            }
+        };
 
         println!("x = {}", x);
         println!("module = {}", module);
@@ -395,8 +420,20 @@ mod tests {
         let mut var0 = 0;
         let mut var1 = 0;
 
-        let module = 0x100000000u64 - rand::random::<u32>() as u64;
-        let x = PRIMES[rand::random_range(0..PRIMES.len())] % module;
+        let (module, x) = loop {
+            let m = 0x100000000u64 - rand::random::<u32>() as u64;
+            if m == 0 {
+                continue;
+            }
+            let p = PRIMES[rand::random_range(0..PRIMES.len())];
+            let x = p % m;
+            if x == 0 {
+                continue;
+            }
+            if gcd(x, m) == 1 {
+                break (m, x);
+            }
+        };
 
         println!("x = {}", x);
         println!("module = {}", module);
