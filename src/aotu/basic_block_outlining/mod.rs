@@ -27,7 +27,7 @@ impl AmicePass for BasicBlockOutlining {
     fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
         let mut functions = Vec::new();
         for function in module.get_functions() {
-            if function.is_undef_function() || function.is_llvm_function() && function.is_inline_marked() {
+            if function.is_undef_function() || function.is_llvm_function() || function.is_inline_marked() {
                 continue;
             }
 
