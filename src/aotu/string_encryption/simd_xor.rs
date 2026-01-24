@@ -13,7 +13,7 @@ use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
     ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
 };
-use log::{debug, error, warn};
+use log::{debug, error, log_enabled, warn, Level};
 use rand::Rng;
 
 #[derive(Default)]
@@ -56,25 +56,71 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                     .get_section()
                     .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))
         })
-        .filter_map(|global| match global.get_initializer()? {
-            // C-like strings
-            BasicValueEnum::ArrayValue(arr) => Some((global, None, arr)),
-            // Rust-like strings
-            BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => match stru.get_field_at_index(0)? {
-                BasicValueEnum::ArrayValue(arr) => Some((global, Some(stru), arr)),
-                _ => None,
-            },
-            _ => None,
-        })
-        .filter(|(_, _, arr)| {
-            if !arr.is_const_string() {
-                return false;
+        .filter_map(|global| {
+            let init = global.get_initializer()?;
+            let mut string_fields = Vec::new();
+            let mut struct_value: Option<_> = None;
+
+            match init {
+                // 情况 A: 传统的 C-style 字符串直接就是 ArrayValue
+                BasicValueEnum::ArrayValue(arr) => {
+                    if arr.is_const_string() && arr.get_type().len() > 1 {
+                        string_fields.push((None, arr)); // None 表示不是结构体成员
+                    }
+                },
+                // 情况 B: 结构体（适配 Rust String, C++ NTTP 结构体等）
+                BasicValueEnum::StructValue(stru) => {
+                    for i in 0..stru.count_fields() {
+                        if let Some(field) = stru.get_field_at_index(i) {
+                            if let BasicValueEnum::ArrayValue(arr) = field {
+                                if arr.is_const_string() && arr.get_type().len() > 1 {
+                                    string_fields.push((Some(i), arr)); // 记录字段索引
+                                }
+                            }
+                        }
+                    }
+                    struct_value = Some(stru);
+                },
+                _ => return None,
             }
 
-            let ty = arr.get_type();
-            !ty.is_empty() && ty.len() > 1
+            if string_fields.is_empty() {
+                None
+            } else {
+                // 返回全局变量及其内部所有的待加密字符串信息
+                Some((global, struct_value, string_fields))
+            }
         })
-        .filter_map(|(global, stru, arr)| {
+        .flat_map(|(global, stru, string_fields)| {
+            // 这里的 string_fields 是 Vec<(Option<usize>, ArrayValue)>
+            string_fields.into_iter().filter_map(move |(field_idx, arr)| {
+                if !arr.is_const_string() {
+                    debug!(
+                        "(strenc) skipping field in {:?}: is_const_string() false",
+                        global.get_name()
+                    );
+                    return None;
+                }
+
+                let ty = arr.get_type();
+                if ty.is_empty() || ty.len() <= 1 {
+                    debug!(
+                        "(strenc) skipping field in {:?}: too short (len={})",
+                        global.get_name(),
+                        ty.len()
+                    );
+                    return None;
+                }
+
+                // 校验通过，返回一个包含上下文的元组，方便后面加密逻辑使用
+                // 这里的 stru 现在需要重新考虑，因为一个 global 可能对应多个字段
+                Some((global, stru, field_idx, arr))
+            })
+        })
+        .inspect(|(a, b, c, d)| {
+            // do nothing!
+        })
+        .filter_map(|(global, stru, field_idx, arr)| {
             let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
             let mut encoded_str = vec![0u8; s.len()];
             for (i, c) in s.bytes().enumerate() {
@@ -85,9 +131,9 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 .get_name()
                 .to_str()
                 .map_or_else(|_| rand::random::<u32>().to_string(), |s| s.to_string());
-            Some((unique_name, global, stru, encoded_str))
+            Some((unique_name, global, stru, field_idx, encoded_str))
         })
-        .map(|(unique_name, global, stru, encoded_str)| {
+        .map(|(unique_name, global, stru, field_idx, encoded_str)| {
             let string_len = encoded_str.len() as u32;
             let mut should_use_stack = cfg.stack_alloc && string_len <= STACK_ALLOC_THRESHOLD;
 
@@ -99,23 +145,13 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 );
             }
 
-            if let Some(stru) = stru {
-                // Rust-like strings
-                let new_const = ctx.const_string(&encoded_str, false);
-                stru.set_field_at_index(0, new_const);
-                global.set_initializer(&stru);
-            } else {
-                // C-like strings
-                let new_const = ctx.const_string(&encoded_str, false);
-                global.set_initializer(&new_const);
-            }
-
             let mut users = Vec::new();
 
             if !is_global_mode && (is_lazy_mode) {
                 let mut use_opt = global.get_first_use();
                 while let Some(u) = use_opt {
                     use_opt = u.get_next_use();
+
                     let mut temp_user = Vec::new();
                     if let Err(e) = collect_insert_points(global, u.get_user(), &mut temp_user) {
                         error!("(strenc) failed to collect insert points: {e}");
@@ -162,12 +198,44 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 None
             };
 
+            // 判断是不是C like的基于ArrayValue的字符串
+            // 如果为false就是Rust/C++ NTTP的string, 这个时候一个结构体里面可能出现多个字符串
+            // 需要struct gep回去结构体底下指向字符串的指针，而不是指向结构体的头
+            let mut is_array_string = true;
+            if let Some(stru) = stru {
+                // Rust-like strings or C++ NTTP string
+                let new_const = ctx.const_string(&encoded_str, false);
+                if let Some(field_idx) = field_idx {
+                    is_array_string = false;
+                    stru.set_field_at_index(field_idx, new_const);
+                } else {
+                    stru.set_field_at_index(0, new_const);
+                }
+                global.set_initializer(&stru);
+            } else {
+                // C-like strings
+                let new_const = ctx.const_string(&encoded_str, false);
+                global.set_initializer(&new_const);
+            }
+
             // 如果有flag的话 ===> 回写模式，字符串不能是一个常量
             if !flag.is_none() || is_global_mode {
                 global.set_constant(false);
             }
 
-            EncryptedGlobalValue::new(global, string_len, flag, should_use_stack, users)
+            if is_array_string {
+                EncryptedGlobalValue::new_array_string(global, string_len, flag, should_use_stack, users)
+            } else {
+                EncryptedGlobalValue::new_struct_string(
+                    global,
+                    string_len,
+                    flag,
+                    should_use_stack,
+                    users,
+                    stru,
+                    field_idx,
+                )
+            }
         })
         .collect();
 
@@ -259,7 +327,27 @@ fn emit_decrypt_before_inst<'a>(
 
                 builder.position_before(&insert_point);
 
-                let ptr = string.global.as_pointer_value();
+                let ptr = if string.is_array_string() {
+                    // 如果是c风格的基于ArrayValue的字符串，那么全局常量本身就是这个字符串
+                    string.global.as_pointer_value()
+                } else {
+                    assert!(string.is_struct_string());
+                    let Some(struct_value) = &string.struct_value else {
+                        panic!("string.struct_value must be Some(StructValue)");
+                    };
+                    let Some(field_idx) = string.field_index else {
+                        panic!("string.field_index must be Some(u32)");
+                    };
+                    let global_ptr = string.global.as_pointer_value();
+                    let value_type = string.global.get_value_type().into_struct_type();
+
+                    if log_enabled!(Level::Debug) {
+                        debug!("StructString found, type = {:?}, value = {:?}, idx = {}", value_type, struct_value, field_idx);
+                    }
+
+                    // 生成 GEP: getelementptr inbounds %struct..., ptr @global, i32 0, i32 field_idx
+                    builder.build_struct_gep(value_type, global_ptr, field_idx, "field_gep")?
+                };
                 let len_val = i32_ty.const_int(string.str_len as u64, false);
 
                 if stack_alloc
@@ -342,10 +430,31 @@ fn emit_global_string_decryptor_ctor<'a>(
     let builder = ctx.create_builder();
 
     builder.position_at_end(entry);
-    for ev in gs {
-        let ptr = ev.global.as_pointer_value();
-        let dst = ev.global.as_pointer_value(); // In-place decryption: src == dst
-        let len_val = i32_ty.const_int(ev.str_len as u64, false);
+    for string in gs {
+        let ptr = if string.is_array_string() {
+            // 如果是c风格的基于ArrayValue的字符串，那么全局常量本身就是这个字符串
+            string.global.as_pointer_value()
+        } else {
+            assert!(string.is_struct_string());
+            let Some(struct_value) = &string.struct_value else {
+                panic!("string.struct_value must be Some(StructValue)");
+            };
+            let Some(field_idx) = string.field_index else {
+                panic!("string.field_index must be Some(u32)");
+            };
+            let global_ptr = string.global.as_pointer_value();
+            let value_type = string.global.get_value_type().into_struct_type();
+
+            if log_enabled!(Level::Debug) {
+                debug!("StructString found, type = {:?}, value = {:?}, idx = {}", value_type, struct_value, field_idx);
+            }
+
+            // 生成 GEP: getelementptr inbounds %struct..., ptr @global, i32 0, i32 field_idx
+            builder.build_struct_gep(value_type, global_ptr, field_idx, "field_gep")?
+        };
+
+        let dst = ptr; // In-place decryption: src == dst
+        let len_val = i32_ty.const_int(string.str_len as u64, false);
         let key_ptr = global_key.as_pointer_value();
         let flag_ptr = i32_ptr.const_null(); // No flag for global timing
         builder.build_call(

@@ -16,8 +16,9 @@ tmp/
 # Test fixtures - external dependencies
 tests/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/
 
-# Claude Code
+# Claude Code & OpenCode
 CLAUDE.md
+AGENTS.md
 .claude/
 /tests/rust/indirect_call/target/
 /tests/rust/indirect_branch/target/

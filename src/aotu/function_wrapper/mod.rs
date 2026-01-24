@@ -39,22 +39,22 @@ impl AmicePass for FunctionWrapper {
         for function in module.get_functions() {
             total_funcs += 1;
             if function.is_llvm_function() {
-                debug!("skip llvm function: {:?}", function.get_name());
+                //debug!("skip llvm function: {:?}", function.get_name());
                 continue;
             }
             if function.is_inline_marked() {
-                debug!("skip inline function: {:?}", function.get_name());
+                //debug!("skip inline function: {:?}", function.get_name());
                 continue;
             }
             if function.is_undef_function() {
-                debug!("skip undef function: {:?}", function.get_name());
+                //debug!("skip undef function: {:?}", function.get_name());
                 continue;
             }
             func_count += 1;
 
             let cfg = self.parse_function_annotations(module, function)?;
             if !cfg.enable {
-                debug!("function {:?} skipped: enable=false", function.get_name());
+                //debug!("function {:?} skipped: enable=false", function.get_name());
                 continue;
             }
 
@@ -64,7 +64,7 @@ impl AmicePass for FunctionWrapper {
                         // Apply probability check
                         if rand::random_range(0..100) < cfg.probability {
                             if let Some(called_func) = get_called_function(&inst) {
-                                debug!("adding call to function: {:?}", called_func.get_name());
+                                //debug!("adding call to function: {:?}", called_func.get_name());
                                 call_instructions.push((inst, called_func));
                             }
                         }
@@ -150,13 +150,13 @@ fn handle_call_instruction<'a>(
     called_function: Option<FunctionValue<'a>>,
 ) -> anyhow::Result<Option<InstructionValue<'a>>> {
     let Some(called_function) = called_function else {
-        debug!("skipping call with no function");
+        //debug!("skipping call with no function");
         return Ok(None);
     };
 
     // Skip intrinsic functions
     if called_function.get_intrinsic_id() != 0 {
-        debug!("skipping intrinsic function");
+        //debug!("skipping intrinsic function");
         return Ok(None);
     }
 
@@ -165,7 +165,7 @@ fn handle_call_instruction<'a>(
     }
 
     if called_function.get_type().is_var_arg() {
-        debug!("skipping varargs function: {:?}", called_function.get_name());
+        //debug!("skipping varargs function: {:?}", called_function.get_name());
         return Ok(None);
     }
 

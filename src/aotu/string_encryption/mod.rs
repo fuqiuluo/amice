@@ -12,6 +12,7 @@ use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use llvm_plugin::inkwell::module::Module;
 use llvm_plugin::inkwell::values::{
     AnyValueEnum, ArrayValue, AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, PointerValue,
+    StructValue,
 };
 use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use std::ptr::NonNull;
@@ -88,10 +89,14 @@ struct EncryptedGlobalValue<'a> {
     /// This can be false even when overall stack_alloc is true, for strings > 4KB
     use_stack_alloc: bool,
     users: NonNull<Vec<(InstructionValue<'a>, u32)>>,
+
+    /// Rust Struct String or C++ NTTP String
+    pub struct_value: Option<StructValue<'a>>,
+    pub field_index: Option<u32>,
 }
 
 impl<'a> EncryptedGlobalValue<'a> {
-    pub fn new(
+    pub fn new_array_string(
         global: GlobalValue<'a>,
         len: u32,
         flag: Option<GlobalValue<'a>>,
@@ -110,6 +115,36 @@ impl<'a> EncryptedGlobalValue<'a> {
             oneshot: false,
             use_stack_alloc,
             users: NonNull::new(Box::leak(user)).unwrap(),
+            struct_value: None,
+            field_index: None,
+        }
+    }
+
+    pub fn new_struct_string(
+        global: GlobalValue<'a>,
+        len: u32,
+        flag: Option<GlobalValue<'a>>,
+        use_stack_alloc: bool,
+        user: Vec<(LLVMValueRef, u32)>,
+        struct_value: Option<StructValue<'a>>,
+        field_index: Option<u32>,
+    ) -> Self {
+        let user = Box::new(
+            user.iter()
+                .map(|(value_ref, op_num)| (value_ref.into_instruction_value(), *op_num))
+                .collect::<Vec<_>>(),
+        );
+        assert!(struct_value.is_some());
+        assert!(field_index.is_some());
+        EncryptedGlobalValue {
+            global,
+            str_len: len,
+            flag,
+            oneshot: false,
+            use_stack_alloc,
+            users: NonNull::new(Box::leak(user)).unwrap(),
+            struct_value,
+            field_index,
         }
     }
 
@@ -118,6 +153,14 @@ impl<'a> EncryptedGlobalValue<'a> {
         unsafe {
             let _ = &(*self.users.as_ptr()).push((user, op_num));
         }
+    }
+
+    pub fn is_array_string(&self) -> bool {
+        self.struct_value.is_none() && self.field_index.is_none()
+    }
+
+    pub fn is_struct_string(&self) -> bool {
+        self.struct_value.is_some() && self.field_index.is_some()
     }
 
     pub fn user_slice(&self) -> &[(InstructionValue<'a>, u32)] {
