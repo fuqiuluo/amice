@@ -76,5 +76,5 @@ fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
         pass_registry::install_all(cfg, manager, AmicePassFlag::FullLtoLast);
     });
 
-    info!("amice plugin registered");
+    info!("amice plugin registered!");
 }

@@ -13,7 +13,6 @@ Source code: `src/aotu/string_encryption`
 | AMICE_STRING_INLINE_DECRYPT_FN           | Inline decrypt function:<br/>- `true` — inline<br/>- `false` — don't inline                                                                                                                                                                           | false   |
 | AMICE_STRING_ONLY_DOT_STRING             | Only process strings in `.str` section:<br/>- `true` — only encrypt `.str` strings<br/>- `false` — may encrypt char[] global variables in llvm::Module, possibly causing crashes                                                                      | true    |
 | AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC | Allow stack allocation in non-entry blocks (stack decryption mode):<br/>- `true` — allow (many LLVM optimization passes assume all alloca are in entry block)<br/>- `false` — recommended                                                             | false   |
-| AMICE_STRING_NULL_TERMINATED             | Whether strings are null-terminated (C-style):<br/>- `true` — write null terminator at len-1 position after decryption (C mode)<br/>- `false` — don't write null terminator, preserve original string content (Rust mode)                             | true    |
 
 > **Note for Rust**: Rust strings are not null-terminated. If using string encryption, you need to set the following environment variables:
 > ```bash

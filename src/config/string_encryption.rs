@@ -35,11 +35,6 @@ pub struct StringEncryptionConfig {
     pub allow_non_entry_stack_alloc: bool,
 
     pub max_encryption_count: u32,
-
-    /// Whether strings are null-terminated (C-style).
-    /// When true (default), the decryption function writes a null terminator at position len-1.
-    /// When false (Rust mode), no null terminator is written, preserving the original string content.
-    pub null_terminated: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,7 +76,6 @@ impl Default for StringEncryptionConfig {
             only_dot_str: true,
             allow_non_entry_stack_alloc: false,
             max_encryption_count: 1,
-            null_terminated: true,
         }
     }
 }
@@ -146,9 +140,6 @@ impl EnvOverlay for StringEncryptionConfig {
             } else {
                 error!("(strenc) invalid max encryption count value, using default");
             }
-        }
-        if std::env::var("AMICE_STRING_NULL_TERMINATED").is_ok() {
-            self.null_terminated = bool_var("AMICE_STRING_NULL_TERMINATED", self.null_terminated);
         }
     }
 }
