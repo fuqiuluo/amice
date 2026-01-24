@@ -13,7 +13,7 @@ use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
     ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
 };
-use log::{debug, error, log_enabled, warn, Level};
+use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 
 #[derive(Default)]
@@ -342,7 +342,10 @@ fn emit_decrypt_before_inst<'a>(
                     let value_type = string.global.get_value_type().into_struct_type();
 
                     if log_enabled!(Level::Debug) {
-                        debug!("StructString found, type = {:?}, value = {:?}, idx = {}", value_type, struct_value, field_idx);
+                        debug!(
+                            "StructString found, type = {:?}, value = {:?}, idx = {}",
+                            value_type, struct_value, field_idx
+                        );
                     }
 
                     // 生成 GEP: getelementptr inbounds %struct..., ptr @global, i32 0, i32 field_idx
@@ -446,7 +449,10 @@ fn emit_global_string_decryptor_ctor<'a>(
             let value_type = string.global.get_value_type().into_struct_type();
 
             if log_enabled!(Level::Debug) {
-                debug!("StructString found, type = {:?}, value = {:?}, idx = {}", value_type, struct_value, field_idx);
+                debug!(
+                    "StructString found, type = {:?}, value = {:?}, idx = {}",
+                    value_type, struct_value, field_idx
+                );
             }
 
             // 生成 GEP: getelementptr inbounds %struct..., ptr @global, i32 0, i32 field_idx
