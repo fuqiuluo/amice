@@ -346,7 +346,7 @@ fn emit_decrypt_before_inst<'a>(
                     }
 
                     // 生成 GEP: getelementptr inbounds %struct..., ptr @global, i32 0, i32 field_idx
-                    builder.build_struct_gep(value_type, global_ptr, field_idx, "field_gep")?
+                    builder.build_struct_gep2(value_type, global_ptr, field_idx, "field_gep")?
                 };
                 let len_val = i32_ty.const_int(string.str_len as u64, false);
 
@@ -450,7 +450,7 @@ fn emit_global_string_decryptor_ctor<'a>(
             }
 
             // 生成 GEP: getelementptr inbounds %struct..., ptr @global, i32 0, i32 field_idx
-            builder.build_struct_gep(value_type, global_ptr, field_idx, "field_gep")?
+            builder.build_struct_gep2(value_type, global_ptr, field_idx, "field_gep")?
         };
 
         let dst = ptr; // In-place decryption: src == dst
