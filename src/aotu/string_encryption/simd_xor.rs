@@ -204,15 +204,17 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
             let mut is_array_string = true;
             if let Some(stru) = stru {
                 // Rust-like strings or C++ NTTP string
-                let values: Vec<_> = stru.get_fields().collect();
-                let stru = stru.get_type().const_named_struct(values.as_slice());
+                let mut values: Vec<_> = stru.get_fields().collect();
                 let new_const = ctx.const_string(&encoded_str, false);
                 if let Some(field_idx) = field_idx {
                     is_array_string = false;
-                    stru.set_field_at_index(field_idx, new_const);
+                    values[field_idx as usize] = BasicValueEnum::ArrayValue(new_const);
                 } else {
-                    stru.set_field_at_index(0, new_const);
+                    values[0] = BasicValueEnum::ArrayValue(new_const);
                 }
+                let stru2 = stru.get_type().const_named_struct(values.as_slice());
+                error!("stru={:#?} stru2={:#?}", stru, stru2);
+                let stru = stru2;
                 global.set_initializer(&stru);
             } else {
                 // C-like strings
