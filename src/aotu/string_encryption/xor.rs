@@ -247,9 +247,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
                 } else {
                     values[0] = BasicValueEnum::ArrayValue(new_const);
                 }
-                let stru2 = stru.get_type().const_named_struct(values.as_slice());
-                error!("stru={:#?} stru2={:#?}", stru, stru2);
-                let stru = stru2;
+                let stru = stru.get_type().const_named_struct(values.as_slice());
                 global.set_initializer(&stru);
             } else {
                 // C-like strings
