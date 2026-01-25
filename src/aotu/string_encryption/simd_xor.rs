@@ -127,10 +127,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 encoded_str[i] = c ^ key[i % key.len()];
             }
 
-            let unique_name = global
-                .get_name()
-                .to_str()
-                .map_or_else(|_| rand::random::<u32>().to_string(), |s| s.to_string());
+            let unique_name = global.get_name().to_str().map_or_else(
+                |_| format!("ref_{:x}", global.as_value_ref() as usize),
+                |s| s.to_string(),
+            );
             Some((unique_name, global, stru, field_idx, encoded_str))
         })
         .map(|(unique_name, global, stru, field_idx, encoded_str)| {
@@ -186,13 +186,41 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 }
             }
 
-            // 当需要回写解密的时候，一个flag是必须的，虽然我没有办法保证线程安全（这也许是一个todo
+            // 当需要回写解密的时候，一个flag是必须的，虽然我没有办法保证线程安全
             // 什么时候是回写解密？是懒加载开启且不是在栈上解密的情况下！
             // 全局函数解密不需要flag，省去这个步骤
             let flag = if is_lazy_mode && !should_use_stack {
-                let flag = module.add_global(i32_ty, None, &format!("dec_flag_{unique_name}"));
-                flag.set_initializer(&i32_ty.const_int(0, false));
-                flag.set_linkage(Linkage::Internal);
+                // 必须使用跟 global string 一样的名字后缀，确保不同模块生成的 flag 名字一致
+                let flag_name = format!("dec_flag_{}", global.get_name().to_str().unwrap());
+                let flag = if let Some(existing) = module.get_global(&flag_name) {
+                    existing
+                } else {
+                    let new_flag = module.add_global(i32_ty, None, &flag_name);
+                    new_flag.set_initializer(&i32_ty.const_int(0, false));
+                    let str_linkage = global.get_linkage();
+                    match str_linkage {
+                        // 如果字符串是私有的，Flag 也是私有的
+                        Linkage::Internal | Linkage::Private => {
+                            new_flag.set_linkage(Linkage::Internal);
+                        },
+                        // 如果字符串是 LinkOnce/Weak (可合并的)，Flag 也必须是 LinkOnceODR/WeakODR
+                        // 这样链接器会把多个模块的 Flag 合并成一个
+                        Linkage::LinkOnceODR | Linkage::WeakODR | Linkage::LinkOnceAny | Linkage::WeakAny => {
+                            // 使用 LinkOnceODR 确保合并，并且如果没用到的模块可以丢弃
+                            // new_flag.set_linkage(Linkage::LinkOnceODR);
+                            // LinkOnce 需要设置 comdat 组吗？通常为了保险最好设为 weakODR 或者同组
+                            // 简单起见，WeakODR 比较通用，不仅合并而且保证存在
+                            new_flag.set_linkage(Linkage::WeakODR);
+                        },
+                        // 其他情况保守起见设为 WeakODR 或跳过加密
+                        _ => {
+                            new_flag.set_linkage(Linkage::WeakODR);
+                        },
+                    }
+                    // 只有 LinkOnce/Weak 需要设置 comdat，否则链接器可能会报错
+                    // 如果你不想处理复杂的 Comdat，最简单的办法是把 Shared 的 flag 设为 WeakODR
+                    new_flag
+                };
                 Some(flag)
             } else {
                 None
