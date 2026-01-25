@@ -1,4 +1,3 @@
-use std::ptr::null_mut;
 use crate::aotu::string_encryption::{
     EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo, alloc_stack_string,
     array_as_const_string, collect_insert_points,
@@ -8,15 +7,16 @@ use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell;
-use llvm_plugin::inkwell::{AddressSpace, GlobalVisibility};
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::comdat::Comdat;
 use llvm_plugin::inkwell::module::{Linkage, Module};
 use llvm_plugin::inkwell::values::{
     ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
 };
+use llvm_plugin::inkwell::{AddressSpace, GlobalVisibility};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
+use std::ptr::null_mut;
 
 #[derive(Default)]
 pub(super) struct SimdXorAlgo {
@@ -219,7 +219,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 global.set_initializer(&stru);
 
                 let current_linkage = global.get_linkage();
-                if matches!(current_linkage, Linkage::LinkOnceAny | Linkage::LinkOnceODR | Linkage::WeakAny | Linkage::WeakODR) {
+                if matches!(
+                    current_linkage,
+                    Linkage::LinkOnceAny | Linkage::LinkOnceODR | Linkage::WeakAny | Linkage::WeakODR
+                ) {
                     global.set_linkage(Linkage::Internal);
                     global.set_comdat(unsafe { Comdat::new(null_mut()) });
                     global.set_visibility(GlobalVisibility::Default);

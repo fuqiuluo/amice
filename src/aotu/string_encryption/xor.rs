@@ -1,4 +1,3 @@
-use std::ptr::{null, null_mut};
 use crate::aotu::string_encryption::{
     EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo, alloc_stack_string,
     array_as_const_string, collect_insert_points,
@@ -16,6 +15,7 @@ use llvm_plugin::inkwell::comdat::Comdat;
 use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, BasicValueEnum};
 use log::{Level, debug, error, info, log_enabled, warn};
+use std::ptr::{null, null_mut};
 
 #[derive(Default)]
 pub(super) struct XorAlgo;
@@ -255,7 +255,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
                 global.set_initializer(&stru);
 
                 let current_linkage = global.get_linkage();
-                if matches!(current_linkage, Linkage::LinkOnceAny | Linkage::LinkOnceODR | Linkage::WeakAny | Linkage::WeakODR) {
+                if matches!(
+                    current_linkage,
+                    Linkage::LinkOnceAny | Linkage::LinkOnceODR | Linkage::WeakAny | Linkage::WeakODR
+                ) {
                     global.set_linkage(Linkage::Internal);
                     global.set_comdat(unsafe { Comdat::new(null_mut()) });
                     global.set_visibility(GlobalVisibility::Default);
