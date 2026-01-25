@@ -1,3 +1,4 @@
+use std::ptr::{null, null_mut};
 use crate::aotu::string_encryption::{
     EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo, alloc_stack_string,
     array_as_const_string, collect_insert_points,
@@ -5,11 +6,13 @@ use crate::aotu::string_encryption::{
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
+use inkwell::GlobalVisibility;
 use inkwell::module::Module;
 use inkwell::values::{FunctionValue, InstructionOpcode};
 use llvm_plugin::inkwell;
 use llvm_plugin::inkwell::AddressSpace;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
+use llvm_plugin::inkwell::comdat::Comdat;
 use llvm_plugin::inkwell::module::Linkage;
 use llvm_plugin::inkwell::values::{AsValueRef, BasicValue, BasicValueEnum};
 use log::{Level, debug, error, info, log_enabled, warn};
@@ -247,8 +250,16 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
                 } else {
                     values[0] = BasicValueEnum::ArrayValue(new_const);
                 }
+
                 let stru = stru.get_type().const_named_struct(values.as_slice());
                 global.set_initializer(&stru);
+
+                let current_linkage = global.get_linkage();
+                if matches!(current_linkage, Linkage::LinkOnceAny | Linkage::LinkOnceODR | Linkage::WeakAny | Linkage::WeakODR) {
+                    global.set_linkage(Linkage::Internal);
+                    global.set_comdat(unsafe { Comdat::new(null_mut()) });
+                    global.set_visibility(GlobalVisibility::Default);
+                }
             } else {
                 // C-like strings
                 let new_const = ctx.const_string(&encoded_str, false);
