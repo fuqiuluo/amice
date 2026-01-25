@@ -7,6 +7,7 @@ use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell;
+use llvm_plugin::inkwell::AtomicOrdering;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::comdat::Comdat;
 use llvm_plugin::inkwell::module::{Linkage, Module};
@@ -530,7 +531,6 @@ fn add_decrypt_function<'a>(
     let entry = ctx.append_basic_block(decrypt_fn, "entry");
     let entry_has_flags = ctx.append_basic_block(decrypt_fn, "entry_has_flags");
     let main_loop = ctx.append_basic_block(decrypt_fn, "main_loop");
-    let update_flag = ctx.append_basic_block(decrypt_fn, "update_flag");
     let key_prepare = ctx.append_basic_block(decrypt_fn, "key_prepare");
     let next = ctx.append_basic_block(decrypt_fn, "next");
     let check_rest = ctx.append_basic_block(decrypt_fn, "check_rest");
@@ -574,18 +574,25 @@ fn add_decrypt_function<'a>(
         builder.build_conditional_branch(cond_if_flag_ptr_is_null, key_prepare, entry_has_flags)?;
 
         builder.position_at_end(entry_has_flags);
-        let flag = builder.build_load2(i32_ty, flag_ptr, "flag")?.into_int_value();
-        let is_decrypted = builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "")?;
-        builder.build_conditional_branch(is_decrypted, update_flag, exit)?;
+        // Use atomic cmpxchg to atomically check and update the flag
+        // cmpxchg compares flag with 0, if equal, sets it to 1 atomically
+        let cmpxchg_result = builder.build_cmpxchg(
+            flag_ptr,
+            i32_ty.const_zero(),
+            i32_ty.const_int(1, false),
+            AtomicOrdering::AcquireRelease,
+            AtomicOrdering::Acquire,
+        )?;
+        // Extract the success flag (second element of the result struct)
+        let was_not_decrypted = builder
+            .build_extract_value(cmpxchg_result, 1, "cmpxchg_success")?
+            .into_int_value();
+        // If cmpxchg succeeded (flag was 0 and we set it to 1), proceed to decrypt
+        // If cmpxchg failed (flag was not 0), skip decryption
+        builder.build_conditional_branch(was_not_decrypted, key_prepare, exit)?;
     } else {
         builder.build_unconditional_branch(key_prepare)?;
     }
-
-    builder.position_at_end(update_flag);
-    if has_flag {
-        builder.build_store(flag_ptr, i32_ty.const_int(1, false))?;
-    }
-    builder.build_unconditional_branch(key_prepare)?;
 
     builder.position_at_end(key_prepare);
     let key_load_inst = builder.build_load2(vector_256, key_ptr, "key_vec")?;
