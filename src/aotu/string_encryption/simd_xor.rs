@@ -204,6 +204,8 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
             let mut is_array_string = true;
             if let Some(stru) = stru {
                 // Rust-like strings or C++ NTTP string
+                let values: Vec<_> = stru.get_fields().collect();
+                let stru = ctx.const_struct(values.as_slice(), stru.get_type().is_packed());
                 let new_const = ctx.const_string(&encoded_str, false);
                 if let Some(field_idx) = field_idx {
                     is_array_string = false;
