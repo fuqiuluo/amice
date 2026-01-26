@@ -652,10 +652,8 @@ fn add_decrypt_function<'a>(
         // Mark decryption as complete (flag = 2)
         // This block is only reached after successful decryption
         builder.position_at_end(do_mark_done);
-        builder.build_store(flag_ptr, i32_ty.const_int(2, false))?;
-        if let Some(store_inst) = builder.get_insert_block().and_then(|bb| bb.get_last_instruction()) {
-            store_inst.set_atomic_ordering(AtomicOrdering::Release)?;
-        }
+        let store_inst = builder.build_store(flag_ptr, i32_ty.const_int(2, false))?;
+        store_inst.set_atomic_ordering(AtomicOrdering::Release)?;
         builder.build_unconditional_branch(exit)?;
     } else {
         builder.build_unconditional_branch(entry)?;
