@@ -141,13 +141,13 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
         })
         .filter_map(|(global, stru, field_idx, arr)| {
             // we ignore non-UTF8 strings, since they are probably not human-readable
-            let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
+            let s = array_as_const_string(&arr)?.to_vec();
 
             if log_enabled!(Level::Debug) {
-                info!("Will process string {:?}: {}, len = {}", global, s, s.len())
+                info!("Will process string {:?}: {}, len = {}", global, hex::encode(&s), s.len())
             }
 
-            let mut encoded_str = s.bytes().collect::<Vec<_>>();
+            let mut encoded_str = s;
             for byte in encoded_str.iter_mut() {
                 *byte ^= 0xAA;
             }

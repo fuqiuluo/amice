@@ -124,9 +124,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
             // do nothing!
         })
         .filter_map(|(global, stru, field_idx, arr)| {
-            let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
+            let s = array_as_const_string(&arr)?.to_vec();
+
             let mut encoded_str = vec![0u8; s.len()];
-            for (i, c) in s.bytes().enumerate() {
+            for (i, c) in s.iter().enumerate() {
                 encoded_str[i] = c ^ key[i % key.len()];
             }
 
