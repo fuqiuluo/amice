@@ -7,6 +7,7 @@ use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
 use llvm_plugin::inkwell;
+use llvm_plugin::inkwell::AtomicOrdering;
 use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use llvm_plugin::inkwell::comdat::Comdat;
 use llvm_plugin::inkwell::module::{Linkage, Module};
@@ -529,8 +530,9 @@ fn add_decrypt_function<'a>(
 
     let entry = ctx.append_basic_block(decrypt_fn, "entry");
     let entry_has_flags = ctx.append_basic_block(decrypt_fn, "entry_has_flags");
+    let spin_wait = ctx.append_basic_block(decrypt_fn, "spin_wait");
+    let do_mark_done = ctx.append_basic_block(decrypt_fn, "do_mark_done");
     let main_loop = ctx.append_basic_block(decrypt_fn, "main_loop");
-    let update_flag = ctx.append_basic_block(decrypt_fn, "update_flag");
     let key_prepare = ctx.append_basic_block(decrypt_fn, "key_prepare");
     let next = ctx.append_basic_block(decrypt_fn, "next");
     let check_rest = ctx.append_basic_block(decrypt_fn, "check_rest");
@@ -565,27 +567,61 @@ fn add_decrypt_function<'a>(
     builder.build_store(idx, ctx.i32_type().const_zero())?;
 
     if has_flag {
-        let cond_if_flag_ptr_is_null = builder.build_int_compare(
+        // Check if flag_ptr is NULL (stack allocation case)
+        let flag_is_null = builder.build_int_compare(
             inkwell::IntPredicate::EQ,
             flag_ptr,
             flag_ptr.get_type().const_null(),
-            "",
+            "flag_is_null",
         )?;
-        builder.build_conditional_branch(cond_if_flag_ptr_is_null, key_prepare, entry_has_flags)?;
+        // If flag_ptr is NULL, go directly to decrypt (no synchronization needed)
+        // If flag_ptr is not NULL, go to entry_has_flags for synchronization
+        builder.build_conditional_branch(flag_is_null, key_prepare, entry_has_flags)?;
 
         builder.position_at_end(entry_has_flags);
-        let flag = builder.build_load2(i32_ty, flag_ptr, "flag")?.into_int_value();
-        let is_decrypted = builder.build_int_compare(inkwell::IntPredicate::EQ, flag, i32_ty.const_zero(), "")?;
-        builder.build_conditional_branch(is_decrypted, update_flag, exit)?;
+        // Three-state protocol for thread safety:
+        // 0 = not decrypted, 1 = decrypting (in progress), 2 = decrypted (complete)
+        // Try to atomically change flag from 0 to 1 (claim the decryption task)
+        let cmpxchg_result = builder.build_cmpxchg(
+            flag_ptr,
+            i32_ty.const_zero(),        // expected: 0 (not decrypted)
+            i32_ty.const_int(1, false), // new value: 1 (decrypting)
+            AtomicOrdering::AcquireRelease,
+            AtomicOrdering::Acquire,
+        )?;
+        // Extract the success flag (second element of the result struct)
+        let cmpxchg_success = builder
+            .build_extract_value(cmpxchg_result, 1, "cmpxchg_success")?
+            .into_int_value();
+        // If cmpxchg succeeded (we are the winner), proceed to decrypt
+        // If cmpxchg failed (someone else is decrypting or already done), go to spin_wait
+        builder.build_conditional_branch(cmpxchg_success, key_prepare, spin_wait)?;
+
+        // Spin-wait loop: wait until flag becomes 2 (decryption complete)
+        builder.position_at_end(spin_wait);
+        let flag_val = builder.build_load2(i32_ty, flag_ptr, "flag_val")?.into_int_value();
+        // Make the load atomic to ensure we see the latest value
+        if let Some(load_inst) = flag_val.as_instruction_value() {
+            load_inst.set_atomic_ordering(AtomicOrdering::Acquire)?;
+        }
+        let is_complete = builder.build_int_compare(
+            inkwell::IntPredicate::EQ,
+            flag_val,
+            i32_ty.const_int(2, false), // 2 = decrypted (complete)
+            "is_complete",
+        )?;
+        // If complete, exit; otherwise keep spinning
+        builder.build_conditional_branch(is_complete, exit, spin_wait)?;
+
+        // Mark decryption as complete (flag = 2)
+        // This block is only reached after successful decryption when flag_ptr is not NULL
+        builder.position_at_end(do_mark_done);
+        let store_inst = builder.build_store(flag_ptr, i32_ty.const_int(2, false))?;
+        store_inst.set_atomic_ordering(AtomicOrdering::Release)?;
+        builder.build_unconditional_branch(exit)?;
     } else {
         builder.build_unconditional_branch(key_prepare)?;
     }
-
-    builder.position_at_end(update_flag);
-    if has_flag {
-        builder.build_store(flag_ptr, i32_ty.const_int(1, false))?;
-    }
-    builder.build_unconditional_branch(key_prepare)?;
 
     builder.position_at_end(key_prepare);
     let key_load_inst = builder.build_load2(vector_256, key_ptr, "key_vec")?;
@@ -624,7 +660,22 @@ fn add_decrypt_function<'a>(
     // 查询是否有剩余的字节没有处理
     let index = builder.build_load2(i32_ty, idx, "")?.into_int_value();
     let cond = builder.build_int_compare(inkwell::IntPredicate::ULT, index, len, "cond2")?;
-    builder.build_conditional_branch(cond, rest, exit)?;
+    // When done decrypting, need to check if we should mark done or exit directly
+    if has_flag {
+        let check_mark_done = ctx.append_basic_block(decrypt_fn, "check_mark_done");
+        builder.build_conditional_branch(cond, rest, check_mark_done)?;
+
+        builder.position_at_end(check_mark_done);
+        let flag_is_null = builder.build_int_compare(
+            inkwell::IntPredicate::EQ,
+            flag_ptr,
+            flag_ptr.get_type().const_null(),
+            "flag_is_null_exit",
+        )?;
+        builder.build_conditional_branch(flag_is_null, exit, do_mark_done)?;
+    } else {
+        builder.build_conditional_branch(cond, rest, exit)?;
+    }
 
     builder.position_at_end(rest);
     // 处理剩余的字节
