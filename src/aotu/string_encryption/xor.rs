@@ -113,6 +113,14 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
         .flat_map(|(global, stru, string_fields)| {
             // 这里的 string_fields 是 Vec<(Option<usize>, ArrayValue)>
             string_fields.into_iter().filter_map(move |(field_idx, arr)| {
+                if arr.is_undef() || arr.is_null() {
+                    debug!(
+                        "(strenc) skipping field in {:?}: is_undef() or is_null()",
+                        global.get_name()
+                    );
+                    return None;
+                }
+
                 if !arr.is_const_string() {
                     debug!(
                         "(strenc) skipping field in {:?}: is_const_string() false",
@@ -144,7 +152,12 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
             let s = array_as_const_string(&arr)?.to_vec();
 
             if log_enabled!(Level::Debug) {
-                info!("Will process string {:?}: {}, len = {}", global, hex::encode(&s), s.len())
+                info!(
+                    "Will process string {:?}: {}, len = {}",
+                    global,
+                    hex::encode(&s),
+                    s.len()
+                )
             }
 
             let mut encoded_str = s;
