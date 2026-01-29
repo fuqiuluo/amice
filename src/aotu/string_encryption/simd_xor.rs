@@ -97,6 +97,14 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
         .flat_map(|(global, stru, string_fields)| {
             // 这里的 string_fields 是 Vec<(Option<usize>, ArrayValue)>
             string_fields.into_iter().filter_map(move |(field_idx, arr)| {
+                if arr.is_undef() || arr.is_null() {
+                    debug!(
+                        "(strenc) skipping field in {:?}: is_undef() or is_null()",
+                        global.get_name()
+                    );
+                    return None;
+                }
+                
                 if !arr.is_const_string() {
                     debug!(
                         "(strenc) skipping field in {:?}: is_const_string() false",
@@ -124,9 +132,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
             // do nothing!
         })
         .filter_map(|(global, stru, field_idx, arr)| {
-            let s = array_as_const_string(&arr).and_then(|s| str::from_utf8(s).ok())?;
+            let s = array_as_const_string(&arr)?.to_vec();
+
             let mut encoded_str = vec![0u8; s.len()];
-            for (i, c) in s.bytes().enumerate() {
+            for (i, c) in s.iter().enumerate() {
                 encoded_str[i] = c ^ key[i % key.len()];
             }
 

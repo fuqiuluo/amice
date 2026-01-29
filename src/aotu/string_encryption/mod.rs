@@ -185,6 +185,7 @@ pub(crate) fn array_as_rust_string(arr: &ArrayValue) -> Option<String> {
     String::from_utf8(str.to_vec()).ok()
 }
 
+#[inline]
 pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]> {
     let mut len = 0;
     if arr.is_null() {
