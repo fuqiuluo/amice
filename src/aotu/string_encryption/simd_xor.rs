@@ -104,7 +104,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                     );
                     return None;
                 }
-                
+
                 if !arr.is_const_string() {
                     debug!(
                         "(strenc) skipping field in {:?}: is_const_string() false",
