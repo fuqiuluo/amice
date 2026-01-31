@@ -48,7 +48,6 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
     let array_values = key
         .map(|c| i8_ty.const_int(c as u64, false))
         .map(|v| unsafe { ArrayValue::new(v.as_value_ref()) });
-    global_key.set_linkage(Linkage::Private);
     global_key.set_initializer(&vector256.const_array(&array_values));
 
     let string_global_values: Vec<EncryptedGlobalValue<'a>> = module
