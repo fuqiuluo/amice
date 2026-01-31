@@ -48,6 +48,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
     let array_values = key
         .map(|c| i8_ty.const_int(c as u64, false))
         .map(|v| unsafe { ArrayValue::new(v.as_value_ref()) });
+    global_key.set_linkage(Linkage::Private);
     global_key.set_initializer(&vector256.const_array(&array_values));
 
     let string_global_values: Vec<EncryptedGlobalValue<'a>> = module
@@ -531,6 +532,7 @@ fn add_decrypt_function<'a>(
         false,
     );
     let decrypt_fn = module.add_function(name, fn_ty, None);
+    decrypt_fn.set_linkage(Linkage::Internal);
 
     if inline_fn {
         let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
