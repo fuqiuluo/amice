@@ -531,6 +531,7 @@ fn add_decrypt_function<'a>(
         false,
     );
     let decrypt_fn = module.add_function(name, fn_ty, None);
+    decrypt_fn.set_linkage(Linkage::Internal);
 
     if inline_fn {
         let inlinehint_attr = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0);
