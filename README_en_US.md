@@ -11,10 +11,10 @@ Amice is an LLVM Pass plugin project built on **llvm-plugin-rs**, injectable int
 1. **Build the Plugin**
 
    ```bash
-   # Uncomment for debug logs
-   # export RUST_LOG=debug
+   export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21  # Fedora; adjust for your distro
+   # export RUST_LOG=debug  # uncomment for debug logs
    cargo build --release
-   # The dynamic library will be at target/release/libamice.so
+   # Output: target/release/libamice.so
    ```
 
 2. **Compile with Pass Injection**
@@ -22,7 +22,6 @@ Amice is an LLVM Pass plugin project built on **llvm-plugin-rs**, injectable int
    ```bash
    clang -fpass-plugin=libamice.so your_source.c -o your_source
    ```
-
 ---
 
 ## Supported Obfuscations
@@ -62,47 +61,54 @@ For detailed documentation, please refer to:
 
 ## Build Guide
 
-### 1. Linux / macOS
+### 1. Linux
 
-> Requires LLVM toolchain with **dynamic linking** support.
-> Recommended to install via system package manager.
+> The default feature is `llvm21-1`. LLVM 21 development package is required. You can also disable the default feature and use another LLVM version via `--no-default-features --features llvm<version>` (supported range: llvm11-0 ~ llvm21-1).
 
-- Debian / Ubuntu
-
-  ```bash
-  sudo apt install llvm-14
-  ```
-
-- Homebrew
+- Fedora / RHEL
 
   ```bash
-  brew install llvm@14
+  sudo dnf install llvm llvm-devel
+  export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21
+  cargo build --release
   ```
 
-For self-compiled or extracted versions, configure the path manually:
+- Debian / Ubuntu (via [apt.llvm.org](https://apt.llvm.org/))
 
-```bash
-# Assuming LLVM is installed in ~/llvm
-export PATH="$PATH:$HOME/llvm/bin"
-# Or
-export LLVM_SYS_140_PREFIX="$HOME/llvm"
-```
+  ```bash
+  sudo apt install llvm-21 llvm-21-dev
+  export LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
+  cargo build --release
+  ```
+
+- Custom path
+
+  ```bash
+  export LLVM_SYS_211_PREFIX=/path/to/llvm21
+  cargo build --release
+  ```
 
 #### [Troubleshooting](docs/Troubleshooting_en_US.md) | [LLVM Setup Guide](docs/LLVMSetup_en_US.md)
 
-### 2. Windows
+### 2. macOS
 
-Official pre-built LLVM does not support dynamic plugins. You need to **compile yourself** or use community builds:
+```bash
+brew install llvm@21
+export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
+cargo build --release
+```
+
+### 3. Windows
+
+Official pre-built LLVM does not support dynamic plugins. Compile yourself or use community builds:
 <https://github.com/jamesmth/llvm-project/releases>
 
 ```powershell
-# Assuming LLVM is installed in C:\llvm
-setx PATH "%PATH%;C:\llvm\bin"
-rem Or
-setx LLVM_SYS_140_PREFIX "C:\llvm"
+setx LLVM_SYS_211_PREFIX "C:\llvm21"
+cargo build --release
 ```
 
-### 3. Android NDK
+### 4. Android NDK
 
 Android's bundled clang supports dynamic Pass loading but lacks `opt`. Use the "unstripped clang" approach, refer to:
 [Ylarod: NDK Load LLVM Pass](https://xtuly.cn/article/ndk-load-llvm-pass-plugin)
