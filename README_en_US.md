@@ -63,27 +63,40 @@ For detailed documentation, please refer to:
 
 ### 1. Linux
 
-> The default feature is `llvm21-1`. LLVM 21 development package is required. You can also disable the default feature and use another LLVM version via `--no-default-features --features llvm<version>` (supported range: llvm11-0 ~ llvm21-1).
+> The default feature is `llvm21-1`. LLVM 21 development package is required.
+> You can also switch to another LLVM version via `--no-default-features --features llvm<version>` (supported range: llvm11-0 ~ llvm21-1), and adjust `LLVM_SYS_<MAJOR>_PREFIX` accordingly.
+>
+> At build time, `amice` automatically searches `$PATH` for `llvm-config`, `llvm-config-<N>`, etc. If your package manager places `llvm-config` in PATH, no `LLVM_SYS_*_PREFIX` is needed.
 
 - Fedora / RHEL
 
   ```bash
   sudo dnf install llvm llvm-devel
-  export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21
   cargo build --release
   ```
 
 - Debian / Ubuntu (via [apt.llvm.org](https://apt.llvm.org/))
 
   ```bash
-  sudo apt install llvm-21 llvm-21-dev
-  export LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
+  # Install LLVM 21 (https://apt.llvm.org/)
+  sudo apt install llvm-21 llvm-21-dev clang-21
+  # llvm-config-21 may not be in PATH on Ubuntu; set it explicitly if needed
+  # export LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
   cargo build --release
   ```
 
-- Custom path
+- Non-default version (e.g. LLVM 18)
 
   ```bash
+  # feature name: llvm18-1, corresponding env var: LLVM_SYS_181_PREFIX
+  export LLVM_SYS_181_PREFIX=/path/to/llvm18
+  cargo build --release --no-default-features --features llvm18-1
+  ```
+
+- Custom path (generic)
+
+  ```bash
+  # LLVM_SYS_<MAJOR>_PREFIX points to the parent of the bin/ directory containing llvm-config
   export LLVM_SYS_211_PREFIX=/path/to/llvm21
   cargo build --release
   ```
