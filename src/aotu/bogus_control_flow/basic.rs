@@ -1,6 +1,6 @@
-use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
+use crate::aotu::bogus_control_flow::BogusControlFlowAlgo;
 use crate::config::BogusControlFlowConfig;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, PhiInst};
+use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, InstructionExt};
 use llvm_plugin::inkwell::IntPredicate;
 use llvm_plugin::inkwell::basic_block::BasicBlock;
 use llvm_plugin::inkwell::builder::Builder;
@@ -158,7 +158,6 @@ fn apply_bogus_control_flow_to_unconditional_branch(
         .ok_or_else(|| anyhow::anyhow!("Cannot get branch target"))?;
 
     let context = function.get_type().get_context();
-    let i32_type = context.i32_type();
     let builder = context.create_builder();
 
     // Create new blocks
@@ -203,85 +202,119 @@ fn apply_bogus_control_flow_to_unconditional_branch(
     Ok(())
 }
 
-/// Create a simple opaque predicate that always evaluates to true
+/// Volatile-load an i32 from a pointer.
+fn volatile_load_i32<'a>(builder: &Builder<'a>, ptr: PointerValue<'a>, name: &std::ffi::CStr) -> IntValue<'a> {
+    unsafe {
+        let i32_type = builder.get_insert_block().unwrap().get_context().i32_type();
+        let load_inst = LLVMBuildLoad2(
+            builder.as_mut_ptr() as _,
+            i32_type.as_type_ref() as _,
+            ptr.as_value_ref() as _,
+            name.as_ptr(),
+        );
+        LLVMSetVolatile(load_inst, 1);
+        IntValue::new(load_inst as _)
+    }
+}
+
+/// Create an opaque predicate based on number-theoretic / bitwise identities
+/// that hold for ALL values of x and y, making them resistant to algebraic simplification.
+///
+/// Returns `(is_always_true, condition)` where `is_always_true` indicates the
+/// actual truth value so the caller can wire branches correctly.
 fn create_simple_opaque_predicate<'a>(
-    algo: &BogusControlFlowBasic,
+    _algo: &BogusControlFlowBasic,
     builder: &Builder<'a>,
-    x: PointerValue<'a>,
-    y: PointerValue<'a>,
+    x_ptr: PointerValue<'a>,
+    y_ptr: PointerValue<'a>,
 ) -> anyhow::Result<(bool, IntValue<'a>)> {
     let context = builder.get_insert_block().unwrap().get_context();
     let i32_type = context.i32_type();
 
-    let mut bits = [false; 2];
-    rand::fill(&mut bits);
+    let x_val = volatile_load_i32(builder, x_ptr, c"x_val");
+    let y_val = volatile_load_i32(builder, y_ptr, c"y_val");
 
-    // let x_val = builder.build_load2(i32_type, x, "x_val")?.into_int_value();
-    // let y_val = builder.build_load2(i32_type, y, "y_val")?.into_int_value();
-    // Load global variables with volatile to prevent optimizer from constant folding
-    let x_val = unsafe {
-        let load_inst = LLVMBuildLoad2(
-            builder.as_mut_ptr() as _,
-            i32_type.as_type_ref() as _,
-            x.as_value_ref() as _,
-            c"x_val".as_ptr(),
-        );
-        LLVMSetVolatile(load_inst, 1);
-        IntValue::new(load_inst as _)
-    };
-    let y_val = unsafe {
-        let load_inst = LLVMBuildLoad2(
-            builder.as_mut_ptr() as _,
-            i32_type.as_type_ref() as _,
-            y.as_value_ref() as _,
-            c"y_val".as_ptr(),
-        );
-        LLVMSetVolatile(load_inst, 1);
-        IntValue::new(load_inst as _)
-    };
-
-    let (opaque_val, val) = if bits[0] {
-        (x_val, algo.x) // Use x if first bit is true
+    // Randomly swap x and y for variety
+    let (x, y) = if rand::random::<bool>() {
+        (x_val, y_val)
     } else {
-        (y_val, algo.y) // Use y if first bit is false
+        (y_val, x_val)
     };
 
-    let rand_val_u32 = rand::random_range(0..473948483);
-    let is_gt = val > rand_val_u32;
-    let is_lt = val < rand_val_u32;
-    let is_eq = val == rand_val_u32;
-    let rand_val = i32_type.const_int(rand_val_u32 as u64, false);
+    let mut rng = rand::rng();
+    let identity = rng.random_range(0u32..7);
+    let negate = rand::random::<bool>();
 
-    // if log_enabled!(Level::Debug) {
-    //     debug!("[bogus-control-flow] is_gt: {}, is_lt: {}, is_eq: {}", is_gt, is_lt, is_eq);
-    // }
-    // bits[1] is true ==> condition always true
-    let (pred, lhs, rhs) = match (is_gt, is_lt, is_eq) {
-        (true, false, false) => (
-            IntPredicate::UGT, // opaque_val > rand_val
-            if bits[1] { opaque_val } else { rand_val },
-            if bits[1] { rand_val } else { opaque_val },
-        ),
-        (false, true, false) => (
-            IntPredicate::ULT, // opaque_val < rand_val
-            if bits[1] { opaque_val } else { rand_val },
-            if bits[1] { rand_val } else { opaque_val },
-        ),
-        (false, false, true) => (
-            // opaque_val == rand_val
-            if bits[1] { IntPredicate::EQ } else { IntPredicate::NE },
-            if bits[1] { opaque_val } else { rand_val },
-            if bits[1] { rand_val } else { opaque_val },
-        ),
-        _ => panic!("Invalid condition"),
+    let zero = i32_type.const_zero();
+    let all_ones = i32_type.const_all_ones();
+
+    // Build an always-true condition from one of 7 identity families.
+    // If `negate` is set, we invert the comparison to get always-false.
+    let condition = match identity {
+        // Identity 1: (x & ~x) == 0  — always true
+        0 => {
+            let not_x = builder.build_not(x, "not_x")?;
+            let and = builder.build_and(x, not_x, "x_and_not_x")?;
+            let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
+            builder.build_int_compare(pred, and, zero, "id_and_compl")?
+        }
+        // Identity 2: (x | ~x) == -1  — always true
+        1 => {
+            let not_x = builder.build_not(x, "not_x")?;
+            let or = builder.build_or(x, not_x, "x_or_not_x")?;
+            let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
+            builder.build_int_compare(pred, or, all_ones, "id_or_compl")?
+        }
+        // Identity 3: (x ^ y) | (x & y) == (x | y)  — always true
+        2 => {
+            let xor = builder.build_xor(x, y, "x_xor_y")?;
+            let and = builder.build_and(x, y, "x_and_y")?;
+            let lhs = builder.build_or(xor, and, "xor_or_and")?;
+            let rhs = builder.build_or(x, y, "x_or_y")?;
+            let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
+            builder.build_int_compare(pred, lhs, rhs, "id_bitdecomp")?
+        }
+        // Identity 4: ((x ^ y) & x) | (x & y) == x  — always true
+        3 => {
+            let xor = builder.build_xor(x, y, "x_xor_y")?;
+            let xor_and_x = builder.build_and(xor, x, "xor_and_x")?;
+            let x_and_y = builder.build_and(x, y, "x_and_y")?;
+            let lhs = builder.build_or(xor_and_x, x_and_y, "partition")?;
+            let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
+            builder.build_int_compare(pred, lhs, x, "id_partition")?
+        }
+        // Identity 5: (x | y) >= (x & y)  — always true (unsigned)
+        4 => {
+            let or = builder.build_or(x, y, "x_or_y")?;
+            let and = builder.build_and(x, y, "x_and_y")?;
+            let pred = if negate { IntPredicate::ULT } else { IntPredicate::UGE };
+            builder.build_int_compare(pred, or, and, "id_or_ge_and")?
+        }
+        // Identity 6: x*x - 1 == (x-1)*(x+1)  — always true (mod 2^32)
+        5 => {
+            let one = i32_type.const_int(1, false);
+            let x_sq = builder.build_int_mul(x, x, "x_sq")?;
+            let lhs = builder.build_int_sub(x_sq, one, "x_sq_m1")?;
+            let x_m1 = builder.build_int_sub(x, one, "x_m1")?;
+            let x_p1 = builder.build_int_add(x, one, "x_p1")?;
+            let rhs = builder.build_int_mul(x_m1, x_p1, "diff_sq")?;
+            let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
+            builder.build_int_compare(pred, lhs, rhs, "id_diffsq")?
+        }
+        // Identity 7: 2*(x & y) + (x ^ y) == x + y  — always true
+        6 => {
+            let two = i32_type.const_int(2, false);
+            let and = builder.build_and(x, y, "x_and_y")?;
+            let two_and = builder.build_int_mul(two, and, "two_and")?;
+            let xor = builder.build_xor(x, y, "x_xor_y")?;
+            let lhs = builder.build_int_add(two_and, xor, "add_decomp_lhs")?;
+            let rhs = builder.build_int_add(x, y, "x_plus_y")?;
+            let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
+            builder.build_int_compare(pred, lhs, rhs, "id_adddecomp")?
+        }
+        _ => unreachable!(),
     };
 
-    let label = if bits[1] { "always_true" } else { "always_false" };
-    let result = builder.build_int_compare(pred, lhs, rhs, label)?;
-
-    // if log_enabled!(Level::Debug) {
-    //     debug!("[bogus-control-flow] Condition: {} {} ({} {})", bits[1], label, lhs, rhs);
-    // }
-
-    Ok((bits[1], result))
+    // If negate is true, the condition is always-false; otherwise always-true
+    Ok((!negate, condition))
 }
