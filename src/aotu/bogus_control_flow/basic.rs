@@ -257,14 +257,14 @@ fn create_simple_opaque_predicate<'a>(
             let and = builder.build_and(x, not_x, "x_and_not_x")?;
             let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
             builder.build_int_compare(pred, and, zero, "id_and_compl")?
-        }
+        },
         // Identity 2: (x | ~x) == -1  — always true
         1 => {
             let not_x = builder.build_not(x, "not_x")?;
             let or = builder.build_or(x, not_x, "x_or_not_x")?;
             let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
             builder.build_int_compare(pred, or, all_ones, "id_or_compl")?
-        }
+        },
         // Identity 3: (x ^ y) | (x & y) == (x | y)  — always true
         2 => {
             let xor = builder.build_xor(x, y, "x_xor_y")?;
@@ -273,7 +273,7 @@ fn create_simple_opaque_predicate<'a>(
             let rhs = builder.build_or(x, y, "x_or_y")?;
             let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
             builder.build_int_compare(pred, lhs, rhs, "id_bitdecomp")?
-        }
+        },
         // Identity 4: ((x ^ y) & x) | (x & y) == x  — always true
         3 => {
             let xor = builder.build_xor(x, y, "x_xor_y")?;
@@ -282,14 +282,14 @@ fn create_simple_opaque_predicate<'a>(
             let lhs = builder.build_or(xor_and_x, x_and_y, "partition")?;
             let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
             builder.build_int_compare(pred, lhs, x, "id_partition")?
-        }
+        },
         // Identity 5: (x | y) >= (x & y)  — always true (unsigned)
         4 => {
             let or = builder.build_or(x, y, "x_or_y")?;
             let and = builder.build_and(x, y, "x_and_y")?;
             let pred = if negate { IntPredicate::ULT } else { IntPredicate::UGE };
             builder.build_int_compare(pred, or, and, "id_or_ge_and")?
-        }
+        },
         // Identity 6: x*x - 1 == (x-1)*(x+1)  — always true (mod 2^32)
         5 => {
             let one = i32_type.const_int(1, false);
@@ -300,7 +300,7 @@ fn create_simple_opaque_predicate<'a>(
             let rhs = builder.build_int_mul(x_m1, x_p1, "diff_sq")?;
             let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
             builder.build_int_compare(pred, lhs, rhs, "id_diffsq")?
-        }
+        },
         // Identity 7: 2*(x & y) + (x ^ y) == x + y  — always true
         6 => {
             let two = i32_type.const_int(2, false);
@@ -311,7 +311,7 @@ fn create_simple_opaque_predicate<'a>(
             let rhs = builder.build_int_add(x, y, "x_plus_y")?;
             let pred = if negate { IntPredicate::NE } else { IntPredicate::EQ };
             builder.build_int_compare(pred, lhs, rhs, "id_adddecomp")?
-        }
+        },
         _ => unreachable!(),
     };
 
