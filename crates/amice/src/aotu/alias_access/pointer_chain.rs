@@ -7,7 +7,9 @@ use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::targets::TargetData;
 use amice_plugin::inkwell::types::{BasicType, StructType};
-use amice_plugin::inkwell::values::{AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, InstructionValue, PointerValue};
+use amice_plugin::inkwell::values::{
+    AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, InstructionValue, PointerValue,
+};
 use anyhow::anyhow;
 use log::{debug, warn};
 use std::collections::HashMap;
