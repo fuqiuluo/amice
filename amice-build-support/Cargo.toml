@@ -1,0 +1,15 @@
+[package]
+name = "amice-build-support"
+version = "0.1.0"
+edition = "2021"
+description = "Shared build-script helpers for amice crates: locate llvm-config, configure C++ FFI compilation, and emit LLVM link directives."
+publish = false
+
+[lib]
+# This crate is only ever used from `[build-dependencies]`.
+path = "src/lib.rs"
+
+[dependencies]
+cc = "1"
+regex = "1"
+semver = "1"

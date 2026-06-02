@@ -32,9 +32,7 @@ strum = "0.27"
 strum_macros = "0.27"
 
 [build-dependencies]
+amice-build-support = { path = "../amice-build-support" }
 cc = "1"
-lazy_static = "1"
-regex = "1"
-semver = "1"
 
 

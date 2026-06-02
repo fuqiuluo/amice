@@ -12,14 +12,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "amice-llvm"
+name = "amice-build-support"
 version = "0.1.0"
 dependencies = [
  "cc",
- "inkwell",
- "lazy_static",
  "regex",
  "semver 1.0.26",
+]
+
+[[package]]
+name = "amice-llvm"
+version = "0.1.0"
+dependencies = [
+ "amice-build-support",
+ "cc",
+ "inkwell",
+ "lazy_static",
  "strum",
  "strum_macros",
 ]
@@ -40,12 +48,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "either"
-version = "1.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
-
-[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -53,10 +55,10 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "inkwell"
-version = "0.6.0"
-source = "git+https://github.com/TheDan64/inkwell#e29a3d068f35918316777508afcbc96b5c80537c"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39457e8611219cf690f862a470575f5c06862910d03ea3c3b187ad7abc44b4e2"
 dependencies = [
- "either",
  "inkwell_internals",
  "libc",
  "llvm-sys 110.0.4",
@@ -69,14 +71,16 @@ dependencies = [
  "llvm-sys 181.2.0",
  "llvm-sys 191.0.0",
  "llvm-sys 201.0.1",
+ "llvm-sys 211.0.1",
  "once_cell",
  "thiserror",
 ]
 
 [[package]]
 name = "inkwell_internals"
-version = "0.11.0"
-source = "git+https://github.com/TheDan64/inkwell#e29a3d068f35918316777508afcbc96b5c80537c"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad9a7dd586b00f2b20e0b9ae3c6faa351fbfd56d15d63bbce35b13bece682eda"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -220,6 +224,20 @@ name = "llvm-sys"
 version = "201.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9bb947e8b79254ca10d496d0798a9ba1287dcf68e50a92b016fec1cc45bef447"
+dependencies = [
+ "anyhow",
+ "cc",
+ "lazy_static",
+ "libc",
+ "regex-lite",
+ "semver 1.0.26",
+]
+
+[[package]]
+name = "llvm-sys"
+version = "211.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44007a7a44b73bdd877fa9c9ccef256036511220e90f65b4d50e7a15773c0ee3"
 dependencies = [
  "anyhow",
  "cc",
