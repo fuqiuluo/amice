@@ -150,10 +150,14 @@ pub fn cxx_build(probe: &LlvmProbe) -> cc::Build {
     let mut build = cc::Build::new();
     build.cpp(true).include(probe.includedir());
 
+    // Pass the standard unconditionally: every compiler we target supports
+    // C++17, and the LLVM headers require it. `flag_if_supported` was observed
+    // to silently drop the flag in release builds, leaving the default
+    // (pre-C++17) standard and breaking on std::optional / std::size.
     if is_msvc() {
-        build.flag_if_supported("/std:c++17");
+        build.flag("/std:c++17");
     } else {
-        build.flag_if_supported("-std=c++17");
+        build.flag("-std=c++17");
     }
 
     if probe.has_rtti() {

@@ -26,7 +26,7 @@ pub trait ModuleExt<'ctx> {
 impl<'ctx> ModuleExt<'ctx> for Module<'ctx> {
     fn append_to_global_ctors(&mut self, function: FunctionValue, priority: i32) {
         unsafe {
-            ffi::amice_append_to_global_ctors(
+            ffi::amice_module_append_to_global_ctors(
                 self.as_mut_ptr() as LLVMModuleRef,
                 function.as_value_ref() as LLVMValueRef,
                 priority,
@@ -36,13 +36,13 @@ impl<'ctx> ModuleExt<'ctx> for Module<'ctx> {
 
     fn append_to_used(&mut self, value: GlobalValue) {
         unsafe {
-            ffi::amice_append_to_used(self.as_mut_ptr() as LLVMModuleRef, value.as_value_ref() as LLVMValueRef);
+            ffi::amice_module_append_to_used(self.as_mut_ptr() as LLVMModuleRef, value.as_value_ref() as LLVMValueRef);
         }
     }
 
     fn append_to_compiler_used(&mut self, value: GlobalValue) {
         unsafe {
-            ffi::amice_append_to_compiler_used(
+            ffi::amice_module_append_to_compiler_used(
                 self.as_mut_ptr() as LLVMModuleRef,
                 value.as_value_ref() as LLVMValueRef,
             );
@@ -72,7 +72,7 @@ impl<'ctx> ModuleExt<'ctx> for Module<'ctx> {
             .collect();
 
         let result = unsafe {
-            ffi::amice_specialize_function(
+            ffi::amice_module_specialize_function(
                 original_func.as_value_ref() as LLVMValueRef,
                 self.as_mut_ptr() as LLVMModuleRef,
                 arg_replacements.as_ptr(),

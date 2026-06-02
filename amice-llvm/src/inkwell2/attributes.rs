@@ -350,7 +350,7 @@ impl AttributeEnumKind {
             let name_ptr = ffi::amice_attribute_enum_kind_to_str(kind);
             let c_name = CStr::from_ptr(name_ptr);
             let name = c_name.to_str().expect("Invalid attribute name").to_string();
-            ffi::amice_free_msg(name_ptr);
+            ffi::amice_free_string(name_ptr);
             name
         };
         str_name

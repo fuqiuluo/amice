@@ -23,7 +23,7 @@ impl CodeExtractor {
             basic_block_refs[i] = bb.as_mut_ptr();
         }
         let basic_block_refs = basic_block_refs.as_ptr() as *mut LLVMBasicBlockRef;
-        let ptr = unsafe { ffi::amice_create_code_extractor(basic_block_refs, basic_blocks.len() as i32) };
+        let ptr = unsafe { ffi::amice_code_extractor_create(basic_block_refs, basic_blocks.len() as i32) };
         if ptr.is_null() {
             None
         } else {
@@ -37,7 +37,7 @@ impl CodeExtractor {
 
     pub fn extract_code_region<'a>(&self, function: FunctionValue<'a>) -> Option<FunctionValue<'a>> {
         let generated_func =
-            unsafe { ffi::amice_code_extractor_extract_code_region(self.ptr, function.as_value_ref() as LLVMValueRef) };
+            unsafe { ffi::amice_code_extractor_extract_region(self.ptr, function.as_value_ref() as LLVMValueRef) };
         if generated_func.is_null() {
             None
         } else {
@@ -49,7 +49,7 @@ impl CodeExtractor {
 impl Drop for CodeExtractor {
     fn drop(&mut self) {
         unsafe {
-            ffi::amice_delete_code_extractor(self.ptr);
+            ffi::amice_code_extractor_delete(self.ptr);
         }
     }
 }

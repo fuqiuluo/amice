@@ -9,15 +9,15 @@ pub mod code_extractor;
 mod ffi;
 pub mod inkwell2;
 
-// fix
-pub use ffi::amice_const_array;
+// Public alias kept stable for downstream callers (root `amice` crate).
+pub use ffi::module::amice_module_const_array as amice_const_array;
 
 pub fn get_llvm_version_major() -> i32 {
-    unsafe { ffi::amice_get_llvm_version_major() }
+    unsafe { ffi::amice_version_major() }
 }
 
 pub fn get_llvm_version_minor() -> i32 {
-    unsafe { ffi::amice_get_llvm_version_minor() }
+    unsafe { ffi::amice_version_minor() }
 }
 
 pub fn to_c_str(mut s: &str) -> Cow<'_, CStr> {

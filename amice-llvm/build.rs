@@ -14,12 +14,14 @@ fn main() {
 
     let mut build = amice_build_support::cxx_build(&probe);
     build
-        .file("cpp/ffi.cc")
-        .file("cpp/dominators_ffi.cc")
-        .file("cpp/utils.cc")
-        .file("cpp/verifier.cc")
-        .file("cpp/instructions.cc")
-        .file("cpp/adt_ffi.cc");
+        .file("cpp/module.cc")
+        .file("cpp/function.cc")
+        .file("cpp/basic_block.cc")
+        .file("cpp/instruction.cc")
+        .file("cpp/dominators.cc")
+        .file("cpp/code_extractor.cc")
+        .file("cpp/attribute.cc")
+        .file("cpp/support.cc");
 
     if std::env::var_os("CARGO_FEATURE_ANDROID_NDK").is_some() {
         build.define("AMICE_ENABLE_CLONE_FUNCTION", None);

@@ -1,6 +1,6 @@
 use crate::ffi::{
-    llvm_dominator_tree_create, llvm_dominator_tree_create_from_function, llvm_dominator_tree_destroy,
-    llvm_dominator_tree_dominate_BB, llvm_dominator_tree_view_graph,
+    amice_dominator_tree_create, amice_dominator_tree_create_from_function, amice_dominator_tree_destroy,
+    amice_dominator_tree_dominates, amice_dominator_tree_view_graph,
 };
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
@@ -21,7 +21,7 @@ pub struct DominatorTree {
 impl DominatorTree {
     /// Create a new empty DominatorTree
     pub fn new() -> Result<Self, &'static str> {
-        let ptr = unsafe { llvm_dominator_tree_create() };
+        let ptr = unsafe { amice_dominator_tree_create() };
         if ptr.is_null() {
             Err("Failed to create DominatorTree")
         } else {
@@ -35,7 +35,7 @@ impl DominatorTree {
             return Err("Function pointer is null");
         }
 
-        let ptr = unsafe { llvm_dominator_tree_create_from_function(func.as_value_ref() as LLVMValueRef) };
+        let ptr = unsafe { amice_dominator_tree_create_from_function(func.as_value_ref() as LLVMValueRef) };
         if ptr.is_null() {
             Err("Failed to create DominatorTree from function")
         } else {
@@ -48,7 +48,7 @@ impl DominatorTree {
             return Err("Function pointer is null");
         }
 
-        let ptr = unsafe { llvm_dominator_tree_create_from_function(func) };
+        let ptr = unsafe { amice_dominator_tree_create_from_function(func) };
         if ptr.is_null() {
             Err("Failed to create DominatorTree from function")
         } else {
@@ -60,7 +60,7 @@ impl DominatorTree {
         if self.ptr.is_null() {
             panic!("Cannot view graph of a null DominatorTree");
         }
-        unsafe { llvm_dominator_tree_view_graph(self.ptr) }
+        unsafe { amice_dominator_tree_view_graph(self.ptr) }
     }
 
     pub fn dominate(&self, a: BasicBlock, b: BasicBlock) -> bool {
@@ -69,7 +69,7 @@ impl DominatorTree {
         }
 
         unsafe {
-            llvm_dominator_tree_dominate_BB(
+            amice_dominator_tree_dominates(
                 self.ptr,
                 a.as_mut_ptr() as LLVMBasicBlockRef,
                 b.as_mut_ptr() as LLVMBasicBlockRef,
@@ -85,7 +85,7 @@ impl DominatorTree {
 impl Drop for DominatorTree {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            unsafe { llvm_dominator_tree_destroy(self.ptr) }
+            unsafe { amice_dominator_tree_destroy(self.ptr) }
         }
     }
 }

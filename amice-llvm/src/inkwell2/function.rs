@@ -36,7 +36,7 @@ impl<'ctx> FunctionExt<'ctx> for FunctionValue<'ctx> {
     fn verify_function(self) -> VerifyResult {
         let mut errmsg: *const c_char = std::ptr::null();
         let broken = unsafe {
-            ffi::amice_verify_function(self.as_value_ref() as LLVMValueRef, &mut errmsg as *mut *const c_char) == 1
+            ffi::amice_function_verify(self.as_value_ref() as LLVMValueRef, &mut errmsg as *mut *const c_char) == 1
         };
         let result = if !errmsg.is_null() && broken {
             let c_errmsg = unsafe { CStr::from_ptr(errmsg) };
@@ -45,7 +45,7 @@ impl<'ctx> FunctionExt<'ctx> for FunctionValue<'ctx> {
             VerifyResult::Ok
         };
         unsafe {
-            ffi::amice_free_msg(errmsg);
+            ffi::amice_free_string(errmsg);
         }
         result
     }
@@ -68,7 +68,7 @@ impl<'ctx> FunctionExt<'ctx> for FunctionValue<'ctx> {
     }
 
     fn is_inline_marked(&self) -> bool {
-        unsafe { ffi::amice_is_inline_marked_function(self.as_value_ref() as LLVMValueRef) }
+        unsafe { ffi::amice_function_is_inline_marked(self.as_value_ref() as LLVMValueRef) }
     }
 
     fn is_llvm_function(&self) -> bool {
@@ -86,14 +86,14 @@ impl<'ctx> FunctionExt<'ctx> for FunctionValue<'ctx> {
     }
 
     unsafe fn fix_stack(&self) {
-        unsafe { ffi::amice_fix_stack(self.as_value_ref() as LLVMValueRef, 0, 0) }
+        unsafe { ffi::amice_function_fix_stack(self.as_value_ref() as LLVMValueRef, 0, 0) }
     }
 
     unsafe fn fix_stack_at_terminator(&self) {
-        unsafe { ffi::amice_fix_stack(self.as_value_ref() as LLVMValueRef, 1, 0) }
+        unsafe { ffi::amice_function_fix_stack(self.as_value_ref() as LLVMValueRef, 1, 0) }
     }
 
     unsafe fn fix_stack_with_max_iterations(&self, max_iterations: usize) {
-        unsafe { ffi::amice_fix_stack(self.as_value_ref() as LLVMValueRef, 0, max_iterations as i32) }
+        unsafe { ffi::amice_function_fix_stack(self.as_value_ref() as LLVMValueRef, 0, max_iterations as i32) }
     }
 }

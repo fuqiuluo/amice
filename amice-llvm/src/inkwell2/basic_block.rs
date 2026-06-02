@@ -1,4 +1,4 @@
-use crate::ffi::{amice_get_first_insertion_pt, amice_phi_node_replace_incoming_block_with, amice_split_basic_block};
+use crate::ffi::{amice_basic_block_first_insertion_pt, amice_phi_replace_incoming_block_with, amice_basic_block_split};
 use crate::inkwell2::{InstructionExt, LLVMBasicBlockRefExt, LLVMValueRefExt};
 use crate::to_c_str;
 use inkwell::basic_block::BasicBlock;
@@ -24,7 +24,7 @@ impl<'ctx> BasicBlockExt<'ctx> for BasicBlock<'ctx> {
     fn split_basic_block(&self, inst: InstructionValue<'ctx>, name: &str, before: bool) -> Option<BasicBlock<'ctx>> {
         let c_str_name = to_c_str(name);
         let new_block = unsafe {
-            amice_split_basic_block(
+            amice_basic_block_split(
                 self.as_mut_ptr() as LLVMBasicBlockRef,
                 inst.as_value_ref() as LLVMValueRef,
                 c_str_name.as_ptr(),
@@ -36,7 +36,7 @@ impl<'ctx> BasicBlockExt<'ctx> for BasicBlock<'ctx> {
     }
 
     fn get_first_insertion_pt(&self) -> InstructionValue<'ctx> {
-        (unsafe { amice_get_first_insertion_pt(self.as_mut_ptr() as LLVMBasicBlockRef) } as LLVMValueRef)
+        (unsafe { amice_basic_block_first_insertion_pt(self.as_mut_ptr() as LLVMBasicBlockRef) } as LLVMValueRef)
             .into_instruction_value()
     }
 
@@ -93,7 +93,7 @@ impl<'ctx> BasicBlockExt<'ctx> for BasicBlock<'ctx> {
 
             let phi = phi.into_phi_inst();
             unsafe {
-                amice_phi_node_replace_incoming_block_with(
+                amice_phi_replace_incoming_block_with(
                     phi.as_value_ref() as LLVMValueRef,
                     old_pred.as_mut_ptr() as LLVMBasicBlockRef,
                     new_pred.as_mut_ptr() as LLVMBasicBlockRef,
