@@ -7,11 +7,11 @@ use crate::config::{Config, FlattenConfig, FlattenMode};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, VerifyResult};
 use amice_macro::amice;
-use anyhow::anyhow;
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use anyhow::anyhow;
 
 #[amice(
     priority = 959,

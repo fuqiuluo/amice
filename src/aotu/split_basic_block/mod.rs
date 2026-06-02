@@ -2,11 +2,11 @@ use crate::config::{Config, SplitBasicBlockConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt};
 use amice_macro::amice;
-use anyhow::anyhow;
 use amice_plugin::PreservedAnalyses;
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
+use anyhow::anyhow;
 use log::{Level, log_enabled};
 use rand::seq::SliceRandom;
 

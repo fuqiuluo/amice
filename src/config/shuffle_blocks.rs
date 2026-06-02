@@ -1,9 +1,9 @@
 use crate::config::{EnvOverlay, bool_var};
 use crate::pass_registry::FunctionAnnotationsOverlay;
 use amice_llvm::inkwell2::ModuleExt;
-use bitflags::bitflags;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::values::FunctionValue;
+use bitflags::bitflags;
 use log::warn;
 use serde::{Deserialize, Serialize};
 

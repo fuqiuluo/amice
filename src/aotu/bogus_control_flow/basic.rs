@@ -7,7 +7,9 @@ use amice_plugin::inkwell::builder::Builder;
 use amice_plugin::inkwell::llvm_sys::core::{LLVMBuildLoad2, LLVMSetVolatile};
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::types::AsTypeRef;
-use amice_plugin::inkwell::values::{AsValueRef, FunctionValue, GlobalValue, InstructionOpcode, IntValue, PointerValue};
+use amice_plugin::inkwell::values::{
+    AsValueRef, FunctionValue, GlobalValue, InstructionOpcode, IntValue, PointerValue,
+};
 use log::{error, warn};
 use rand::Rng;
 

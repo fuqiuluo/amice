@@ -2,9 +2,9 @@ use super::bool_var;
 use crate::config::eloquent_config::EloquentConfigParser;
 use crate::pass_registry::{EnvOverlay, FunctionAnnotationsOverlay};
 use amice_llvm::inkwell2::ModuleExt;
-use bitflags::bitflags;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::values::FunctionValue;
+use bitflags::bitflags;
 use log::warn;
 use serde::{Deserialize, Serialize};
 

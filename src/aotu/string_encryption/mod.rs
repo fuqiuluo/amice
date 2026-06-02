@@ -7,7 +7,6 @@ use crate::config::{Config, StringAlgorithm, StringDecryptTiming, StringEncrypti
 use crate::pass_registry::{AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, LLVMValueRefExt, VerifyResult};
 use amice_macro::amice;
-use inkwell::llvm_sys::core::LLVMGetAsString;
 use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::values::{
@@ -15,6 +14,7 @@ use amice_plugin::inkwell::values::{
     StructValue,
 };
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
+use inkwell::llvm_sys::core::LLVMGetAsString;
 use std::ptr::NonNull;
 
 /// Stack allocation threshold: strings larger than this will use global timing

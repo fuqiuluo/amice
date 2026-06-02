@@ -4,7 +4,6 @@
 use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
 use crate::config::BogusControlFlowConfig;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt};
-use anyhow::anyhow;
 use amice_plugin::inkwell::IntPredicate;
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::builder::Builder;
@@ -16,6 +15,7 @@ use amice_plugin::inkwell::types::IntType;
 use amice_plugin::inkwell::values::{
     AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue, PhiValue, PointerValue,
 };
+use anyhow::anyhow;
 use log::error;
 use rand::Rng;
 

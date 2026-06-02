@@ -4,7 +4,6 @@ use amice_llvm::inkwell2::{
     AttributeEnumKind, BuilderExt, CallInst, FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt, VerifyResult,
 };
 use amice_macro::amice;
-use anyhow::anyhow;
 use amice_plugin::PreservedAnalyses;
 use amice_plugin::inkwell::AddressSpace;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -14,6 +13,7 @@ use amice_plugin::inkwell::types::{BasicType, StructType};
 use amice_plugin::inkwell::values::{
     AnyValue, AsValueRef, BasicMetadataValueEnum, FIRST_CUSTOM_METADATA_KIND_ID, FunctionValue, InstructionOpcode,
 };
+use anyhow::anyhow;
 use log::log_enabled;
 use rand::prelude::SliceRandom;
 use std::collections::HashMap;

@@ -5,7 +5,6 @@ use crate::aotu::string_encryption::{
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
-use anyhow::anyhow;
 use amice_plugin::inkwell;
 use amice_plugin::inkwell::AtomicOrdering;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -15,6 +14,7 @@ use amice_plugin::inkwell::values::{
     ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
 };
 use amice_plugin::inkwell::{AddressSpace, GlobalVisibility};
+use anyhow::anyhow;
 use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::ptr::null_mut;

@@ -2,7 +2,6 @@ use crate::config::{CloneFunctionConfig, Config};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
-use anyhow::anyhow;
 use amice_plugin::inkwell::attributes::AttributeLoc;
 use amice_plugin::inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 use amice_plugin::inkwell::module::Module;
@@ -10,6 +9,7 @@ use amice_plugin::inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
 };
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use anyhow::anyhow;
 use std::collections::BTreeSet;
 
 #[amice(

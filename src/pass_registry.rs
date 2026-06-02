@@ -1,9 +1,9 @@
 use crate::config::Config;
-use bitflags::bitflags;
-use lazy_static::lazy_static;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::values::FunctionValue;
 use amice_plugin::{ModulePassManager, PreservedAnalyses};
+use bitflags::bitflags;
+use lazy_static::lazy_static;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
