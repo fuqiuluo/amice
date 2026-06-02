@@ -1,0 +1,411 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Existing tag to publish, for example v0.1.5'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release-${{ inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          generate_release_notes: true
+
+  linux:
+    name: "Release LLVM ${{ matrix.llvm-version[0] }} Linux x86_64"
+    needs: create-release
+    runs-on: ubuntu-latest
+    env:
+      BUILD_OUTPUT_PATH: target/release
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version:
+          - ["12", "12-0", "120", "v12.0.1-rust-1.55/llvm-lld-12.0.1-rust-1.55-linux-x86_64.tar.gz"]
+          - ["13", "13-0", "130", "v13.0.0-rust-1.59/llvm-lld-13.0.0-rust-1.59-linux-x86_64.tar.gz"]
+          - ["14", "14-0", "140", "v14.0.6-rust-1.64/llvm-lld-14.0.6-rust-1.64-linux-x86_64.tar.gz"]
+          - ["15", "15-0", "150", "v15.0.0-rust-1.65/llvm-lld-15.0.0-rust-1.65-linux-x86_64.tar.gz"]
+          - ["16", "16-0", "160", "16.0"]
+          - ["17", "17-0", "170", "17.0"]
+          - ["18", "18-1", "181", "18.1"]
+          - ["19", "19-1", "191", "19.1"]
+          - ["20", "20-1", "201", "20.1"]
+          - ["21", "21-1", "211", "21.1"]
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
+
+      - name: Cache Rust Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
+
+      - name: Install Dependencies
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt update
+          sudo apt install --no-install-recommends -y libtinfo6
+
+      - name: Install LLVM and Clang (LLVM >= 19.1)
+        if: ${{ matrix.llvm-version[0] >= 19 }}
+        run: |
+          set -euxo pipefail
+          major=${{ matrix.llvm-version[0] }}
+          suffix=${{ matrix.llvm-version[2] }}
+          sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "${major}"
+          sudo apt-get update
+          sudo apt install --no-install-recommends -y \
+            "libllvm${major}" \
+            "llvm-${major}" \
+            "llvm-${major}-dev" \
+            "llvm-${major}-runtime" \
+            "libpolly-${major}-dev"
+          prefix="/usr/lib/llvm-${major}"
+          echo "LLVM_SYS_${suffix}_PREFIX=${prefix}" >> "$GITHUB_ENV"
+          echo "${prefix}/bin" >> "$GITHUB_PATH"
+          if [ ! -e "${prefix}/lib/libLLVM.so" ]; then
+            if [ -e "${prefix}/lib/libLLVM-${major}.so" ]; then
+              sudo ln -s "libLLVM-${major}.so" "${prefix}/lib/libLLVM.so"
+            elif [ -e "/usr/lib/x86_64-linux-gnu/libLLVM-${major}.so.1" ]; then
+              sudo ln -s "../../x86_64-linux-gnu/libLLVM-${major}.so.1" "${prefix}/lib/libLLVM.so"
+            fi
+          fi
+
+      - name: Install LLVM and Clang (16 <= LLVM < 19)
+        uses: KyleMayes/install-llvm-action@v2
+        if: ${{ matrix.llvm-version[0] > 15 && matrix.llvm-version[0] < 19 }}
+        with:
+          version: ${{ matrix.llvm-version[0] }}
+
+      - name: Configure LLVM env (16 <= LLVM < 19)
+        if: ${{ matrix.llvm-version[0] > 15 && matrix.llvm-version[0] < 19 }}
+        run: |
+          set -euxo pipefail
+          suffix=${{ matrix.llvm-version[2] }}
+          echo "LLVM_SYS_${suffix}_PREFIX=${LLVM_PATH}" >> "$GITHUB_ENV"
+          echo "${LLVM_PATH}/bin" >> "$GITHUB_PATH"
+          if [ ! -e "${LLVM_PATH}/lib/libLLVM.so" ]; then
+            candidate="$(find "${LLVM_PATH}/lib" -maxdepth 1 -name 'libLLVM*.so*' | sort | head -n 1)"
+            ln -s "$(basename "$candidate")" "${LLVM_PATH}/lib/libLLVM.so"
+          fi
+
+      - name: Install LLVM and Clang (12 <= LLVM <= 15)
+        if: ${{ matrix.llvm-version[0] >= 12 && matrix.llvm-version[0] <= 15 }}
+        run: |
+          set -euxo pipefail
+          suffix=${{ matrix.llvm-version[2] }}
+          rm -rf "$HOME/llvm"
+          mkdir -p "$HOME"
+          wget --user-agent='GithubCI' -O llvm.tar.gz https://github.com/jamesmth/llvm-project/releases/download/${{ matrix.llvm-version[3] }}
+          tar -C "$HOME" -xf llvm.tar.gz
+          echo "LLVM_SYS_${suffix}_PREFIX=$HOME/llvm" >> "$GITHUB_ENV"
+          echo "$HOME/llvm/bin" >> "$GITHUB_PATH"
+
+      - name: Build libamice.so
+        run: |
+          set -euxo pipefail
+          cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+          file "${BUILD_OUTPUT_PATH}/libamice.so"
+          ldd "${BUILD_OUTPUT_PATH}/libamice.so" || true
+
+      - name: Prepare release assets
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          asset="libamice-llvm${{ matrix.llvm-version[0] }}-linux-x86_64.so"
+          cp "${BUILD_OUTPUT_PATH}/libamice.so" "dist/${asset}"
+          sha256sum "dist/${asset}" > "dist/${asset}.sha256"
+          ls -lh dist
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          files: |
+            dist/libamice-llvm${{ matrix.llvm-version[0] }}-linux-x86_64.so
+            dist/libamice-llvm${{ matrix.llvm-version[0] }}-linux-x86_64.so.sha256
+
+  macos:
+    name: "Release LLVM ${{ matrix.llvm-version[0] }} ${{ matrix.os }}"
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    env:
+      BUILD_OUTPUT_PATH: target/release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-latest]
+        llvm-version:
+          - ["18", "18-1", "181"]
+          - ["19", "19-1", "191"]
+          - ["20", "20-1", "201"]
+          - ["21", "21-1", "211"]
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
+
+      - name: Cache Homebrew downloads and Cellar
+        uses: actions/cache@v4
+        with:
+          path: |
+            /Users/runner/Library/Caches/Homebrew
+            /opt/homebrew/Library/Caches/Homebrew
+            /usr/local/Homebrew/Library/Caches/Homebrew
+            /opt/homebrew/Cellar
+            /usr/local/Cellar
+          key: release-${{ runner.os }}-${{ runner.arch }}-homebrew-llvm-${{ matrix.llvm-version[0] }}
+          restore-keys: release-${{ runner.os }}-${{ runner.arch }}-homebrew-llvm-${{ matrix.llvm-version[0] }}
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
+
+      - name: Install Homebrew LLVM
+        run: |
+          set -euxo pipefail
+          major=${{ matrix.llvm-version[0] }}
+          suffix=${{ matrix.llvm-version[2] }}
+          brew update
+          if ! brew install --force-bottle "llvm@${major}"; then
+            brew install "llvm@${major}"
+          fi
+          brew link "llvm@${major}" || true
+          prefix="$(brew --prefix "llvm@${major}")"
+          echo "LLVM_SYS_${suffix}_PREFIX=${prefix}" >> "$GITHUB_ENV"
+          echo "${prefix}/bin" >> "$GITHUB_PATH"
+          echo "LLVM_LIBDIR=${prefix}/lib" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-C link-args=-Wl,-rpath,${prefix}/lib" >> "$GITHUB_ENV"
+
+      - name: Build libamice.dylib
+        run: |
+          set -euxo pipefail
+          cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+          file "${BUILD_OUTPUT_PATH}/libamice.dylib"
+          otool -L "${BUILD_OUTPUT_PATH}/libamice.dylib" || true
+
+      - name: Prepare release assets
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          arch="$(uname -m)"
+          asset="libamice-llvm${{ matrix.llvm-version[0] }}-macos-${arch}.dylib"
+          cp "${BUILD_OUTPUT_PATH}/libamice.dylib" "dist/${asset}"
+          shasum -a 256 "dist/${asset}" > "dist/${asset}.sha256"
+          ls -lh dist
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          files: |
+            dist/libamice-llvm${{ matrix.llvm-version[0] }}-macos-*.dylib
+            dist/libamice-llvm${{ matrix.llvm-version[0] }}-macos-*.dylib.sha256
+
+  android-ndk:
+    name: "Release Android NDK ${{ matrix.llvm-version[3] }} ${{ matrix.os }}"
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    env:
+      BUILD_OUTPUT_PATH: target/release
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version:
+          - ["14", "14-0", "140", "r25c", "r450784d1"]
+          - ["17", "17-0", "170", "r26d", "r487747e"]
+          - ["18", "18-1", "181", "r27d", "r522817d"]
+          - ["19", "19-1", "191", "r28c", "r530567e"]
+          - ["21", "21-1", "211", "r29", "r563880c"]
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
+
+      - name: Cache Rust Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ runner.os }}-cargo-android-ndk-${{ matrix.llvm-version[3] }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-${{ runner.os }}-cargo-android-ndk-${{ matrix.llvm-version[3] }}-
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
+
+      - name: Install Android NDK Clang
+        id: ndk-clang
+        uses: Ylarod/setup-ndk-clang@v1
+        with:
+          ndk-version: ${{ matrix.llvm-version[3] }}
+
+      - name: Configure Android NDK Clang
+        run: |
+          set -euxo pipefail
+          env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
+          LLVM_HOME="${{ steps.ndk-clang.outputs.clang-path }}"
+          echo "${env_name}=${LLVM_HOME}" >> "$GITHUB_ENV"
+          echo "LLVM_HOME=${LLVM_HOME}" >> "$GITHUB_ENV"
+          echo "${LLVM_HOME}/bin" >> "$GITHUB_PATH"
+
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            host_tag="linux-x86_64"
+            plugin_ext="so"
+            echo "LD_LIBRARY_PATH=${LLVM_HOME}/lib" >> "$GITHUB_ENV"
+            echo "CXXFLAGS=-stdlib=libc++ -I${LLVM_HOME}/include/c++/v1" >> "$GITHUB_ENV"
+            echo "LDFLAGS=-stdlib=libc++ -L${LLVM_HOME}/lib" >> "$GITHUB_ENV"
+          else
+            host_tag="darwin-x86_64"
+            plugin_ext="dylib"
+            SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+            echo "SDKROOT=${SDKROOT}" >> "$GITHUB_ENV"
+            echo "CFLAGS=-isysroot ${SDKROOT}" >> "$GITHUB_ENV"
+            echo "CXXFLAGS=-isysroot ${SDKROOT} -stdlib=libc++ -I${LLVM_HOME}/include/c++/v1" >> "$GITHUB_ENV"
+            echo "RUSTFLAGS=-C link-args=-Wl,-rpath,${LLVM_HOME}/lib" >> "$GITHUB_ENV"
+            echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
+          fi
+
+          echo "ANDROID_HOST_TAG=${host_tag}" >> "$GITHUB_ENV"
+          echo "PLUGIN_EXT=${plugin_ext}" >> "$GITHUB_ENV"
+          echo "CC=${LLVM_HOME}/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=${LLVM_HOME}/bin/clang++" >> "$GITHUB_ENV"
+
+          if [ "${plugin_ext}" = "so" ] && [ ! -e "${LLVM_HOME}/lib/libLLVM.so" ]; then
+            candidate="$(find "${LLVM_HOME}/lib" -maxdepth 1 -name 'libLLVM*.so*' | sort | head -n 1)"
+            ln -s "$(basename "$candidate")" "${LLVM_HOME}/lib/libLLVM.so"
+          fi
+          if [ "${plugin_ext}" = "dylib" ] && [ ! -e "${LLVM_HOME}/lib/libLLVM.dylib" ]; then
+            candidate="$(find "${LLVM_HOME}/lib" -maxdepth 1 -name 'libLLVM*.dylib*' | sort | head -n 1)"
+            ln -s "$(basename "$candidate")" "${LLVM_HOME}/lib/libLLVM.dylib"
+          fi
+
+      - name: Build Android NDK libamice
+        run: |
+          set -euxo pipefail
+          cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }},android-ndk
+          file "${BUILD_OUTPUT_PATH}/libamice.${PLUGIN_EXT}"
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            otool -L "${BUILD_OUTPUT_PATH}/libamice.${PLUGIN_EXT}" || true
+          else
+            ldd "${BUILD_OUTPUT_PATH}/libamice.${PLUGIN_EXT}" || true
+          fi
+
+      - name: Prepare Android NDK plugin asset
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          arch="$(uname -m)"
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            host="macos"
+          else
+            host="linux"
+          fi
+          asset="libamice-android-ndk-${{ matrix.llvm-version[3] }}-${host}-${arch}.${PLUGIN_EXT}"
+          cp "${BUILD_OUTPUT_PATH}/libamice.${PLUGIN_EXT}" "dist/${asset}"
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            shasum -a 256 "dist/${asset}" > "dist/${asset}.sha256"
+          else
+            sha256sum "dist/${asset}" > "dist/${asset}.sha256"
+          fi
+
+      - name: Install Android NDK for Bundle
+        id: setup-ndk
+        if: ${{ matrix.llvm-version[3] == 'r29' }}
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ matrix.llvm-version[3] }}
+          add-to-path: false
+
+      - name: Package Android NDK Bundle
+        if: ${{ matrix.llvm-version[3] == 'r29' }}
+        run: |
+          set -euxo pipefail
+          scripts/package_android_ndk_bundle.sh \
+            --ndk-home "${{ steps.setup-ndk.outputs.ndk-path }}" \
+            --llvm-home "${LLVM_HOME}" \
+            --plugin "${BUILD_OUTPUT_PATH}/libamice.${PLUGIN_EXT}" \
+            --ndk-release "${{ matrix.llvm-version[3] }}" \
+            --llvm-feature "llvm${{ matrix.llvm-version[1] }}" \
+            --clang-revision "${{ matrix.llvm-version[4] }}" \
+            --host-tag "${ANDROID_HOST_TAG}" \
+            --out-dir dist
+          ls -lh dist
+
+      - name: Smoke Test Android NDK Bundle
+        if: ${{ matrix.llvm-version[3] == 'r29' }}
+        run: |
+          set -euxo pipefail
+          package="$(ls dist/amice-android-ndk-${{ matrix.llvm-version[3] }}-*.tar.gz | head -n 1)"
+          tmp="$(mktemp -d)"
+          tar -xzf "$package" -C "$tmp"
+          cd "$tmp"/amice-android-ndk-${{ matrix.llvm-version[3] }}-*
+          cat > hello.c <<'SRC'
+          extern int puts(const char *);
+          int main(void) { return puts("AMICE_RELEASE_BUNDLE_STRING_TEST_20260603") < 0; }
+          SRC
+          AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
+          file hello
+          if strings -a hello | grep -q 'AMICE_RELEASE_BUNDLE_STRING_TEST_20260603'; then
+            echo "ERROR: string encryption did not hide the marker"
+            exit 1
+          fi
+
+      - name: Upload Android NDK plugin assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          files: |
+            dist/libamice-android-ndk-${{ matrix.llvm-version[3] }}-*
+
+      - name: Upload Android NDK bundle assets
+        if: ${{ matrix.llvm-version[3] == 'r29' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          files: |
+            dist/amice-android-ndk-${{ matrix.llvm-version[3] }}-*

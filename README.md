@@ -118,38 +118,27 @@ cargo build --release
 <https://github.com/jamesmth/llvm-project/releases>
 
 ```powershell
-setx LLVM_SYS_211_PREFIX “C:\llvm21”
+setx LLVM_SYS_211_PREFIX "C:\llvm21"
 cargo build --release
 ```
 
 ### 4. Android NDK
 
-Android 自带 clang 支持动态加载 Pass，但缺少 `opt`。可采用“未精简版 clang”方案，参考：  
-[Ylarod：NDK 加载 LLVM Pass](https://xtuly.cn/article/ndk-load-llvm-pass-plugin)
+普通 Android NDK 通常没有 `libLLVM.so`/`libLLVM.dylib`，直接加载 `libamice` 很容易失败。优先使用 release 里的 Android NDK bundle：
 
 ```bash
-# 以下示例基于 r522817 (NDK 25c)
-export CXX="/path/to/unstripped-clang/bin/clang++"
-export CXXFLAGS="-stdlib=libc++ -I/path/to/unstripped-clang/include/c++/v1"
-export LDFLAGS="-stdlib=libc++ -L/path/to/unstripped-clang/lib"
+tar xf amice-android-ndk-r29-linux-x86_64.tar.gz
+cd amice-android-ndk-r29-linux-x86_64
 
-# llvm-plugin-rs 18.1，对应 NDK clang 18.0
-export LLVM_SYS_181_PREFIX=/path/to/unstripped-clang
+cat > hello.c <<'SRC'
+int main(void) { return 0; }
+SRC
 
-# cargo build --release 
-# ndk 25c is llvm-18-1
-cargo b --release --no-default-features --features llvm-18-1
-
-# 如遇找不到 libLLVM.so，可指定 LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=/path/to/unstripped-clang/lib
-
-/path/to/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang \
-  -fpass-plugin=../target/release/libamice.so \
-  -Xclang -load -Xclang ../target/release/libamice.so \
-  luo.c -o luo
+AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
+file hello
 ```
 
-Download: [android-ndk-r25c Linux X64](https://github.com/fuqiuluo/amice/releases/tag/android-ndk-r25c)
+详细说明见 [Android NDK 使用说明](docs/AndroidNDKSupport_zh_CN.md)。
 
 ---
 

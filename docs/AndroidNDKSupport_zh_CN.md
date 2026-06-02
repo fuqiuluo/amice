@@ -1,156 +1,201 @@
-# Android NDK 支持
+# Android NDK 使用说明
 
-## 背景说明
+## 先说结论
 
-Android NDK 和上游的 LLVM Clang 版本存在不一致的问题。为了正确构建和使用 AMICE 插件，需要使用与 Android NDK 版本匹配的完整版 Clang。
+不要直接拿普通 Android NDK 的 clang 加载随便构建出来的 `libamice.so`。AMICE 是 clang 在宿主机上加载的 LLVM Pass 插件，插件本身需要匹配的 host `libLLVM.so`/`libLLVM.dylib`。官方 NDK 通常不带这个动态库，所以用户最常见的失败是：
 
-## 查看 Android NDK 信息
+```text
+error: unable to load plugin 'libamice.so': libLLVM.so: cannot open shared object file
+```
 
-首先，查看当前 Android NDK 使用的 LLVM 版本信息：
+推荐方式是下载 AMICE release 里的 Android NDK bundle：
+
+- `amice-android-ndk-r29-linux-x86_64.tar.gz`
+- `amice-android-ndk-r29-darwin-x86_64.tar.gz`
+
+这个包里面已经放好了：
+
+- 官方 Android NDK：`android-ndk-r29/`
+- AMICE 插件：`amice/lib/libamice.so` 或 `amice/lib/libamice.dylib`
+- 与 NDK clang 匹配的 LLVM 动态库：`amice/llvm-lib/`
+- 自动设置动态库路径并追加 `-fpass-plugin` 的 wrapper：`amice/bin/`
+
+macOS 的 NDK host tag 仍叫 `darwin-x86_64`，这是 Android NDK 的历史路径名；现代 NDK 里这个目录也用于 Apple Silicon。
+
+## 直接测试
+
+Linux：
 
 ```bash
-cat $ANDROID_HOME/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/AndroidVersion.txt
+tar xf amice-android-ndk-r29-linux-x86_64.tar.gz
+cd amice-android-ndk-r29-linux-x86_64
 ```
 
-输出内容示例：
-
-```
-14.0.7
-based on r450784d1
-for additional information on LLVM revision and cherry-picks, see clang_source_info.md
-```
-
-## 获取匹配的完整版 Clang
-
-根据版本信息中的 `r450784d1`，访问 Google 的预构建 Clang 仓库找到对应分支：
-
-🔗 [https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+log/refs/heads/master/clang-r450784d](https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+log/refs/heads/master/clang-r450784d)
-
-**详细下载教程**: [https://xtuly.cn/article/ndk-load-llvm-pass-plugin](https://xtuly.cn/article/ndk-load-llvm-pass-plugin)
-
-下载完整版（未精简）的 Clang，然后使用该版本编译 AMICE，以获得与当前 Android NDK (Clang) 兼容的 AMICE 插件库文件。
-
-## 构建脚本
-
-以下是构建 AMICE 的示例脚本：
+macOS：
 
 ```bash
-# r522817是llvm18-1
-export LLVM_SYS_181_PREFIX=/home/fuqiuluo/下载/linux-x86-refs_heads_main-clang-r522817
-
-#cargo clean
-export CXX="/home/fuqiuluo/下载/linux-x86-refs_heads_main-clang-r522817/bin/clang++"
-export CXXFLAGS="-stdlib=libc++ -I/home/fuqiuluo/下载/linux-x86-refs_heads_main-clang-r522817/include/c++/v1"
-export LDFLAGS="-stdlib=libc++ -L/home/fuqiuluo/下载/linux-x86-refs_heads_main-clang-r522817/lib"
-
-cargo b --release --no-default-features --features llvm18-1,android-ndk
+tar xf amice-android-ndk-r29-darwin-x86_64.tar.gz
+cd amice-android-ndk-r29-darwin-x86_64
 ```
 
-## 编译使用方式
-
-### 使用完整版 Clang 编译
-
-构建成功后，可以直接使用完整版 Clang 编译源文件：
+编译一个 arm64 Android 可执行文件：
 
 ```bash
-# 设置库依赖路径，因为插件依赖 libLLVM.so
-export LD_LIBRARY_PATH="/home/fuqiuluo/下载/linux-x86-refs_heads_main-clang-r522817/lib"
-/home/fuqiuluo/下载/linux-x86-refs_heads_main-clang-r522817/bin/clang \
-  -fpass-plugin=../target/release/libamice.so \
-  test1.c -o test1
+cat > hello.c <<'SRC'
+int main(void) { return 0; }
+SRC
+
+AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
+file hello
 ```
 
-### 使用 Android NDK Toolchain 编译
+默认 API level：
 
-也可以直接使用 Android NDK toolchain 中的 Clang 进行编译：
+- `aarch64-linux-android-*`：API 23
+- `x86_64-linux-android-*`：API 23
+- `armv7a-linux-androideabi-*`：API 19
+- `i686-linux-android-*`：API 19
+
+需要指定 API level：
 
 ```bash
-/home/fuqiuluo/android-kernel/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
-  -fpass-plugin=../target/release/libamice.so \
-  test1.c -o test_ndk
+AMICE_ANDROID_API=21 ./amice/bin/aarch64-linux-android-clang hello.c -o hello
 ```
 
-## 配套资源
+需要 C++：
 
-**Android NDK r25c 配套版本**: [https://github.com/fuqiuluo/amice/releases/tag/android-ndk-r25c](https://github.com/fuqiuluo/amice/releases/tag/android-ndk-r25c)
-
-配套构建命令：
 ```bash
-cargo b --release --no-default-features --features llvm18-1
+./amice/bin/aarch64-linux-android-clang++ hello.cc -o hello
 ```
 
-## 常见问题及解决方案
+`amice/bin/amice-clang` 和 `amice/bin/amice-clang++` 是通用 wrapper，只负责设置动态库路径并注入插件；它们不会自动选择 Android ABI。使用它们时要显式传 `--target=aarch64-linux-android23` 这类 target。想要默认 Android target，就用 `aarch64-linux-android-clang` 这类带 ABI 名的 wrapper。
 
-### 符号未定义错误
+所有 Pass 默认关闭。通过环境变量或配置文件开启，完整列表见 [运行时环境变量](EnvConfig_zh_CN.md)。
 
-如果在载入时出现以下错误：
-```
-error: unable to load plugin './target/release/libamice.so': './target/release/libamice.so: undefined symbol: _ZTIN4llvm10CallbackVHE'
-```
+## 在 CMake/Gradle 里用
 
-尝试添加新的 feature：
+先让构建进程能找到 bundle 里的 LLVM 动态库：
+
 ```bash
-cargo b --release --no-default-features --features llvm18-1,android-ndk
+cd /path/to/amice-android-ndk-r29-linux-x86_64
+source ./amice/env.sh
 ```
 
-### 版本不匹配错误
-
-如果出现类似错误：
-```
-error: unable to load plugin '/home/who/amice/target/release/libamice.so': 'Could not load library '/home/who/amice/target/release/libamice.so': /usr/lib/llvm-18/lib/libLLVM-18.so: version `LLVM_18' not found (required by /home/who/amice/target/release/libamice.so)'
-```
-
-**解决步骤：**
-
-1. 检查 Clang 版本：
-   ```bash
-   $ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --version
-   ```
-
-2. 设置完整版 Clang 库路径：
-   ```bash
-   export LD_LIBRARY_PATH=/path/to/unstripped-clang/lib:$LD_LIBRARY_PATH
-   ```
-
-## 集成到构建系统
-
-### CMake 集成
-
-在 CMake 中使用插件：
+CMake 里只需要把插件路径加到编译参数：
 
 ```cmake
-target_compile_options(${PROJECT_NAME} PRIVATE
-    -fpass-plugin=${PLUGIN_PATH}
-    -Xclang -load -Xclang ${PLUGIN_PATH}
+set(AMICE_PLUGIN "/absolute/path/to/amice/lib/libamice.so")
+
+target_compile_options(your_target PRIVATE
+    "-fpass-plugin=${AMICE_PLUGIN}"
 )
 ```
 
-### Gradle 集成
-
-配合 Gradle 使用：
+Gradle + externalNativeBuild 通常把插件路径作为 CMake 参数传进去：
 
 ```gradle
 externalNativeBuild {
     cmake {
-        arguments(
-            "-DCMAKE_VERBOSE_MAKEFILE=ON",
-            "-DPLUGIN_PATH=/home/who/amice/target/release/libamice.so"
-        )
-        targets += "[your target name]"
+        arguments "-DAMICE_PLUGIN=/absolute/path/to/amice/lib/libamice.so"
     }
 }
 ```
 
-## 调试和日志
+然后在 `CMakeLists.txt` 中使用：
 
-构建成功运行后，可以启用日志查看详细信息：
-
-```bash
-export RUST_LOG=info
+```cmake
+if(DEFINED AMICE_PLUGIN)
+    target_compile_options(your_target PRIVATE
+        "-fpass-plugin=${AMICE_PLUGIN}"
+    )
+endif()
 ```
 
-## 更多信息
+如果 Gradle 仍然使用系统里另一个 NDK，确保它使用的是 bundle 里的 NDK：
 
-更多详细信息请参考：[https://github.com/fuqiuluo/amice/wiki](https://github.com/fuqiuluo/amice/wiki)
+```properties
+ndk.dir=/absolute/path/to/amice-android-ndk-r29-linux-x86_64/android-ndk-r29
+```
 
-> 感谢 [Android1500](https://github.com/Android1500) 在 https://github.com/fuqiuluo/amice/discussions/55 的讨论与研究。
+如果你的 Android Gradle Plugin 版本要求使用 `android.ndkVersion`，注意它要写数字版本号，不是 `r29` 这种 release 名。此时建议把对应 NDK 安装进 Android SDK，再用 `source ./amice/env.sh` 提供 `libLLVM` 和 `libamice`。
+
+## 仓库脚本
+
+在源码仓库里，可以直接让现有脚本使用解压后的 release bundle：
+
+```bash
+AMICE_ANDROID_BUNDLE=/absolute/path/to/amice-android-ndk-r29-linux-x86_64 \
+  ./scripts/build_android_arm64.sh hello.c hello
+```
+
+## 从源码构建 Android NDK 版本
+
+如果你不使用 release bundle，就必须自己准备和 NDK 对应的完整 Android clang，并用它构建 AMICE。
+
+当前 CI 覆盖的对应关系：
+
+| NDK | LLVM feature | `LLVM_SYS_*_PREFIX` | Android clang revision |
+| --- | --- | --- | --- |
+| r25c | `llvm14-0` | `LLVM_SYS_140_PREFIX` | `r450784d1` |
+| r26d | `llvm17-0` | `LLVM_SYS_170_PREFIX` | `r487747e` |
+| r27d | `llvm18-1` | `LLVM_SYS_181_PREFIX` | `r522817d` |
+| r28c | `llvm19-1` | `LLVM_SYS_191_PREFIX` | `r530567e` |
+| r29 | `llvm21-1` | `LLVM_SYS_211_PREFIX` | `r563880c` |
+
+以 r29 为例：
+
+```bash
+export LLVM_SYS_211_PREFIX=/path/to/unstripped-android-clang
+export CXX="/path/to/unstripped-android-clang/bin/clang++"
+export CXXFLAGS="-stdlib=libc++ -I/path/to/unstripped-android-clang/include/c++/v1"
+export LDFLAGS="-stdlib=libc++ -L/path/to/unstripped-android-clang/lib"
+
+cargo build --release --no-default-features --features llvm21-1,android-ndk
+```
+
+注意 feature 名是 `llvm21-1`、`llvm18-1` 这种格式，中间没有额外的横线。
+
+## 常见错误
+
+### 找不到 `libLLVM.so`
+
+原因：普通 NDK 里没有 AMICE 插件需要的 host LLVM 动态库。
+
+解决：
+
+```bash
+source /path/to/amice-android-ndk-r29-linux-x86_64/amice/env.sh
+```
+
+或者手动设置：
+
+```bash
+export LD_LIBRARY_PATH=/path/to/amice/llvm-lib:$LD_LIBRARY_PATH
+```
+
+macOS：
+
+```bash
+export DYLD_LIBRARY_PATH=/path/to/amice/llvm-lib:$DYLD_LIBRARY_PATH
+```
+
+### `undefined symbol`
+
+原因通常是 `libamice`、`libLLVM` 和 NDK clang 不是同一套 Android clang 构建出来的。
+
+解决：换成匹配同一个 NDK release 的 bundle，或者按上面的版本表重新构建。
+
+### Pass 没有效果
+
+AMICE 的 Pass 默认关闭。先用环境变量开一个最容易观察的 Pass：
+
+```bash
+AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
+```
+
+更多开关见 [运行时环境变量](EnvConfig_zh_CN.md)。
+
+## 参考
+
+- Android NDK host tag 和命令行用法：<https://developer.android.google.cn/ndk/guides/other_build_systems?hl=zh-cn>
+- 旧的手动方案说明：<https://xtuly.cn/article/ndk-load-llvm-pass-plugin>

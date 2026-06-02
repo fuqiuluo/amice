@@ -123,32 +123,21 @@ cargo build --release
 
 ### 4. Android NDK
 
-Android's bundled clang supports dynamic Pass loading but lacks `opt`. Use the "unstripped clang" approach, refer to:
-[Ylarod: NDK Load LLVM Pass](https://xtuly.cn/article/ndk-load-llvm-pass-plugin)
+The plain Android NDK usually does not include `libLLVM.so`/`libLLVM.dylib`, so loading `libamice` directly often fails. Prefer the Android NDK bundle from AMICE releases:
 
 ```bash
-# Example based on r522817 (NDK 25c)
-export CXX="/path/to/unstripped-clang/bin/clang++"
-export CXXFLAGS="-stdlib=libc++ -I/path/to/unstripped-clang/include/c++/v1"
-export LDFLAGS="-stdlib=libc++ -L/path/to/unstripped-clang/lib"
+tar xf amice-android-ndk-r29-linux-x86_64.tar.gz
+cd amice-android-ndk-r29-linux-x86_64
 
-# llvm-plugin-rs 18.1, corresponding to NDK clang 18.0
-export LLVM_SYS_181_PREFIX=/path/to/unstripped-clang
+cat > hello.c <<'SRC'
+int main(void) { return 0; }
+SRC
 
-# cargo build --release
-# ndk 25c is llvm-18-1
-cargo b --release --no-default-features --features llvm-18-1
-
-# If libLLVM.so is not found, specify LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=/path/to/unstripped-clang/lib
-
-/path/to/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang \
-  -fpass-plugin=../target/release/libamice.so \
-  -Xclang -load -Xclang ../target/release/libamice.so \
-  luo.c -o luo
+AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
+file hello
 ```
 
-Download: [android-ndk-r25c Linux X64](https://github.com/fuqiuluo/amice/releases/tag/android-ndk-r25c)
+See [Android NDK Usage](docs/AndroidNDKSupport_en_US.md) for details.
 
 ---
 

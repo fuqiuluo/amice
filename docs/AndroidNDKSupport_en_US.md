@@ -1,156 +1,201 @@
-# Android NDK Support
+# Android NDK Usage
 
-## Background
+## Short Version
 
-Android NDK and upstream LLVM Clang versions may not be consistent. To correctly build and use the AMICE plugin, you need to use a complete (unstripped) Clang that matches the Android NDK version.
+Do not load a random `libamice.so` with the clang from a plain Android NDK. AMICE is an LLVM Pass plugin loaded by the host clang process, and the plugin needs a matching host `libLLVM.so`/`libLLVM.dylib`. The official NDK usually does not ship that shared library, so the common failure is:
 
-## Check Android NDK Information
+```text
+error: unable to load plugin 'libamice.so': libLLVM.so: cannot open shared object file
+```
 
-First, check the LLVM version information used by your current Android NDK:
+Use the Android NDK bundle from AMICE releases:
+
+- `amice-android-ndk-r29-linux-x86_64.tar.gz`
+- `amice-android-ndk-r29-darwin-x86_64.tar.gz`
+
+The bundle contains:
+
+- Official Android NDK: `android-ndk-r29/`
+- AMICE plugin: `amice/lib/libamice.so` or `amice/lib/libamice.dylib`
+- Matching LLVM runtime libraries: `amice/llvm-lib/`
+- Wrapper compilers that set the runtime library path and add `-fpass-plugin`: `amice/bin/`
+
+The macOS NDK host tag is still named `darwin-x86_64`. That is Android NDK's historical path name; modern NDKs use that directory for Apple Silicon too.
+
+## Quick Test
+
+Linux:
 
 ```bash
-cat $ANDROID_HOME/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/AndroidVersion.txt
+tar xf amice-android-ndk-r29-linux-x86_64.tar.gz
+cd amice-android-ndk-r29-linux-x86_64
 ```
 
-Example output:
-
-```
-14.0.7
-based on r450784d1
-for additional information on LLVM revision and cherry-picks, see clang_source_info.md
-```
-
-## Obtain Matching Complete Clang
-
-Based on the `r450784d1` in the version information, visit Google's prebuilt Clang repository to find the corresponding branch:
-
-[https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+log/refs/heads/master/clang-r450784d](https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+log/refs/heads/master/clang-r450784d)
-
-**Detailed download tutorial**: [https://xtuly.cn/article/ndk-load-llvm-pass-plugin](https://xtuly.cn/article/ndk-load-llvm-pass-plugin)
-
-Download the complete (unstripped) Clang, then use that version to compile AMICE to get an AMICE plugin library compatible with your current Android NDK (Clang).
-
-## Build Script
-
-Here's an example script for building AMICE:
+macOS:
 
 ```bash
-# r522817 corresponds to llvm18-1
-export LLVM_SYS_181_PREFIX=/home/fuqiuluo/Downloads/linux-x86-refs_heads_main-clang-r522817
-
-#cargo clean
-export CXX="/home/fuqiuluo/Downloads/linux-x86-refs_heads_main-clang-r522817/bin/clang++"
-export CXXFLAGS="-stdlib=libc++ -I/home/fuqiuluo/Downloads/linux-x86-refs_heads_main-clang-r522817/include/c++/v1"
-export LDFLAGS="-stdlib=libc++ -L/home/fuqiuluo/Downloads/linux-x86-refs_heads_main-clang-r522817/lib"
-
-cargo b --release --no-default-features --features llvm18-1,android-ndk
+tar xf amice-android-ndk-r29-darwin-x86_64.tar.gz
+cd amice-android-ndk-r29-darwin-x86_64
 ```
 
-## Compilation Usage
-
-### Using Complete Clang
-
-After a successful build, you can directly use the complete Clang to compile source files:
+Build an arm64 Android executable:
 
 ```bash
-# Set library dependency path because the plugin depends on libLLVM.so
-export LD_LIBRARY_PATH="/home/fuqiuluo/Downloads/linux-x86-refs_heads_main-clang-r522817/lib"
-/home/fuqiuluo/Downloads/linux-x86-refs_heads_main-clang-r522817/bin/clang \
-  -fpass-plugin=../target/release/libamice.so \
-  test1.c -o test1
+cat > hello.c <<'SRC'
+int main(void) { return 0; }
+SRC
+
+AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
+file hello
 ```
 
-### Using Android NDK Toolchain
+Default API levels:
 
-You can also use the Clang from the Android NDK toolchain directly:
+- `aarch64-linux-android-*`: API 23
+- `x86_64-linux-android-*`: API 23
+- `armv7a-linux-androideabi-*`: API 19
+- `i686-linux-android-*`: API 19
+
+Override the API level:
 
 ```bash
-/home/fuqiuluo/android-kernel/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
-  -fpass-plugin=../target/release/libamice.so \
-  test1.c -o test_ndk
+AMICE_ANDROID_API=21 ./amice/bin/aarch64-linux-android-clang hello.c -o hello
 ```
 
-## Resources
+For C++:
 
-**Android NDK r25c compatible version**: [https://github.com/fuqiuluo/amice/releases/tag/android-ndk-r25c](https://github.com/fuqiuluo/amice/releases/tag/android-ndk-r25c)
-
-Compatible build command:
 ```bash
-cargo b --release --no-default-features --features llvm18-1
+./amice/bin/aarch64-linux-android-clang++ hello.cc -o hello
 ```
 
-## Common Issues and Solutions
+`amice/bin/amice-clang` and `amice/bin/amice-clang++` are generic wrappers. They set the runtime library path and inject the plugin, but they do not choose an Android ABI. Use them with an explicit target such as `--target=aarch64-linux-android23`. If you want a default Android target, use an ABI-named wrapper such as `aarch64-linux-android-clang`.
 
-### Undefined Symbol Error
+All passes are disabled by default. Enable them with environment variables or a config file. See [Runtime Environment Variables](EnvConfig_en_US.md).
 
-If you encounter the following error when loading:
-```
-error: unable to load plugin './target/release/libamice.so': './target/release/libamice.so: undefined symbol: _ZTIN4llvm10CallbackVHE'
-```
+## CMake/Gradle
 
-Try adding the new feature:
+First, make the bundled LLVM runtime visible to the build process:
+
 ```bash
-cargo b --release --no-default-features --features llvm18-1,android-ndk
+cd /path/to/amice-android-ndk-r29-linux-x86_64
+source ./amice/env.sh
 ```
 
-### Version Mismatch Error
-
-If you see an error like:
-```
-error: unable to load plugin '/home/who/amice/target/release/libamice.so': 'Could not load library '/home/who/amice/target/release/libamice.so': /usr/lib/llvm-18/lib/libLLVM-18.so: version `LLVM_18' not found (required by /home/who/amice/target/release/libamice.so)'
-```
-
-**Solution steps:**
-
-1. Check Clang version:
-   ```bash
-   $ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --version
-   ```
-
-2. Set the complete Clang library path:
-   ```bash
-   export LD_LIBRARY_PATH=/path/to/unstripped-clang/lib:$LD_LIBRARY_PATH
-   ```
-
-## Build System Integration
-
-### CMake Integration
-
-Use the plugin in CMake:
+In CMake, add the plugin path to compile options:
 
 ```cmake
-target_compile_options(${PROJECT_NAME} PRIVATE
-    -fpass-plugin=${PLUGIN_PATH}
-    -Xclang -load -Xclang ${PLUGIN_PATH}
+set(AMICE_PLUGIN "/absolute/path/to/amice/lib/libamice.so")
+
+target_compile_options(your_target PRIVATE
+    "-fpass-plugin=${AMICE_PLUGIN}"
 )
 ```
 
-### Gradle Integration
-
-Use with Gradle:
+Gradle + externalNativeBuild usually passes the plugin path into CMake:
 
 ```gradle
 externalNativeBuild {
     cmake {
-        arguments(
-            "-DCMAKE_VERBOSE_MAKEFILE=ON",
-            "-DPLUGIN_PATH=/home/who/amice/target/release/libamice.so"
-        )
-        targets += "[your target name]"
+        arguments "-DAMICE_PLUGIN=/absolute/path/to/amice/lib/libamice.so"
     }
 }
 ```
 
-## Debugging and Logging
+Then use it from `CMakeLists.txt`:
 
-After a successful build, you can enable logging for detailed information:
-
-```bash
-export RUST_LOG=info
+```cmake
+if(DEFINED AMICE_PLUGIN)
+    target_compile_options(your_target PRIVATE
+        "-fpass-plugin=${AMICE_PLUGIN}"
+    )
+endif()
 ```
 
-## More Information
+If Gradle still uses another NDK, point it at the bundled one:
 
-For more details, please refer to: [https://github.com/fuqiuluo/amice/wiki](https://github.com/fuqiuluo/amice/wiki)
+```properties
+ndk.dir=/absolute/path/to/amice-android-ndk-r29-linux-x86_64/android-ndk-r29
+```
 
-> Thanks to [Android1500](https://github.com/Android1500) for the discussion and research at https://github.com/fuqiuluo/amice/discussions/55.
+If your Android Gradle Plugin requires `android.ndkVersion`, remember that it uses the numeric NDK revision, not the `r29` release name. In that setup, install the matching NDK into the Android SDK and use `source ./amice/env.sh` only for `libLLVM` and `libamice`.
+
+## Repository Helper Script
+
+From the source repository, the existing helper can use an unpacked release bundle:
+
+```bash
+AMICE_ANDROID_BUNDLE=/absolute/path/to/amice-android-ndk-r29-linux-x86_64 \
+  ./scripts/build_android_arm64.sh hello.c hello
+```
+
+## Build from Source
+
+If you do not use the release bundle, you must prepare the complete Android clang matching your NDK and build AMICE with it.
+
+CI currently covers this mapping:
+
+| NDK | LLVM feature | `LLVM_SYS_*_PREFIX` | Android clang revision |
+| --- | --- | --- | --- |
+| r25c | `llvm14-0` | `LLVM_SYS_140_PREFIX` | `r450784d1` |
+| r26d | `llvm17-0` | `LLVM_SYS_170_PREFIX` | `r487747e` |
+| r27d | `llvm18-1` | `LLVM_SYS_181_PREFIX` | `r522817d` |
+| r28c | `llvm19-1` | `LLVM_SYS_191_PREFIX` | `r530567e` |
+| r29 | `llvm21-1` | `LLVM_SYS_211_PREFIX` | `r563880c` |
+
+Example for r29:
+
+```bash
+export LLVM_SYS_211_PREFIX=/path/to/unstripped-android-clang
+export CXX="/path/to/unstripped-android-clang/bin/clang++"
+export CXXFLAGS="-stdlib=libc++ -I/path/to/unstripped-android-clang/include/c++/v1"
+export LDFLAGS="-stdlib=libc++ -L/path/to/unstripped-android-clang/lib"
+
+cargo build --release --no-default-features --features llvm21-1,android-ndk
+```
+
+Feature names are `llvm21-1`, `llvm18-1`, etc. There is no extra dash after `llvm`.
+
+## Common Errors
+
+### `libLLVM.so` Not Found
+
+Cause: a plain NDK does not include the host LLVM shared library required by the AMICE plugin.
+
+Fix:
+
+```bash
+source /path/to/amice-android-ndk-r29-linux-x86_64/amice/env.sh
+```
+
+or set it manually:
+
+```bash
+export LD_LIBRARY_PATH=/path/to/amice/llvm-lib:$LD_LIBRARY_PATH
+```
+
+macOS:
+
+```bash
+export DYLD_LIBRARY_PATH=/path/to/amice/llvm-lib:$DYLD_LIBRARY_PATH
+```
+
+### `undefined symbol`
+
+The usual cause is a mismatch between `libamice`, `libLLVM`, and the NDK clang process.
+
+Fix: use the bundle for the same NDK release, or rebuild using the version table above.
+
+### The Pass Does Nothing
+
+AMICE passes are disabled by default. Start with an easy-to-check pass:
+
+```bash
+AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
+```
+
+More switches are documented in [Runtime Environment Variables](EnvConfig_en_US.md).
+
+## References
+
+- Android NDK host tags and command-line usage: <https://developer.android.com/ndk/guides/other_build_systems>
+- Older manual setup article: <https://xtuly.cn/article/ndk-load-llvm-pass-plugin>

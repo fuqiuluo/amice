@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Cache Homebrew downloads & Cellar
         uses: actions/cache@v4
