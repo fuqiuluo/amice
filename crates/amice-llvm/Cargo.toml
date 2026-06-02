@@ -32,7 +32,6 @@ strum = "0.27"
 strum_macros = "0.27"
 
 [build-dependencies]
-amice-build-support = { path = "../amice-build-support" }
+amice-build-support.workspace = true
 cc = "1"
-
 

@@ -37,7 +37,7 @@ fn test_issue_61_cpp_fmt_strenc() {
 
     ensure_plugin_built();
 
-    let fmt_include = project_root().join("tests/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/include");
+    let fmt_include = project_root().join("tests/c/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/include");
 
     let result = CppCompileBuilder::new(
         fixture_path("issues/issue_61_cpp_fmt_strenc", "main.cpp", Language::Cpp),
@@ -70,7 +70,7 @@ fn test_issue_61_cpp_fmt_strenc() {
 fn test_issue_61_cpp_fmt_baseline() {
     use common::project_root;
 
-    let fmt_include = project_root().join("tests/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/include");
+    let fmt_include = project_root().join("tests/c/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/include");
 
     let result = CppCompileBuilder::new(
         fixture_path("issues/issue_61_cpp_fmt_strenc", "main.cpp", Language::Cpp),

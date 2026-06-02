@@ -1,5 +1,5 @@
 # Amice Integration Test Runner for Windows
-# Usage: .\tests\scripts\run_tests.ps1 [options] [test_filter]
+# Usage: .\crates\amice\tests\scripts\run_tests.ps1 [options] [test_filter]
 #
 # Options:
 #   -Build          Build amice before running tests
@@ -8,9 +8,9 @@
 #   -Help           Show this help message
 #
 # Examples:
-#   .\tests\scripts\run_tests.ps1                    # Run all tests
-#   .\tests\scripts\run_tests.ps1 string             # Run tests matching 'string'
-#   .\tests\scripts\run_tests.ps1 -Verbose md5       # Run MD5 tests with verbose output
+#   .\crates\amice\tests\scripts\run_tests.ps1                    # Run all tests
+#   .\crates\amice\tests\scripts\run_tests.ps1 string             # Run tests matching 'string'
+#   .\crates\amice\tests\scripts\run_tests.ps1 -Verbose md5       # Run MD5 tests with verbose output
 
 param(
     [switch]$Build,
@@ -23,9 +23,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Get project root
+# Get crate and workspace roots
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ProjectRoot = (Get-Item "$ScriptDir\..\..").FullName
+$AmiceCrateRoot = (Get-Item "$ScriptDir\..\..").FullName
+$WorkspaceRoot = (Get-Item "$AmiceCrateRoot\..\..").FullName
 
 # Colors
 function Write-Info { Write-Host "[INFO] $args" -ForegroundColor Blue }
@@ -68,7 +69,7 @@ function Build-Amice {
 
     Write-Info "Building amice plugin..."
 
-    $args = @("build", "--release")
+    $args = @("build", "--release", "-p", "amice")
 
     if ($LlvmFeature) {
         $args += @("--no-default-features", "--features", "$LlvmFeature,win-link-lld")
@@ -76,7 +77,7 @@ function Build-Amice {
         $args += @("--features", "win-link-lld")
     }
 
-    Push-Location $ProjectRoot
+    Push-Location $WorkspaceRoot
     try {
         & cargo $args
         if ($LASTEXITCODE -ne 0) {
@@ -91,7 +92,7 @@ function Build-Amice {
 
 # Check plugin exists
 function Test-Plugin {
-    $plugin = Join-Path $ProjectRoot "target\release\amice.dll"
+    $plugin = Join-Path $WorkspaceRoot "target\release\amice.dll"
     return Test-Path $plugin
 }
 
@@ -105,7 +106,7 @@ function Invoke-Tests {
 
     Write-Info "Running integration tests..."
 
-    $args = @("test", "--release")
+    $args = @("test", "--release", "-p", "amice")
 
     if ($LlvmFeature) {
         $args += @("--no-default-features", "--features", "$LlvmFeature,win-link-lld")
@@ -123,7 +124,7 @@ function Invoke-Tests {
         $args += $Filter
     }
 
-    Push-Location $ProjectRoot
+    Push-Location $WorkspaceRoot
     try {
         & cargo $args
         if ($LASTEXITCODE -ne 0) {
@@ -141,7 +142,7 @@ function Get-Tests {
 
     Write-Info "Available integration tests:"
 
-    $args = @("test", "--release")
+    $args = @("test", "--release", "-p", "amice")
 
     if ($LlvmFeature) {
         $args += @("--no-default-features", "--features", "$LlvmFeature,win-link-lld")
@@ -151,9 +152,9 @@ function Get-Tests {
 
     $args += @("--", "--list")
 
-    Push-Location $ProjectRoot
+    Push-Location $WorkspaceRoot
     try {
-        & cargo $args 2>$null | Where-Object { $_ -match "^test " } | ForEach-Object { "  " + ($_ -replace "^test ", "") }
+        & cargo $args 2>$null | Where-Object { $_ -match ": test$" } | ForEach-Object { "  " + ($_ -replace ": test$", "") }
     } finally {
         Pop-Location
     }
@@ -186,7 +187,7 @@ if ($Build -or -not (Test-Plugin)) {
 }
 
 # Create output directory
-$outputDir = Join-Path $ProjectRoot "target\test-outputs"
+$outputDir = Join-Path $WorkspaceRoot "target\test-outputs"
 if (-not (Test-Path $outputDir)) {
     New-Item -ItemType Directory -Path $outputDir | Out-Null
 }

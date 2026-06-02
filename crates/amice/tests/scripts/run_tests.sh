@@ -1,6 +1,6 @@
 #!/bin/bash
 # Amice Integration Test Runner
-# Usage: ./tests/scripts/run_tests.sh [options] [test_filter]
+# Usage: ./crates/amice/tests/scripts/run_tests.sh [options] [test_filter]
 #
 # Options:
 #   -b, --build     Build amice before running tests (default: auto-detect)
@@ -15,10 +15,10 @@
 #   3. Supports llvm-config-XX variant names (e.g., llvm-config-18)
 #
 # Examples:
-#   ./tests/scripts/run_tests.sh                    # Run all tests
-#   ./tests/scripts/run_tests.sh string             # Run tests matching 'string'
-#   ./tests/scripts/run_tests.sh -v md5             # Run MD5 tests with verbose output
-#   ./tests/scripts/run_tests.sh --list             # List all available tests
+#   ./crates/amice/tests/scripts/run_tests.sh                    # Run all tests
+#   ./crates/amice/tests/scripts/run_tests.sh string             # Run tests matching 'string'
+#   ./crates/amice/tests/scripts/run_tests.sh -v md5             # Run MD5 tests with verbose output
+#   ./crates/amice/tests/scripts/run_tests.sh --list             # List all available tests
 
 set -e
 
@@ -38,9 +38,10 @@ LLVM_FEATURE=""
 LLVM_PREFIX=""
 LLVM_ENV_VAR=""
 
-# Detect project root
+# Detect crate and workspace roots
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+AMICE_CRATE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$AMICE_CRATE_ROOT/../.." && pwd)"
 
 # Print colored message
 info() { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -204,13 +205,13 @@ detect_llvm() {
 build_amice() {
     info "Building amice plugin..."
 
-    local args=("build" "--release")
+    local args=("build" "--release" "-p" "amice")
 
     if [[ -n "$LLVM_FEATURE" ]]; then
         args+=("--no-default-features" "--features" "$LLVM_FEATURE")
     fi
 
-    cd "$PROJECT_ROOT"
+    cd "$WORKSPACE_ROOT"
     if cargo "${args[@]}"; then
         success "Build completed"
     else
@@ -223,10 +224,10 @@ build_amice() {
 check_plugin() {
     local plugin=""
     case "$(uname -s)" in
-        Darwin) plugin="$PROJECT_ROOT/target/release/libamice.dylib" ;;
-        Linux)  plugin="$PROJECT_ROOT/target/release/libamice.so" ;;
-        MINGW*|CYGWIN*|MSYS*) plugin="$PROJECT_ROOT/target/release/amice.dll" ;;
-        *) plugin="$PROJECT_ROOT/target/release/libamice.so" ;;
+        Darwin) plugin="$WORKSPACE_ROOT/target/release/libamice.dylib" ;;
+        Linux)  plugin="$WORKSPACE_ROOT/target/release/libamice.so" ;;
+        MINGW*|CYGWIN*|MSYS*) plugin="$WORKSPACE_ROOT/target/release/amice.dll" ;;
+        *) plugin="$WORKSPACE_ROOT/target/release/libamice.so" ;;
     esac
 
     if [[ -f "$plugin" ]]; then
@@ -240,7 +241,7 @@ check_plugin() {
 run_tests() {
     info "Running integration tests..."
 
-    local args=("test" "--release")
+    local args=("test" "--release" "-p" "amice")
 
     if [[ -n "$LLVM_FEATURE" ]]; then
         args+=("--no-default-features" "--features" "$LLVM_FEATURE")
@@ -258,7 +259,7 @@ run_tests() {
         fi
     fi
 
-    cd "$PROJECT_ROOT"
+    cd "$WORKSPACE_ROOT"
     cargo "${args[@]}"
 }
 
@@ -266,7 +267,7 @@ run_tests() {
 list_tests() {
     info "Available integration tests:"
 
-    local args=("test" "--release")
+    local args=("test" "--release" "-p" "amice")
 
     if [[ -n "$LLVM_FEATURE" ]]; then
         args+=("--no-default-features" "--features" "$LLVM_FEATURE")
@@ -274,8 +275,8 @@ list_tests() {
 
     args+=("--" "--list")
 
-    cd "$PROJECT_ROOT"
-    cargo "${args[@]}" 2>/dev/null | grep "^test " | sed 's/^test /  /'
+    cd "$WORKSPACE_ROOT"
+    cargo "${args[@]}" 2>/dev/null | sed -n 's/: test$//p' | sed 's/^/  /'
 }
 
 # Parse arguments
@@ -338,7 +339,7 @@ elif [[ "$BUILD" == "yes" ]]; then
 fi
 
 # Create output directory
-mkdir -p "$PROJECT_ROOT/target/test-outputs"
+mkdir -p "$WORKSPACE_ROOT/target/test-outputs"
 
 # Run tests
 echo ""

@@ -5,7 +5,7 @@
 ## 目录结构
 
 ```
-tests/
+crates/amice/tests/
 ├── common/                     # 公共测试工具模块
 │   └── mod.rs                  # Language enum, CompileBuilder, RustCompileBuilder 等
 │
@@ -49,14 +49,14 @@ tests/
 1. 安装 Rust 工具链
 2. 安装 LLVM 并设置环境变量：
    ```bash
-   # Linux (以 LLVM 18 为例)
-   export LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
+   # Linux (以 LLVM 21 为例)
+   export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21
 
    # macOS (Homebrew)
-   export LLVM_SYS_181_PREFIX=$(brew --prefix llvm@18)
+   export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
 
    # Windows
-   setx LLVM_SYS_181_PREFIX "C:\llvm"
+   setx LLVM_SYS_211_PREFIX "C:\llvm"
    ```
 3. 确保 `clang` 在 PATH 中
 
@@ -66,10 +66,10 @@ tests/
 
 ```bash
 # Linux/macOS
-./tests/scripts/run_tests.sh
+./crates/amice/tests/scripts/run_tests.sh
 
 # Windows PowerShell
-.\tests\scripts\run_tests.ps1
+.\crates\amice\tests\scripts\run_tests.ps1
 ```
 
 **方式二：使用 Cargo**
@@ -88,21 +88,21 @@ cargo test --no-default-features --features llvm21-1 --lib
 
 ```bash
 # 显示帮助
-./tests/scripts/run_tests.sh --help
+./crates/amice/tests/scripts/run_tests.sh --help
 
 # 强制重新构建
-./tests/scripts/run_tests.sh --build
+./crates/amice/tests/scripts/run_tests.sh --build
 
 # 显示详细输出
-./tests/scripts/run_tests.sh --verbose
+./crates/amice/tests/scripts/run_tests.sh --verbose
 
 # 列出所有可用测试
-./tests/scripts/run_tests.sh --list
+./crates/amice/tests/scripts/run_tests.sh --list
 
 # 运行匹配名称的测试
-./tests/scripts/run_tests.sh string      # 运行字符串相关测试
-./tests/scripts/run_tests.sh md5         # 运行 MD5 测试
-./tests/scripts/run_tests.sh -v bcf      # 详细模式运行 BCF 测试
+./crates/amice/tests/scripts/run_tests.sh string      # 运行字符串相关测试
+./crates/amice/tests/scripts/run_tests.sh md5         # 运行 MD5 测试
+./crates/amice/tests/scripts/run_tests.sh -v bcf      # 详细模式运行 BCF 测试
 ```
 
 ## 测试模块说明
@@ -125,7 +125,7 @@ cargo test --no-default-features --features llvm21-1 --lib
 将 C/C++ 测试文件放入对应的 `fixtures/` 子目录：
 
 ```bash
-tests/fixtures/your_module/your_test.c
+crates/amice/tests/c/fixtures/your_module/your_test.c
 ```
 
 ### 2. 使用公共工具

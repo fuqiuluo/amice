@@ -7,34 +7,25 @@
 shells/
 tmp/
 
-/amice-llvm/target/
-/amice-llvm/.llvm-config-path
-/amice-llvm/.llvm-prefix-path
+/crates/amice-llvm/target/
+/crates/amice-llvm/.llvm-config-path
+/crates/amice-llvm/.llvm-prefix-path
 
-/amice-macro/target
+/crates/amice-macro/target
 
-/amice-plugin/target/
-/amice-plugin/.llvm-config-path
-/amice-plugin/.llvm-prefix-path
+/crates/amice-plugin/target/
+/crates/amice-plugin/.llvm-config-path
+/crates/amice-plugin/.llvm-prefix-path
 
-/amice-plugin-macros/target/
+/crates/amice-plugin-macros/target/
 
-/amice-build-support/target/
+/crates/amice-build-support/target/
 
 # Test fixtures - external dependencies
-tests/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/
+crates/amice/tests/c/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/
 
 # Claude Code & OpenCode
 CLAUDE.md
 AGENTS.md
 .claude/
-/tests/rust/indirect_call/target/
-/tests/rust/indirect_branch/target/
-/tests/rust/switch_lowering/target/
-/tests/rust/vm_flatten/target/
-/tests/rust/flatten/target/
-/tests/rust/mba/target/
-/tests/rust/bcf/target/
-/tests/rust/function_wrapper/target/
-/tests/rust/clone_function/target/
-/tests/rust/alias_access/target/
+/crates/amice/tests/rust/*/target/

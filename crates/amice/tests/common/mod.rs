@@ -52,10 +52,19 @@ pub fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Get the Cargo workspace root directory.
+pub fn workspace_root() -> PathBuf {
+    project_root()
+        .ancestors()
+        .nth(2)
+        .expect("amice crate should live under crates/amice")
+        .to_path_buf()
+}
+
 /// Get the path to the compiled amice plugin library.
 /// Handles platform-specific library naming conventions.
 pub fn plugin_path() -> PathBuf {
-    let root = project_root();
+    let root = workspace_root();
     let target_dir = root.join("target").join("release");
 
     #[cfg(target_os = "windows")]
@@ -75,7 +84,7 @@ pub fn plugin_path() -> PathBuf {
 
 /// Get the target output directory for compiled test binaries
 pub fn output_dir() -> PathBuf {
-    project_root().join("target").join("test-outputs")
+    workspace_root().join("target").join("test-outputs")
 }
 
 /// Get the path to a fixture file
@@ -130,8 +139,8 @@ pub fn detect_llvm_config() -> Option<LlvmConfig> {
 /// Automatically detects and applies LLVM configuration from environment.
 pub fn build_amice() {
     let mut cmd = Command::new("cargo");
-    cmd.arg("build").arg("--release");
-    cmd.current_dir(project_root());
+    cmd.args(["build", "--release", "-p", "amice"]);
+    cmd.current_dir(workspace_root());
 
     // Apply LLVM-specific configuration if detected
     if let Some(config) = detect_llvm_config() {

@@ -53,8 +53,8 @@ target-all = ["inkwell/target-all"]
 
 [dependencies]
 inkwell = { version = "0.7", default-features = false }
-amice-plugin-macros = { path = "../amice-plugin-macros", version = "0.1", optional = true }
+amice-plugin-macros = { workspace = true, optional = true }
 
 [build-dependencies]
-amice-build-support = { path = "../amice-build-support" }
+amice-build-support.workspace = true
 cc = "1"

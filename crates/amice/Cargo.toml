@@ -1,0 +1,58 @@
+[package]
+name = "amice"
+version = "0.1.4"
+edition = "2024"
+authors = ["fuqiuluo", "ylarod", "aviraxp", "5ec1cff"]
+
+[lib]
+name = "amice"
+crate-type = ["cdylib"]
+
+[features]
+default = ["llvm21-1"]
+
+android-ndk = ["amice-llvm/android-ndk"]
+
+# On Windows, llvm plugins require linking with either opt.lib,
+# or lld.lib.
+win-link-opt = ["amice-plugin/win-link-opt", "amice-llvm/win-link-opt"]
+win-link-lld = ["amice-plugin/win-link-lld", "amice-llvm/win-link-lld"]
+
+llvm11-0 = ["amice-plugin/llvm11-0", "amice-llvm/llvm11-0"]
+llvm12-0 = ["amice-plugin/llvm12-0", "amice-llvm/llvm12-0"]
+llvm13-0 = ["amice-plugin/llvm13-0", "amice-llvm/llvm13-0"]
+llvm14-0 = ["amice-plugin/llvm14-0", "amice-llvm/llvm14-0"]
+llvm15-0 = ["amice-plugin/llvm15-0", "amice-llvm/llvm15-0"]
+llvm16-0 = ["amice-plugin/llvm16-0", "amice-llvm/llvm16-0"]
+llvm17-0 = ["amice-plugin/llvm17-0", "amice-llvm/llvm17-0"]
+llvm18-1 = ["amice-plugin/llvm18-1", "amice-llvm/llvm18-1"]
+llvm19-1 = ["amice-plugin/llvm19-1", "amice-llvm/llvm19-1"]
+llvm20-1 = ["amice-plugin/llvm20-1", "amice-llvm/llvm20-1"]
+llvm21-1 = ["amice-plugin/llvm21-1", "amice-llvm/llvm21-1"]
+
+[dependencies]
+amice-llvm.workspace = true
+amice-macro.workspace = true
+amice-plugin.workspace = true
+log = "0.4"
+env_logger = "0.11.8"
+bitflags = { version = "2.10", features = ["serde"] }
+anyhow = "1.0.100"
+rand = { version = "0.9.2", features = ["default"] }
+hex = "0.4.3"
+num-traits = "0.2"
+lazy_static = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+toml = "0.9.7"
+serde_json = "1"
+ctor = "0.6.3"
+
+[build-dependencies]
+cc = "1"
+lazy_static = "1"
+regex = "1"
+semver = "1"
+
+[dev-dependencies]
+serial_test = "3.2"
