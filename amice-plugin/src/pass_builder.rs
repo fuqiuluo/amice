@@ -1,8 +1,6 @@
 use std::ffi::c_void;
 
-use super::{
-    FunctionAnalysisManager, FunctionPassManager, ModuleAnalysisManager, ModulePassManager,
-};
+use super::{FunctionAnalysisManager, FunctionPassManager, ModuleAnalysisManager, ModulePassManager};
 
 /// Main struct for registering callbacks.
 pub struct PassBuilder {
@@ -12,9 +10,7 @@ pub struct PassBuilder {
 impl PassBuilder {
     #[doc(hidden)]
     pub unsafe fn from_raw(pass_builder: *mut c_void) -> Self {
-        Self {
-            inner: pass_builder,
-        }
+        Self { inner: pass_builder }
     }
 
     /// Register a new pipeline parsing callback.
@@ -177,11 +173,8 @@ impl PassBuilder {
     {
         let cb = Box::new(cb);
 
-        extern "C" fn callback_entrypoint<T>(
-            cb: *const c_void,
-            manager: *mut c_void,
-            opt: OptimizationLevel,
-        ) where
+        extern "C" fn callback_entrypoint<T>(cb: *const c_void, manager: *mut c_void, opt: OptimizationLevel)
+        where
             T: Fn(&mut FunctionPassManager, OptimizationLevel) + 'static,
         {
             let cb = unsafe { Box::<T>::from_raw(cb as *mut _) };
@@ -216,11 +209,8 @@ impl PassBuilder {
     {
         let cb = Box::new(cb);
 
-        extern "C" fn callback_entrypoint<T>(
-            cb: *const c_void,
-            manager: *mut c_void,
-            opt: OptimizationLevel,
-        ) where
+        extern "C" fn callback_entrypoint<T>(cb: *const c_void, manager: *mut c_void, opt: OptimizationLevel)
+        where
             T: Fn(&mut FunctionPassManager, OptimizationLevel) + 'static,
         {
             let cb = unsafe { Box::<T>::from_raw(cb as *mut _) };
@@ -255,11 +245,8 @@ impl PassBuilder {
     {
         let cb = Box::new(cb);
 
-        extern "C" fn callback_entrypoint<T>(
-            cb: *const c_void,
-            manager: *mut c_void,
-            opt: OptimizationLevel,
-        ) where
+        extern "C" fn callback_entrypoint<T>(cb: *const c_void, manager: *mut c_void, opt: OptimizationLevel)
+        where
             T: Fn(&mut FunctionPassManager, OptimizationLevel) + 'static,
         {
             let cb = unsafe { Box::<T>::from_raw(cb as *mut _) };
@@ -307,11 +294,8 @@ impl PassBuilder {
     {
         let cb = Box::new(cb);
 
-        extern "C" fn callback_entrypoint<T>(
-            cb: *const c_void,
-            manager: *mut c_void,
-            opt: OptimizationLevel,
-        ) where
+        extern "C" fn callback_entrypoint<T>(cb: *const c_void, manager: *mut c_void, opt: OptimizationLevel)
+        where
             T: Fn(&mut ModulePassManager, OptimizationLevel) + 'static,
         {
             let cb = unsafe { Box::<T>::from_raw(cb as *mut _) };
@@ -356,11 +340,8 @@ impl PassBuilder {
     {
         let cb = Box::new(cb);
 
-        extern "C" fn callback_entrypoint<T>(
-            cb: *const c_void,
-            manager: *mut c_void,
-            opt: OptimizationLevel,
-        ) where
+        extern "C" fn callback_entrypoint<T>(cb: *const c_void, manager: *mut c_void, opt: OptimizationLevel)
+        where
             T: Fn(&mut ModulePassManager, OptimizationLevel) + 'static,
         {
             let cb = unsafe { Box::<T>::from_raw(cb as *mut _) };
@@ -446,11 +427,8 @@ impl PassBuilder {
     {
         let cb = Box::new(cb);
 
-        extern "C" fn callback_entrypoint<T>(
-            cb: *const c_void,
-            manager: *mut c_void,
-            opt: OptimizationLevel,
-        ) where
+        extern "C" fn callback_entrypoint<T>(cb: *const c_void, manager: *mut c_void, opt: OptimizationLevel)
+        where
             T: Fn(&mut ModulePassManager, OptimizationLevel) + 'static,
         {
             let cb = unsafe { Box::<T>::from_raw(cb as *mut _) };
@@ -534,11 +512,8 @@ impl PassBuilder {
     {
         let cb = Box::new(cb);
 
-        extern "C" fn callback_entrypoint<T>(
-            cb: *const c_void,
-            manager: *mut c_void,
-            opt: OptimizationLevel,
-        ) where
+        extern "C" fn callback_entrypoint<T>(cb: *const c_void, manager: *mut c_void, opt: OptimizationLevel)
+        where
             T: Fn(&mut ModulePassManager, OptimizationLevel) + 'static,
         {
             let cb = unsafe { Box::<T>::from_raw(cb as *mut _) };
@@ -582,11 +557,8 @@ impl PassBuilder {
     {
         let cb = Box::new(cb);
 
-        extern "C" fn callback_entrypoint<T>(
-            cb: *const c_void,
-            manager: *mut c_void,
-            opt: OptimizationLevel,
-        ) where
+        extern "C" fn callback_entrypoint<T>(cb: *const c_void, manager: *mut c_void, opt: OptimizationLevel)
+        where
             T: Fn(&mut ModulePassManager, OptimizationLevel) + 'static,
         {
             let cb = unsafe { Box::<T>::from_raw(cb as *mut _) };
@@ -628,11 +600,8 @@ impl PassBuilder {
     {
         let cb = Box::new(cb);
 
-        extern "C" fn callback_entrypoint<T>(
-            cb: *const c_void,
-            manager: *mut c_void,
-            opt: OptimizationLevel,
-        ) where
+        extern "C" fn callback_entrypoint<T>(cb: *const c_void, manager: *mut c_void, opt: OptimizationLevel)
+        where
             T: Fn(&mut ModulePassManager, OptimizationLevel) + 'static,
         {
             let cb = unsafe { Box::<T>::from_raw(cb as *mut _) };

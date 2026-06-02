@@ -4,6 +4,18 @@ version = "0.1.4"
 edition = "2024"
 authors = ["fuqiuluo", "ylarod", "aviraxp", "5ec1cff"]
 
+[workspace]
+members = [
+    ".",
+    "amice-build-support",
+    "amice-llvm",
+    "amice-macro",
+    "amice-plugin",
+    "amice-plugin-macros",
+]
+default-members = ["."]
+resolver = "3"
+
 [lib]
 name = "amice"
 crate-type = ["cdylib"]

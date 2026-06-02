@@ -230,7 +230,7 @@ fn locate_llvm_config(major: u32, minor: u32) -> Option<PathBuf> {
             Ok(_) => continue,
             Err(ref e) if e.kind() == ErrorKind::NotFound => {
                 // Keep searching the remaining candidate names.
-            }
+            },
             Err(e) => panic!("amice-build-support: failed to search PATH for llvm-config: {e}"),
         }
     }

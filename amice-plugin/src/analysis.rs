@@ -14,10 +14,7 @@ pub struct FunctionAnalysisManager {
 
 impl FunctionAnalysisManager {
     #[doc(hidden)]
-    pub unsafe fn from_raw(
-        inner: *mut c_void,
-        from_analysis_id: Option<crate::AnalysisKey>,
-    ) -> Self {
+    pub unsafe fn from_raw(inner: *mut c_void, from_analysis_id: Option<crate::AnalysisKey>) -> Self {
         Self {
             inner,
             from_analysis_id,
@@ -44,8 +41,7 @@ impl FunctionAnalysisManager {
         );
 
         unsafe {
-            let res =
-                crate::get_function_analysis_result(self.inner, id, function.as_value_ref().cast());
+            let res = crate::get_function_analysis_result(self.inner, id, function.as_value_ref().cast());
             Box::leak(Box::from_raw(res.cast()))
         }
     }
@@ -71,11 +67,7 @@ impl FunctionAnalysisManager {
             "Analysis cannot request its own result"
         );
 
-        let res = crate::get_function_analysis_cached_result(
-            self.inner,
-            id,
-            function.as_value_ref().cast(),
-        );
+        let res = crate::get_function_analysis_cached_result(self.inner, id, function.as_value_ref().cast());
 
         if !res.is_null() {
             let res = unsafe { Box::leak(Box::from_raw(res.cast())) };
@@ -156,10 +148,7 @@ pub struct ModuleAnalysisManager {
 
 impl ModuleAnalysisManager {
     #[doc(hidden)]
-    pub unsafe fn from_raw(
-        inner: *mut c_void,
-        from_analysis_id: Option<crate::AnalysisKey>,
-    ) -> Self {
+    pub unsafe fn from_raw(inner: *mut c_void, from_analysis_id: Option<crate::AnalysisKey>) -> Self {
         Self {
             inner,
             from_analysis_id,
@@ -185,8 +174,7 @@ impl ModuleAnalysisManager {
             "Analysis cannot request its own result"
         );
 
-        let res =
-            crate::get_module_analysis_result(self.inner, A::id(), module.as_mut_ptr().cast());
+        let res = crate::get_module_analysis_result(self.inner, A::id(), module.as_mut_ptr().cast());
 
         unsafe { Box::leak(Box::from_raw(res.cast())) }
     }
@@ -212,11 +200,7 @@ impl ModuleAnalysisManager {
             "Analysis cannot request its own result"
         );
 
-        let res = crate::get_module_analysis_cached_result(
-            self.inner,
-            A::id(),
-            module.as_mut_ptr().cast(),
-        );
+        let res = crate::get_module_analysis_cached_result(self.inner, A::id(), module.as_mut_ptr().cast());
 
         if !res.is_null() {
             let res = unsafe { Box::leak(Box::from_raw(res.cast())) };
@@ -228,14 +212,8 @@ impl ModuleAnalysisManager {
 
     /// Returns a [FunctionAnalysisManagerProxy], which is essentially an interface
     /// allowing management of analyses at the function level.
-    pub fn get_function_analysis_manager_proxy(
-        &self,
-        module: &Module<'_>,
-    ) -> FunctionAnalysisManagerProxy {
-        let proxy = crate::get_function_analysis_manager_module_proxy(
-            self.inner,
-            module.as_mut_ptr().cast(),
-        );
+    pub fn get_function_analysis_manager_proxy(&self, module: &Module<'_>) -> FunctionAnalysisManagerProxy {
+        let proxy = crate::get_function_analysis_manager_module_proxy(self.inner, module.as_mut_ptr().cast());
         FunctionAnalysisManagerProxy { inner: proxy }
     }
 

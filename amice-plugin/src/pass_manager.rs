@@ -3,10 +3,7 @@ use std::ffi::c_void;
 use inkwell::module::Module;
 use inkwell::values::FunctionValue;
 
-use super::{
-    FunctionAnalysisManager, LlvmFunctionPass, LlvmModulePass, ModuleAnalysisManager,
-    PreservedAnalyses,
-};
+use super::{FunctionAnalysisManager, LlvmFunctionPass, LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 
 /// Struct allowing to add passes on LLVM IR modules to the pass manager
 /// pipeline.
@@ -17,9 +14,7 @@ pub struct ModulePassManager {
 impl ModulePassManager {
     #[doc(hidden)]
     pub unsafe fn from_raw(pass_manager: *mut c_void) -> Self {
-        Self {
-            inner: pass_manager,
-        }
+        Self { inner: pass_manager }
     }
 
     /// Adds a pass to this pass manager.
@@ -91,9 +86,7 @@ pub struct FunctionPassManager {
 impl FunctionPassManager {
     #[doc(hidden)]
     pub unsafe fn from_raw(pass_manager: *mut c_void) -> Self {
-        Self {
-            inner: pass_manager,
-        }
+        Self { inner: pass_manager }
     }
 
     /// Adds a pass to this pass manager.

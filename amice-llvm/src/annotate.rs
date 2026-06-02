@@ -1,14 +1,14 @@
 use inkwell::llvm_sys::core::{LLVMGetAsString, LLVMGetNumOperands, LLVMGetOperand, LLVMGetSection};
 use inkwell::llvm_sys::prelude::LLVMValueRef;
 use inkwell::values::{AsValueRef, BasicValueEnum, GlobalValue, StructValue};
-use inkwell::{
-    module::Module,
-    values::FunctionValue,
-};
+use inkwell::{module::Module, values::FunctionValue};
 use std::ffi::{CStr, CString, c_uint};
 
 /// 读取给定函数在 llvm.global.annotations 里的注解
-pub(crate) fn read_function_annotate<'ctx>(module: &Module<'ctx>, func: FunctionValue<'ctx>) -> Result<Vec<String>, &'static str> {
+pub(crate) fn read_function_annotate<'ctx>(
+    module: &Module<'ctx>,
+    func: FunctionValue<'ctx>,
+) -> Result<Vec<String>, &'static str> {
     let mut out = Vec::new();
 
     let Some(global) = module.get_global("llvm.global.annotations") else {

@@ -45,7 +45,7 @@ pub fn plugin(attrs: TokenStream, input: TokenStream) -> TokenStream {
         Err(e) => {
             let msg = e.to_string();
             quote_spanned! { e.span() => fn error() { std::compile_error!(#msg) } }.into()
-        }
+        },
     }
 }
 
@@ -94,11 +94,8 @@ fn parse_plugin_args(args: AttributeArgs) -> Option<syn::Result<(String, String)
             ..
         })) if path.is_ident("name") => s.value(),
         _ => {
-            return Some(Err(Error::new_spanned(
-                arg,
-                "expected arg `name=\"value\"`",
-            )));
-        }
+            return Some(Err(Error::new_spanned(arg, "expected arg `name=\"value\"`")));
+        },
     };
 
     let arg = args_iter.next()?;
@@ -109,11 +106,8 @@ fn parse_plugin_args(args: AttributeArgs) -> Option<syn::Result<(String, String)
             ..
         })) if path.is_ident("version") => s.value(),
         _ => {
-            return Some(Err(Error::new_spanned(
-                arg,
-                "expected arg `version=\"value\"`",
-            )));
-        }
+            return Some(Err(Error::new_spanned(arg, "expected arg `version=\"value\"`")));
+        },
     };
 
     Some(Ok((name, version)))

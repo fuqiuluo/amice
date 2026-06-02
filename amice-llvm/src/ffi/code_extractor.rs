@@ -9,5 +9,6 @@ unsafe extern "C" {
 
     pub(crate) fn amice_code_extractor_is_eligible(ce: LLVMCodeExtractorRef) -> bool;
 
-    pub(crate) fn amice_code_extractor_extract_region(ce: LLVMCodeExtractorRef, function: LLVMValueRef) -> LLVMValueRef;
+    pub(crate) fn amice_code_extractor_extract_region(ce: LLVMCodeExtractorRef, function: LLVMValueRef)
+    -> LLVMValueRef;
 }

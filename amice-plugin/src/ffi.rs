@@ -259,44 +259,22 @@ extern "C" {
         id: AnalysisKey,
     ) -> bool;
 
-    fn getFunctionAnalysisManagerModuleProxy(
-        manager: *mut c_void,
-        function: *mut c_void,
-    ) -> *mut c_void;
+    fn getFunctionAnalysisManagerModuleProxy(manager: *mut c_void, function: *mut c_void) -> *mut c_void;
 
     fn getFunctionAnalysisManager(manager_proxy: *mut c_void) -> *mut c_void;
 
-    fn getFunctionAnalysisResult(
-        manager: *mut c_void,
-        id: AnalysisKey,
-        function: *mut c_void,
-    ) -> *mut c_void;
+    fn getFunctionAnalysisResult(manager: *mut c_void, id: AnalysisKey, function: *mut c_void) -> *mut c_void;
 
-    fn getModuleAnalysisResult(
-        manager: *mut c_void,
-        id: AnalysisKey,
-        module: *mut c_void,
-    ) -> *mut c_void;
+    fn getModuleAnalysisResult(manager: *mut c_void, id: AnalysisKey, module: *mut c_void) -> *mut c_void;
 
-    fn getFunctionAnalysisCachedResult(
-        manager: *mut c_void,
-        id: AnalysisKey,
-        function: *mut c_void,
-    ) -> *mut c_void;
+    fn getFunctionAnalysisCachedResult(manager: *mut c_void, id: AnalysisKey, function: *mut c_void) -> *mut c_void;
 
-    fn getModuleAnalysisCachedResult(
-        manager: *mut c_void,
-        id: AnalysisKey,
-        module: *mut c_void,
-    ) -> *mut c_void;
+    fn getModuleAnalysisCachedResult(manager: *mut c_void, id: AnalysisKey, module: *mut c_void) -> *mut c_void;
 
     fn llvmPluginApiVersion() -> u32;
 }
 
-pub(super) fn get_function_analysis_manager_module_proxy(
-    manager: *mut c_void,
-    function: *mut c_void,
-) -> *mut c_void {
+pub(super) fn get_function_analysis_manager_module_proxy(manager: *mut c_void, function: *mut c_void) -> *mut c_void {
     unsafe { getFunctionAnalysisManagerModuleProxy(manager, function) }
 }
 
@@ -304,11 +282,7 @@ pub(super) fn get_function_analysis_manager(manager_proxy: *mut c_void) -> *mut 
     unsafe { getFunctionAnalysisManager(manager_proxy) }
 }
 
-pub(super) fn get_module_analysis_result(
-    manager: *mut c_void,
-    id: AnalysisKey,
-    module: *mut c_void,
-) -> *mut c_void {
+pub(super) fn get_module_analysis_result(manager: *mut c_void, id: AnalysisKey, module: *mut c_void) -> *mut c_void {
     unsafe { getModuleAnalysisResult(manager, id, module) }
 }
 

@@ -1,4 +1,6 @@
-use crate::ffi::{amice_basic_block_first_insertion_pt, amice_phi_replace_incoming_block_with, amice_basic_block_split};
+use crate::ffi::{
+    amice_basic_block_first_insertion_pt, amice_basic_block_split, amice_phi_replace_incoming_block_with,
+};
 use crate::inkwell2::{InstructionExt, LLVMBasicBlockRefExt, LLVMValueRefExt};
 use crate::to_c_str;
 use inkwell::basic_block::BasicBlock;

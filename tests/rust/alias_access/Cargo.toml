@@ -3,6 +3,8 @@ name = "alias_access_test"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+
 [profile.dev]
 opt-level = 0
 debug = true

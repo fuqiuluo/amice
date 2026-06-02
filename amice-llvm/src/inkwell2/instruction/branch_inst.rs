@@ -15,7 +15,7 @@ impl<'ctx> BranchInst<'ctx> {
 
     pub fn get_successor(&self, idx: u32) -> Option<BasicBlock<'ctx>> {
         if self.inst.get_num_operands() == 1 {
-            return self.inst.get_operand(0)?.block()
+            return self.inst.get_operand(0)?.block();
         }
 
         assert!(idx < 2);

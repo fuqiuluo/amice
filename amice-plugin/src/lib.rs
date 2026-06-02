@@ -148,11 +148,7 @@ pub trait LlvmModulePass {
     /// If this function makes modifications on the given module IR, it
     /// should return `PreservedAnalyses::None` to indicate to the
     /// pass manager that all analyses are now invalidated.
-    fn run_pass(
-        &self,
-        module: &mut Module<'_>,
-        manager: &ModuleAnalysisManager,
-    ) -> PreservedAnalyses;
+    fn run_pass(&self, module: &mut Module<'_>, manager: &ModuleAnalysisManager) -> PreservedAnalyses;
 }
 
 /// Trait to use for implementing a transformation pass on an LLVM function.
@@ -167,11 +163,7 @@ pub trait LlvmFunctionPass {
     /// If this function makes modifications on the given function IR, it
     /// should return `PreservedAnalyses::None` to indicate to the
     /// pass manager that all analyses are now invalidated.
-    fn run_pass(
-        &self,
-        function: &mut FunctionValue<'_>,
-        manager: &FunctionAnalysisManager,
-    ) -> PreservedAnalyses;
+    fn run_pass(&self, function: &mut FunctionValue<'_>, manager: &FunctionAnalysisManager) -> PreservedAnalyses;
 }
 
 /// Trait to use for implementing an analysis pass on an LLVM module.
@@ -250,11 +242,7 @@ pub trait LlvmFunctionAnalysis {
     /// The returned result will be moved into a [Box](`std::boxed::Box`)
     /// before being given to the pass manager. This one will then add it to
     /// its internal cache, to avoid unnecessary calls to this entrypoint.
-    fn run_analysis(
-        &self,
-        module: &FunctionValue<'_>,
-        manager: &FunctionAnalysisManager,
-    ) -> Self::Result;
+    fn run_analysis(&self, module: &FunctionValue<'_>, manager: &FunctionAnalysisManager) -> Self::Result;
 
     /// Identifier for the analysis type.
     ///
