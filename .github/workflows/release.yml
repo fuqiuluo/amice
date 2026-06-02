@@ -123,22 +123,23 @@ jobs:
         if: ${{ matrix.llvm-version[0] > 15 && matrix.llvm-version[0] < 19 }}
         run: |
           set -euxo pipefail
+          major=${{ matrix.llvm-version[0] }}
           suffix=${{ matrix.llvm-version[2] }}
-          libdir="${LLVM_PATH}/lib"
-          if detected="$("${LLVM_PATH}/bin/llvm-config" --libdir 2>/dev/null)"; then
-            libdir="${detected}"
-          else
-            echo "WARN: llvm-config --libdir failed; falling back to ${libdir}"
+          prefix="/usr/lib/llvm-${major}"
+          libdir="${prefix}/lib"
+          if [ ! -x "${prefix}/bin/llvm-config" ]; then
+            echo "ERROR: expected system LLVM prefix is missing: ${prefix}"
+            echo "The regular Linux CI uses this prefix successfully for LLVM ${major}."
+            exit 1
           fi
-          echo "LLVM_SYS_${suffix}_PREFIX=${LLVM_PATH}" >> "$GITHUB_ENV"
+          echo "LLVM_SYS_${suffix}_PREFIX=${prefix}" >> "$GITHUB_ENV"
           echo "LLVM_LIBDIR=${libdir}" >> "$GITHUB_ENV"
-          echo "${LLVM_PATH}/bin" >> "$GITHUB_PATH"
+          echo "${prefix}/bin" >> "$GITHUB_PATH"
           if [ ! -e "${libdir}/libLLVM.so" ]; then
-            candidate="$(find "${libdir}" "${LLVM_PATH}" -maxdepth 3 -name 'libLLVM*.so*' | sort | head -n 1 || true)"
-            if [ -n "${candidate}" ]; then
-              ln -s "${candidate}" "${libdir}/libLLVM.so"
-            else
-              echo "WARN: no shared libLLVM found under ${LLVM_PATH}; using the static LLVM libraries from this package"
+            if [ -e "${libdir}/libLLVM-${major}.so" ]; then
+              sudo ln -s "libLLVM-${major}.so" "${libdir}/libLLVM.so"
+            elif [ -e "/usr/lib/x86_64-linux-gnu/libLLVM-${major}.so.1" ]; then
+              sudo ln -s "../../x86_64-linux-gnu/libLLVM-${major}.so.1" "${libdir}/libLLVM.so"
             fi
           fi
 
