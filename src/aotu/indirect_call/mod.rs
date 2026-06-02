@@ -1,5 +1,6 @@
 use crate::config::{Config, IndirectCallConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
+use amice_llvm::const_array;
 use amice_llvm::inkwell2::{BuilderExt, CallInst, FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
@@ -119,7 +120,7 @@ impl AmicePass for IndirectCall {
             .collect::<Vec<_>>();
 
         let array_type = ptr_type.array_type(likely_functions.len() as u32);
-        let initializer = ptr_type.const_array(&likely_functions_values);
+        let initializer = const_array(ptr_type, &likely_functions_values);
         let global_fun_table = module.add_global(array_type, None, ".amice_indirect_call_table");
         global_fun_table.set_linkage(Linkage::Private);
         global_fun_table.set_initializer(&initializer);

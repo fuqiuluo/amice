@@ -2,6 +2,7 @@ use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use crate::config::FlattenConfig;
 use amice_llvm::analysis::dominators::DominatorTree;
+use amice_llvm::const_array;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, LLVMValueRefExt, VerifyResult};
 use amice_llvm::ptr_type;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
@@ -236,7 +237,7 @@ fn do_handle(
                 .map(|sub_bb| basic_block_index_map[sub_bb]) // 这个数组里面装的是bb支配的块所在basic_blocks的下标
                 .map(|index| i32_type.const_int(index as u64, false))
                 .collect::<Vec<_>>();
-            let dominator_index_array = i32_type.const_array(&dominator_index_array);
+            let dominator_index_array = const_array(i32_type, &dominator_index_array);
             let global_dominator_index_array = module.add_global(dominator_index_array.get_type(), None, "");
             global_dominator_index_array.set_linkage(Linkage::Private);
             global_dominator_index_array.set_constant(true);

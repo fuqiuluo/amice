@@ -2,4 +2,5 @@ a.out
 test1*
 test_ndk*
 vm_flatten*
+!fixtures/control_flow/vm_flatten.c
 test_md5.env

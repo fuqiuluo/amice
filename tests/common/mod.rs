@@ -100,7 +100,7 @@ pub struct LlvmConfig {
 /// Returns the first matching LLVM installation found.
 pub fn detect_llvm_config() -> Option<LlvmConfig> {
     let llvm_versions = [
-        ("LLVM_SYS_210_PREFIX", "llvm21-1"),
+        ("LLVM_SYS_211_PREFIX", "llvm21-1"),
         ("LLVM_SYS_201_PREFIX", "llvm20-1"),
         ("LLVM_SYS_191_PREFIX", "llvm19-1"),
         ("LLVM_SYS_181_PREFIX", "llvm18-1"),

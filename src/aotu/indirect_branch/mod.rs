@@ -1,16 +1,14 @@
 use crate::config::{Config, IndirectBranchConfig, IndirectBranchFlags};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
-use amice_llvm::amice_const_array;
+use amice_llvm::const_array;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::builder::Builder;
 use amice_plugin::inkwell::module::{Linkage, Module};
-use amice_plugin::inkwell::types::{AsTypeRef, IntType};
-use amice_plugin::inkwell::values::{
-    ArrayValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue,
-};
+use amice_plugin::inkwell::types::IntType;
+use amice_plugin::inkwell::values::{AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
 use amice_plugin::inkwell::{AddressSpace, IntPredicate};
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use rand::Rng;
@@ -93,7 +91,7 @@ impl AmicePass for IndirectBranch {
         let non_entry_bb_addrs_refs: Vec<_> = non_entry_bb_addrs.iter().map(|addr| addr.as_value_ref()).collect();
 
         let non_entry_bb_array_ty = ptr_type.array_type(non_entry_bb_addrs.len() as u32);
-        let non_entry_bb_initializer = create_ptr_const_array(ptr_type, &non_entry_bb_addrs);
+        let non_entry_bb_initializer = const_array(ptr_type, &non_entry_bb_addrs);
         let global_indirect_branch_table = module.add_global(non_entry_bb_array_ty, None, INDIRECT_BRANCH_TABLE_NAME);
         global_indirect_branch_table.set_initializer(&non_entry_bb_initializer);
         global_indirect_branch_table.set_linkage(Linkage::Internal);
@@ -113,7 +111,7 @@ impl AmicePass for IndirectBranch {
                 .map(|x| i32_type.const_int(*x as u64, false))
                 .collect();
             let xor_key_array_ty = i32_type.array_type(xor_key_values.len() as u32);
-            let initializer = i32_type.const_array(&xor_key_values);
+            let initializer = const_array(i32_type, &xor_key_values);
             let table = module.add_global(xor_key_array_ty, None, ".amice.indirect_branch_key");
             table.set_initializer(&initializer);
             table.set_linkage(Linkage::Private);
@@ -172,7 +170,7 @@ impl AmicePass for IndirectBranch {
                             .filter_map(|next_basic_block| unsafe { next_basic_block.get_address() })
                             .collect();
                         let basic_block_array_ty = ptr_type.array_type(future_branches_ptrs.len() as u32);
-                        let initializer = create_ptr_const_array(ptr_type, &future_branches_ptrs);
+                        let initializer = const_array(ptr_type, &future_branches_ptrs);
                         let local_indirect_branch_table =
                             module.add_global(basic_block_array_ty, None, ".amice.indirect_branch");
                         local_indirect_branch_table.set_initializer(&initializer);
@@ -393,17 +391,4 @@ fn collect_basic_block<'a>(funcs: &Vec<(FunctionValue<'a>, IndirectBranchConfig)
     }
 
     basic_blocks
-}
-
-/// Creates a constant array of pointer values using LLVM C++ API directly.
-/// This is needed because inkwell's const_array has issues with blockaddress constants.
-fn create_ptr_const_array<'ctx>(element_type: impl AsTypeRef, values: &[PointerValue<'ctx>]) -> ArrayValue<'ctx> {
-    let mut value_refs: Vec<_> = values.iter().map(|v| v.as_value_ref()).collect();
-    unsafe {
-        ArrayValue::new(amice_const_array(
-            element_type.as_type_ref(),
-            value_refs.as_mut_ptr(),
-            value_refs.len() as u64,
-        ))
-    }
 }

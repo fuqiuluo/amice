@@ -5,6 +5,7 @@ use amice_llvm::ptr_type;
 use amice_plugin::inkwell::AddressSpace;
 use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::targets::TargetData;
 use amice_plugin::inkwell::types::{BasicType, StructType};
 use amice_plugin::inkwell::values::{AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
 use anyhow::anyhow;
@@ -44,6 +45,13 @@ fn get_random_no_repeat(n: usize, k: usize) -> Vec<usize> {
     }
     v.truncate(k);
     v
+}
+
+fn is_static_single_alloca(instr: amice_plugin::inkwell::values::InstructionValue<'_>) -> bool {
+    instr
+        .get_operand(0)
+        .and_then(|opnd| opnd.value())
+        .is_some_and(|opnd| opnd.is_int_value() && opnd.into_int_value().get_zero_extended_constant() == Some(1))
 }
 
 fn build_getter_function<'ctx>(
@@ -102,10 +110,12 @@ fn do_alias_access_pointer_chain(
     function: FunctionValue,
 ) -> anyhow::Result<()> {
     let ctx = module.get_context();
-    let i8_ty = ctx.i8_type();
     let i8_ptr = ptr_type!(ctx, i8_type);
-    let i32_ty = ctx.i32_type();
     let ptr_ty = ptr_type!(ctx, i8_type);
+    let data_layout = module.get_data_layout();
+    let layout = data_layout.as_str().to_string_lossy().into_owned();
+    drop(data_layout);
+    let target_data = TargetData::create(&layout);
 
     let mut allocas = Vec::new();
     for bb in function.get_basic_blocks() {
@@ -115,10 +125,17 @@ fn do_alias_access_pointer_chain(
                 if !any_value_enum.is_pointer_value() {
                     return Err(anyhow::anyhow!("Alloca must be pointer type: {:?}", any_value_enum));
                 }
+                if !is_static_single_alloca(instr) {
+                    continue;
+                }
                 let alignment = instr
                     .get_alignment()
                     .map_err(|e| anyhow!("failed to get alloca alignment: {}", e))?;
-                if alignment <= 8 {
+                let allocated_type = instr
+                    .get_allocated_type()
+                    .map_err(|e| anyhow!("failed to get alloca allocated type: {}", e))?;
+                let field_alignment = target_data.get_abi_alignment(&allocated_type);
+                if alignment <= 8 && alignment <= field_alignment {
                     allocas.push(any_value_enum.into_pointer_value());
                 }
             }

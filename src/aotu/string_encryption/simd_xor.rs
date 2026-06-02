@@ -3,6 +3,7 @@ use crate::aotu::string_encryption::{
     array_as_const_string, collect_insert_points,
 };
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
+use amice_llvm::const_array;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_plugin::inkwell;
@@ -11,7 +12,7 @@ use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use amice_plugin::inkwell::comdat::Comdat;
 use amice_plugin::inkwell::module::{Linkage, Module};
 use amice_plugin::inkwell::values::{
-    ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
+    AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
 };
 use amice_plugin::inkwell::{AddressSpace, GlobalVisibility};
 use anyhow::anyhow;
@@ -45,10 +46,8 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
     let is_global_mode = matches!(cfg.timing, DecryptTiming::Global);
 
     let global_key = module.add_global(vector256, Some(AddressSpace::default()), "");
-    let array_values = key
-        .map(|c| i8_ty.const_int(c as u64, false))
-        .map(|v| unsafe { ArrayValue::new(v.as_value_ref()) });
-    global_key.set_initializer(&vector256.const_array(&array_values));
+    let array_values = key.map(|c| i8_ty.const_int(c as u64, false));
+    global_key.set_initializer(&const_array(i8_ty, &array_values));
 
     let string_global_values: Vec<EncryptedGlobalValue<'a>> = module
         .get_globals()

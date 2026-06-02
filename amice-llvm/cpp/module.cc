@@ -108,4 +108,10 @@ LLVMValueRef amice_module_const_array(LLVMTypeRef element_ty, LLVMValueRef *valu
     return llvm::wrap(llvm::ConstantArray::get(ArrayTy, Vals));
 }
 
+#if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR == 17
+LLVMValueRef LLVMConstArray2(LLVMTypeRef element_ty, LLVMValueRef *values, uint64_t len) {
+    return amice_module_const_array(element_ty, values, len);
+}
+#endif
+
 }

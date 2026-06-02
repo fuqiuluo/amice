@@ -42,7 +42,7 @@ function Show-Help {
 # Detect LLVM version
 function Get-LlvmFeature {
     $versions = @(
-        @{ Env = "LLVM_SYS_210_PREFIX"; Feature = "llvm21-1" },
+        @{ Env = "LLVM_SYS_211_PREFIX"; Feature = "llvm21-1" },
         @{ Env = "LLVM_SYS_201_PREFIX"; Feature = "llvm20-1" },
         @{ Env = "LLVM_SYS_191_PREFIX"; Feature = "llvm19-1" },
         @{ Env = "LLVM_SYS_181_PREFIX"; Feature = "llvm18-1" },

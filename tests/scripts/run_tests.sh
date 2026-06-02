@@ -61,7 +61,7 @@ map_llvm_version() {
     local minor=${2:-0}
 
     case "$major" in
-        21) LLVM_FEATURE="llvm21-1"; LLVM_ENV_VAR="LLVM_SYS_210_PREFIX" ;;
+        21) LLVM_FEATURE="llvm21-1"; LLVM_ENV_VAR="LLVM_SYS_211_PREFIX" ;;
         20) LLVM_FEATURE="llvm20-1"; LLVM_ENV_VAR="LLVM_SYS_201_PREFIX" ;;
         19) LLVM_FEATURE="llvm19-1"; LLVM_ENV_VAR="LLVM_SYS_191_PREFIX" ;;
         18) LLVM_FEATURE="llvm18-1"; LLVM_ENV_VAR="LLVM_SYS_181_PREFIX" ;;
@@ -147,7 +147,7 @@ detect_llvm_from_config() {
 # Detect LLVM version from environment variables
 detect_llvm_from_env() {
     local llvm_versions=(
-        "LLVM_SYS_210_PREFIX:llvm21-1"
+        "LLVM_SYS_211_PREFIX:llvm21-1"
         "LLVM_SYS_201_PREFIX:llvm20-1"
         "LLVM_SYS_191_PREFIX:llvm19-1"
         "LLVM_SYS_181_PREFIX:llvm18-1"

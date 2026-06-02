@@ -25,6 +25,16 @@ bool valueEscapes(llvm::Instruction *Inst) {
     return false;
 }
 
+bool isDemotableValueTy(llvm::Type *Ty) {
+    if (!Ty)
+        return false;
+    if (Ty->isVoidTy())
+        return false;
+    if (Ty->isTokenTy())
+        return false;
+    return Ty->isFirstClassType();
+}
+
 } // namespace
 
 extern "C" {
@@ -43,12 +53,17 @@ void amice_function_fix_stack(llvm::Function *f, int AtTerminator, int MaxIterat
             for (llvm::BasicBlock::iterator j = i->begin(); j != i->end(); j++) {
                 if (llvm::isa<llvm::PHINode>(j)) {
                     llvm::PHINode *phi = llvm::cast<llvm::PHINode>(j);
-                    tmpPhi.push_back(phi);
+                    if (isDemotableValueTy(phi->getType())) {
+                        tmpPhi.push_back(phi);
+                    }
                     continue;
                 }
 
                 // 跳过 terminator（包括 invoke/switch/ret/br/callbr 等）
                 if (j->isTerminator())
+                    continue;
+
+                if (!isDemotableValueTy(j->getType()))
                     continue;
 
                 if (!(llvm::isa<llvm::AllocaInst>(j) && j->getParent() == bbEntry) &&

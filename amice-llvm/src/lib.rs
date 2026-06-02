@@ -3,6 +3,9 @@ extern crate alloc;
 use std::borrow::Cow;
 use std::ffi::{CStr, CString};
 
+use inkwell::types::AsTypeRef;
+use inkwell::values::{ArrayValue, AsValueRef};
+
 pub mod analysis;
 mod annotate;
 pub mod code_extractor;
@@ -11,6 +14,22 @@ pub mod inkwell2;
 
 // Public alias kept stable for downstream callers (root `amice` crate).
 pub use ffi::module::amice_module_const_array as amice_const_array;
+
+/// Creates a constant array through the C++ shim instead of inkwell's raw C API.
+pub fn const_array<'ctx, T, V>(element_ty: T, values: &[V]) -> ArrayValue<'ctx>
+where
+    T: AsTypeRef,
+    V: AsValueRef,
+{
+    let mut value_refs: Vec<_> = values.iter().map(V::as_value_ref).collect();
+    unsafe {
+        ArrayValue::new(ffi::module::amice_module_const_array(
+            element_ty.as_type_ref(),
+            value_refs.as_mut_ptr(),
+            value_refs.len() as u64,
+        ))
+    }
+}
 
 pub fn get_llvm_version_major() -> i32 {
     unsafe { ffi::amice_version_major() }

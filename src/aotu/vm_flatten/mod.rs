@@ -1,12 +1,13 @@
 use crate::config::{Config, VmFlattenConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
+use amice_llvm::const_array;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
 
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::module::{Linkage, Module};
-use amice_plugin::inkwell::values::{ArrayValue, FunctionValue, InstructionOpcode, IntValue};
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode, IntValue};
 use amice_plugin::inkwell::{AddressSpace, IntPredicate};
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use anyhow::anyhow;
@@ -407,7 +408,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
             opcode_llvm_values.push(right);
         }
     }
-    let opcode_array = unsafe { ArrayValue::new_const_array(&opcode_array_type, &opcode_llvm_values) };
+    let opcode_array = const_array(i32_type, &opcode_llvm_values);
 
     let local_opcodes_value = module.add_global(opcode_array_type, None, ".amice.vm_flatten_opcodes");
     local_opcodes_value.set_constant(false);
