@@ -79,6 +79,11 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           sudo apt update
           sudo apt install --no-install-recommends -y libtinfo6
+          for dir in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+            if [ -e "${dir}/libtinfo.so.6" ] && [ ! -e "${dir}/libtinfo.so.5" ]; then
+              sudo ln -s libtinfo.so.6 "${dir}/libtinfo.so.5"
+            fi
+          done
 
       - name: Install LLVM and Clang (LLVM >= 19.1)
         if: ${{ matrix.llvm-version[0] >= 19 }}
@@ -119,18 +124,22 @@ jobs:
         run: |
           set -euxo pipefail
           suffix=${{ matrix.llvm-version[2] }}
-          libdir="$("${LLVM_PATH}/bin/llvm-config" --libdir)"
+          libdir="${LLVM_PATH}/lib"
+          if detected="$("${LLVM_PATH}/bin/llvm-config" --libdir 2>/dev/null)"; then
+            libdir="${detected}"
+          else
+            echo "WARN: llvm-config --libdir failed; falling back to ${libdir}"
+          fi
           echo "LLVM_SYS_${suffix}_PREFIX=${LLVM_PATH}" >> "$GITHUB_ENV"
           echo "LLVM_LIBDIR=${libdir}" >> "$GITHUB_ENV"
           echo "${LLVM_PATH}/bin" >> "$GITHUB_PATH"
           if [ ! -e "${libdir}/libLLVM.so" ]; then
             candidate="$(find "${libdir}" "${LLVM_PATH}" -maxdepth 3 -name 'libLLVM*.so*' | sort | head -n 1 || true)"
-            if [ -z "${candidate}" ]; then
-              echo "ERROR: no libLLVM shared library found under ${LLVM_PATH}"
-              find "${LLVM_PATH}" -maxdepth 3 -type f -name 'libLLVM*' -print || true
-              exit 1
+            if [ -n "${candidate}" ]; then
+              ln -s "${candidate}" "${libdir}/libLLVM.so"
+            else
+              echo "WARN: no shared libLLVM found under ${LLVM_PATH}; using the static LLVM libraries from this package"
             fi
-            ln -s "${candidate}" "${libdir}/libLLVM.so"
           fi
 
       - name: Install LLVM and Clang (12 <= LLVM <= 15)
