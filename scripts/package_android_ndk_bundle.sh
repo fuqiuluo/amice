@@ -124,16 +124,15 @@ if [[ ! -f "$PLUGIN" ]]; then
     exit 1
 fi
 
-LLVM_LIBDIR=""
-for candidate in "$LLVM_HOME/lib64" "$LLVM_HOME/lib"; do
-    if compgen -G "$candidate/libLLVM*" >/dev/null 2>&1; then
-        LLVM_LIBDIR="$candidate"
-        break
-    fi
-done
+LLVM_LIBDIR="$("$LLVM_HOME/bin/llvm-config" --libdir)"
 
-if [[ -z "$LLVM_LIBDIR" ]]; then
-    echo "ERROR: no libLLVM* found under $LLVM_HOME/lib64 or $LLVM_HOME/lib" >&2
+if [[ ! -d "$LLVM_LIBDIR" ]]; then
+    echo "ERROR: llvm-config reported a missing libdir: $LLVM_LIBDIR" >&2
+    exit 1
+fi
+
+if ! compgen -G "$LLVM_LIBDIR/libLLVM*" >/dev/null 2>&1; then
+    echo "ERROR: no libLLVM* found under llvm-config libdir: $LLVM_LIBDIR" >&2
     exit 1
 fi
 

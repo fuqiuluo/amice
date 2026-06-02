@@ -119,11 +119,18 @@ jobs:
         run: |
           set -euxo pipefail
           suffix=${{ matrix.llvm-version[2] }}
+          libdir="$("${LLVM_PATH}/bin/llvm-config" --libdir)"
           echo "LLVM_SYS_${suffix}_PREFIX=${LLVM_PATH}" >> "$GITHUB_ENV"
+          echo "LLVM_LIBDIR=${libdir}" >> "$GITHUB_ENV"
           echo "${LLVM_PATH}/bin" >> "$GITHUB_PATH"
-          if [ ! -e "${LLVM_PATH}/lib/libLLVM.so" ]; then
-            candidate="$(find "${LLVM_PATH}/lib" -maxdepth 1 -name 'libLLVM*.so*' | sort | head -n 1)"
-            ln -s "$(basename "$candidate")" "${LLVM_PATH}/lib/libLLVM.so"
+          if [ ! -e "${libdir}/libLLVM.so" ]; then
+            candidate="$(find "${libdir}" "${LLVM_PATH}" -maxdepth 3 -name 'libLLVM*.so*' | sort | head -n 1 || true)"
+            if [ -z "${candidate}" ]; then
+              echo "ERROR: no libLLVM shared library found under ${LLVM_PATH}"
+              find "${LLVM_PATH}" -maxdepth 3 -type f -name 'libLLVM*' -print || true
+              exit 1
+            fi
+            ln -s "${candidate}" "${libdir}/libLLVM.so"
           fi
 
       - name: Install LLVM and Clang (12 <= LLVM <= 15)
@@ -289,16 +296,18 @@ jobs:
           set -euxo pipefail
           env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
           LLVM_HOME="${{ steps.ndk-clang.outputs.clang-path }}"
+          LLVM_LIBDIR="$("${LLVM_HOME}/bin/llvm-config" --libdir)"
           echo "${env_name}=${LLVM_HOME}" >> "$GITHUB_ENV"
           echo "LLVM_HOME=${LLVM_HOME}" >> "$GITHUB_ENV"
+          echo "LLVM_LIBDIR=${LLVM_LIBDIR}" >> "$GITHUB_ENV"
           echo "${LLVM_HOME}/bin" >> "$GITHUB_PATH"
 
           if [ "${RUNNER_OS}" = "Linux" ]; then
             host_tag="linux-x86_64"
             plugin_ext="so"
-            echo "LD_LIBRARY_PATH=${LLVM_HOME}/lib" >> "$GITHUB_ENV"
+            echo "LD_LIBRARY_PATH=${LLVM_LIBDIR}" >> "$GITHUB_ENV"
             echo "CXXFLAGS=-stdlib=libc++ -I${LLVM_HOME}/include/c++/v1" >> "$GITHUB_ENV"
-            echo "LDFLAGS=-stdlib=libc++ -L${LLVM_HOME}/lib" >> "$GITHUB_ENV"
+            echo "LDFLAGS=-stdlib=libc++ -L${LLVM_LIBDIR}" >> "$GITHUB_ENV"
           else
             host_tag="darwin-x86_64"
             plugin_ext="dylib"
@@ -306,7 +315,7 @@ jobs:
             echo "SDKROOT=${SDKROOT}" >> "$GITHUB_ENV"
             echo "CFLAGS=-isysroot ${SDKROOT}" >> "$GITHUB_ENV"
             echo "CXXFLAGS=-isysroot ${SDKROOT} -stdlib=libc++ -I${LLVM_HOME}/include/c++/v1" >> "$GITHUB_ENV"
-            echo "RUSTFLAGS=-C link-args=-Wl,-rpath,${LLVM_HOME}/lib" >> "$GITHUB_ENV"
+            echo "RUSTFLAGS=-C link-args=-Wl,-rpath,${LLVM_LIBDIR}" >> "$GITHUB_ENV"
             echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
           fi
 
@@ -315,13 +324,23 @@ jobs:
           echo "CC=${LLVM_HOME}/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=${LLVM_HOME}/bin/clang++" >> "$GITHUB_ENV"
 
-          if [ "${plugin_ext}" = "so" ] && [ ! -e "${LLVM_HOME}/lib/libLLVM.so" ]; then
-            candidate="$(find "${LLVM_HOME}/lib" -maxdepth 1 -name 'libLLVM*.so*' | sort | head -n 1)"
-            ln -s "$(basename "$candidate")" "${LLVM_HOME}/lib/libLLVM.so"
+          if [ "${plugin_ext}" = "so" ] && [ ! -e "${LLVM_LIBDIR}/libLLVM.so" ]; then
+            candidate="$(find "${LLVM_LIBDIR}" "${LLVM_HOME}" -maxdepth 3 -name 'libLLVM*.so*' | sort | head -n 1 || true)"
+            if [ -z "${candidate}" ]; then
+              echo "ERROR: no libLLVM shared library found under ${LLVM_HOME}"
+              find "${LLVM_HOME}" -maxdepth 3 -type f -name 'libLLVM*' -print || true
+              exit 1
+            fi
+            ln -s "${candidate}" "${LLVM_LIBDIR}/libLLVM.so"
           fi
-          if [ "${plugin_ext}" = "dylib" ] && [ ! -e "${LLVM_HOME}/lib/libLLVM.dylib" ]; then
-            candidate="$(find "${LLVM_HOME}/lib" -maxdepth 1 -name 'libLLVM*.dylib*' | sort | head -n 1)"
-            ln -s "$(basename "$candidate")" "${LLVM_HOME}/lib/libLLVM.dylib"
+          if [ "${plugin_ext}" = "dylib" ] && [ ! -e "${LLVM_LIBDIR}/libLLVM.dylib" ]; then
+            candidate="$(find "${LLVM_LIBDIR}" "${LLVM_HOME}" -maxdepth 3 -name 'libLLVM*.dylib*' | sort | head -n 1 || true)"
+            if [ -z "${candidate}" ]; then
+              echo "ERROR: no libLLVM dylib found under ${LLVM_HOME}"
+              find "${LLVM_HOME}" -maxdepth 3 -type f -name 'libLLVM*' -print || true
+              exit 1
+            fi
+            ln -s "${candidate}" "${LLVM_LIBDIR}/libLLVM.dylib"
           fi
 
       - name: Build Android NDK libamice
