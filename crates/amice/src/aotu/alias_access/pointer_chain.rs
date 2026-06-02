@@ -7,7 +7,7 @@ use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::targets::TargetData;
 use amice_plugin::inkwell::types::{BasicType, StructType};
-use amice_plugin::inkwell::values::{AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue};
+use amice_plugin::inkwell::values::{AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, InstructionValue, PointerValue};
 use anyhow::anyhow;
 use log::{debug, warn};
 use std::collections::HashMap;
@@ -47,7 +47,7 @@ fn get_random_no_repeat(n: usize, k: usize) -> Vec<usize> {
     v
 }
 
-fn is_static_single_alloca(instr: amice_plugin::inkwell::values::InstructionValue<'_>) -> bool {
+fn is_static_single_alloca(instr: InstructionValue<'_>) -> bool {
     instr
         .get_operand(0)
         .and_then(|opnd| opnd.value())
