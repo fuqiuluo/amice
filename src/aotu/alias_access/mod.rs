@@ -5,9 +5,9 @@ use crate::config::{AliasAccessConfig, AliasAccessMode, Config};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag, AmicePassMetadata};
 use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
 use amice_macro::amice;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::FunctionValue;
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::values::FunctionValue;
+use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 
 #[amice(
     priority = 1112,

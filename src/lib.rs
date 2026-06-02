@@ -4,11 +4,11 @@ pub(crate) mod pass_registry;
 
 use crate::config::CONFIG;
 use crate::pass_registry::AmicePassFlag;
-use llvm_plugin::PipelineParsing;
+use amice_plugin::PipelineParsing;
 use log::{error, info, warn};
 
-#[llvm_plugin::plugin(name = "amice", version = "0.1.4")]
-fn plugin_registrar(builder: &mut llvm_plugin::PassBuilder) {
+#[amice_plugin::plugin(name = "amice", version = "0.1.4")]
+fn plugin_registrar(builder: &mut amice_plugin::PassBuilder) {
     if let Err(e) = env_logger::builder().try_init() {
         warn!("amice init logger failed: {e:?}");
         return;

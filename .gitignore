@@ -13,6 +13,14 @@ tmp/
 
 /amice-macro/target
 
+/amice-plugin/target/
+/amice-plugin/.llvm-config-path
+/amice-plugin/.llvm-prefix-path
+
+/amice-plugin-macros/target/
+
+/amice-build-support/target/
+
 # Test fixtures - external dependencies
 tests/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/
 

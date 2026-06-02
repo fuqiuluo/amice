@@ -2,9 +2,9 @@ use crate::config::{Config, ShuffleBlocksConfig, ShuffleBlocksFlags};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::FunctionExt;
 use amice_macro::amice;
-use llvm_plugin::PreservedAnalyses;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::FunctionValue;
+use amice_plugin::PreservedAnalyses;
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::values::FunctionValue;
 use log::{Level, log_enabled};
 
 #[amice(

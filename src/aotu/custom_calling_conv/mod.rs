@@ -2,9 +2,9 @@ use crate::config::{Config, CustomCallingConvConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{FunctionExt, ModuleExt};
 use amice_macro::amice;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{AsValueRef, CallSiteValue, FunctionValue, InstructionOpcode};
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::values::{AsValueRef, CallSiteValue, FunctionValue, InstructionOpcode};
+use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 
 #[amice(
     priority = 1121,

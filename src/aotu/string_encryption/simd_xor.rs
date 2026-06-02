@@ -6,15 +6,15 @@ use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use anyhow::anyhow;
-use llvm_plugin::inkwell;
-use llvm_plugin::inkwell::AtomicOrdering;
-use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
-use llvm_plugin::inkwell::comdat::Comdat;
-use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{
+use amice_plugin::inkwell;
+use amice_plugin::inkwell::AtomicOrdering;
+use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
+use amice_plugin::inkwell::comdat::Comdat;
+use amice_plugin::inkwell::module::{Linkage, Module};
+use amice_plugin::inkwell::values::{
     ArrayValue, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
 };
-use llvm_plugin::inkwell::{AddressSpace, GlobalVisibility};
+use amice_plugin::inkwell::{AddressSpace, GlobalVisibility};
 use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
 use std::ptr::null_mut;

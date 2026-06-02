@@ -17,6 +17,7 @@ version = "0.1.4"
 dependencies = [
  "amice-llvm",
  "amice-macro",
+ "amice-plugin",
  "anyhow",
  "bitflags",
  "cc",
@@ -24,7 +25,6 @@ dependencies = [
  "env_logger",
  "hex",
  "lazy_static",
- "llvm-plugin",
  "log",
  "num-traits",
  "rand",
@@ -38,14 +38,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "amice-llvm"
+name = "amice-build-support"
 version = "0.1.0"
 dependencies = [
  "cc",
- "inkwell",
- "lazy_static",
  "regex",
  "semver 1.0.27",
+]
+
+[[package]]
+name = "amice-llvm"
+version = "0.1.0"
+dependencies = [
+ "amice-build-support",
+ "cc",
+ "inkwell",
+ "lazy_static",
  "strum",
  "strum_macros",
 ]
@@ -59,6 +67,25 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "amice-plugin"
+version = "0.1.0"
+dependencies = [
+ "amice-build-support",
+ "amice-plugin-macros",
+ "cc",
+ "inkwell",
+]
+
+[[package]]
+name = "amice-plugin-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -393,29 +420,6 @@ name = "libc"
 version = "0.2.180"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
-
-[[package]]
-name = "llvm-plugin"
-version = "0.6.0"
-source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=43fff11b3d58b787244c463d9b6624d59bc20307#43fff11b3d58b787244c463d9b6624d59bc20307"
-dependencies = [
- "cc",
- "inkwell",
- "lazy_static",
- "llvm-plugin-macros",
- "regex",
- "semver 1.0.27",
-]
-
-[[package]]
-name = "llvm-plugin-macros"
-version = "0.2.0"
-source = "git+https://github.com/fuqiuluo/llvm-plugin-rs?rev=43fff11b3d58b787244c463d9b6624d59bc20307#43fff11b3d58b787244c463d9b6624d59bc20307"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
 
 [[package]]
 name = "llvm-sys"

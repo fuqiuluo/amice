@@ -3,14 +3,14 @@ use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BuilderExt, CallInst, FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
-use llvm_plugin::inkwell::AddressSpace;
-use llvm_plugin::inkwell::attributes::AttributeLoc;
-use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
-use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{
+use amice_plugin::inkwell::AddressSpace;
+use amice_plugin::inkwell::attributes::AttributeLoc;
+use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
+use amice_plugin::inkwell::module::{Linkage, Module};
+use amice_plugin::inkwell::values::{
     AsValueRef, BasicValue, CallSiteValue, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue,
 };
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 
 #[amice(
     priority = 990,

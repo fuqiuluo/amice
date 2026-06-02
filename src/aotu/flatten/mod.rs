@@ -8,10 +8,10 @@ use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, VerifyResult};
 use amice_macro::amice;
 use anyhow::anyhow;
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use amice_plugin::inkwell::basic_block::BasicBlock;
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
+use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 
 #[amice(
     priority = 959,

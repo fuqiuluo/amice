@@ -4,15 +4,15 @@ use amice_llvm::amice_const_array;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::builder::Builder;
-use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::types::{AsTypeRef, IntType};
-use llvm_plugin::inkwell::values::{
+use amice_plugin::inkwell::basic_block::BasicBlock;
+use amice_plugin::inkwell::builder::Builder;
+use amice_plugin::inkwell::module::{Linkage, Module};
+use amice_plugin::inkwell::types::{AsTypeRef, IntType};
+use amice_plugin::inkwell::values::{
     ArrayValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, PointerValue,
 };
-use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use amice_plugin::inkwell::{AddressSpace, IntPredicate};
+use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use rand::Rng;
 use rand::prelude::SliceRandom;
 

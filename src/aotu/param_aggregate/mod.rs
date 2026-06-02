@@ -5,13 +5,13 @@ use amice_llvm::inkwell2::{
 };
 use amice_macro::amice;
 use anyhow::anyhow;
-use llvm_plugin::PreservedAnalyses;
-use llvm_plugin::inkwell::AddressSpace;
-use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
-use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
-use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::types::{BasicType, StructType};
-use llvm_plugin::inkwell::values::{
+use amice_plugin::PreservedAnalyses;
+use amice_plugin::inkwell::AddressSpace;
+use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
+use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
+use amice_plugin::inkwell::module::{Linkage, Module};
+use amice_plugin::inkwell::types::{BasicType, StructType};
+use amice_plugin::inkwell::values::{
     AnyValue, AsValueRef, BasicMetadataValueEnum, FIRST_CUSTOM_METADATA_KIND_ID, FunctionValue, InstructionOpcode,
 };
 use log::log_enabled;

@@ -3,13 +3,13 @@ use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{FunctionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
 use anyhow::anyhow;
-use llvm_plugin::inkwell::attributes::AttributeLoc;
-use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{
+use amice_plugin::inkwell::attributes::AttributeLoc;
+use amice_plugin::inkwell::llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
 };
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use std::collections::BTreeSet;
 
 #[amice(

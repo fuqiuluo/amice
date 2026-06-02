@@ -2,10 +2,10 @@ use crate::config::{Config, LowerSwitchConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, SwitchInst};
 use amice_macro::amice;
-use llvm_plugin::PreservedAnalyses;
-use llvm_plugin::inkwell::IntPredicate;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue};
+use amice_plugin::PreservedAnalyses;
+use amice_plugin::inkwell::IntPredicate;
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue};
 
 #[amice(
     priority = 961,

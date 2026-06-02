@@ -7,9 +7,9 @@ use crate::config::{BogusControlFlowConfig, BogusControlFlowMode, Config};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
 use amice_macro::amice;
-use llvm_plugin::PreservedAnalyses;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::FunctionValue;
+use amice_plugin::PreservedAnalyses;
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::values::FunctionValue;
 
 #[amice(
     priority = 950,

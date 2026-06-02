@@ -2,8 +2,8 @@ use super::{EnvOverlay, bool_var};
 use crate::config::eloquent_config::EloquentConfigParser;
 use crate::pass_registry::FunctionAnnotationsOverlay;
 use amice_llvm::inkwell2::ModuleExt;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::FunctionValue;
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::values::FunctionValue;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

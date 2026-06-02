@@ -1,0 +1,60 @@
+[package]
+name = "amice-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "In-tree LLVM pass-plugin runtime for amice (replaces the external llvm-plugin crate)."
+publish = false
+
+# Derived from llvm-plugin (Apache-2.0, James Smith),
+# https://github.com/jamesmth/llvm-plugin-rs
+
+[lib]
+# Doc examples reference the crate's own macros and are illustrative only; we
+# never run them as part of the project test suite.
+doctest = false
+
+[features]
+default = ["macros", "target-all"]
+macros = ["amice-plugin-macros"]
+
+# On Windows, llvm plugins require linking with either opt.lib, or lld.lib.
+win-link-opt = []
+win-link-lld = []
+
+llvm11-0 = ["inkwell/llvm11-0-no-llvm-linking"]
+llvm12-0 = ["inkwell/llvm12-0-no-llvm-linking"]
+llvm13-0 = ["inkwell/llvm13-0-no-llvm-linking"]
+llvm14-0 = ["inkwell/llvm14-0-no-llvm-linking"]
+llvm15-0 = ["inkwell/llvm15-0-no-llvm-linking"]
+llvm16-0 = ["inkwell/llvm16-0-no-llvm-linking"]
+llvm17-0 = ["inkwell/llvm17-0-no-llvm-linking"]
+llvm18-1 = ["inkwell/llvm18-1-no-llvm-linking"]
+llvm19-1 = ["inkwell/llvm19-1-no-llvm-linking"]
+llvm20-1 = ["inkwell/llvm20-1-no-llvm-linking"]
+llvm21-1 = ["inkwell/llvm21-1-no-llvm-linking"]
+
+target-x86 = ["inkwell/target-x86"]
+target-arm = ["inkwell/target-arm"]
+target-mips = ["inkwell/target-mips"]
+target-aarch64 = ["inkwell/target-aarch64"]
+target-amdgpu = ["inkwell/target-amdgpu"]
+target-systemz = ["inkwell/target-systemz"]
+target-hexagon = ["inkwell/target-hexagon"]
+target-nvptx = ["inkwell/target-nvptx"]
+target-msp430 = ["inkwell/target-msp430"]
+target-xcore = ["inkwell/target-xcore"]
+target-powerpc = ["inkwell/target-powerpc"]
+target-sparc = ["inkwell/target-sparc"]
+target-bpf = ["inkwell/target-bpf"]
+target-lanai = ["inkwell/target-lanai"]
+target-webassembly = ["inkwell/target-webassembly"]
+target-riscv = ["inkwell/target-riscv"]
+target-all = ["inkwell/target-all"]
+
+[dependencies]
+inkwell = { version = "0.7", default-features = false }
+amice-plugin-macros = { path = "../amice-plugin-macros", version = "0.1", optional = true }
+
+[build-dependencies]
+amice-build-support = { path = "../amice-build-support" }
+cc = "1"

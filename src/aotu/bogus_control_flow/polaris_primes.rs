@@ -5,15 +5,15 @@ use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
 use crate::config::BogusControlFlowConfig;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt};
 use anyhow::anyhow;
-use llvm_plugin::inkwell::IntPredicate;
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::builder::Builder;
-use llvm_plugin::inkwell::context::{Context, ContextRef};
-use llvm_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
-use llvm_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::types::IntType;
-use llvm_plugin::inkwell::values::{
+use amice_plugin::inkwell::IntPredicate;
+use amice_plugin::inkwell::basic_block::BasicBlock;
+use amice_plugin::inkwell::builder::Builder;
+use amice_plugin::inkwell::context::{Context, ContextRef};
+use amice_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
+use amice_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::types::IntType;
+use amice_plugin::inkwell::values::{
     AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue, PhiValue, PointerValue,
 };
 use log::error;

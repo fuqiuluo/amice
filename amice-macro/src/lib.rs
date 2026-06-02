@@ -148,7 +148,7 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
             impl crate::pass_registry::AmiceFunctionPass for #struct_name {
                 type Config = #config_ty;
 
-                fn parse_function_annotations<'a>(&self, module: &mut llvm_plugin::inkwell::module::Module<'a>, function: llvm_plugin::inkwell::values::FunctionValue<'a>) -> anyhow::Result<#config_ty> {
+                fn parse_function_annotations<'a>(&self, module: &mut amice_plugin::inkwell::module::Module<'a>, function: amice_plugin::inkwell::values::FunctionValue<'a>) -> anyhow::Result<#config_ty> {
                     let def_cfg = &self.default_config;
                     let cfg = <#config_ty as crate::pass_registry::FunctionAnnotationsOverlay>::overlay_annotations(def_cfg, module, function);
                     cfg
@@ -172,8 +172,8 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
             }
         }
 
-        impl llvm_plugin::LlvmModulePass for #struct_name {
-            fn run_pass(&self, module: &mut llvm_plugin::inkwell::module::Module<'_>, _manager: &llvm_plugin::ModuleAnalysisManager) -> llvm_plugin::PreservedAnalyses {
+        impl amice_plugin::LlvmModulePass for #struct_name {
+            fn run_pass(&self, module: &mut amice_plugin::inkwell::module::Module<'_>, _manager: &amice_plugin::ModuleAnalysisManager) -> amice_plugin::PreservedAnalyses {
                 let name = <#struct_name as crate::pass_registry::AmicePassMetadata>::name();
                 let flag = <#struct_name as crate::pass_registry::AmicePassMetadata>::flag();
 
@@ -181,12 +181,12 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
                     Ok(analyses) => analyses,
                     Err(e) => {
                         log::error!("({}) do_pass failed: {}", name, e);
-                        llvm_plugin::PreservedAnalyses::All
+                        amice_plugin::PreservedAnalyses::All
                     }
                 };
 
                 match result {
-                    llvm_plugin::PreservedAnalyses::None => log::info!("({}) pass done", name),
+                    amice_plugin::PreservedAnalyses::None => log::info!("({}) pass done", name),
                     _ => {}
                 };
 
@@ -196,7 +196,7 @@ pub fn amice(args: TokenStream, input: TokenStream) -> TokenStream {
 
         #[ctor::ctor]
         fn #reg_fn_ident() {
-            fn installer(cfg: &crate::config::Config, manager: &mut llvm_plugin::ModulePassManager, flag: crate::pass_registry::AmicePassFlag) -> bool {
+            fn installer(cfg: &crate::config::Config, manager: &mut amice_plugin::ModulePassManager, flag: crate::pass_registry::AmicePassFlag) -> bool {
                 let allowed_flag = #flag_value;
                 if !allowed_flag.contains(flag) {
                     return false;

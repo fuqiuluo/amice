@@ -5,11 +5,11 @@ use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionEx
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use anyhow::anyhow;
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{ArrayValue, FunctionValue, InstructionOpcode, IntValue};
-use llvm_plugin::inkwell::{AddressSpace, IntPredicate};
-use llvm_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
+use amice_plugin::inkwell::basic_block::BasicBlock;
+use amice_plugin::inkwell::module::{Linkage, Module};
+use amice_plugin::inkwell::values::{ArrayValue, FunctionValue, InstructionOpcode, IntValue};
+use amice_plugin::inkwell::{AddressSpace, IntPredicate};
+use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use log::{Level, log_enabled};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};

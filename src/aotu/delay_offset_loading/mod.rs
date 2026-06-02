@@ -5,11 +5,11 @@ use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BuilderExt, FunctionExt, InstructionExt, LLVMValueRefExt, VerifyResult};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
-use llvm_plugin::inkwell::AddressSpace;
-use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
-use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{AsValueRef, InstructionOpcode};
-use llvm_plugin::{ModuleAnalysisManager, PreservedAnalyses};
+use amice_plugin::inkwell::AddressSpace;
+use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
+use amice_plugin::inkwell::module::{Linkage, Module};
+use amice_plugin::inkwell::values::{AsValueRef, InstructionOpcode};
+use amice_plugin::{ModuleAnalysisManager, PreservedAnalyses};
 use std::collections::HashMap;
 use std::ops::BitXor;
 

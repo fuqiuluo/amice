@@ -1,5 +1,5 @@
-use llvm_plugin::inkwell::context::ContextRef;
-use llvm_plugin::inkwell::types::IntType;
+use amice_plugin::inkwell::context::ContextRef;
+use amice_plugin::inkwell::types::IntType;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(super) enum BitWidth {

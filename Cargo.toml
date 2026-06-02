@@ -15,25 +15,25 @@ android-ndk = ["amice-llvm/android-ndk"]
 
 # On Windows, llvm plugins require linking with either opt.lib,
 # or lld.lib.
-win-link-opt = ["llvm-plugin/win-link-opt", "amice-llvm/win-link-opt"]
-win-link-lld = ["llvm-plugin/win-link-lld", "amice-llvm/win-link-lld"]
+win-link-opt = ["amice-plugin/win-link-opt", "amice-llvm/win-link-opt"]
+win-link-lld = ["amice-plugin/win-link-lld", "amice-llvm/win-link-lld"]
 
-llvm11-0 = ["llvm-plugin/llvm11-0", "amice-llvm/llvm11-0"]
-llvm12-0 = ["llvm-plugin/llvm12-0", "amice-llvm/llvm12-0"]
-llvm13-0 = ["llvm-plugin/llvm13-0", "amice-llvm/llvm13-0"]
-llvm14-0 = ["llvm-plugin/llvm14-0", "amice-llvm/llvm14-0"]
-llvm15-0 = ["llvm-plugin/llvm15-0", "amice-llvm/llvm15-0"]
-llvm16-0 = ["llvm-plugin/llvm16-0", "amice-llvm/llvm16-0"]
-llvm17-0 = ["llvm-plugin/llvm17-0", "amice-llvm/llvm17-0"]
-llvm18-1 = ["llvm-plugin/llvm18-1", "amice-llvm/llvm18-1"]
-llvm19-1 = ["llvm-plugin/llvm19-1", "amice-llvm/llvm19-1"]
-llvm20-1 = ["llvm-plugin/llvm20-1", "amice-llvm/llvm20-1"]
-llvm21-1 = ["llvm-plugin/llvm21-1", "amice-llvm/llvm21-1"]
+llvm11-0 = ["amice-plugin/llvm11-0", "amice-llvm/llvm11-0"]
+llvm12-0 = ["amice-plugin/llvm12-0", "amice-llvm/llvm12-0"]
+llvm13-0 = ["amice-plugin/llvm13-0", "amice-llvm/llvm13-0"]
+llvm14-0 = ["amice-plugin/llvm14-0", "amice-llvm/llvm14-0"]
+llvm15-0 = ["amice-plugin/llvm15-0", "amice-llvm/llvm15-0"]
+llvm16-0 = ["amice-plugin/llvm16-0", "amice-llvm/llvm16-0"]
+llvm17-0 = ["amice-plugin/llvm17-0", "amice-llvm/llvm17-0"]
+llvm18-1 = ["amice-plugin/llvm18-1", "amice-llvm/llvm18-1"]
+llvm19-1 = ["amice-plugin/llvm19-1", "amice-llvm/llvm19-1"]
+llvm20-1 = ["amice-plugin/llvm20-1", "amice-llvm/llvm20-1"]
+llvm21-1 = ["amice-plugin/llvm21-1", "amice-llvm/llvm21-1"]
 
 [dependencies]
 amice-llvm = { path = "amice-llvm", default-features = false }
 amice-macro = { path = "amice-macro", default-features = false }
-llvm-plugin = { version = "0.6", features = ["default"] }
+amice-plugin = { path = "amice-plugin" }
 log = "0.4"
 env_logger = "0.11.8"
 bitflags = { version = "2.10", features = ["serde"] }
@@ -56,7 +56,3 @@ semver = "1"
 
 [dev-dependencies]
 serial_test = "3.2"
-
-[patch.crates-io]
-# inkwell = { git = "https://github.com/Ylarod/inkwell" }
-llvm-plugin = { git = "https://github.com/fuqiuluo/llvm-plugin-rs", rev = "43fff11b3d58b787244c463d9b6624d59bc20307" }

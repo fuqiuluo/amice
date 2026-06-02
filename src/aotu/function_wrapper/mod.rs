@@ -2,13 +2,13 @@ use crate::config::{Config, FunctionWrapperConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
-use llvm_plugin::PreservedAnalyses;
-use llvm_plugin::inkwell::attributes::AttributeLoc;
-use llvm_plugin::inkwell::context::ContextRef;
-use llvm_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
-use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::types::BasicTypeEnum;
-use llvm_plugin::inkwell::values::{
+use amice_plugin::PreservedAnalyses;
+use amice_plugin::inkwell::attributes::AttributeLoc;
+use amice_plugin::inkwell::context::ContextRef;
+use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
+use amice_plugin::inkwell::module::{Linkage, Module};
+use amice_plugin::inkwell::types::BasicTypeEnum;
+use amice_plugin::inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, FunctionValue, InstructionOpcode, InstructionValue, ValueKind,
 };
 use rand::Rng;

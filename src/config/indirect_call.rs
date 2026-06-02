@@ -37,8 +37,8 @@ impl FunctionAnnotationsOverlay for IndirectCallConfig {
 
     fn overlay_annotations<'a>(
         &self,
-        module: &mut llvm_plugin::inkwell::module::Module<'a>,
-        function: llvm_plugin::inkwell::values::FunctionValue<'a>,
+        module: &mut amice_plugin::inkwell::module::Module<'a>,
+        function: amice_plugin::inkwell::values::FunctionValue<'a>,
     ) -> anyhow::Result<Self::Config> {
         let mut cfg = self.clone();
         let annotations_expr = module

@@ -3,10 +3,10 @@ use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt};
 use amice_macro::amice;
 use anyhow::anyhow;
-use llvm_plugin::PreservedAnalyses;
-use llvm_plugin::inkwell::basic_block::BasicBlock;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
+use amice_plugin::PreservedAnalyses;
+use amice_plugin::inkwell::basic_block::BasicBlock;
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use log::{Level, log_enabled};
 use rand::seq::SliceRandom;
 
@@ -173,7 +173,7 @@ fn first_non_alloca_index(bb: &BasicBlock<'_>) -> u32 {
     idx
 }
 
-fn is_terminator_instruction(inst: &llvm_plugin::inkwell::values::InstructionValue) -> bool {
+fn is_terminator_instruction(inst: &amice_plugin::inkwell::values::InstructionValue) -> bool {
     matches!(
         inst.get_opcode(),
         InstructionOpcode::Return

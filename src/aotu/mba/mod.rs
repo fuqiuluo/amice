@@ -12,10 +12,10 @@ use crate::config::{Config, MbaConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BuilderExt, FunctionExt, InstructionExt};
 use amice_macro::amice;
-use llvm_plugin::PreservedAnalyses;
-use llvm_plugin::inkwell::attributes::{Attribute, AttributeLoc};
-use llvm_plugin::inkwell::module::{Linkage, Module};
-use llvm_plugin::inkwell::values::{
+use amice_plugin::PreservedAnalyses;
+use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
+use amice_plugin::inkwell::module::{Linkage, Module};
+use amice_plugin::inkwell::values::{
     BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue,
 };
 use std::cmp::max;

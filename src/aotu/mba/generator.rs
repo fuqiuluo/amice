@@ -1,11 +1,11 @@
 use crate::aotu::mba::binary_expr_mba::{BinOp, mba_binop};
 use crate::aotu::mba::config::{BitWidth, ConstantMbaConfig};
 use crate::aotu::mba::expr::Expr;
-use llvm_plugin::inkwell::builder::Builder;
-use llvm_plugin::inkwell::context::ContextRef;
-use llvm_plugin::inkwell::module::Module;
-use llvm_plugin::inkwell::types::IntType;
-use llvm_plugin::inkwell::values::{FunctionValue, IntValue};
+use amice_plugin::inkwell::builder::Builder;
+use amice_plugin::inkwell::context::ContextRef;
+use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::types::IntType;
+use amice_plugin::inkwell::values::{FunctionValue, IntValue};
 use rand::SeedableRng;
 use rand::prelude::StdRng;
 
