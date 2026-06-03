@@ -54,7 +54,6 @@ fn test_rust_switch_lowering_basic() {
 
 #[test]
 #[serial]
-#[ignore = "append_dummy_code causes LLVM IR verification issues - tracked as known issue"]
 fn test_rust_switch_lowering_with_dummy_code() {
     common::ensure_plugin_built();
 
@@ -65,6 +64,11 @@ fn test_rust_switch_lowering_with_dummy_code() {
         .compile();
 
     result.assert_success();
+    assert!(
+        !result.stderr().contains("is not verified"),
+        "LowerSwitch dummy mode emitted verifier warning:\n{}",
+        result.stderr()
+    );
 
     let run_result = result.run();
     run_result.assert_success();

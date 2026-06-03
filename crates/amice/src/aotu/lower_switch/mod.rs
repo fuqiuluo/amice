@@ -5,7 +5,7 @@ use amice_macro::amice;
 use amice_plugin::PreservedAnalyses;
 use amice_plugin::inkwell::IntPredicate;
 use amice_plugin::inkwell::module::Module;
-use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue};
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 
 #[amice(
     priority = 961,
@@ -130,7 +130,7 @@ pub(crate) fn demote_switch_to_if(
         builder.position_before(&inst);
         let dummy_value = builder.build_load2(i32_ty, tmp, "")?;
         let cond = builder.build_int_compare(IntPredicate::EQ, dummy_value.into_int_value(), i32_zero, "")?;
-        builder.build_conditional_branch(cond, lower_branches[0], unreachable_block)?;
+        builder.build_conditional_branch(cond, lower_branches[0], current_branch)?;
         dummy_value_ptr = Some(tmp);
     } else {
         builder.position_before(&inst);
