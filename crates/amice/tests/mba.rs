@@ -12,6 +12,15 @@ fn mba_config() -> ObfuscationConfig {
     }
 }
 
+fn mba_aux_count_config(aux_count: u32, alloc_aux_params_in_global: bool) -> ObfuscationConfig {
+    ObfuscationConfig {
+        mba: Some(true),
+        mba_aux_count: Some(aux_count),
+        mba_alloc_aux_params_in_global: Some(alloc_aux_params_in_global),
+        ..ObfuscationConfig::disabled()
+    }
+}
+
 /// Get expected output from non-obfuscated baseline
 fn get_baseline_output(test_name: &str) -> String {
     let result = CppCompileBuilder::new(
@@ -82,4 +91,36 @@ fn test_mba_with_bcf() {
     run.assert_success();
 
     assert_eq!(run.stdout(), baseline, "MBA with BCF changed program output");
+}
+
+#[test]
+fn test_mba_i128_aux_count_three() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("mba", "mba_i128_aux.c", Language::C),
+        "mba_i128_aux_count_three",
+    )
+    .config(mba_aux_count_config(3, false))
+    .optimization("O1")
+    .compile();
+
+    result.assert_success();
+    result.run().assert_success();
+}
+
+#[test]
+fn test_mba_i128_global_aux_count_three() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("mba", "mba_i128_aux.c", Language::C),
+        "mba_i128_global_aux_count_three",
+    )
+    .config(mba_aux_count_config(3, true))
+    .optimization("O1")
+    .compile();
+
+    result.assert_success();
+    result.run().assert_success();
 }

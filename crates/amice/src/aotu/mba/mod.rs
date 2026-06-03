@@ -43,7 +43,7 @@ impl AmicePass for Mba {
         self.default_config.fix_stack = cfg.mba.fix_stack;
         self.default_config.opt_none = cfg.mba.opt_none;
 
-        self.alloc_aux_params_in_global = false;
+        self.alloc_aux_params_in_global = self.default_config.alloc_aux_params_in_global;
     }
 
     fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
@@ -70,7 +70,7 @@ impl AmicePass for Mba {
             BitWidth::W16,
             BitWidth::W32,
             BitWidth::W64,
-            /*BitWidth::W128,*/
+            BitWidth::W128,
         ];
 
         let global_aux_params = if self.default_config.alloc_aux_params_in_global {
@@ -79,15 +79,8 @@ impl AmicePass for Mba {
             for mba_int_width in mba_int_widths {
                 let mut global_aux_params = vec![];
                 for _ in 0..self.default_config.aux_count {
-                    let rand = match mba_int_width {
-                        BitWidth::W8 => rand::random::<u8>() as u64,
-                        BitWidth::W16 => rand::random::<u16>() as u64,
-                        BitWidth::W32 => rand::random::<u32>() as u64,
-                        BitWidth::W64 => rand::random::<u64>(),
-                        BitWidth::W128 => panic!("(mba) not support 128 bit"),
-                    };
                     let value_type = mba_int_width.to_llvm_int_type(ctx);
-                    let aux_param = value_type.const_int(rand, false);
+                    let aux_param = mba_int_width.random_const(value_type);
                     let global_aux = module.add_global(value_type, None, "");
                     global_aux.set_initializer(&aux_param);
                     global_aux.set_linkage(Linkage::Internal);
@@ -189,15 +182,8 @@ impl AmicePass for Mba {
                 for mba_int_width in mba_int_widths {
                     let mut stack_aux_params = vec![];
                     for _ in 0..self.default_config.aux_count {
-                        let rand = match mba_int_width {
-                            BitWidth::W8 => rand::random::<u8>() as u64,
-                            BitWidth::W16 => rand::random::<u16>() as u64,
-                            BitWidth::W32 => rand::random::<u32>() as u64,
-                            BitWidth::W64 => rand::random::<u64>(),
-                            BitWidth::W128 => panic!("(mba) not support 128 bit"),
-                        };
                         let value_type = mba_int_width.to_llvm_int_type(ctx);
-                        let aux_param = value_type.const_int(rand, false);
+                        let aux_param = mba_int_width.random_const(value_type);
                         let aux_param_alloca = builder
                             .build_alloca(value_type, "")
                             .expect("(mba) failed to build alloca");
@@ -345,14 +331,7 @@ fn rewrite_binop_with_mba<'a>(
             let int = builder.build_load2(value_type, stack_aux, "")?.into_int_value();
             aux_params.push(int);
         } else {
-            let rand = match mba_int_width {
-                BitWidth::W8 => rand::random::<u8>() as u64,
-                BitWidth::W16 => rand::random::<u16>() as u64,
-                BitWidth::W32 => rand::random::<u32>() as u64,
-                BitWidth::W64 => rand::random::<u64>(),
-                BitWidth::W128 => panic!("(mba) not support 128 bit"),
-            };
-            let aux_param = value_type.const_int(rand, false);
+            let aux_param = mba_int_width.random_const(value_type);
             aux_params.push(aux_param);
         }
     }
@@ -423,14 +402,7 @@ fn rewrite_constant_inst_with_mba<'a>(
                 let int = builder.build_load2(value_type, stack_aux, "")?.into_int_value();
                 aux_params.push(int);
             } else {
-                let rand = match mba_int_width {
-                    BitWidth::W8 => rand::random::<u8>() as u64,
-                    BitWidth::W16 => rand::random::<u16>() as u64,
-                    BitWidth::W32 => rand::random::<u32>() as u64,
-                    BitWidth::W64 => rand::random::<u64>(),
-                    BitWidth::W128 => panic!("(mba) not support 128 bit"),
-                };
-                let aux_param = value_type.const_int(rand, false);
+                let aux_param = mba_int_width.random_const(value_type);
                 aux_params.push(aux_param);
             }
         }

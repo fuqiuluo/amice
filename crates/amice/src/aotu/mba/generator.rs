@@ -9,23 +9,10 @@ use amice_plugin::inkwell::values::{FunctionValue, IntValue};
 use rand::SeedableRng;
 use rand::prelude::StdRng;
 
-pub fn build_u128_constant<'ctx>(
-    context: ContextRef<'ctx>,
-    builder: &Builder<'ctx>,
-    value: u128,
-    int_type: IntType<'ctx>,
-) -> IntValue<'ctx> {
-    match int_type.get_bit_width() {
-        8 => int_type.const_int(value as u64, false),
-        16 => int_type.const_int(value as u64, false),
-        32 => int_type.const_int(value as u64, false),
-        64 => int_type.const_int(value as u64, false),
-        128 => {
-            let words = [(value & 0xFFFF_FFFF_FFFF_FFFF) as u64, (value >> 64) as u64];
-            int_type.const_int_arbitrary_precision(&words)
-        },
-        _ => panic!("Unsupported bit width: {}", int_type.get_bit_width()),
-    }
+pub fn build_u128_constant<'ctx>(value: u128, int_type: IntType<'ctx>) -> IntValue<'ctx> {
+    let width =
+        BitWidth::from_bits(int_type.get_bit_width()).expect("expr_to_llvm_value should use a supported int width");
+    width.const_int(int_type, value)
 }
 
 pub fn expr_to_llvm_value<'ctx>(
@@ -41,7 +28,7 @@ pub fn expr_to_llvm_value<'ctx>(
     match expr {
         Const(value) => {
             let masked_value = *value & width.mask_u128();
-            build_u128_constant(context, builder, masked_value, int_type)
+            build_u128_constant(masked_value, int_type)
         },
 
         Var(index) => aux_params.get(*index).copied().unwrap_or_else(|| int_type.const_zero()),
@@ -84,7 +71,7 @@ pub fn expr_to_llvm_value<'ctx>(
         MulConst(coeff, inner) => {
             let inner_val = expr_to_llvm_value(context, builder, inner, aux_params, int_type, width);
             let coeff_masked = *coeff & width.mask_u128();
-            let coeff_val = build_u128_constant(context, builder, coeff_masked, int_type);
+            let coeff_val = build_u128_constant(coeff_masked, int_type);
             builder.build_int_mul(coeff_val, inner_val, "mul_const_op").unwrap()
         },
     }

@@ -1,5 +1,6 @@
 use amice_plugin::inkwell::context::ContextRef;
 use amice_plugin::inkwell::types::IntType;
+use amice_plugin::inkwell::values::IntValue;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(super) enum BitWidth {
@@ -106,6 +107,28 @@ impl BitWidth {
             BitWidth::W64 => context.i64_type(),
             BitWidth::W128 => context.i128_type(),
         }
+    }
+
+    pub(crate) fn const_int<'ctx>(self, int_type: IntType<'ctx>, value: u128) -> IntValue<'ctx> {
+        let value = value & self.mask_u128();
+        match self {
+            BitWidth::W8 | BitWidth::W16 | BitWidth::W32 | BitWidth::W64 => int_type.const_int(value as u64, false),
+            BitWidth::W128 => {
+                let words = [(value & u64::MAX as u128) as u64, (value >> 64) as u64];
+                int_type.const_int_arbitrary_precision(&words)
+            },
+        }
+    }
+
+    pub(crate) fn random_const<'ctx>(self, int_type: IntType<'ctx>) -> IntValue<'ctx> {
+        let value = match self {
+            BitWidth::W8 => rand::random::<u8>() as u128,
+            BitWidth::W16 => rand::random::<u16>() as u128,
+            BitWidth::W32 => rand::random::<u32>() as u128,
+            BitWidth::W64 => rand::random::<u64>() as u128,
+            BitWidth::W128 => rand::random::<u128>(),
+        };
+        self.const_int(int_type, value)
     }
 }
 

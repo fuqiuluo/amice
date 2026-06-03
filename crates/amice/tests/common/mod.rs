@@ -222,6 +222,8 @@ pub struct ObfuscationConfig {
 
     // MBA
     pub mba: Option<bool>,
+    pub mba_aux_count: Option<u32>,
+    pub mba_alloc_aux_params_in_global: Option<bool>,
 
     // Function wrapper
     pub function_wrapper: Option<bool>,
@@ -326,6 +328,12 @@ impl ObfuscationConfig {
 
         // MBA
         set_env_bool!(cmd, "AMICE_MBA", self.mba);
+        set_env_num!(cmd, "AMICE_MBA_AUX_COUNT", self.mba_aux_count);
+        set_env_bool!(
+            cmd,
+            "AMICE_MBA_ALLOC_AUX_PARAMS_IN_GLOBAL",
+            self.mba_alloc_aux_params_in_global
+        );
 
         // Function wrapper
         set_env_bool!(cmd, "AMICE_FUNCTION_WRAPPER", self.function_wrapper);
