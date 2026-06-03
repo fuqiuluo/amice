@@ -9,7 +9,7 @@ use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, VerifyResult};
 use amice_macro::amice;
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::module::Module;
-use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue};
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use anyhow::anyhow;
 
@@ -99,52 +99,23 @@ fn split_entry_block_for_flatten<'a>(
         return Ok(None);
     };
 
-    // 调试一下入口块的终结指令
-    //debug!("terminator: {:?}", entry_terminator);
-
-    // 计算入口块指令数（用于决定 split 位置）
-    let entry_block_inst_count = entry_block.get_instructions().count();
-
-    let mut first_basic_block = None;
-    match entry_terminator.get_opcode() {
+    let first_basic_block = match entry_terminator.get_opcode() {
         InstructionOpcode::Br => {
             if entry_terminator.is_conditional() || entry_terminator.get_num_operands() > 1 {
-                // 分裂，让新块只承载 terminator，便于作为起始节点
-                let mut split_pos = entry_terminator;
-                if entry_block_inst_count > 0 {
-                    split_pos = split_pos.get_previous_instruction().unwrap();
-                }
-                let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.br", false) else {
-                    panic!("failed to split basic block");
-                };
-                if new_block.get_parent().unwrap() != function {
-                    return Err(anyhow!("Split block has wrong parent"));
-                }
-                first_basic_block = new_block.into();
+                split_entry_terminator_block(function, entry_block, entry_terminator, ".no.conditional.br")?
             } else {
                 // 无条件跳转，直接取目标块为第一个实际执行的块
-                first_basic_block = entry_terminator
+                entry_terminator
                     .get_operand(0)
-                    .ok_or(anyhow!("expected operand for unconditional br"))?
+                    .ok_or_else(|| anyhow!("expected operand for unconditional br"))?
                     .block()
-                    .ok_or(anyhow!("expected right operand for unconditional br"))?
-                    .into();
+                    .ok_or_else(|| anyhow!("expected right operand for unconditional br"))?
             }
         },
         InstructionOpcode::Switch => {
             // 这些 terminator 没有 单一落地块 概念，为保持与 br的 一致的处理，
             // 分裂出仅包含 terminator 的新块作为 first_basic_block
-            let mut split_pos = entry_terminator;
-            if entry_block_inst_count > 0 {
-                split_pos = split_pos.get_previous_instruction().unwrap();
-            }
-            let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.term", false) else {
-                panic!("failed to split basic block");
-            };
-            if new_block.get_parent().unwrap() != function {
-                return Err(anyhow!("Split block has wrong parent"));
-            }
-            first_basic_block = new_block.into();
+            split_entry_terminator_block(function, entry_block, entry_terminator, ".no.conditional.term")?
         },
         InstructionOpcode::Return | InstructionOpcode::Unreachable => {
             // 无后继，不需要做 flatten
@@ -154,15 +125,32 @@ fn split_entry_block_for_flatten<'a>(
             debug!("Unknown terminator opcode: {:?}", entry_terminator.get_opcode());
             return Ok(None);
         },
-    }
+    };
 
     // 确保这个块包含在待处理列表中
-    if let Some(start_block) = first_basic_block {
-        if !basic_blocks.contains(&start_block) {
-            basic_blocks.push(start_block);
-        }
-        // 不需要在这里强制 insert(0)，因为我们已经通过返回值告诉调用者是谁了
+    if !basic_blocks.contains(&first_basic_block) {
+        basic_blocks.push(first_basic_block);
+    }
+    // 不需要在这里强制 insert(0)，因为我们已经通过返回值告诉调用者是谁了
+
+    Ok(Some(first_basic_block))
+}
+
+fn split_entry_terminator_block<'a>(
+    function: FunctionValue<'a>,
+    entry_block: BasicBlock<'a>,
+    terminator: InstructionValue<'a>,
+    name: &str,
+) -> anyhow::Result<BasicBlock<'a>> {
+    let split_pos = terminator.get_previous_instruction().unwrap_or(terminator);
+
+    let Some(new_block) = entry_block.split_basic_block(split_pos, name, false) else {
+        return Err(anyhow!("failed to split basic block"));
+    };
+
+    if new_block.get_parent() != Some(function) {
+        return Err(anyhow!("split block has wrong parent"));
     }
 
-    Ok(first_basic_block)
+    Ok(new_block)
 }

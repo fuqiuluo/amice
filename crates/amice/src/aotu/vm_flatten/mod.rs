@@ -7,7 +7,7 @@ use amice_llvm::ptr_type;
 use amice_macro::amice;
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::module::{Linkage, Module};
-use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode, IntValue};
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue, IntValue};
 use amice_plugin::inkwell::{AddressSpace, IntPredicate};
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 use anyhow::anyhow;
@@ -152,6 +152,25 @@ enum VmBranchNodeKind {
     None = 0,
 }
 
+fn split_entry_terminator_block<'a>(
+    function: FunctionValue<'a>,
+    entry_block: BasicBlock<'a>,
+    terminator: InstructionValue<'a>,
+    name: &str,
+) -> anyhow::Result<BasicBlock<'a>> {
+    let split_pos = terminator.get_previous_instruction().unwrap_or(terminator);
+
+    let Some(new_block) = entry_block.split_basic_block(split_pos, name, false) else {
+        return Err(anyhow!("failed to split basic block"));
+    };
+
+    if new_block.get_parent() != Some(function) {
+        return Err(anyhow!("split block has wrong parent"));
+    }
+
+    Ok(new_block)
+}
+
 fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: FunctionValue) -> anyhow::Result<()> {
     let mut basic_blocks = function.get_basic_blocks();
     if basic_blocks.is_empty() {
@@ -193,38 +212,21 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
     // 从basic block移除入口基本块
     basic_blocks.retain(|bb| *bb != entry_block);
 
-    // 计算入口块指令数（用于决定 split 位置）
-    let entry_block_inst_count = entry_block.get_instructions().count();
-
-    #[allow(unused_assignments)]
-    let mut first_basic_block = None;
     let Some(entry_terminator_inst) = entry_block.get_terminator() else {
         return Err(anyhow::anyhow!("expected entry block to have terminator"));
     };
 
-    match entry_terminator_inst.get_opcode() {
+    let first_basic_block = match entry_terminator_inst.get_opcode() {
         InstructionOpcode::Br => {
             if entry_terminator_inst.is_conditional() || entry_terminator_inst.get_num_operands() > 1 {
-                // 分裂，让新块只承载 terminator，便于作为起始节点
-                let mut split_pos = entry_terminator_inst;
-                if entry_block_inst_count > 0 {
-                    split_pos = split_pos.get_previous_instruction().unwrap();
-                }
-                let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.br", false) else {
-                    panic!("failed to split basic block");
-                };
-                if new_block.get_parent().unwrap() != function {
-                    return Err(anyhow!("Split block has wrong parent"));
-                }
-                first_basic_block = new_block.into();
+                split_entry_terminator_block(function, entry_block, entry_terminator_inst, ".no.conditional.br")?
             } else {
                 // 无条件跳转，直接取目标块为第一个实际执行的块
-                first_basic_block = entry_terminator_inst
+                entry_terminator_inst
                     .get_operand(0)
-                    .ok_or(anyhow!("expected operand for unconditional br"))?
+                    .ok_or_else(|| anyhow!("expected operand for unconditional br"))?
                     .block()
-                    .ok_or(anyhow!("expected right operand for unconditional br"))?
-                    .into();
+                    .ok_or_else(|| anyhow!("expected right operand for unconditional br"))?
             }
         },
         InstructionOpcode::Switch
@@ -233,17 +235,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
         | InstructionOpcode::IndirectBr => {
             // 这些 terminator 没有 单一落地块 概念，为保持与 br的 一致的处理，
             // 分裂出仅包含 terminator 的新块作为 first_basic_block
-            let mut split_pos = entry_terminator_inst;
-            if entry_block_inst_count > 0 {
-                split_pos = split_pos.get_previous_instruction().unwrap();
-            }
-            let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.term", false) else {
-                panic!("failed to split basic block");
-            };
-            if new_block.get_parent().unwrap() != function {
-                return Err(anyhow!("Split block has wrong parent"));
-            }
-            first_basic_block = new_block.into();
+            split_entry_terminator_block(function, entry_block, entry_terminator_inst, ".no.conditional.term")?
         },
         InstructionOpcode::Return | InstructionOpcode::Unreachable => {
             // 无后继，不需要做 flatten
@@ -251,52 +243,10 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
         },
         _ => {
             // 尝试像条件分支一样 split 出一个仅含 terminator 的块
-            let mut split_pos = entry_terminator_inst;
-            if entry_block_inst_count > 0 {
-                split_pos = split_pos.get_previous_instruction().unwrap();
-            }
-            if let Some(new_block) = entry_block.split_basic_block(split_pos, ".no.conditional.others", false) {
-                if new_block.get_parent().unwrap() != function {
-                    return Err(anyhow!("Split block has wrong parent"));
-                }
-                first_basic_block = new_block.into();
-            } else {
-                return Err(anyhow!("failed to get first basic block: {}", entry_terminator_inst));
-            }
+            split_entry_terminator_block(function, entry_block, entry_terminator_inst, ".no.conditional.others")?
         },
-    }
-
-    // for inst in entry_block.get_instructions() {
-    //     if inst.get_opcode() == InstructionOpcode::Br {
-    //         if inst.is_conditional() || inst.get_num_operands() > 1 {
-    //             let mut split_pos = inst;
-    //             if entry_block_inst_count > 0 {
-    //                 split_pos = split_pos.get_previous_instruction().unwrap();
-    //             }
-    //             let Some(new_block) = split_basic_block(entry_block, split_pos, ".no.conditional.br", false) else {
-    //                 panic!("failed to split basic block");
-    //             };
-    //             if new_block.get_parent().unwrap() != function {
-    //                 return Err(anyhow!("Split block has wrong parent"));
-    //             }
-    //             first_basic_block = new_block.into();
-    //         } else {
-    //             first_basic_block = inst
-    //                 .get_operand(0)
-    //                 .ok_or(anyhow!("expected operand for unconditional br"))?
-    //                 .right()
-    //                 .ok_or(anyhow!("expected right operand for unconditional br"))?
-    //                 .into();
-    //         }
-    //         break;
-    //     }
-    // }
-
-    let Some(first_basic_block) = first_basic_block.take() else {
-        return Err(anyhow::anyhow!(
-            "failed to get first basic block: {entry_terminator_inst}"
-        ));
     };
+
     if !basic_blocks.contains(&first_basic_block) {
         basic_blocks.insert(0, first_basic_block);
     }

@@ -8,7 +8,11 @@
 mod common;
 
 use crate::common::Language;
-use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_path};
+use common::{
+    CppCompileBuilder, ObfuscationConfig, detect_llvm_config, ensure_plugin_built, fixture_path, plugin_path,
+};
+use std::path::PathBuf;
+use std::process::Command;
 
 fn bcf_config() -> ObfuscationConfig {
     ObfuscationConfig {
@@ -74,6 +78,37 @@ fn flatten_config_dominator() -> ObfuscationConfig {
     config
 }
 
+fn opt_path() -> PathBuf {
+    detect_llvm_config()
+        .map(|config| PathBuf::from(config.prefix).join("bin").join("opt"))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from("opt"))
+}
+
+fn assert_entry_only_conditional_terminator_opt_pass(enable_env: &str) {
+    ensure_plugin_built();
+
+    let mut cmd = Command::new(opt_path());
+    ObfuscationConfig::disabled().apply_to_command(&mut cmd);
+    cmd.env(enable_env, "true")
+        .arg(format!("-load-pass-plugin={}", plugin_path().display()))
+        .arg("-passes=default<O1>")
+        .arg("-disable-output")
+        .arg(fixture_path(
+            "control_flow",
+            "entry_only_conditional_terminator.ll",
+            Language::C,
+        ));
+
+    let output = cmd.output().expect("failed to execute opt");
+    assert!(
+        output.status.success(),
+        "opt failed\nSTDOUT:\n{}\nSTDERR:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn test_flatten_basic() {
     ensure_plugin_built();
@@ -114,6 +149,11 @@ fn test_flatten_dominator() {
     assert!(lines[0].contains("Testing bogus control flow"));
 
     println!("{:?}", lines);
+}
+
+#[test]
+fn test_flatten_entry_only_conditional_terminator() {
+    assert_entry_only_conditional_terminator_opt_pass("AMICE_FLATTEN");
 }
 
 // ============================================================================
@@ -163,6 +203,11 @@ fn test_vm_flatten_complex() {
     result.assert_success();
     let run = result.run();
     run.assert_success();
+}
+
+#[test]
+fn test_vm_flatten_entry_only_conditional_terminator() {
+    assert_entry_only_conditional_terminator_opt_pass("AMICE_VM_FLATTEN");
 }
 
 // ============================================================================
