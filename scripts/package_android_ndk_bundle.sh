@@ -124,6 +124,57 @@ if [[ ! -f "$PLUGIN" ]]; then
     exit 1
 fi
 
+resolve_symlink_target() {
+    local path="$1"
+    local dir
+    local link
+
+    while [[ -L "$path" ]]; do
+        dir="$(cd "$(dirname "$path")" && pwd -P)"
+        link="$(readlink "$path")"
+        if [[ "$link" == /* ]]; then
+            path="$link"
+        else
+            path="$dir/$link"
+        fi
+    done
+
+    dir="$(cd "$(dirname "$path")" && pwd -P)"
+    printf '%s/%s\n' "$dir" "$(basename "$path")"
+}
+
+adhoc_sign_darwin_clang_drivers() {
+    local toolchain="$1"
+    local signed=""
+    local driver
+    local target
+
+    if [[ "$HOST_TAG" != darwin-* ]]; then
+        return
+    fi
+
+    if ! command -v codesign >/dev/null 2>&1; then
+        echo "ERROR: codesign is required to package a usable macOS Android NDK bundle" >&2
+        exit 1
+    fi
+
+    for driver in "$toolchain/bin/clang" "$toolchain/bin/clang++"; do
+        if [[ ! -e "$driver" ]]; then
+            echo "ERROR: expected Android NDK clang driver is missing: $driver" >&2
+            exit 1
+        fi
+
+        target="$(resolve_symlink_target "$driver")"
+        case ":$signed:" in
+            *":$target:"*) continue ;;
+        esac
+
+        echo "Ad-hoc signing Android NDK clang driver for plugin loading: $target"
+        codesign --force --sign - "$target"
+        signed="${signed:+$signed:}$target"
+    done
+}
+
 LLVM_LIBDIR="$("$LLVM_HOME/bin/llvm-config" --libdir)"
 
 if [[ ! -d "$LLVM_LIBDIR" ]]; then
@@ -152,6 +203,7 @@ mkdir -p "$BUNDLE_DIR/amice/bin" "$BUNDLE_DIR/amice/lib" "$BUNDLE_DIR/amice/llvm
 
 echo "Copying Android NDK: $NDK_HOME"
 cp -a "$NDK_HOME" "$BUNDLE_DIR/android-ndk-${NDK_RELEASE}"
+adhoc_sign_darwin_clang_drivers "$BUNDLE_DIR/android-ndk-${NDK_RELEASE}/toolchains/llvm/prebuilt/$HOST_TAG"
 
 echo "Copying AMICE plugin: $PLUGIN"
 cp -a "$PLUGIN" "$BUNDLE_DIR/amice/lib/libamice.$PLUGIN_EXT"
@@ -313,11 +365,16 @@ Smoke test:
 
 \`\`\`bash
 cat > hello.c <<'SRC'
-int main(void) { return 0; }
+extern int puts(const char *);
+int main(void) { return puts("AMICE_NDK_STRING_TEST_20260603") < 0; }
 SRC
 
 AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
 file hello
+if strings -a hello | grep -q 'AMICE_NDK_STRING_TEST_20260603'; then
+  echo "ERROR: string encryption did not hide the marker"
+  exit 1
+fi
 \`\`\`
 
 Default target wrapper API levels:
@@ -332,6 +389,12 @@ Override with \`AMICE_ANDROID_API=21\`, or pass \`--target=...\` yourself.
 The generic \`amice-clang\` and \`amice-clang++\` wrappers do not choose an Android target. Use them with an explicit target, for example \`--target=aarch64-linux-android23\`. If you want a default Android target, use the ABI-named wrappers such as \`aarch64-linux-android-clang\`.
 
 For CMake/Gradle, use \`android-ndk-${NDK_RELEASE}\` as the NDK path, add \`-fpass-plugin=\$PWD/amice/lib/libamice.${PLUGIN_EXT}\`, and make sure \`amice/llvm-lib\` is in \`LD_LIBRARY_PATH\` on Linux or \`DYLD_LIBRARY_PATH\` on macOS.
+
+macOS note: this bundle ad-hoc signs the copied NDK clang driver so it can load the AMICE plugin. If you use a plain NDK or an older bundle and see a Team ID mismatch from \`dlopen\`, re-sign the extracted clang driver:
+
+\`\`\`bash
+codesign --force --sign - android-ndk-${NDK_RELEASE}/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang-21
+\`\`\`
 EOF
 
 (

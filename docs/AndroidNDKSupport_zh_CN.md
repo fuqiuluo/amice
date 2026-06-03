@@ -42,11 +42,16 @@ cd amice-android-ndk-r29-darwin-x86_64
 
 ```bash
 cat > hello.c <<'SRC'
-int main(void) { return 0; }
+extern int puts(const char *);
+int main(void) { return puts("AMICE_NDK_STRING_TEST_20260603") < 0; }
 SRC
 
 AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
 file hello
+if strings -a hello | grep -q 'AMICE_NDK_STRING_TEST_20260603'; then
+  echo "ERROR: string encryption did not hide the marker"
+  exit 1
+fi
 ```
 
 默认 API level：
@@ -80,6 +85,8 @@ AMICE_ANDROID_API=21 ./amice/bin/aarch64-linux-android-clang hello.c -o hello
 cd /path/to/amice-android-ndk-r29-linux-x86_64
 source ./amice/env.sh
 ```
+
+macOS 下把上面的目录换成 `amice-android-ndk-r29-darwin-x86_64`，插件扩展名也使用 `.dylib`。
 
 CMake 里只需要把插件路径加到编译参数：
 
@@ -179,6 +186,24 @@ macOS：
 export DYLD_LIBRARY_PATH=/path/to/amice/llvm-lib:$DYLD_LIBRARY_PATH
 ```
 
+### macOS 上 Team ID 不一致
+
+如果看到类似错误：
+
+```text
+code signature ... not valid for use in process: mapping process and mapped file (non-platform) have different Team IDs
+```
+
+原因：官方 NDK 的 `clang` 可能带 hardened runtime 签名，默认不允许加载另一个 Team ID 或 ad-hoc 签名的 pass 插件。新的 AMICE NDK bundle 会在打包时对复制出来的 NDK clang driver 做 ad-hoc 重签，避免这个问题。
+
+如果你用的是旧 bundle 或普通 NDK，可以在解压目录里手动重签本地副本：
+
+```bash
+codesign --force --sign - android-ndk-r29/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang-21
+```
+
+这会修改解压后的本地 NDK 副本；不要对系统里共享的 NDK 做这个操作，除非你明确接受该改动。
+
 ### `undefined symbol`
 
 原因通常是 `libamice`、`libLLVM` 和 NDK clang 不是同一套 Android clang 构建出来的。
@@ -191,9 +216,10 @@ AMICE 的 Pass 默认关闭。先用环境变量开一个最容易观察的 Pass
 
 ```bash
 AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
+strings -a hello | grep AMICE_NDK_STRING_TEST_20260603
 ```
 
-更多开关见 [运行时环境变量](EnvConfig_zh_CN.md)。
+如果上面的字符串还能搜到，说明字符串加密没有生效；如果 `grep` 没有输出，说明这个 marker 已经被隐藏。更多开关见 [运行时环境变量](EnvConfig_zh_CN.md)。
 
 ## 参考
 

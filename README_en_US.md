@@ -130,11 +130,16 @@ tar xf amice-android-ndk-r29-linux-x86_64.tar.gz
 cd amice-android-ndk-r29-linux-x86_64
 
 cat > hello.c <<'SRC'
-int main(void) { return 0; }
+extern int puts(const char *);
+int main(void) { return puts("AMICE_NDK_STRING_TEST_20260603") < 0; }
 SRC
 
 AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
 file hello
+if strings -a hello | grep -q 'AMICE_NDK_STRING_TEST_20260603'; then
+  echo "ERROR: string encryption did not hide the marker"
+  exit 1
+fi
 ```
 
 See [Android NDK Usage](docs/AndroidNDKSupport_en_US.md) for details.

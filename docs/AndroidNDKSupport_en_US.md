@@ -42,11 +42,16 @@ Build an arm64 Android executable:
 
 ```bash
 cat > hello.c <<'SRC'
-int main(void) { return 0; }
+extern int puts(const char *);
+int main(void) { return puts("AMICE_NDK_STRING_TEST_20260603") < 0; }
 SRC
 
 AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
 file hello
+if strings -a hello | grep -q 'AMICE_NDK_STRING_TEST_20260603'; then
+  echo "ERROR: string encryption did not hide the marker"
+  exit 1
+fi
 ```
 
 Default API levels:
@@ -80,6 +85,8 @@ First, make the bundled LLVM runtime visible to the build process:
 cd /path/to/amice-android-ndk-r29-linux-x86_64
 source ./amice/env.sh
 ```
+
+On macOS, use the `amice-android-ndk-r29-darwin-x86_64` directory and the `.dylib` plugin extension instead.
 
 In CMake, add the plugin path to compile options:
 
@@ -179,6 +186,24 @@ macOS:
 export DYLD_LIBRARY_PATH=/path/to/amice/llvm-lib:$DYLD_LIBRARY_PATH
 ```
 
+### Team ID Mismatch on macOS
+
+If you see an error like:
+
+```text
+code signature ... not valid for use in process: mapping process and mapped file (non-platform) have different Team IDs
+```
+
+Cause: the official NDK `clang` may be signed with hardened runtime, which can reject pass plugins signed by another Team ID or with an ad-hoc signature. New AMICE NDK bundles ad-hoc sign the copied NDK clang driver during packaging to avoid this.
+
+If you are using an older bundle or a plain NDK, re-sign the local extracted copy:
+
+```bash
+codesign --force --sign - android-ndk-r29/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang-21
+```
+
+This modifies the extracted local NDK copy. Do not do this to a shared system NDK unless you explicitly accept that change.
+
 ### `undefined symbol`
 
 The usual cause is a mismatch between `libamice`, `libLLVM`, and the NDK clang process.
@@ -191,9 +216,10 @@ AMICE passes are disabled by default. Start with an easy-to-check pass:
 
 ```bash
 AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
+strings -a hello | grep AMICE_NDK_STRING_TEST_20260603
 ```
 
-More switches are documented in [Runtime Environment Variables](EnvConfig_en_US.md).
+If the string is still printed, string encryption did not run. If `grep` prints nothing, the marker was hidden. More switches are documented in [Runtime Environment Variables](EnvConfig_en_US.md).
 
 ## References
 
