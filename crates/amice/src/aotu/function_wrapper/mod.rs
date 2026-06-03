@@ -58,9 +58,17 @@ impl AmicePass for FunctionWrapper {
                 continue;
             }
 
+            if function_has_exception_handling(function) {
+                debug!(
+                    "function {:?} has exception handling instructions, skipping",
+                    function.get_name()
+                );
+                continue;
+            }
+
             for bb in function.get_basic_blocks() {
                 for inst in bb.get_instructions() {
-                    if matches!(inst.get_opcode(), InstructionOpcode::Call | InstructionOpcode::Invoke) {
+                    if inst.get_opcode() == InstructionOpcode::Call {
                         // Apply probability check
                         if rand::random_range(0..100) < cfg.probability {
                             if let Some(called_func) = get_called_function(&inst) {
@@ -122,25 +130,31 @@ impl AmicePass for FunctionWrapper {
 fn get_called_function<'a>(inst: &InstructionValue<'a>) -> Option<FunctionValue<'a>> {
     match inst.get_opcode() {
         InstructionOpcode::Call => inst.into_call_inst().get_call_function(),
-        InstructionOpcode::Invoke => {
-            let operand_num = inst.get_num_operands();
-            if operand_num == 0 {
-                return None;
-            }
-
-            // The last operand of a call instruction is typically the called function
-            if let Some(operand) = inst.get_operand(operand_num - 1) {
-                if let Some(callee) = operand.value() {
-                    let callee_ptr = callee.into_pointer_value();
-                    if let Some(func_val) = unsafe { FunctionValue::new(callee_ptr.as_value_ref()) } {
-                        return Some(func_val);
-                    }
-                }
-            }
-            None
-        },
         _ => None,
     }
+}
+
+fn function_has_exception_handling(function: FunctionValue<'_>) -> bool {
+    for bb in function.get_basic_blocks() {
+        for inst in bb.get_instructions() {
+            if matches!(
+                inst.get_opcode(),
+                InstructionOpcode::Invoke
+                    | InstructionOpcode::LandingPad
+                    | InstructionOpcode::Resume
+                    | InstructionOpcode::CatchSwitch
+                    | InstructionOpcode::CatchPad
+                    | InstructionOpcode::CatchRet
+                    | InstructionOpcode::CleanupPad
+                    | InstructionOpcode::CleanupRet
+                    | InstructionOpcode::CallBr
+            ) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 /// Handle a single call instruction by creating a wrapper function

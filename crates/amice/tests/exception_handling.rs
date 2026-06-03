@@ -116,6 +116,26 @@ fn test_cpp_exception_with_indirect_branch() {
 }
 
 #[test]
+fn test_cpp_exception_with_function_wrapper() {
+    ensure_plugin_built();
+
+    // FunctionWrapper should skip functions with invoke/landingpad EH IR instead of replacing invoke with call.
+    let result = CppCompileBuilder::new(
+        fixture_path("exception_handling", "cpp_exception_bcf.cpp", Language::Cpp),
+        "cpp_exception_function_wrapper",
+    )
+    .config(ObfuscationConfig {
+        function_wrapper: Some(true),
+        ..ObfuscationConfig::disabled()
+    })
+    .compile();
+
+    result.assert_success();
+    let run = result.run();
+    run.assert_success();
+}
+
+#[test]
 fn test_cpp_exception_combined() {
     ensure_plugin_built();
 
