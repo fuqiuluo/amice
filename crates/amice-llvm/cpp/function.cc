@@ -4,10 +4,9 @@
 
 #include <optional>
 
+#include <llvm/Config/llvm-config.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/Verifier.h>
-#include <llvm/Config/llvm-config.h>
-#include <llvm/Support/ModRef.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/Utils/Local.h>
 
@@ -143,7 +142,7 @@ void amice_function_clear_stale_analysis_attrs_after_cfg_rewrite(llvm::Function 
     if (!F)
         return;
 
-#if LLVM_VERSION_MAJOR >= 14
+#if LLVM_VERSION_MAJOR >= 16
     F->setMemoryEffects(llvm::MemoryEffects::unknown());
 #endif
     F->removeFnAttr(llvm::Attribute::ReadNone);
