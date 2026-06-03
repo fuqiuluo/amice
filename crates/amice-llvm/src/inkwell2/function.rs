@@ -19,6 +19,8 @@ pub trait FunctionExt<'ctx> {
 
     fn is_undef_function(&self) -> bool;
 
+    fn clear_stale_analysis_attrs_after_cfg_rewrite(&self);
+
     unsafe fn fix_stack(&self);
 
     unsafe fn fix_stack_at_terminator(&self);
@@ -83,6 +85,10 @@ impl<'ctx> FunctionExt<'ctx> for FunctionValue<'ctx> {
 
     fn is_undef_function(&self) -> bool {
         self.is_null() || self.is_undef() || self.count_basic_blocks() <= 0 || self.get_intrinsic_id() != 0
+    }
+
+    fn clear_stale_analysis_attrs_after_cfg_rewrite(&self) {
+        unsafe { ffi::amice_function_clear_stale_analysis_attrs_after_cfg_rewrite(self.as_value_ref() as LLVMValueRef) }
     }
 
     unsafe fn fix_stack(&self) {

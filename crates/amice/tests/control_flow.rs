@@ -210,6 +210,33 @@ fn test_vm_flatten_entry_only_conditional_terminator() {
     assert_entry_only_conditional_terminator_opt_pass("AMICE_VM_FLATTEN");
 }
 
+#[test]
+fn test_vm_flatten_clears_stale_analysis_attributes() {
+    ensure_plugin_built();
+
+    let mut cmd = Command::new(opt_path());
+    ObfuscationConfig::disabled().apply_to_command(&mut cmd);
+    cmd.env("AMICE_VM_FLATTEN", "true")
+        .arg(format!("-load-pass-plugin={}", plugin_path().display()))
+        .arg("-passes=default<O0>")
+        .arg("-S")
+        .arg(fixture_path("control_flow", "stale_analysis_attrs.ll", Language::C));
+
+    let output = cmd.output().expect("failed to execute opt");
+    assert!(
+        output.status.success(),
+        "opt failed\nSTDOUT:\n{}\nSTDERR:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(".amice.vm_flatten_opcodes"));
+    assert!(!stdout.contains("memory(none)"), "stale memory(none) attribute kept");
+    assert!(!stdout.contains("readnone"), "stale readnone attribute kept");
+    assert!(!stdout.contains("willreturn"), "stale willreturn attribute kept");
+}
+
 // ============================================================================
 // Combined Control Flow Tests
 // ============================================================================

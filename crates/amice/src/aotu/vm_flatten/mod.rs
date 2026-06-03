@@ -594,6 +594,8 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
         builder.build_unconditional_branch(vm_entry)?;
     }
 
+    function.clear_stale_analysis_attrs_after_cfg_rewrite();
+
     if function.verify_function_bool() {
         warn!("function {:?} verify failed", function.get_name());
     }
