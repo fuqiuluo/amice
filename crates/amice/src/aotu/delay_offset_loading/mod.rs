@@ -48,18 +48,6 @@ impl AmicePass for DelayOffsetLoading {
                         if !gep.get_type().is_pointer_type() {
                             continue;
                         }
-                        if gep.get_indices().iter().any(|operand| {
-                            if let Some(operand) = operand
-                                && operand.is_int_value()
-                            {
-                                let int_value = operand.into_int_value();
-                                int_value.is_constant_int() && int_value.is_const() && !int_value.is_null()
-                            } else {
-                                false
-                            }
-                        }) {
-                            continue;
-                        }
                         gep_vec.push(gep);
                     }
                 }
@@ -71,11 +59,12 @@ impl AmicePass for DelayOffsetLoading {
 
             let ctx = module.get_context();
             let i8_type = ctx.i8_type();
-            let i32_type = ctx.i32_type();
+            let i64_type = ctx.i64_type();
 
             let i8_ptr = ptr_type!(ctx, i8_type);
 
             let builder = ctx.create_builder();
+            let mut function_changed = false;
             for gep_inst in &gep_vec {
                 let Some(struct_ptr) = gep_inst.get_pointer_operand() else {
                     continue;
@@ -83,15 +72,18 @@ impl AmicePass for DelayOffsetLoading {
                 let Some(offset) = gep_inst.accumulate_constant_offset(module) else {
                     continue;
                 };
+                if offset == 0 {
+                    continue;
+                }
 
                 let (global_offset_value, xor_key) = if !shared_global_offset_map.contains_key(&offset) {
                     let xor_key = if cfg.xor_offset { rand::random::<u64>() } else { 0 };
                     let initializer = if cfg.xor_offset {
-                        i32_type.const_int(offset.bitxor(xor_key), false)
+                        i64_type.const_int(offset.bitxor(xor_key), false)
                     } else {
-                        i32_type.const_int(offset, false)
+                        i64_type.const_int(offset, false)
                     };
-                    let global_value = module.add_global(i32_type, None, &format!(".ama.offset.{}", offset));
+                    let global_value = module.add_global(i64_type, None, &format!(".ama.offset.{}", offset));
                     global_value.set_constant(false);
                     global_value.set_linkage(Linkage::Private);
                     global_value.set_initializer(&initializer);
@@ -103,7 +95,7 @@ impl AmicePass for DelayOffsetLoading {
 
                 builder.position_before(&gep_inst);
                 let Ok(offset_value) =
-                    builder.build_load2(i32_type, global_offset_value.as_pointer_value(), "offset_val")
+                    builder.build_load2(i64_type, global_offset_value.as_pointer_value(), "offset_val")
                 else {
                     error!("load global_offset_value failed");
                     continue;
@@ -112,7 +104,7 @@ impl AmicePass for DelayOffsetLoading {
 
                 if cfg.xor_offset {
                     offset_value =
-                        match builder.build_xor(offset_value, i32_type.const_int(xor_key, false), "offset_val_no_xor") {
+                        match builder.build_xor(offset_value, i64_type.const_int(xor_key, false), "offset_val_no_xor") {
                             Ok(value) => value,
                             Err(e) => {
                                 error!("xor offset value failed: {}", e);
@@ -142,8 +134,12 @@ impl AmicePass for DelayOffsetLoading {
 
                 gep_inst.replace_all_uses_with(&ptr);
                 gep_inst.erase_from_basic_block();
+                function_changed = true;
             }
 
+            if !function_changed {
+                continue;
+            }
             executed = true;
             if let VerifyResult::Broken(err) = function.verify_function() {
                 warn!("function {:?} is broken: {}", function.get_name(), err);

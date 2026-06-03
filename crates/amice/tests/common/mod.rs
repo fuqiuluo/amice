@@ -234,6 +234,10 @@ pub struct ObfuscationConfig {
     // Alias access
     pub alias_access: Option<bool>,
 
+    // Delay offset loading
+    pub delay_offset_loading: Option<bool>,
+    pub delay_offset_loading_xor_offset: Option<bool>,
+
     // Lower switch
     pub lower_switch: Option<bool>,
     pub lower_switch_with_dummy_code: Option<bool>,
@@ -260,6 +264,8 @@ impl ObfuscationConfig {
             function_wrapper: Some(false),
             clone_function: Some(false),
             alias_access: Some(false),
+            delay_offset_loading: Some(false),
+            delay_offset_loading_xor_offset: Some(true),
             lower_switch: Some(false),
             lower_switch_with_dummy_code: Some(false),
             ..Default::default()
@@ -343,6 +349,14 @@ impl ObfuscationConfig {
 
         // Alias access
         set_env_bool!(cmd, "AMICE_ALIAS_ACCESS", self.alias_access);
+
+        // Delay offset loading
+        set_env_bool!(cmd, "AMICE_DELAY_OFFSET_LOADING", self.delay_offset_loading);
+        set_env_bool!(
+            cmd,
+            "AMICE_DELAY_OFFSET_LOADING_XOR_OFFSET",
+            self.delay_offset_loading_xor_offset
+        );
 
         // Lower switch
         set_env_bool!(cmd, "AMICE_LOWER_SWITCH", self.lower_switch);
