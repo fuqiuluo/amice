@@ -5,6 +5,7 @@ mod function;
 mod instruction;
 mod module;
 mod refs;
+mod value;
 
 pub use attributes::*;
 pub use basic_block::*;
@@ -13,3 +14,4 @@ pub use function::*;
 pub use instruction::*;
 pub use module::*;
 pub use refs::*;
+pub use value::*;

@@ -2,17 +2,13 @@ mod common;
 
 use common::{ObfuscationConfig, RustCompileBuilder};
 use serial_test::serial;
-use std::fs;
 
 #[test]
 #[serial]
 fn test_rust_string_encryption_basic() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("string_encryption");
+    let project_dir = common::rust_fixture_project_path("string_encryption");
 
     // Test with obfuscation enabled
     let mut config = ObfuscationConfig::default();
@@ -31,7 +27,6 @@ fn test_rust_string_encryption_basic() {
     run_result.assert_success();
 
     let output = run_result.stdout();
-    //fs::write("aaa.log", &run_result.output.stdout).unwrap();
 
     println!("Output:\n{}", output);
 
@@ -48,10 +43,7 @@ fn test_rust_string_encryption_basic() {
 fn test_rust_string_encryption_simd() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("string_encryption");
+    let project_dir = common::rust_fixture_project_path("string_encryption");
 
     // Test with obfuscation enabled
     let mut config = ObfuscationConfig::default();
@@ -86,10 +78,7 @@ fn test_rust_string_encryption_simd() {
 fn test_rust_string_encryption_vs_baseline() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("string_encryption");
+    let project_dir = common::rust_fixture_project_path("string_encryption");
 
     // Compile without obfuscation (baseline)
     let baseline_result = RustCompileBuilder::new(&project_dir, "string_encryption_test")

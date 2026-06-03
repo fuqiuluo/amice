@@ -23,10 +23,7 @@ fn lower_switch_with_dummy_config() -> ObfuscationConfig {
 fn test_rust_switch_lowering_basic() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("switch_lowering");
+    let project_dir = common::rust_fixture_project_path("switch_lowering");
 
     let result = RustCompileBuilder::new(&project_dir, "switch_lowering_test")
         .config(lower_switch_config())
@@ -61,10 +58,7 @@ fn test_rust_switch_lowering_basic() {
 fn test_rust_switch_lowering_with_dummy_code() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("switch_lowering");
+    let project_dir = common::rust_fixture_project_path("switch_lowering");
 
     let result = RustCompileBuilder::new(&project_dir, "switch_lowering_test")
         .config(lower_switch_with_dummy_config())
@@ -84,10 +78,7 @@ fn test_rust_switch_lowering_with_dummy_code() {
 fn test_rust_switch_lowering_vs_baseline() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("switch_lowering");
+    let project_dir = common::rust_fixture_project_path("switch_lowering");
 
     // Compile without obfuscation (baseline)
     let baseline_result = RustCompileBuilder::new(&project_dir, "switch_lowering_test")
@@ -120,10 +111,7 @@ fn test_rust_switch_lowering_vs_baseline() {
 #[test]
 #[serial]
 fn test_rust_switch_lowering_without_plugin() {
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("switch_lowering");
+    let project_dir = common::rust_fixture_project_path("switch_lowering");
 
     // Verify that the test works without the plugin
     let result = RustCompileBuilder::new(&project_dir, "switch_lowering_test")

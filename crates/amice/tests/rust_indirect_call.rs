@@ -16,7 +16,7 @@ fn indirect_call_config() -> ObfuscationConfig {
 fn test_rust_indirect_call_basic() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("indirect_call");
+    let project_dir = common::rust_fixture_project_path("indirect_call");
 
     let result = RustCompileBuilder::new(&project_dir, "indirect_call_test")
         .config(indirect_call_config())
@@ -71,7 +71,7 @@ fn test_rust_indirect_call_basic() {
 fn test_rust_indirect_call_vs_baseline() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("indirect_call");
+    let project_dir = common::rust_fixture_project_path("indirect_call");
 
     // Compile without obfuscation (baseline)
     let baseline_result = RustCompileBuilder::new(&project_dir, "indirect_call_test")
@@ -106,7 +106,7 @@ fn test_rust_indirect_call_vs_baseline() {
 fn test_rust_indirect_call_optimized() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("indirect_call");
+    let project_dir = common::rust_fixture_project_path("indirect_call");
 
     // Test with release optimization
     let result = RustCompileBuilder::new(&project_dir, "indirect_call_test")

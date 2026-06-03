@@ -4,7 +4,6 @@ mod common;
 
 use common::{ObfuscationConfig, RustCompileBuilder};
 use serial_test::serial;
-use std::env;
 
 fn flatten_config() -> ObfuscationConfig {
     let mut config = ObfuscationConfig::disabled();
@@ -25,7 +24,7 @@ fn flatten_config_dominator() -> ObfuscationConfig {
 fn test_rust_flatten_basic() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("flatten");
+    let project_dir = common::rust_fixture_project_path("flatten");
 
     let result = RustCompileBuilder::new(&project_dir, "flatten_test")
         .config(flatten_config())
@@ -56,7 +55,7 @@ fn test_rust_flatten_basic() {
 fn test_rust_flatten_vs_baseline() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("flatten");
+    let project_dir = common::rust_fixture_project_path("flatten");
 
     // Compile without obfuscation (baseline)
     let baseline_result = RustCompileBuilder::new(&project_dir, "flatten_test")
@@ -89,7 +88,7 @@ fn test_rust_flatten_vs_baseline() {
 #[test]
 #[serial]
 fn test_rust_flatten_without_plugin() {
-    let project_dir = common::project_root().join("tests").join("rust").join("flatten");
+    let project_dir = common::rust_fixture_project_path("flatten");
 
     // Verify that the test works without the plugin
     let result = RustCompileBuilder::new(&project_dir, "flatten_test")
@@ -111,7 +110,7 @@ fn test_rust_flatten_without_plugin() {
 fn test_rust_flatten_optimized() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("flatten");
+    let project_dir = common::rust_fixture_project_path("flatten");
 
     // Test with optimizations enabled
     let result = RustCompileBuilder::new(&project_dir, "flatten_test")
@@ -133,7 +132,7 @@ fn test_rust_flatten_optimized() {
 fn test_rust_flatten_dominator_mode() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("flatten");
+    let project_dir = common::rust_fixture_project_path("flatten");
 
     // Test with dominator mode
     let result = RustCompileBuilder::new(&project_dir, "flatten_test")

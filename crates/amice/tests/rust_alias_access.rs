@@ -11,12 +11,43 @@ fn alias_access_config() -> ObfuscationConfig {
     config
 }
 
+fn assert_alias_access_output(output: &str) {
+    for expected in [
+        "=== Rust Alias Access Test Suite ===",
+        "--- Test 1: Simple Locals ---",
+        "--- Test 2: Local Array ---",
+        "--- Test 3: Multiple Locals ---",
+        "--- Test 4: Conditional ---",
+        "--- Test 5: Loop ---",
+        "--- Test 6: Drop + ZST ---",
+        "--- Test 7: Struct + Tuple + Refs ---",
+        "--- Test 8: Option + Result + Slice ---",
+        "--- Test 9: Trait Object + Closure ---",
+        "--- Test 10: Vec + String Drop ---",
+        "--- Test 11: Raw Pointer Roundtrip ---",
+        "test_simple(5, 3) = 21",
+        "test_array(2) = 12",
+        "test_multiple(10) = 5",
+        "test_conditional(5) = 30",
+        "test_loop(5) = 10",
+        "test_drop_and_zst(7) = 37",
+        "test_struct_tuple_refs(5) = 48",
+        "test_option_result_slice(4) = 21",
+        "test_trait_object_and_closure(9) = 27",
+        "test_vec_string_drop(11) = 77",
+        "test_raw_pointer_roundtrip(6) = 22",
+        "SUCCESS: All alias access tests passed!",
+    ] {
+        assert!(output.contains(expected), "missing output marker: {expected}");
+    }
+}
+
 #[test]
 #[serial]
 fn test_rust_alias_access_basic() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("alias_access");
+    let project_dir = common::rust_fixture_project_path("alias_access");
 
     let result = RustCompileBuilder::new(&project_dir, "alias_access_test")
         .config(alias_access_config())
@@ -31,21 +62,7 @@ fn test_rust_alias_access_basic() {
     let output = run_result.stdout();
     println!("Output:\n{}", output);
 
-    // Verify key outputs
-    // assert!(output.contains("=== Rust Alias Access Test Suite ==="));
-    // assert!(output.contains("Test 1: Simple Locals"));
-    // assert!(output.contains("Test 2: Multiple Locals"));
-    // assert!(output.contains("Test 3: Local Array"));
-    // assert!(output.contains("Test 4: Local Tuple"));
-    // assert!(output.contains("Test 5: Conditional Locals"));
-    // assert!(output.contains("Test 6: Loop Locals"));
-    // assert!(output.contains("Test 7: Swap Locals"));
-    // assert!(output.contains("Test 8: Bitwise Locals"));
-    // assert!(output.contains("Test 9: Fibonacci Locals"));
-    // assert!(output.contains("Test 10: Nested Locals"));
-    // assert!(output.contains("Test 11: State Machine Locals"));
-    // assert!(output.contains("Test 12: Computed Index Locals"));
-    // assert!(output.contains("SUCCESS: All alias access tests passed!"));
+    assert_alias_access_output(&output);
 }
 
 #[test]
@@ -53,7 +70,7 @@ fn test_rust_alias_access_basic() {
 fn test_rust_alias_access_vs_baseline() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("alias_access");
+    let project_dir = common::rust_fixture_project_path("alias_access");
 
     // Compile without obfuscation (baseline)
     let baseline_result = RustCompileBuilder::new(&project_dir, "alias_access_test")
@@ -75,6 +92,7 @@ fn test_rust_alias_access_vs_baseline() {
     let obfuscated_run = obfuscated_result.run();
     obfuscated_run.assert_success();
     let obfuscated_output = obfuscated_run.stdout();
+    assert_alias_access_output(&obfuscated_output);
 
     // Both versions should produce identical output
     assert_eq!(
@@ -86,7 +104,7 @@ fn test_rust_alias_access_vs_baseline() {
 #[test]
 #[serial]
 fn test_rust_alias_access_without_plugin() {
-    let project_dir = common::project_root().join("tests").join("rust").join("alias_access");
+    let project_dir = common::rust_fixture_project_path("alias_access");
 
     // Verify that the test works without the plugin
     let result = RustCompileBuilder::new(&project_dir, "alias_access_test")
@@ -100,7 +118,7 @@ fn test_rust_alias_access_without_plugin() {
     run_result.assert_success();
 
     let output = run_result.stdout();
-    assert!(output.contains("SUCCESS: All alias access tests passed!"));
+    assert_alias_access_output(&output);
 }
 
 #[test]
@@ -108,7 +126,7 @@ fn test_rust_alias_access_without_plugin() {
 fn test_rust_alias_access_optimized() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("alias_access");
+    let project_dir = common::rust_fixture_project_path("alias_access");
 
     // Test with optimizations enabled
     let result = RustCompileBuilder::new(&project_dir, "alias_access_test")
@@ -122,5 +140,5 @@ fn test_rust_alias_access_optimized() {
     run_result.assert_success();
 
     let output = run_result.stdout();
-    assert!(output.contains("SUCCESS: All alias access tests passed!"));
+    assert_alias_access_output(&output);
 }

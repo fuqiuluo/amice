@@ -43,10 +43,7 @@ fn split_and_indirect_branch_config() -> ObfuscationConfig {
 fn test_rust_indirect_branch_basic() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("indirect_branch");
+    let project_dir = common::rust_fixture_project_path("indirect_branch");
 
     let result = RustCompileBuilder::new(&project_dir, "indirect_branch_test")
         .config(indirect_branch_config())
@@ -80,10 +77,7 @@ fn test_rust_indirect_branch_basic() {
 fn test_rust_indirect_branch_chained() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("indirect_branch");
+    let project_dir = common::rust_fixture_project_path("indirect_branch");
 
     let result = RustCompileBuilder::new(&project_dir, "indirect_branch_test")
         .config(indirect_branch_config_chained())
@@ -103,10 +97,7 @@ fn test_rust_indirect_branch_chained() {
 fn test_rust_indirect_branch_all_flags() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("indirect_branch");
+    let project_dir = common::rust_fixture_project_path("indirect_branch");
 
     let result = RustCompileBuilder::new(&project_dir, "indirect_branch_test")
         .config(indirect_branch_config_all_flags())
@@ -126,10 +117,7 @@ fn test_rust_indirect_branch_all_flags() {
 fn test_rust_indirect_branch_vs_baseline() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("indirect_branch");
+    let project_dir = common::rust_fixture_project_path("indirect_branch");
 
     // Compile without obfuscation (baseline)
     let baseline_result = RustCompileBuilder::new(&project_dir, "indirect_branch_test")
@@ -164,10 +152,7 @@ fn test_rust_indirect_branch_vs_baseline() {
 fn test_rust_split_basic_block() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("indirect_branch");
+    let project_dir = common::rust_fixture_project_path("indirect_branch");
 
     let result = RustCompileBuilder::new(&project_dir, "indirect_branch_test")
         .config(split_basic_block_config())
@@ -187,10 +172,7 @@ fn test_rust_split_basic_block() {
 fn test_rust_split_and_indirect_branch() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root()
-        .join("tests")
-        .join("rust")
-        .join("indirect_branch");
+    let project_dir = common::rust_fixture_project_path("indirect_branch");
 
     // SplitBasicBlock (priority 980) runs before IndirectBranch (priority 800)
     let result = RustCompileBuilder::new(&project_dir, "indirect_branch_test")

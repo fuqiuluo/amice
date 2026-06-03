@@ -17,6 +17,7 @@ pub(crate) mod function;
 pub(crate) mod instruction;
 pub(crate) mod module;
 pub(crate) mod support;
+pub(crate) mod value;
 
 pub(crate) use attribute::*;
 pub(crate) use basic_block::*;
@@ -26,3 +27,4 @@ pub(crate) use function::*;
 pub(crate) use instruction::*;
 pub(crate) use module::*;
 pub(crate) use support::*;
+pub(crate) use value::*;

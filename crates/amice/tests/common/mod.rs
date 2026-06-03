@@ -52,6 +52,11 @@ pub fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Get the integration test root for the amice crate.
+pub fn tests_root() -> PathBuf {
+    project_root().join("tests")
+}
+
 /// Get the Cargo workspace root directory.
 pub fn workspace_root() -> PathBuf {
     project_root()
@@ -89,12 +94,16 @@ pub fn output_dir() -> PathBuf {
 
 /// Get the path to a fixture file
 pub fn fixture_path(category: &str, filename: &str, language: Language) -> PathBuf {
-    project_root()
-        .join("tests")
+    tests_root()
         .join(language.dir_name())
         .join("fixtures")
         .join(category)
         .join(filename)
+}
+
+/// Get the path to a Rust fixture Cargo project.
+pub fn rust_fixture_project_path(name: &str) -> PathBuf {
+    tests_root().join("rust").join(name)
 }
 
 /// LLVM version configuration

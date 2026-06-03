@@ -5,9 +5,43 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 static SINK: AtomicI32 = AtomicI32::new(0);
 
+#[derive(Clone, Copy)]
+struct Pair {
+    left: i32,
+    right: i32,
+}
+
+trait Op {
+    fn apply(&self, value: i32) -> i32;
+}
+
+struct Adder(i32);
+
+impl Op for Adder {
+    #[inline(never)]
+    fn apply(&self, value: i32) -> i32 {
+        value + self.0
+    }
+}
+
 #[inline(never)]
 fn set_sink(val: i32) {
     SINK.store(val, Ordering::SeqCst);
+}
+
+#[inline(never)]
+fn bump_ref(value: &mut i32, delta: i32) {
+    *value += delta;
+}
+
+#[inline(never)]
+fn read_ref(value: &i32) -> i32 {
+    *value
+}
+
+#[inline(never)]
+fn run_op(op: &dyn Op, value: i32) -> i32 {
+    op.apply(value)
 }
 
 #[inline(never)]
@@ -72,6 +106,96 @@ fn test_loop(n: i32) -> i32 {
     sum
 }
 
+#[inline(never)]
+fn test_drop_and_zst(input: i32) -> i32 {
+    let _marker = ();
+    let text = format!("value:{}", input);
+    let mut acc = 0;
+    for byte in text.as_bytes() {
+        acc += (*byte as i32) & 7;
+    }
+    let result = match Some(acc) {
+        Some(value) if value > 0 => value + input,
+        _ => input,
+    };
+    set_sink(result);
+    result
+}
+
+#[inline(never)]
+fn test_struct_tuple_refs(seed: i32) -> i32 {
+    let mut pair = Pair {
+        left: seed,
+        right: seed * 2,
+    };
+    bump_ref(&mut pair.left, 3);
+
+    let tuple = (pair.left, pair.right, pair.left + pair.right);
+    let mut acc = tuple.0 + tuple.1 + tuple.2;
+    let borrowed = read_ref(&acc);
+    acc += borrowed / 3;
+    set_sink(acc);
+    acc
+}
+
+#[inline(never)]
+fn test_option_result_slice(input: i32) -> i32 {
+    let values = [input, input + 1, input + 2, input + 3];
+    let slice = &values[1..3];
+    let mut total = 0;
+    for (idx, item) in slice.iter().enumerate() {
+        total += *item * (idx as i32 + 1);
+    }
+
+    let result = match if total > 0 { Ok(total) } else { Err(input) } {
+        Ok(value) if value % 2 == 1 => value + input,
+        Ok(value) => value,
+        Err(value) => -value,
+    };
+    set_sink(result);
+    result
+}
+
+#[inline(never)]
+fn test_trait_object_and_closure(input: i32) -> i32 {
+    let adder = Adder(6);
+    let base = run_op(&adder, input);
+    let factor = 3;
+    let closure = |value: i32| value * factor + base;
+    let result = closure(4);
+    set_sink(result);
+    result
+}
+
+#[inline(never)]
+fn test_vec_string_drop(input: i32) -> i32 {
+    let mut words = vec![format!("a{}", input), String::from("rust")];
+    let tail = words.pop().unwrap();
+    let mut total = tail.len() as i32;
+    for byte in words[0].bytes() {
+        total += (byte as i32) & 3;
+    }
+
+    let result = match Some((total, input)) {
+        Some((a, b)) => a * b,
+        None => 0,
+    };
+    set_sink(result);
+    result
+}
+
+#[inline(never)]
+fn test_raw_pointer_roundtrip(input: i32) -> i32 {
+    let mut value = input;
+    let ptr = &mut value as *mut i32;
+    unsafe {
+        *ptr += 5;
+    }
+    let result = value * 2;
+    set_sink(result);
+    result
+}
+
 fn main() {
     println!("=== Rust Alias Access Test Suite ===");
 
@@ -103,6 +227,42 @@ fn main() {
     let r5 = test_loop(5);
     println!("test_loop(5) = {}", r5);
     assert_eq!(r5, 10);
+    println!("PASS");
+
+    println!("\n--- Test 6: Drop + ZST ---");
+    let r6 = test_drop_and_zst(7);
+    println!("test_drop_and_zst(7) = {}", r6);
+    assert_eq!(r6, 37);
+    println!("PASS");
+
+    println!("\n--- Test 7: Struct + Tuple + Refs ---");
+    let r7 = test_struct_tuple_refs(5);
+    println!("test_struct_tuple_refs(5) = {}", r7);
+    assert_eq!(r7, 48);
+    println!("PASS");
+
+    println!("\n--- Test 8: Option + Result + Slice ---");
+    let r8 = test_option_result_slice(4);
+    println!("test_option_result_slice(4) = {}", r8);
+    assert_eq!(r8, 21);
+    println!("PASS");
+
+    println!("\n--- Test 9: Trait Object + Closure ---");
+    let r9 = test_trait_object_and_closure(9);
+    println!("test_trait_object_and_closure(9) = {}", r9);
+    assert_eq!(r9, 27);
+    println!("PASS");
+
+    println!("\n--- Test 10: Vec + String Drop ---");
+    let r10 = test_vec_string_drop(11);
+    println!("test_vec_string_drop(11) = {}", r10);
+    assert_eq!(r10, 77);
+    println!("PASS");
+
+    println!("\n--- Test 11: Raw Pointer Roundtrip ---");
+    let r11 = test_raw_pointer_roundtrip(6);
+    println!("test_raw_pointer_roundtrip(6) = {}", r11);
+    assert_eq!(r11, 22);
     println!("PASS");
 
     println!("\nSUCCESS: All alias access tests passed!");

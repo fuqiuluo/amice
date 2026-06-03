@@ -18,6 +18,7 @@ fn main() {
         .file("cpp/function.cc")
         .file("cpp/basic_block.cc")
         .file("cpp/instruction.cc")
+        .file("cpp/value.cc")
         .file("cpp/dominators.cc")
         .file("cpp/code_extractor.cc")
         .file("cpp/attribute.cc")

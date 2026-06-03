@@ -16,7 +16,7 @@ fn mba_config() -> ObfuscationConfig {
 fn test_rust_mba_basic() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("mba");
+    let project_dir = common::rust_fixture_project_path("mba");
 
     let result = RustCompileBuilder::new(&project_dir, "mba_test")
         .config(mba_config())
@@ -50,7 +50,7 @@ fn test_rust_mba_basic() {
 fn test_rust_mba_vs_baseline() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("mba");
+    let project_dir = common::rust_fixture_project_path("mba");
 
     // Compile without obfuscation (baseline)
     let baseline_result = RustCompileBuilder::new(&project_dir, "mba_test")
@@ -83,7 +83,7 @@ fn test_rust_mba_vs_baseline() {
 #[test]
 #[serial]
 fn test_rust_mba_without_plugin() {
-    let project_dir = common::project_root().join("tests").join("rust").join("mba");
+    let project_dir = common::rust_fixture_project_path("mba");
 
     // Verify that the test works without the plugin
     let result = RustCompileBuilder::new(&project_dir, "mba_test")
@@ -105,7 +105,7 @@ fn test_rust_mba_without_plugin() {
 fn test_rust_mba_optimized() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("mba");
+    let project_dir = common::rust_fixture_project_path("mba");
 
     // Test with optimizations enabled
     let result = RustCompileBuilder::new(&project_dir, "mba_test")

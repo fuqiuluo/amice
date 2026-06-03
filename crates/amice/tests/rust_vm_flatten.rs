@@ -16,7 +16,7 @@ fn vm_flatten_config() -> ObfuscationConfig {
 fn test_rust_vm_flatten_basic() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("vm_flatten");
+    let project_dir = common::rust_fixture_project_path("vm_flatten");
 
     let result = RustCompileBuilder::new(&project_dir, "vm_flatten_test")
         .config(vm_flatten_config())
@@ -47,7 +47,7 @@ fn test_rust_vm_flatten_basic() {
 fn test_rust_vm_flatten_vs_baseline() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("vm_flatten");
+    let project_dir = common::rust_fixture_project_path("vm_flatten");
 
     // Compile without obfuscation (baseline)
     let baseline_result = RustCompileBuilder::new(&project_dir, "vm_flatten_test")
@@ -80,7 +80,7 @@ fn test_rust_vm_flatten_vs_baseline() {
 #[test]
 #[serial]
 fn test_rust_vm_flatten_without_plugin() {
-    let project_dir = common::project_root().join("tests").join("rust").join("vm_flatten");
+    let project_dir = common::rust_fixture_project_path("vm_flatten");
 
     // Verify that the test works without the plugin
     let result = RustCompileBuilder::new(&project_dir, "vm_flatten_test")
@@ -102,7 +102,7 @@ fn test_rust_vm_flatten_without_plugin() {
 fn test_rust_vm_flatten_optimized() {
     common::ensure_plugin_built();
 
-    let project_dir = common::project_root().join("tests").join("rust").join("vm_flatten");
+    let project_dir = common::rust_fixture_project_path("vm_flatten");
 
     // Test with optimizations enabled
     let result = RustCompileBuilder::new(&project_dir, "vm_flatten_test")

@@ -77,10 +77,10 @@ impl AmicePass for AliasAccess {
 pub(crate) trait AliasAccessAlgo {
     fn initialize(&mut self, pass: &AliasAccessConfig) -> anyhow::Result<()>;
 
-    fn do_alias_access(
+    fn do_alias_access<'ctx>(
         &mut self,
         pass: &AliasAccessConfig,
-        module: &Module<'_>,
-        function: FunctionValue,
+        module: &Module<'ctx>,
+        function: FunctionValue<'ctx>,
     ) -> anyhow::Result<()>;
 }

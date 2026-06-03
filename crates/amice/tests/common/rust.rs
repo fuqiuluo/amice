@@ -82,8 +82,14 @@ impl RustCompileBuilder {
         // changes to LLVM plugins, leading to stale cached results.
         cmd.env("CARGO_INCREMENTAL", "0");
 
-        // Set toolchain
-        if self.use_nightly {
+        // Set toolchain. Rust LLVM plugins are ABI-coupled to rustc's own LLVM.
+        // Avoid defaulting to the moving `+nightly` channel because it can advance
+        // past the LLVM version used to build the plugin.
+        if let Ok(toolchain) = std::env::var("AMICE_RUST_TOOLCHAIN") {
+            if !toolchain.trim().is_empty() {
+                cmd.arg(format!("+{}", toolchain.trim().trim_start_matches('+')));
+            }
+        } else if self.use_nightly && !self.use_plugin {
             cmd.arg("+nightly");
         }
 
@@ -100,8 +106,9 @@ impl RustCompileBuilder {
         // Apply obfuscation config
         self.config.apply_to_command(&mut cmd);
 
-        // Add plugin if enabled (nightly only)
+        // Add plugin if enabled.
         if self.use_plugin && self.use_nightly {
+            cmd.env("RUSTC_BOOTSTRAP", "1");
             let plugin = plugin_path();
             cmd.arg("--");
             cmd.arg(format!("-Zllvm-plugins={}", plugin.display()));

@@ -1,12 +1,13 @@
 use crate::aotu::alias_access::{AliasAccess, AliasAccessAlgo};
 use crate::config::AliasAccessConfig;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, LLVMValueRefExt};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, LLVMValueRefExt, PointerValueExt};
 use amice_llvm::ptr_type;
 use amice_plugin::inkwell::AddressSpace;
+use amice_plugin::inkwell::builder::Builder;
 use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::targets::TargetData;
-use amice_plugin::inkwell::types::{BasicType, StructType};
+use amice_plugin::inkwell::types::{BasicType, PointerType, StructType};
 use amice_plugin::inkwell::values::{
     AnyValue, AsValueRef, BasicValue, FunctionValue, InstructionOpcode, InstructionValue, PointerValue,
 };
@@ -88,6 +89,101 @@ fn build_getter_function<'ctx>(
     Ok(func)
 }
 
+fn get_or_build_getter<'ctx>(
+    module: &Module<'ctx>,
+    meta_box_ty: StructType<'ctx>,
+    idx: u32,
+    getters: &mut HashMap<u32, LLVMValueRef>,
+) -> anyhow::Result<FunctionValue<'ctx>> {
+    if let Some(fv) = getters.get(&idx) {
+        return (*fv)
+            .into_function_value()
+            .ok_or_else(|| anyhow!("failed to get existing getter function"));
+    }
+
+    let g = build_getter_function(module, meta_box_ty, idx)?;
+    getters.insert(idx, g.as_value_ref() as LLVMValueRef);
+    Ok(g)
+}
+
+fn build_alias_pointer<'ctx>(
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    ptr_ty: PointerType<'ctx>,
+    meta_box_ty: StructType<'ctx>,
+    graph: &[ReferenceNode<'ctx>],
+    getters: &mut HashMap<u32, LLVMValueRef>,
+    op_ptr: PointerValue<'ctx>,
+) -> anyhow::Result<PointerValue<'ctx>> {
+    // 找一个能到达该 Alloca 的入口节点
+    let mut entry_node_idx = None;
+    // 打乱顺序
+    let mut order: Vec<usize> = (0..graph.len()).collect();
+    for j in (1..order.len()).rev() {
+        let k = rand::random_range(0..=j);
+        order.swap(j, k);
+    }
+    for gi in order {
+        let node = &graph[gi];
+        let hit = if node.is_raw {
+            node.raw_insts
+                .as_ref()
+                .ok_or(anyhow!("raw_insts is None"))?
+                .contains_key(&op_ptr)
+        } else {
+            node.path.as_ref().ok_or(anyhow!("path is None"))?.contains_key(&op_ptr)
+        };
+        if hit {
+            entry_node_idx = Some(gi);
+            break;
+        }
+    }
+    let mut cur_idx = entry_node_idx.ok_or_else(|| anyhow!("no reachable alias node"))?;
+    let mut cur_ptr = graph[cur_idx].alloca; // VP
+
+    // 逐层下钻
+    while !graph[cur_idx].is_raw {
+        // MetaBox里面有至少有一个slot保存了直接指向或者间接指向RawBox的指针
+        // 这里的idxs就是这些slot的下标
+        let idxs = &graph[cur_idx].path.as_ref().ok_or(anyhow!("path is None"))?[&op_ptr];
+        // 随机选一个slot，可能路径都是可行的
+        let pick = idxs[rand::random_range(0..idxs.len())];
+
+        // 获取一个getter，这个getter就是从目标位置的index=pick的位置，把那个结构体的字段拿出来
+        let gfunc = get_or_build_getter(module, meta_box_ty, pick as u32, getters)?;
+
+        // 调 getter(void*) -> void*
+        // 先把当前指针 cast 到 void*
+        let cast_in = builder.build_pointer_cast(cur_ptr, ptr_ty, "as_ptr")?;
+        let call = builder.build_call(gfunc, &[cast_in.into()], "callg")?;
+        // 把返回的 void* 再 cast 回 BaseBox**，再 load 出下一层指针（MetaBox* 或 RawBox*）
+        let slot_addr = call.as_any_value_enum().into_pointer_value();
+        let slot_addr_base_box_ptr =
+            builder.build_pointer_cast(slot_addr, ptr_ty.ptr_type(AddressSpace::default()), "as_ptr_ptr")?;
+        let next_ptr = builder
+            .build_load2(ptr_ty, slot_addr_base_box_ptr, "ld_next")?
+            .into_pointer_value();
+
+        // child pointer 还是 void*；把它转回“通用指针类型”以继续链（这里我们统一用 void*，直到最后再按需 cast）
+        cur_ptr = next_ptr;
+        // 跟踪图下标
+        cur_idx = graph[cur_idx].edges.as_ref().ok_or(anyhow!("edges is None"))?[&pick];
+    }
+
+    // 到达 RawBox：GEP 到字段
+    let ep = &graph[cur_idx].raw_insts.as_ref().ok_or(anyhow!("raw_insts is None"))?[&op_ptr];
+
+    // 当前 cur_ptr 是 RawBox* 的“真实类型”吗？我们一路保持 void*，需要 cast 回 RawBox*
+    let st_ptr_ty = ep.st.ptr_type(AddressSpace::default());
+    let raw_ptr = builder.build_pointer_cast(cur_ptr, st_ptr_ty, "as_raw_st")?;
+
+    let field_addr = builder
+        .build_struct_gep2(ep.st, raw_ptr, ep.index, "field")
+        .expect("field gep");
+
+    Ok(field_addr)
+}
+
 #[derive(Default)]
 pub(super) struct PointerChainAlgo;
 
@@ -96,20 +192,20 @@ impl AliasAccessAlgo for PointerChainAlgo {
         Ok(())
     }
 
-    fn do_alias_access(
+    fn do_alias_access<'ctx>(
         &mut self,
         cfg: &AliasAccessConfig,
-        module: &Module<'_>,
-        function: FunctionValue,
+        module: &Module<'ctx>,
+        function: FunctionValue<'ctx>,
     ) -> anyhow::Result<()> {
         do_alias_access_pointer_chain(cfg, module, function)
     }
 }
 
-fn do_alias_access_pointer_chain(
+fn do_alias_access_pointer_chain<'ctx>(
     cfg: &AliasAccessConfig,
-    module: &Module<'_>,
-    function: FunctionValue,
+    module: &Module<'ctx>,
+    function: FunctionValue<'ctx>,
 ) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i8_ptr = ptr_type!(ctx, i8_type);
@@ -136,6 +232,9 @@ fn do_alias_access_pointer_chain(
                 let allocated_type = instr
                     .get_allocated_type()
                     .map_err(|e| anyhow!("failed to get alloca allocated type: {}", e))?;
+                if target_data.get_store_size(&allocated_type) == 0 {
+                    continue;
+                }
                 let field_alignment = target_data.get_abi_alignment(&allocated_type);
                 if alignment <= 8 && alignment <= field_alignment {
                     allocas.push(any_value_enum.into_pointer_value());
@@ -296,105 +395,20 @@ fn do_alias_access_pointer_chain(
 
     // 为每个 idx 缓存/构造 getter 函数
     let mut getters: HashMap<u32, LLVMValueRef> = HashMap::new();
-    let get_getter = |idx: u32, getters: &mut HashMap<u32, LLVMValueRef>| -> anyhow::Result<FunctionValue> {
-        if let Some(fv) = getters.get(&idx) {
-            let g = fv
-                .into_function_value()
-                .ok_or(anyhow!("failed to get existing getter function"))?;
-            Ok(g)
-        } else {
-            let g = build_getter_function(module, meta_box_ty, idx)?;
-            getters.insert(idx, g.as_value_ref() as LLVMValueRef);
-            Ok(g)
+
+    let mut replacements = Vec::new();
+    for &ai in &allocas {
+        if ai.get_first_use().is_some() {
+            let field_addr = build_alias_pointer(module, &builder, ptr_ty, meta_box_ty, &graph, &mut getters, ai)?;
+            replacements.push((ai, field_addr));
         }
-    };
+    }
 
-    for bb in function.get_basic_blocks() {
-        for instr in bb.get_instructions() {
-            for i in 0..instr.get_num_operands() {
-                if let Some(opnd) = instr.get_operand(i)
-                    && let Some(op_left) = opnd.value()
-                    && op_left.is_pointer_value()
-                {
-                    let op_ptr = op_left.into_pointer_value();
-                    // 是否是参与混淆的原 Alloca
-                    if !allocas.iter().any(|&a| a == op_ptr) {
-                        continue;
-                    }
-
-                    // 找一个能到达该 Alloca 的入口节点
-                    let mut entry_node_idx = None;
-                    // 打乱顺序
-                    let mut order: Vec<usize> = (0..graph.len()).collect();
-                    for j in (1..order.len()).rev() {
-                        let k = rand::random_range(0..=j);
-                        order.swap(j, k);
-                    }
-                    for gi in order {
-                        let node = &graph[gi];
-                        let hit = if node.is_raw {
-                            node.raw_insts
-                                .as_ref()
-                                .ok_or(anyhow!("raw_insts is None"))?
-                                .contains_key(&op_ptr)
-                        } else {
-                            node.path.as_ref().ok_or(anyhow!("path is None"))?.contains_key(&op_ptr)
-                        };
-                        if hit {
-                            entry_node_idx = Some(gi);
-                            break;
-                        }
-                    }
-                    let mut cur_idx = entry_node_idx.expect("reachable node");
-                    let mut cur_ptr = graph[cur_idx].alloca; // VP
-
-                    // 逐层下钻
-                    while !graph[cur_idx].is_raw {
-                        // MetaBox里面有至少有一个slot保存了直接指向或者间接指向RawBox的指针
-                        // 这里的idxs就是这些slot的下标
-                        let idxs = &graph[cur_idx].path.as_ref().ok_or(anyhow!("path is None"))?[&op_ptr];
-                        // 随机选一个slot，可能路径都是可行的
-                        let pick = idxs[rand::random_range(0..idxs.len())];
-
-                        // 获取一个getter，这个getter就是从目标位置的index=pick的位置，把那个结构体的字段拿出来
-                        let gfunc = get_getter(pick as u32, &mut getters)?;
-
-                        // 调 getter(void*) -> void*
-                        // 先把当前指针 cast 到 void*
-                        let cast_in = builder.build_pointer_cast(cur_ptr, ptr_ty, "as_ptr")?;
-                        let call = builder.build_call(gfunc, &[cast_in.into()], "callg")?;
-                        // 把返回的 void* 再 cast 回 BaseBox**，再 load 出下一层指针（MetaBox* 或 RawBox*）
-                        let slot_addr = call.as_any_value_enum().into_pointer_value();
-                        let slot_addr_base_box_ptr = builder.build_pointer_cast(
-                            slot_addr,
-                            ptr_ty.ptr_type(AddressSpace::default()),
-                            "as_ptr_ptr",
-                        )?;
-                        let next_ptr = builder
-                            .build_load2(ptr_ty, slot_addr_base_box_ptr, "ld_next")?
-                            .into_pointer_value();
-
-                        // child pointer 还是 void*；把它转回“通用指针类型”以继续链（这里我们统一用 void*，直到最后再按需 cast）
-                        cur_ptr = next_ptr;
-                        // 跟踪图下标
-                        cur_idx = graph[cur_idx].edges.as_ref().ok_or(anyhow!("edges is None"))?[&pick];
-                    }
-
-                    // 到达 RawBox：GEP 到字段
-                    let ep = &graph[cur_idx].raw_insts.as_ref().ok_or(anyhow!("raw_insts is None"))?[&op_ptr];
-
-                    // 当前 cur_ptr 是 RawBox* 的“真实类型”吗？我们一路保持 void*，需要 cast 回 RawBox*
-                    let st_ptr_ty = ep.st.ptr_type(AddressSpace::default());
-                    let raw_ptr = builder.build_pointer_cast(cur_ptr, st_ptr_ty, "as_raw_st")?;
-
-                    let field_addr = builder
-                        .build_struct_gep2(ep.st, raw_ptr, ep.index, "field")
-                        .expect("field gep");
-
-                    // 用这个地址替换当前指令的第 i 个操作数
-                    instr.set_operand(i, field_addr.as_basic_value_enum());
-                }
-            }
+    for &(ai, field_addr) in &replacements {
+        ai.replace_non_metadata_uses_with(field_addr);
+        ai.drop_droppable_uses();
+        if ai.has_undroppable_uses() || ai.get_first_use().is_some() {
+            return Err(anyhow!("failed to replace all non-metadata uses for alloca {:?}", ai));
         }
     }
 
