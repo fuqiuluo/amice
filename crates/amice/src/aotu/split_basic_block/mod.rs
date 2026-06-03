@@ -66,18 +66,9 @@ fn do_split(_module: &mut Module<'_>, function: FunctionValue, split_num: u32) -
     for bb in function.get_basic_blocks() {
         let is_entry = entry == bb;
 
-        // 非入口块上如发现 alloca，跳过
-        if !is_entry && block_has_alloca(&bb) {
-            continue;
-        }
-
         let mut count = 0u32;
-        if flitter_basic_block(&bb, split_num, &mut count) {
-            // 注意：对于入口块，flitter_basic_block 检出 Alloca 会返回 true
-            // 但我们后面仍可能允许在 alloca 之后切（见下）
-            if !(is_entry && count > 0) {
-                continue;
-            }
+        if flitter_basic_block(&bb, split_num, is_entry, &mut count) {
+            continue;
         }
 
         // 确保基本块有合适的终结符
@@ -157,11 +148,6 @@ fn shuffle(vec: &mut [u32]) {
     vec.shuffle(&mut rng);
 }
 
-fn block_has_alloca(bb: &BasicBlock<'_>) -> bool {
-    bb.get_instructions()
-        .any(|inst| inst.get_opcode() == InstructionOpcode::Alloca)
-}
-
 fn first_non_alloca_index(bb: &BasicBlock<'_>) -> u32 {
     let mut idx = 0u32;
     for inst in bb.get_instructions() {
@@ -186,22 +172,26 @@ fn is_terminator_instruction(inst: &amice_plugin::inkwell::values::InstructionVa
     )
 }
 
-fn flitter_basic_block(bb: &BasicBlock<'_>, split_num: u32, x: &mut u32) -> bool {
-    let has_problematic_instructions = bb.get_instructions().any(|inst| {
+fn flitter_basic_block(bb: &BasicBlock<'_>, split_num: u32, is_entry: bool, x: &mut u32) -> bool {
+    let mut has_problematic_instructions = false;
+    let mut seen_non_alloca = false;
+
+    for inst in bb.get_instructions() {
         *x += 1;
         match inst.get_opcode() {
-            InstructionOpcode::Phi => true,
-            InstructionOpcode::IndirectBr => true, // 避免切割间接跳转
-            InstructionOpcode::Switch => true,     // 避免切割switch
-            InstructionOpcode::Invoke => true,     // 避免切割invoke
-            InstructionOpcode::Alloca => {
-                // 非入口块上有 alloca，一律视为问题块
-                // 调用处可根据 bb 是否为入口块决定是否跳过
-                true
+            InstructionOpcode::Phi
+            | InstructionOpcode::IndirectBr
+            | InstructionOpcode::Switch
+            | InstructionOpcode::Invoke => {
+                has_problematic_instructions = true;
             },
-            _ => false,
+            InstructionOpcode::Alloca if !is_entry || seen_non_alloca => {
+                has_problematic_instructions = true;
+            },
+            InstructionOpcode::Alloca => {},
+            _ => seen_non_alloca = true,
         }
-    });
+    }
 
     has_problematic_instructions || *x < 2 || split_num > *x
 }

@@ -219,6 +219,7 @@ pub struct ObfuscationConfig {
 
     // Split basic block
     pub split_basic_block: Option<bool>,
+    pub split_basic_block_num: Option<u32>,
 
     // MBA
     pub mba: Option<bool>,
@@ -260,6 +261,7 @@ impl ObfuscationConfig {
             vm_flatten: Some(false),
             shuffle_blocks: Some(false),
             split_basic_block: Some(false),
+            split_basic_block_num: None,
             mba: Some(false),
             function_wrapper: Some(false),
             clone_function: Some(false),
@@ -331,6 +333,7 @@ impl ObfuscationConfig {
 
         // Split basic block
         set_env_bool!(cmd, "AMICE_SPLIT_BASIC_BLOCK", self.split_basic_block);
+        set_env_num!(cmd, "AMICE_SPLIT_BASIC_BLOCK_NUM", self.split_basic_block_num);
 
         // MBA
         set_env_bool!(cmd, "AMICE_MBA", self.mba);
