@@ -28,11 +28,12 @@ pub struct IndirectCall {
 impl AmicePass for IndirectCall {
     fn init(&mut self, cfg: &Config, _flag: AmicePassFlag) {
         self.default_config = cfg.indirect_call.clone();
+        self.enable = cfg.indirect_call.enable;
 
         self.xor_key = cfg
             .indirect_call
             .xor_key
-            .unwrap_or(if self.enable { rand::random::<u32>() } else { 0 });
+            .unwrap_or_else(|| if self.enable { random_non_zero_u32() } else { 0 });
 
         if self.xor_key != 0 {
             warn!(
@@ -175,6 +176,15 @@ impl AmicePass for IndirectCall {
         }
 
         Ok(PreservedAnalyses::None)
+    }
+}
+
+fn random_non_zero_u32() -> u32 {
+    loop {
+        let key = rand::random::<u32>();
+        if key != 0 {
+            return key;
+        }
     }
 }
 

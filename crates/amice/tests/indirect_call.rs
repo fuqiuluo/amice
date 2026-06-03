@@ -55,3 +55,29 @@ fn test_indirect_call_optimized() {
     let run = result.run();
     run.assert_success();
 }
+
+#[test]
+fn test_indirect_call_generates_random_xor_key_by_default() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("indirect_call", "indirect_call.c", Language::C),
+        "indirect_call_random_xor.ll",
+    )
+    .config(indirect_call_config())
+    .arg("-S")
+    .arg("-emit-llvm")
+    .compile();
+
+    result.assert_success();
+
+    let ir = std::fs::read_to_string(&result.binary_path).expect("failed to read generated LLVM IR");
+    assert!(
+        ir.contains("@.amice_xor_key"),
+        "expected default indirect-call config to emit an XOR key"
+    );
+    assert!(
+        ir.contains(" xor i32 "),
+        "expected default indirect-call config to emit XOR instructions"
+    );
+}
