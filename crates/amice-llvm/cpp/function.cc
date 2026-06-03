@@ -7,6 +7,9 @@
 #include <llvm/Config/llvm-config.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/Verifier.h>
+#if LLVM_VERSION_MAJOR >= 16
+#include <llvm/Support/ModRef.h>
+#endif
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/Utils/Local.h>
 
