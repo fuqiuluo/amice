@@ -65,6 +65,7 @@ fn test_indirect_call_generates_random_xor_key_by_default() {
         "indirect_call_random_xor.ll",
     )
     .config(indirect_call_config())
+    .optimization("O1")
     .arg("-S")
     .arg("-emit-llvm")
     .compile();

@@ -30,10 +30,7 @@ impl AmicePass for IndirectCall {
         self.default_config = cfg.indirect_call.clone();
         self.enable = cfg.indirect_call.enable;
 
-        self.xor_key = cfg
-            .indirect_call
-            .xor_key
-            .unwrap_or_else(|| if self.enable { random_non_zero_u32() } else { 0 });
+        self.xor_key = cfg.indirect_call.xor_key.unwrap_or_else(random_non_zero_u32);
 
         if self.xor_key != 0 {
             warn!(
@@ -225,6 +222,9 @@ fn do_handle<'a>(
         builder.position_before(inst);
         let index_value = if xor_key_global.is_some() {
             let xor_key_value = builder.build_load2(i32_type, xor_key_global.unwrap().as_pointer_value(), "")?;
+            if let Some(load_inst) = xor_key_value.as_instruction_value() {
+                let _ = load_inst.set_volatile(true);
+            }
             builder.build_xor(index_value, xor_key_value.into_int_value(), "")?
         } else {
             index_value

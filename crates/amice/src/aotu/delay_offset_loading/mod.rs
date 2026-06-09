@@ -8,7 +8,7 @@ use amice_macro::amice;
 use amice_plugin::inkwell::AddressSpace;
 use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use amice_plugin::inkwell::module::{Linkage, Module};
-use amice_plugin::inkwell::values::{AsValueRef, InstructionOpcode};
+use amice_plugin::inkwell::values::{AsValueRef, BasicValue, InstructionOpcode};
 use amice_plugin::{ModuleAnalysisManager, PreservedAnalyses};
 use std::collections::HashMap;
 use std::ops::BitXor;
@@ -100,6 +100,9 @@ impl AmicePass for DelayOffsetLoading {
                     error!("load global_offset_value failed");
                     continue;
                 };
+                if let Some(load_inst) = offset_value.as_instruction_value() {
+                    let _ = load_inst.set_volatile(true);
+                }
                 let mut offset_value = offset_value.into_int_value();
 
                 if cfg.xor_offset {

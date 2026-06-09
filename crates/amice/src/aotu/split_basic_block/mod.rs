@@ -13,7 +13,7 @@ use rand::seq::SliceRandom;
 #[amice(
     priority = 980,
     name = "SplitBasicBlock",
-    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    flag = AmicePassFlag::PipelineStart | AmicePassFlag::OptimizerLast | AmicePassFlag::FunctionLevel,
     config = SplitBasicBlockConfig,
 )]
 #[derive(Default)]

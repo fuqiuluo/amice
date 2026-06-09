@@ -41,6 +41,7 @@ fn test_delay_offset_loading_emits_constant_offsets() {
         "delay_offset_loading_ama.ll",
     )
     .config(delay_offset_loading_config())
+    .optimization("O1")
     .arg("-S")
     .arg("-emit-llvm")
     .compile();
@@ -54,7 +55,7 @@ fn test_delay_offset_loading_emits_constant_offsets() {
         "nested or array constant offsets were not delayed"
     );
     assert!(
-        ir.contains("load i64, ptr @.ama.offset."),
+        ir.contains("load volatile i64, ptr @.ama.offset."),
         "expected delayed offset loads in generated IR"
     );
 }
