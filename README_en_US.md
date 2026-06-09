@@ -2,108 +2,126 @@
 
 English | [简体中文](README.md)
 
-Amice is an LLVM Pass plugin project built on **llvm-plugin-rs**, injectable into the compilation pipeline via `clang -fpass-plugin`.
+Amice is an LLVM pass plugin built with Rust, `llvm-plugin-rs`, and `inkwell`. It is loaded into the compiler through clang `-fpass-plugin` and applies compile-time obfuscation transforms to LLVM IR generated from C/C++, Rust, and other LLVM-based frontends.
+
+The repository is now a Cargo workspace. The main plugin crate lives in `crates/amice`, and the release artifact is `target/release/libamice.so`, `target/release/libamice.dylib`, or `target/release/amice.dll`.
 
 ---
 
 ## Quick Start
 
-1. **Build the Plugin**
+### 1. Build the Plugin
 
-   ```bash
-   export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21  # Fedora; adjust for your distro
-   # export RUST_LOG=debug  # uncomment for debug logs
-   cargo build --release
-   # Output: target/release/libamice.so
-   ```
+The default LLVM feature is `llvm21-1`, so LLVM 21 development files or a usable `llvm-config` are required.
 
-2. **Compile with Pass Injection**
+```bash
+# macOS
+brew install llvm@21
+export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
 
-   ```bash
-   clang -fpass-plugin=libamice.so your_source.c -o your_source
-   ```
+# Linux example: if llvm-config/llvm-config-21 is already in PATH, PREFIX is optional
+# export LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
+
+cargo build --release
+```
+
+### 2. Inject into clang
+
+```bash
+cat > /tmp/amice_hello.c <<'SRC'
+extern int puts(const char *);
+int main(void) { return puts("AMICE_STRING_TEST") < 0; }
+SRC
+
+AMICE_STRING_ENCRYPTION=true \
+clang -fpass-plugin="$(pwd)/target/release/libamice.so" /tmp/amice_hello.c -o /tmp/amice_hello
+```
+
+On macOS, replace the plugin path with `target/release/libamice.dylib`.
+
 ---
 
 ## Supported Obfuscations
 
-| Obfuscation                           | C/C++ | Rust | ObjC |
-|:--------------------------------------|:-----:|:----:|:----:|
-| String Encryption                     |   ✅   |  ✅   |  ⏳   |
-| Indirect Call Obfuscation             |   ✅   |  ✅   |  ❌   |
-| Indirect Branch Obfuscation           |   ✅   |  ✅   |  ❌   |
-| Split Basic Block                     |   ✅   |  ✅   |  ❌   |
-| Switch Lowering                       |   ✅   |  ✅   |  ❌   |
-| VM Flatten                            |   ✅   |  ✅   |  ❌   |
-| Control Flow Flattening               |   ✅   |  ✅   |  ❌   |
-| MBA Arithmetic Obfuscation            |   ✅   |  ✅   |  ❌   |
-| Bogus Control Flow                    |   ✅   |  ✅   |  ❌   |
-| Function Wrapper                      |   ✅   |  ✅   |  ❌   |
-| Clone Function (Const Specialization) |   ✅   |  ✅   |  ❌   |
-| Alias Access Obfuscation              |   ✅   |  ✅   |  ❌   |
-| Custom Calling Convention             |   ⏳   |  ⏳   |  ❌   |
-| Delayed Offset Loading (AMA)          |   ✅   |  ⏳   |  ❌   |
-| Anti-Class Export                     |   ❌   |  ❌   |  ⏳   |
-| Parameter Aggregation (PAO)           |   ✅   |  ⏳   |  ❌   |
-| Instruction Virtualization            |   ⏳   |  ⏳   |  ❌   |
-| Function Outlining (BB2FUNC)          |   ✅   |  ⏳   |  ❌   |
+| Pass | Environment Variable | Description |
+|:---|:---|:---|
+| String Encryption | `AMICE_STRING_ENCRYPTION` | String encryption with `xor` / `simd_xor`, lazy/global decryption, stack/heap allocation options |
+| Indirect Call | `AMICE_INDIRECT_CALL` | Rewrites direct calls into table/index based indirect calls |
+| Indirect Branch | `AMICE_INDIRECT_BRANCH` | Rewrites branches into `indirectbr`; supports dummy blocks, table shuffling, index encryption, and other flags |
+| Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | Splits basic blocks according to configuration |
+| Lower Switch | `AMICE_LOWER_SWITCH` | Lowers LLVM `switch` instructions |
+| VM Flatten | `AMICE_VM_FLATTEN` | VM-style control-flow flattening |
+| Flatten | `AMICE_FLATTEN` | Control-flow flattening with `basic` / `dominator` modes |
+| MBA | `AMICE_MBA` | Mixed Boolean-arithmetic expression rewriting |
+| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | Inserts bogus control flow; supports basic / polaris-primes modes |
+| Function Wrapper | `AMICE_FUNCTION_WRAPPER` | Creates wrapper functions and replaces call sites |
+| Clone Function | `AMICE_CLONE_FUNCTION` | Constant-argument specialization by function cloning |
+| Alias Access | `AMICE_ALIAS_ACCESS` | Pointer-chain based alias access obfuscation |
+| Custom Calling Conv | `AMICE_CUSTOM_CALLING_CONV` | Custom calling convention support, usually enabled per function by annotation |
+| Delay Offset Loading | `AMICE_DELAY_OFFSET_LOADING` | Delayed GEP offset loading with optional XOR protection |
+| Param Aggregate | `AMICE_PARAM_AGGREGATE` | Parameter aggregation obfuscation |
+| Basic Block Outlining | `AMICE_BASIC_BLOCK_OUTLINING` | Extracts basic blocks into standalone helper functions, also known as BB2Func |
+| Shuffle Blocks | `AMICE_SHUFFLE_BLOCKS` | Basic block reordering |
 
-> Legend:
-> - ✅ Supported
-> - ⏳ In Progress / Planned / Untested
-> - ❌ Not Planned
+See [Runtime Environment Variables](docs/EnvConfig_en_US.md) for all options and [Function Annotations](docs/FunctionAnnotations_en_US.md) for per-function enable/disable controls.
 
-## Runtime Environment Variables
+---
 
-For detailed documentation, please refer to:
-<https://github.com/fuqiuluo/amice/blob/master/docs>
+## Configuration
+
+Amice applies configuration in this order:
+
+1. If `AMICE_CONFIG_PATH` is set, load TOML/YAML/JSON from that file.
+2. Otherwise, start from default configuration.
+3. Overlay `AMICE_*` environment variables last. Environment variables have the highest priority.
+
+Example:
+
+```bash
+cat > /tmp/amice.toml <<'TOML'
+[string_encryption]
+enable = true
+algorithm = "xor"
+
+[flatten]
+enable = true
+mode = "basic"
+TOML
+
+AMICE_CONFIG_PATH=/tmp/amice.toml \
+clang -fpass-plugin="$(pwd)/target/release/libamice.so" input.c -o output
+```
+
+Pass execution order can be controlled with `AMICE_PASS_ORDER` or `pass_order.order` in the config file. When an explicit order is provided, only passes in the list run. See [Pass Execution Order](docs/PassOrder_en_US.md) for details.
 
 ---
 
 ## Build Guide
 
-### 1. Linux
+### Linux
 
-> The default feature is `llvm21-1`. LLVM 21 development package is required.
-> You can also switch to another LLVM version via `--no-default-features --features llvm<version>` (supported range: llvm11-0 ~ llvm21-1), and adjust `LLVM_SYS_<MAJOR>_PREFIX` accordingly.
->
-> At build time, `amice` automatically searches `$PATH` for `llvm-config`, `llvm-config-<N>`, etc. If your package manager places `llvm-config` in PATH, no `LLVM_SYS_*_PREFIX` is needed.
+```bash
+# Fedora / RHEL
+sudo dnf install llvm llvm-devel clang
+cargo build --release
 
-- Fedora / RHEL
+# Debian / Ubuntu, preferably install LLVM 21 from https://apt.llvm.org/
+sudo apt install llvm-21 llvm-21-dev clang-21
+# export LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
+cargo build --release
+```
 
-  ```bash
-  sudo dnf install llvm llvm-devel
-  cargo build --release
-  ```
+When using a non-default LLVM version, the Cargo feature and `LLVM_SYS_*_PREFIX` must match:
 
-- Debian / Ubuntu (via [apt.llvm.org](https://apt.llvm.org/))
+```bash
+# LLVM 18 example
+export LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
+cargo build --release --no-default-features --features llvm18-1
+```
 
-  ```bash
-  # Install LLVM 21 (https://apt.llvm.org/)
-  sudo apt install llvm-21 llvm-21-dev clang-21
-  # llvm-config-21 may not be in PATH on Ubuntu; set it explicitly if needed
-  # export LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
-  cargo build --release
-  ```
+Supported LLVM features: `llvm11-0` through `llvm21-1`.
 
-- Non-default version (e.g. LLVM 18)
-
-  ```bash
-  # feature name: llvm18-1, corresponding env var: LLVM_SYS_181_PREFIX
-  export LLVM_SYS_181_PREFIX=/path/to/llvm18
-  cargo build --release --no-default-features --features llvm18-1
-  ```
-
-- Custom path (generic)
-
-  ```bash
-  # LLVM_SYS_<MAJOR>_PREFIX points to the parent of the bin/ directory containing llvm-config
-  export LLVM_SYS_211_PREFIX=/path/to/llvm21
-  cargo build --release
-  ```
-
-#### [Troubleshooting](docs/Troubleshooting_en_US.md) | [LLVM Setup Guide](docs/LLVMSetup_en_US.md)
-
-### 2. macOS
+### macOS
 
 ```bash
 brew install llvm@21
@@ -111,19 +129,25 @@ export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
 cargo build --release
 ```
 
-### 3. Windows
+### Windows
 
-Official pre-built LLVM does not support dynamic plugins. Compile yourself or use community builds:
-<https://github.com/jamesmth/llvm-project/releases>
+Official prebuilt LLVM packages usually do not support dynamic pass plugins directly. Build LLVM yourself or use a community build that supports plugin loading.
 
 ```powershell
 setx LLVM_SYS_211_PREFIX "C:\llvm21"
-cargo build --release
+cargo build --release --features win-link-lld
+# Or link with opt: cargo build --release --features win-link-opt
 ```
 
-### 4. Android NDK
+If default features are disabled, pass the LLVM feature explicitly:
 
-The plain Android NDK usually does not include `libLLVM.so`/`libLLVM.dylib`, so loading `libamice` directly often fails. Prefer the Android NDK bundle from AMICE releases:
+```powershell
+cargo build --release --no-default-features --features llvm21-1,win-link-lld
+```
+
+### Android NDK
+
+The plain Android NDK usually does not include the host `libLLVM.so` / `libLLVM.dylib` required to load the plugin. Prefer the Android NDK bundle from AMICE releases:
 
 ```bash
 tar xf amice-android-ndk-r29-linux-x86_64.tar.gz
@@ -146,29 +170,69 @@ See [Android NDK Usage](docs/AndroidNDKSupport_en_US.md) for details.
 
 ---
 
-## TODO
+## Testing
 
-- [ ] Inline mode support
-- [ ] More Pass examples
-- [ ] CI / CD
+Integration tests invoke clang with the release plugin, so use `--release`. The test script auto-detects `llvm-config` and also honors `LLVM_SYS_*_PREFIX`.
+
+```bash
+# Build and run all tests
+./crates/amice/tests/scripts/run_tests.sh --build
+
+# Run tests matching a name
+./crates/amice/tests/scripts/run_tests.sh -v string
+
+# Use cargo directly
+cargo test --release --no-default-features --features llvm21-1
+cargo test --release --no-default-features --features llvm21-1 --test string_encryption
+cargo test --release --no-default-features --features llvm21-1 test_md5
+```
+
+See [crates/amice/tests/README.md](crates/amice/tests/README.md) for more testing details.
+
+---
+
+## Project Layout
+
+| Path | Description |
+|:---|:---|
+| `crates/amice` | Main clang pass plugin and obfuscation pass implementations |
+| `crates/amice-llvm` | LLVM/inkwell extension layer and C++ FFI glue |
+| `crates/amice-macro` | `#[amice(...)]` pass registration and config macros |
+| `crates/amice-plugin` | Pass manager / pass builder adapter layer |
+| `crates/amice-plugin-macros` | Macros for the plugin adapter layer |
+| `crates/amice-build-support` | Build-time LLVM detection helpers |
+| `docs` | Build, environment variable, function annotation, Android NDK, and troubleshooting docs |
+| `scripts` | Android NDK bundle packaging and helper build scripts |
+
+---
+
+## Documentation
+
+| Topic | Document |
+|:---|:---|
+| LLVM setup | [docs/LLVMSetup_en_US.md](docs/LLVMSetup_en_US.md) |
+| Runtime environment variables | [docs/EnvConfig_en_US.md](docs/EnvConfig_en_US.md) |
+| Function annotations | [docs/FunctionAnnotations_en_US.md](docs/FunctionAnnotations_en_US.md) |
+| Pass execution order | [docs/PassOrder_en_US.md](docs/PassOrder_en_US.md) |
+| Android NDK | [docs/AndroidNDKSupport_en_US.md](docs/AndroidNDKSupport_en_US.md) |
+| Troubleshooting | [docs/Troubleshooting_en_US.md](docs/Troubleshooting_en_US.md) |
 
 ---
 
 ## Acknowledgements
 
-- LLVM Project – <https://llvm.org/>
+- LLVM Project: <https://llvm.org/>
 - llvm-plugin-rs
-    - <https://github.com/jamesmth/llvm-plugin-rs/tree/feat/llvm-20>
-    - <https://github.com/stevefan1999-personal/llvm-plugin-rs>
-- Obfuscator-LLVM - <https://github.com/obfuscator-llvm/obfuscator>
-- SsagePass – <https://github.com/SsageParuders/SsagePass>
-- Polaris-Obfuscator – <https://github.com/za233/Polaris-Obfuscator>
-- YANSOllvm - <https://github.com/emc2314/YANSOllvm>
-- Related Articles
-    - MBA – <https://plzin.github.io/posts/mba>
-    - LLVM PassManager Changes and Dynamic Registration – <https://bbs.kanxue.com/thread-272801.htm>
+  - <https://github.com/jamesmth/llvm-plugin-rs/tree/feat/llvm-20>
+  - <https://github.com/stevefan1999-personal/llvm-plugin-rs>
+- Obfuscator-LLVM: <https://github.com/obfuscator-llvm/obfuscator>
+- SsagePass: <https://github.com/SsageParuders/SsagePass>
+- Polaris-Obfuscator: <https://github.com/za233/Polaris-Obfuscator>
+- YANSOllvm: <https://github.com/emc2314/YANSOllvm>
+- MBA: <https://plzin.github.io/posts/mba>
+- LLVM PassManager Changes and Dynamic Registration: <https://bbs.kanxue.com/thread-272801.htm>
 
 ---
 
-> © 2025-2026 Fuqiuluo & Contributors.
+> © 2025-2026 Fuqiuluo & Contributors.<br>
 > Licensed under this repository's LICENSE.
