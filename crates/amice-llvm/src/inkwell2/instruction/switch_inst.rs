@@ -1,5 +1,5 @@
 use crate::ffi;
-use crate::inkwell2::LLVMValueRefExt;
+use crate::inkwell2::{LLVMBasicBlockRefExt, LLVMValueRefExt};
 use inkwell::basic_block::BasicBlock;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use inkwell::values::{AsValueRef, BasicValueEnum, InstructionOpcode, InstructionValue};
@@ -17,21 +17,29 @@ impl<'ctx> SwitchInst<'ctx> {
     }
 
     pub fn get_case_num(&self) -> u32 {
-        self.inst.get_num_operands() / 2 - 1
+        unsafe { ffi::amice_switch_get_case_num(self.inst.as_value_ref() as LLVMValueRef) }
     }
 
     pub fn get_cases(&self) -> Vec<(BasicValueEnum<'ctx>, BasicBlock<'ctx>)> {
-        let mut cases = Vec::new();
-        for i in (0..self.get_case_num()).step_by(1) {
-            let case_value = self.inst.get_operand(i * 2 + 2);
-            let case_block = self.inst.get_operand(i * 2 + 3);
-            assert!(case_value.is_some());
-            assert!(case_block.is_some());
+        let case_num = self.get_case_num();
+        let mut cases = Vec::with_capacity(case_num as usize);
+
+        for index in 0..case_num {
+            let switch = self.inst.as_value_ref() as LLVMValueRef;
+            let case_value = unsafe { ffi::amice_switch_get_case_value(switch, index) };
+            let case_block = unsafe { ffi::amice_switch_get_case_dest(switch, index) };
+
+            assert!(!case_value.is_null());
+            assert!(!case_block.is_null());
+
             cases.push((
-                case_value.unwrap().value().unwrap(),
-                case_block.unwrap().block().unwrap(),
+                case_value.into_basic_value_enum(),
+                case_block
+                    .into_basic_block()
+                    .expect("switch case destination should be a basic block"),
             ));
         }
+
         cases
     }
 

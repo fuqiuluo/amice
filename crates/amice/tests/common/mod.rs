@@ -114,6 +114,14 @@ pub struct LlvmConfig {
     pub prefix: String,
 }
 
+pub fn llvm_config_from_env(env_var: &str, feature: &str) -> Option<LlvmConfig> {
+    env::var(env_var).ok().map(|prefix| LlvmConfig {
+        env_var: env_var.to_string(),
+        feature: feature.to_string(),
+        prefix,
+    })
+}
+
 /// Detect LLVM configuration from environment variables.
 /// Returns the first matching LLVM installation found.
 pub fn detect_llvm_config() -> Option<LlvmConfig> {
@@ -133,36 +141,28 @@ pub fn detect_llvm_config() -> Option<LlvmConfig> {
     ];
 
     for (env_var, feature) in &llvm_versions {
-        if let Ok(prefix) = env::var(env_var) {
-            return Some(LlvmConfig {
-                env_var: env_var.to_string(),
-                feature: feature.to_string(),
-                prefix,
-            });
+        if let Some(config) = llvm_config_from_env(env_var, feature) {
+            return Some(config);
         }
     }
 
     None
 }
 
-/// Build the amice plugin in release mode.
-/// Automatically detects and applies LLVM configuration from environment.
-pub fn build_amice() {
+fn run_amice_build(config: Option<&LlvmConfig>) {
     let mut cmd = Command::new("cargo");
     cmd.args(["build", "--release", "-p", "amice"]);
     cmd.current_dir(workspace_root());
 
-    // Apply LLVM-specific configuration if detected
-    if let Some(config) = detect_llvm_config() {
+    // Apply LLVM-specific configuration if detected.
+    if let Some(config) = config {
         cmd.env(&config.env_var, &config.prefix);
-        cmd.arg("--no-default-features").arg("--features").arg(&config.feature);
 
-        // Add Windows-specific link features if needed
+        let features = config.feature.clone();
         #[cfg(target_os = "windows")]
-        {
-            let features = format!("{},win-link-lld", config.feature);
-            cmd.args(["--features", &features]);
-        }
+        let features = format!("{features},win-link-lld");
+
+        cmd.arg("--no-default-features").arg("--features").arg(features);
     }
 
     let output = cmd.output().expect("Failed to execute cargo build");
@@ -173,6 +173,18 @@ pub fn build_amice() {
         eprintln!("STDERR:\n{}", String::from_utf8_lossy(&output.stderr));
         panic!("Cargo build failed");
     }
+}
+
+/// Build the amice plugin in release mode.
+/// Automatically detects and applies LLVM configuration from environment.
+pub fn build_amice() {
+    let config = detect_llvm_config();
+    run_amice_build(config.as_ref());
+}
+
+/// Build the amice plugin in release mode for an explicit LLVM version.
+pub fn build_amice_with_llvm(config: &LlvmConfig) {
+    run_amice_build(Some(config));
 }
 
 /// Ensure the plugin is built and exists

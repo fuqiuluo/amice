@@ -58,6 +58,12 @@ impl CppCompileBuilder {
         self
     }
 
+    /// Override the C/C++ compiler executable.
+    pub fn compiler(mut self, compiler: impl Into<String>) -> Self {
+        self.compiler = compiler.into();
+        self
+    }
+
     /// Set optimization level (e.g., "O0", "O2", "O3")
     pub fn optimization(mut self, opt: &str) -> Self {
         self.optimization = Some(opt.to_string());
