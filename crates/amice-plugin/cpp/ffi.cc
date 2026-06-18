@@ -4,6 +4,8 @@
 #include <utility>
 
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/Analysis/CGSCCPassManager.h>
+#include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
@@ -380,6 +382,35 @@ auto modulePassManagerAddPass(llvm::ModulePassManager &PassManager,
                               Pass<ModuleIR>::Entrypoint Entrypoint) -> void {
   PassManager.addPass(Pass<ModuleIR>{Entrypoint, {PassData, Deleter}});
 }
+
+#if defined(LLVM_VERSION_MAJOR) && (LLVM_VERSION_MAJOR >= 22)
+auto modulePassManagerCreate() -> llvm::ModulePassManager * {
+  return new llvm::ModulePassManager();
+}
+
+auto modulePassManagerDelete(llvm::ModulePassManager *PassManager) -> void {
+  delete PassManager;
+}
+
+auto modulePassManagerRun(llvm::ModulePassManager &PassManager,
+                          llvm::Module &Module) -> PreservedAnalyses {
+  llvm::LoopAnalysisManager LAM;
+  llvm::FunctionAnalysisManager FAM;
+  llvm::CGSCCAnalysisManager CGAM;
+  llvm::ModuleAnalysisManager MAM;
+
+  llvm::PassBuilder Builder;
+  Builder.registerLoopAnalyses(LAM);
+  Builder.registerFunctionAnalyses(FAM);
+  Builder.registerCGSCCAnalyses(CGAM);
+  Builder.registerModuleAnalyses(MAM);
+  Builder.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+  const auto Analyses = PassManager.run(Module, MAM);
+  return Analyses.areAllPreserved() ? PreservedAnalyses::kAll
+                                    : PreservedAnalyses::kNone;
+}
+#endif
 
 auto functionPassManagerAddPass(llvm::FunctionPassManager &PassManager,
                                 Pass<FunctionIR>::DataPtr PassData,

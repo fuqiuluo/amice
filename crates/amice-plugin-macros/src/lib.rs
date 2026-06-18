@@ -5,8 +5,43 @@ use proc_macro2::TokenStream as TokenStream2;
 
 use quote::{format_ident, quote, quote_spanned};
 
-use syn::ItemFn;
-use syn::{AttributeArgs, Error};
+use syn::punctuated::Punctuated;
+use syn::{parse::Parse, parse::ParseStream};
+use syn::{Error, Expr, Ident, ItemFn, Lit, Token};
+
+struct Kv {
+    key: Ident,
+    _eq: Token![=],
+    value: Expr,
+}
+
+impl Parse for Kv {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(Self {
+            key: input.parse()?,
+            _eq: input.parse()?,
+            value: input.parse()?,
+        })
+    }
+}
+
+struct PluginArgs {
+    items: Punctuated<Kv, Token![,]>,
+}
+
+impl Parse for PluginArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(Self {
+            items: Punctuated::parse_terminated(input)?,
+        })
+    }
+}
+
+struct ParsedPluginArgs {
+    name: String,
+    version: String,
+    pre_code_gen_callback: Option<Expr>,
+}
 
 /// Macro for defining a new LLVM plugin.
 ///
@@ -50,8 +85,12 @@ pub fn plugin(attrs: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 fn plugin_impl(attrs: TokenStream, input: TokenStream) -> syn::Result<TokenStream2> {
-    let args = syn::parse_macro_input::parse(attrs)?;
-    let (name, version) = match parse_plugin_args(args) {
+    let args = syn::parse_macro_input::parse::<PluginArgs>(attrs)?;
+    let ParsedPluginArgs {
+        name,
+        version,
+        pre_code_gen_callback,
+    } = match parse_plugin_args(args) {
         Some(parsed) => parsed?,
         None => return Err(Error::new(Span::call_site(), "`plugin` attr missing args")),
     };
@@ -62,6 +101,9 @@ fn plugin_impl(attrs: TokenStream, input: TokenStream) -> syn::Result<TokenStrea
 
     let name = name + "\0";
     let version = version + "\0";
+    let pre_code_gen_callback = pre_code_gen_callback
+        .map(|callback| quote! { Some(#callback) })
+        .unwrap_or_else(|| quote! { None });
 
     Ok(quote! {
         #func
@@ -79,38 +121,61 @@ fn plugin_impl(attrs: TokenStream, input: TokenStream) -> syn::Result<TokenStrea
                 plugin_version: #version.as_ptr(),
                 plugin_registrar: #registrar_name_sys,
                 #[cfg(feature = "llvm22-1")]
-                pre_code_gen_callback: std::ptr::null(),
+                pre_code_gen_callback: #pre_code_gen_callback,
             }
         }
     })
 }
 
-fn parse_plugin_args(args: AttributeArgs) -> Option<syn::Result<(String, String)>> {
-    let mut args_iter = args.iter();
+fn parse_plugin_args(args: PluginArgs) -> Option<syn::Result<ParsedPluginArgs>> {
+    if args.items.is_empty() {
+        return None;
+    }
 
-    let arg = args_iter.next()?;
-    let name = match arg {
-        syn::NestedMeta::Meta(syn::Meta::NameValue(syn::MetaNameValue {
-            path,
-            lit: syn::Lit::Str(s),
-            ..
-        })) if path.is_ident("name") => s.value(),
-        _ => {
-            return Some(Err(Error::new_spanned(arg, "expected arg `name=\"value\"`")));
-        },
+    let mut name = None;
+    let mut version = None;
+    let mut pre_code_gen_callback = None;
+
+    for arg in args.items {
+        match arg.key.to_string().as_str() {
+            "name" => match arg.value {
+                Expr::Lit(expr_lit) => match expr_lit.lit {
+                    Lit::Str(s) => name = Some(s.value()),
+                    other => return Some(Err(Error::new_spanned(other, "expected string literal for `name`"))),
+                },
+                other => return Some(Err(Error::new_spanned(other, "expected string literal for `name`"))),
+            },
+            "version" => match arg.value {
+                Expr::Lit(expr_lit) => match expr_lit.lit {
+                    Lit::Str(s) => version = Some(s.value()),
+                    other => return Some(Err(Error::new_spanned(other, "expected string literal for `version`"))),
+                },
+                other => return Some(Err(Error::new_spanned(other, "expected string literal for `version`"))),
+            },
+            "pre_code_gen_callback" => {
+                pre_code_gen_callback = Some(arg.value);
+            },
+            other => {
+                return Some(Err(Error::new_spanned(
+                    arg.key,
+                    format!("unknown plugin arg `{other}`"),
+                )));
+            },
+        }
+    }
+
+    let name = match name {
+        Some(name) => name,
+        None => return Some(Err(Error::new(Span::call_site(), "`plugin` attr missing `name`"))),
+    };
+    let version = match version {
+        Some(version) => version,
+        None => return Some(Err(Error::new(Span::call_site(), "`plugin` attr missing `version`"))),
     };
 
-    let arg = args_iter.next()?;
-    let version = match arg {
-        syn::NestedMeta::Meta(syn::Meta::NameValue(syn::MetaNameValue {
-            path,
-            lit: syn::Lit::Str(s),
-            ..
-        })) if path.is_ident("version") => s.value(),
-        _ => {
-            return Some(Err(Error::new_spanned(arg, "expected arg `version=\"value\"`")));
-        },
-    };
-
-    Some(Ok((name, version)))
+    Some(Ok(ParsedPluginArgs {
+        name,
+        version,
+        pre_code_gen_callback,
+    }))
 }

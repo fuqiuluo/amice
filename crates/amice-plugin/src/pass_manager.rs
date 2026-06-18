@@ -9,12 +9,27 @@ use super::{FunctionAnalysisManager, LlvmFunctionPass, LlvmModulePass, ModuleAna
 /// pipeline.
 pub struct ModulePassManager {
     inner: *mut c_void,
+    #[cfg(feature = "llvm22-1")]
+    owned: bool,
 }
 
 impl ModulePassManager {
     #[doc(hidden)]
     pub unsafe fn from_raw(pass_manager: *mut c_void) -> Self {
-        Self { inner: pass_manager }
+        Self {
+            inner: pass_manager,
+            #[cfg(feature = "llvm22-1")]
+            owned: false,
+        }
+    }
+
+    /// Creates an empty module pass manager.
+    #[cfg(feature = "llvm22-1")]
+    pub fn new() -> Self {
+        Self {
+            inner: unsafe { super::modulePassManagerCreate() },
+            owned: true,
+        }
     }
 
     /// Adds a pass to this pass manager.
@@ -75,6 +90,21 @@ impl ModulePassManager {
     ))]
     pub fn is_empty(&self) -> bool {
         unsafe { super::modulePassManagerIsEmpty(self.inner) }
+    }
+
+    /// Runs this pass manager on a module.
+    #[cfg(feature = "llvm22-1")]
+    pub fn run_on_module(&mut self, module: &mut Module<'_>) -> PreservedAnalyses {
+        unsafe { super::modulePassManagerRun(self.inner, module.as_mut_ptr().cast()) }
+    }
+}
+
+#[cfg(feature = "llvm22-1")]
+impl Drop for ModulePassManager {
+    fn drop(&mut self) {
+        if self.owned && !self.inner.is_null() {
+            unsafe { super::modulePassManagerDelete(self.inner) }
+        }
     }
 }
 

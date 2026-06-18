@@ -202,6 +202,15 @@ extern "C" {
         pass_sys: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> crate::PreservedAnalyses,
     );
 
+    #[cfg(feature = "llvm22-1")]
+    pub(crate) fn modulePassManagerCreate() -> *mut c_void;
+
+    #[cfg(feature = "llvm22-1")]
+    pub(crate) fn modulePassManagerDelete(manager: *mut c_void);
+
+    #[cfg(feature = "llvm22-1")]
+    pub(crate) fn modulePassManagerRun(manager: *mut c_void, module: *mut c_void) -> crate::PreservedAnalyses;
+
     #[cfg(any(
         feature = "llvm12-0",
         feature = "llvm13-0",

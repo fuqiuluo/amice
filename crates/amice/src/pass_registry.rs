@@ -61,6 +61,8 @@ bitflags! {
         const OptimizerLast = 0b00010;
         /// add_full_lto_ep_callback
         const FullLtoLast =   0b00100;
+        /// LLVM 22 PreCodeGenCallback
+        const PreCodeGen =    0b100000;
         /// Function Level Pass
         const FunctionLevel = 0b01000;
         /// Module Level Pass

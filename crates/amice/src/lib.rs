@@ -7,7 +7,7 @@ use crate::pass_registry::AmicePassFlag;
 use amice_plugin::PipelineParsing;
 use log::{error, info, warn};
 
-#[amice_plugin::plugin(name = "amice", version = "0.1.4")]
+#[amice_plugin::plugin(name = "amice", version = "0.1.4", pre_code_gen_callback = pre_code_gen_callback)]
 fn plugin_registrar(builder: &mut amice_plugin::PassBuilder) {
     if let Err(e) = env_logger::builder().try_init() {
         warn!("amice init logger failed: {e:?}");
@@ -78,4 +78,30 @@ fn plugin_registrar(builder: &mut amice_plugin::PassBuilder) {
     });
 
     info!("amice plugin registered!");
+}
+
+#[cfg(feature = "llvm22-1")]
+extern "C" fn pre_code_gen_callback(
+    module: *mut std::ffi::c_void,
+    _target_machine: *mut std::ffi::c_void,
+    code_gen_file_type: amice_plugin::CodeGenFileType,
+    _output_stream: *mut std::ffi::c_void,
+) -> bool {
+    if module.is_null() {
+        return false;
+    }
+
+    info!("amice plugin pre codegen callback, file type: {code_gen_file_type:?}");
+
+    let cfg = &*CONFIG;
+    let mut module = unsafe { amice_plugin::inkwell::module::Module::new(module.cast()) };
+    let mut manager = amice_plugin::ModulePassManager::new();
+    pass_registry::install_all(cfg, &mut manager, AmicePassFlag::PreCodeGen);
+
+    if !manager.is_empty() {
+        manager.run_on_module(&mut module);
+    }
+
+    std::mem::forget(module);
+    false
 }
