@@ -228,8 +228,9 @@ jobs:
           if ! brew install --force-bottle "llvm@${major}"; then
             brew install "llvm@${major}"
           fi
-          brew link "llvm@${major}" || true
+          brew link --force --overwrite "llvm@${major}" || true
           prefix="$(brew --prefix "llvm@${major}")"
+          "${prefix}/bin/llvm-config" --version
           echo "LLVM_SYS_${suffix}_PREFIX=${prefix}" >> "$GITHUB_ENV"
           echo "${prefix}/bin" >> "$GITHUB_PATH"
           echo "LLVM_LIBDIR=${prefix}/lib" >> "$GITHUB_ENV"

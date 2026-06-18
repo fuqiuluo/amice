@@ -66,9 +66,10 @@ jobs:
           if ! brew install --force-bottle "llvm@${major}"; then
             brew install "llvm@${major}"
           fi
-          brew link "llvm@${major}"
+          brew link --force --overwrite "llvm@${major}" || true
           # Get the Homebrew prefix for the installed llvm formula (usually /opt/homebrew/opt/llvm@<major>)
           prefix=$(brew --prefix "llvm@${major}")
+          "${prefix}/bin/llvm-config" --version
           echo "Found llvm prefix: ${prefix}"
           # Use suffix from matrix for the llvm-sys env var name (e.g. 201)
           env_name="LLVM_SYS_${suffix}_PREFIX"
