@@ -44,16 +44,15 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Cache Homebrew downloads & Cellar
+      - name: Cache Homebrew downloads
         uses: actions/cache@v4
         with:
           path: |
             /Users/runner/Library/Caches/Homebrew
             /opt/homebrew/Library/Caches/Homebrew
-            /opt/homebrew/Cellar
-          key: ${{ runner.os }}-homebrew-llvm-${{ matrix.llvm-version[0] }}
+          key: ${{ runner.os }}-homebrew-downloads-llvm-${{ matrix.llvm-version[0] }}-v2
           restore-keys: |
-            ${{ runner.os }}-homebrew-llvm-${{ matrix.llvm-version[0] }}
+            ${{ runner.os }}-homebrew-downloads-llvm-${{ matrix.llvm-version[0] }}-v2
 
       - name: Install Homebrew LLVM (clang) and set env dynamically
         run: |

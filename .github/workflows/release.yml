@@ -202,17 +202,15 @@ jobs:
         with:
           ref: ${{ inputs.tag_name || github.ref }}
 
-      - name: Cache Homebrew downloads and Cellar
+      - name: Cache Homebrew downloads
         uses: actions/cache@v4
         with:
           path: |
             /Users/runner/Library/Caches/Homebrew
             /opt/homebrew/Library/Caches/Homebrew
             /usr/local/Homebrew/Library/Caches/Homebrew
-            /opt/homebrew/Cellar
-            /usr/local/Cellar
-          key: release-${{ runner.os }}-${{ runner.arch }}-homebrew-llvm-${{ matrix.llvm-version[0] }}
-          restore-keys: release-${{ runner.os }}-${{ runner.arch }}-homebrew-llvm-${{ matrix.llvm-version[0] }}
+          key: release-${{ runner.os }}-${{ runner.arch }}-homebrew-downloads-llvm-${{ matrix.llvm-version[0] }}-v2
+          restore-keys: release-${{ runner.os }}-${{ runner.arch }}-homebrew-downloads-llvm-${{ matrix.llvm-version[0] }}-v2
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
