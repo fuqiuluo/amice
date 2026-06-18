@@ -43,25 +43,34 @@ macOS 下插件后缀是 `.dylib`，请把路径替换为 `target/release/libami
 
 ## 支持的混淆
 
-| Pass | 环境变量开关 | 说明 |
-|:---|:---|:---|
-| String Encryption | `AMICE_STRING_ENCRYPTION` | 字符串加密，支持 `xor` / `simd_xor`、lazy/global 解密、栈/堆解密配置 |
-| Indirect Call | `AMICE_INDIRECT_CALL` | 将直接调用改写为函数表/索引形式的间接调用 |
-| Indirect Branch | `AMICE_INDIRECT_BRANCH` | 将分支改写为 `indirectbr`，支持 dummy block、表重排、索引加密等 flags |
-| Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | 按配置切割基本块 |
-| Lower Switch | `AMICE_LOWER_SWITCH` | 降级 LLVM `switch` 指令 |
-| VM Flatten | `AMICE_VM_FLATTEN` | VM 风格控制流扁平化 |
-| Flatten | `AMICE_FLATTEN` | 控制流平坦化，支持 `basic` / `dominator` 模式 |
-| MBA | `AMICE_MBA` | 混合布尔算术表达式重写 |
-| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | 插入虚假控制流，支持 basic / polaris-primes 模式 |
-| Function Wrapper | `AMICE_FUNCTION_WRAPPER` | 生成包装函数并替换调用点 |
-| Clone Function | `AMICE_CLONE_FUNCTION` | 常量参数特化克隆 |
-| Alias Access | `AMICE_ALIAS_ACCESS` | 基于指针链的别名访问混淆 |
-| Custom Calling Conv | `AMICE_CUSTOM_CALLING_CONV` | 自定义调用约定，通常通过函数注解按函数启用 |
-| Delay Offset Loading | `AMICE_DELAY_OFFSET_LOADING` | GEP 偏移延迟加载/可选 XOR 保护 |
-| Param Aggregate | `AMICE_PARAM_AGGREGATE` | 参数结构化聚合混淆 |
-| Basic Block Outlining | `AMICE_BASIC_BLOCK_OUTLINING` | 将基础块提取为独立子函数，亦称 BB2Func |
-| Shuffle Blocks | `AMICE_SHUFFLE_BLOCKS` | 基本块重排 |
+| Pass | 环境变量开关 | C/C++ | Rust | ObjC | 说明 |
+|:---|:---|:---:|:---:|:---:|:---|
+| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | 字符串加密，支持 `xor` / `simd_xor`、lazy/global 解密、栈/堆解密配置 |
+| Indirect Call | `AMICE_INDIRECT_CALL` | ✅ | ✅ | ❌ | 将直接调用改写为函数表/索引形式的间接调用 |
+| Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | 将分支改写为 `indirectbr`，支持 dummy block、表重排、索引加密等 flags |
+| Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | 按配置切割基本块 |
+| Lower Switch | `AMICE_LOWER_SWITCH` | ✅ | ✅ | ❌ | 降级 LLVM `switch` 指令 |
+| VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM 风格控制流扁平化 |
+| Flatten | `AMICE_FLATTEN` | ✅ | ✅ | ❌ | 控制流平坦化，支持 `basic` / `dominator` 模式 |
+| MBA | `AMICE_MBA` | ✅ | ✅ | ❌ | 混合布尔算术表达式重写 |
+| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | 插入虚假控制流，支持 basic / polaris-primes 模式 |
+| Function Wrapper | `AMICE_FUNCTION_WRAPPER` | ✅ | ✅ | ❌ | 生成包装函数并替换调用点 |
+| Clone Function | `AMICE_CLONE_FUNCTION` | ✅ | ✅ | ❌ | 常量参数特化克隆 |
+| Alias Access | `AMICE_ALIAS_ACCESS` | ✅ | ✅ | ❌ | 基于指针链的别名访问混淆 |
+| Custom Calling Conv | `AMICE_CUSTOM_CALLING_CONV` | ⏳ | ⏳ | ❌ | 自定义调用约定，通常通过函数注解按函数启用 |
+| Delay Offset Loading | `AMICE_DELAY_OFFSET_LOADING` | ✅ | ⏳ | ❌ | GEP 偏移延迟加载/可选 XOR 保护 |
+| Param Aggregate | `AMICE_PARAM_AGGREGATE` | ✅ | ⏳ | ❌ | 参数结构化聚合混淆 |
+| Basic Block Outlining | `AMICE_BASIC_BLOCK_OUTLINING` | ✅ | ⏳ | ❌ | 将基础块提取为独立子函数，亦称 BB2Func |
+| Shuffle Blocks | `AMICE_SHUFFLE_BLOCKS` | ✅ | ⏳ | ❌ | 基本块重排 |
+
+> 说明：
+> - ✅ 已支持
+> - ⏳ 进行中 / 计划中 / 未测试
+> - ❌ 暂未规划
+>
+> Rust 字符串加密通常需要设置 `AMICE_STRING_ONLY_DOT_STRING=false`（兼容旧名 `AMICE_STRING_ONLY_LLVM_STRING=false`），详见 [运行时环境变量](docs/EnvConfig_zh_CN.md)。
+
+历史 README 中的规划项目前没有独立环境变量：反 Class 导出（C/C++ ❌、Rust ❌、ObjC ⏳）和指令虚拟化（C/C++ ⏳、Rust ⏳、ObjC ❌）。
 
 完整配置项请看 [运行时环境变量](docs/EnvConfig_zh_CN.md)，按函数启用/禁用请看 [函数注解](docs/FunctionAnnotations_zh_CN.md)。
 

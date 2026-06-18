@@ -43,25 +43,34 @@ On macOS, replace the plugin path with `target/release/libamice.dylib`.
 
 ## Supported Obfuscations
 
-| Pass | Environment Variable | Description |
-|:---|:---|:---|
-| String Encryption | `AMICE_STRING_ENCRYPTION` | String encryption with `xor` / `simd_xor`, lazy/global decryption, stack/heap allocation options |
-| Indirect Call | `AMICE_INDIRECT_CALL` | Rewrites direct calls into table/index based indirect calls |
-| Indirect Branch | `AMICE_INDIRECT_BRANCH` | Rewrites branches into `indirectbr`; supports dummy blocks, table shuffling, index encryption, and other flags |
-| Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | Splits basic blocks according to configuration |
-| Lower Switch | `AMICE_LOWER_SWITCH` | Lowers LLVM `switch` instructions |
-| VM Flatten | `AMICE_VM_FLATTEN` | VM-style control-flow flattening |
-| Flatten | `AMICE_FLATTEN` | Control-flow flattening with `basic` / `dominator` modes |
-| MBA | `AMICE_MBA` | Mixed Boolean-arithmetic expression rewriting |
-| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | Inserts bogus control flow; supports basic / polaris-primes modes |
-| Function Wrapper | `AMICE_FUNCTION_WRAPPER` | Creates wrapper functions and replaces call sites |
-| Clone Function | `AMICE_CLONE_FUNCTION` | Constant-argument specialization by function cloning |
-| Alias Access | `AMICE_ALIAS_ACCESS` | Pointer-chain based alias access obfuscation |
-| Custom Calling Conv | `AMICE_CUSTOM_CALLING_CONV` | Custom calling convention support, usually enabled per function by annotation |
-| Delay Offset Loading | `AMICE_DELAY_OFFSET_LOADING` | Delayed GEP offset loading with optional XOR protection |
-| Param Aggregate | `AMICE_PARAM_AGGREGATE` | Parameter aggregation obfuscation |
-| Basic Block Outlining | `AMICE_BASIC_BLOCK_OUTLINING` | Extracts basic blocks into standalone helper functions, also known as BB2Func |
-| Shuffle Blocks | `AMICE_SHUFFLE_BLOCKS` | Basic block reordering |
+| Pass | Environment Variable | C/C++ | Rust | ObjC | Description |
+|:---|:---|:---:|:---:|:---:|:---|
+| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | String encryption with `xor` / `simd_xor`, lazy/global decryption, stack/heap allocation options |
+| Indirect Call | `AMICE_INDIRECT_CALL` | ✅ | ✅ | ❌ | Rewrites direct calls into table/index based indirect calls |
+| Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | Rewrites branches into `indirectbr`; supports dummy blocks, table shuffling, index encryption, and other flags |
+| Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | Splits basic blocks according to configuration |
+| Lower Switch | `AMICE_LOWER_SWITCH` | ✅ | ✅ | ❌ | Lowers LLVM `switch` instructions |
+| VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM-style control-flow flattening |
+| Flatten | `AMICE_FLATTEN` | ✅ | ✅ | ❌ | Control-flow flattening with `basic` / `dominator` modes |
+| MBA | `AMICE_MBA` | ✅ | ✅ | ❌ | Mixed Boolean-arithmetic expression rewriting |
+| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | Inserts bogus control flow; supports basic / polaris-primes modes |
+| Function Wrapper | `AMICE_FUNCTION_WRAPPER` | ✅ | ✅ | ❌ | Creates wrapper functions and replaces call sites |
+| Clone Function | `AMICE_CLONE_FUNCTION` | ✅ | ✅ | ❌ | Constant-argument specialization by function cloning |
+| Alias Access | `AMICE_ALIAS_ACCESS` | ✅ | ✅ | ❌ | Pointer-chain based alias access obfuscation |
+| Custom Calling Conv | `AMICE_CUSTOM_CALLING_CONV` | ⏳ | ⏳ | ❌ | Custom calling convention support, usually enabled per function by annotation |
+| Delay Offset Loading | `AMICE_DELAY_OFFSET_LOADING` | ✅ | ⏳ | ❌ | Delayed GEP offset loading with optional XOR protection |
+| Param Aggregate | `AMICE_PARAM_AGGREGATE` | ✅ | ⏳ | ❌ | Parameter aggregation obfuscation |
+| Basic Block Outlining | `AMICE_BASIC_BLOCK_OUTLINING` | ✅ | ⏳ | ❌ | Extracts basic blocks into standalone helper functions, also known as BB2Func |
+| Shuffle Blocks | `AMICE_SHUFFLE_BLOCKS` | ✅ | ⏳ | ❌ | Basic block reordering |
+
+> Legend:
+> - ✅ Supported
+> - ⏳ In progress / planned / untested
+> - ❌ Not planned
+>
+> Rust string encryption usually requires `AMICE_STRING_ONLY_DOT_STRING=false` (legacy alias: `AMICE_STRING_ONLY_LLVM_STRING=false`); see [Runtime Environment Variables](docs/EnvConfig_en_US.md).
+
+Historical README roadmap items do not currently have standalone environment variables: Anti-Class Export (C/C++ ❌, Rust ❌, ObjC ⏳) and Instruction Virtualization (C/C++ ⏳, Rust ⏳, ObjC ❌).
 
 See [Runtime Environment Variables](docs/EnvConfig_en_US.md) for all options and [Function Annotations](docs/FunctionAnnotations_en_US.md) for per-function enable/disable controls.
 
