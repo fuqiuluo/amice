@@ -70,8 +70,6 @@ macOS 下插件后缀是 `.dylib`，请把路径替换为 `target/release/libami
 >
 > Rust 字符串加密通常需要设置 `AMICE_STRING_ONLY_DOT_STRING=false`（兼容旧名 `AMICE_STRING_ONLY_LLVM_STRING=false`），详见 [运行时环境变量](docs/EnvConfig_zh_CN.md)。
 
-历史 README 中的规划项目前没有独立环境变量：反 Class 导出（C/C++ ❌、Rust ❌、ObjC ⏳）和指令虚拟化（C/C++ ⏳、Rust ⏳、ObjC ❌）。
-
 完整配置项请看 [运行时环境变量](docs/EnvConfig_zh_CN.md)，按函数启用/禁用请看 [函数注解](docs/FunctionAnnotations_zh_CN.md)。
 
 ---

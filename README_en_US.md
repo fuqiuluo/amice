@@ -70,8 +70,6 @@ On macOS, replace the plugin path with `target/release/libamice.dylib`.
 >
 > Rust string encryption usually requires `AMICE_STRING_ONLY_DOT_STRING=false` (legacy alias: `AMICE_STRING_ONLY_LLVM_STRING=false`); see [Runtime Environment Variables](docs/EnvConfig_en_US.md).
 
-Historical README roadmap items do not currently have standalone environment variables: Anti-Class Export (C/C++ ❌, Rust ❌, ObjC ⏳) and Instruction Virtualization (C/C++ ⏳, Rust ⏳, ObjC ❌).
-
 See [Runtime Environment Variables](docs/EnvConfig_en_US.md) for all options and [Function Annotations](docs/FunctionAnnotations_en_US.md) for per-function enable/disable controls.
 
 ---
