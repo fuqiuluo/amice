@@ -32,6 +32,7 @@ llvm18-1 = ["inkwell/llvm18-1-no-llvm-linking"]
 llvm19-1 = ["inkwell/llvm19-1-no-llvm-linking"]
 llvm20-1 = ["inkwell/llvm20-1-no-llvm-linking"]
 llvm21-1 = ["inkwell/llvm21-1-no-llvm-linking"]
+llvm22-1 = ["inkwell/llvm22-1-no-llvm-linking"]
 
 target-x86 = ["inkwell/target-x86"]
 target-arm = ["inkwell/target-arm"]
@@ -52,7 +53,7 @@ target-riscv = ["inkwell/target-riscv"]
 target-all = ["inkwell/target-all"]
 
 [dependencies]
-inkwell = { version = "0.7", default-features = false }
+inkwell = { version = "0.9", default-features = false }
 amice-plugin-macros = { workspace = true, optional = true }
 
 [build-dependencies]

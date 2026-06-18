@@ -6,6 +6,7 @@
 
 | LLVM 版本 | 环境变量              |
 |---------|-------------------|
+| 22.1    | `LLVM_SYS_221_PREFIX` |
 | 21.1    | `LLVM_SYS_211_PREFIX` |
 | 20.1    | `LLVM_SYS_201_PREFIX` |
 | 19.1    | `LLVM_SYS_191_PREFIX` |
@@ -28,8 +29,8 @@ dnf search llvm
 # 安装最新稳定版
 sudo dnf install llvm llvm-devel clang clang-devel
 
-# 或安装指定版本（例如 LLVM 18）
-sudo dnf install llvm18 llvm18-devel clang18 clang18-devel
+# 或安装指定版本（例如 LLVM 22）
+sudo dnf install llvm22 llvm22-devel clang22 clang22-devel
 ```
 
 ### 验证安装
@@ -43,7 +44,7 @@ llvm-config --prefix
 ### 设置环境变量
 
 ```bash
-export LLVM_SYS_181_PREFIX=$(llvm-config --prefix)
+export LLVM_SYS_221_PREFIX=$(llvm-config --prefix)
 ```
 
 ---
@@ -57,7 +58,7 @@ sudo apt update
 sudo apt install llvm llvm-dev clang libclang-dev
 
 # 或安装指定版本
-sudo apt install llvm-18 llvm-18-dev clang-18 libclang-18-dev
+sudo apt install llvm-22 llvm-22-dev clang-22 libclang-22-dev
 ```
 
 ### 验证安装
@@ -70,7 +71,7 @@ llvm-config --prefix
 ### 设置环境变量
 
 ```bash
-export LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
+export LLVM_SYS_221_PREFIX=/usr/lib/llvm-22
 ```
 
 ---
@@ -84,17 +85,17 @@ export LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
 brew install llvm
 
 # 或安装指定版本
-brew install llvm@18
+brew install llvm@22
 ```
 
 ### 设置环境变量
 
 ```bash
 # 最新版本
-export LLVM_SYS_181_PREFIX=$(brew --prefix llvm)
+export LLVM_SYS_221_PREFIX=$(brew --prefix llvm)
 
 # 指定版本
-export LLVM_SYS_181_PREFIX=$(brew --prefix llvm@18)
+export LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)
 ```
 
 ### 添加到 PATH（可选）
@@ -120,13 +121,13 @@ export PATH="$(brew --prefix llvm)/bin:$PATH"
 CMD：
 
 ```cmd
-setx LLVM_SYS_181_PREFIX "C:\Program Files\LLVM"
+setx LLVM_SYS_221_PREFIX "C:\Program Files\LLVM"
 ```
 
 PowerShell：
 
 ```powershell
-[Environment]::SetEnvironmentVariable("LLVM_SYS_181_PREFIX", "C:\Program Files\LLVM", "User")
+[Environment]::SetEnvironmentVariable("LLVM_SYS_221_PREFIX", "C:\Program Files\LLVM", "User")
 ```
 
 ### 构建参数

@@ -62,6 +62,7 @@ map_llvm_version() {
     local minor=${2:-0}
 
     case "$major" in
+        22) LLVM_FEATURE="llvm22-1"; LLVM_ENV_VAR="LLVM_SYS_221_PREFIX" ;;
         21) LLVM_FEATURE="llvm21-1"; LLVM_ENV_VAR="LLVM_SYS_211_PREFIX" ;;
         20) LLVM_FEATURE="llvm20-1"; LLVM_ENV_VAR="LLVM_SYS_201_PREFIX" ;;
         19) LLVM_FEATURE="llvm19-1"; LLVM_ENV_VAR="LLVM_SYS_191_PREFIX" ;;
@@ -82,7 +83,7 @@ map_llvm_version() {
 }
 
 # Find llvm-config executable
-# Tries: llvm-config, llvm-config-XX (for versions 21 down to 11)
+# Tries: llvm-config, llvm-config-XX (for versions 22 down to 11)
 find_llvm_config() {
     # Try plain llvm-config first
     if command -v llvm-config &>/dev/null; then
@@ -91,7 +92,7 @@ find_llvm_config() {
     fi
 
     # Try version-specific variants
-    for ver in 21 20 19 18 17 16 15 14 13 12 11; do
+    for ver in 22 21 20 19 18 17 16 15 14 13 12 11; do
         if command -v "llvm-config-$ver" &>/dev/null; then
             echo "llvm-config-$ver"
             return 0
@@ -100,7 +101,7 @@ find_llvm_config() {
 
     # macOS Homebrew paths
     if [[ "$(uname -s)" == "Darwin" ]]; then
-        for ver in 21 20 19 18 17 16 15 14; do
+        for ver in 22 21 20 19 18 17 16 15 14; do
             local brew_path="/opt/homebrew/opt/llvm@$ver/bin/llvm-config"
             if [[ -x "$brew_path" ]]; then
                 echo "$brew_path"
@@ -148,6 +149,7 @@ detect_llvm_from_config() {
 # Detect LLVM version from environment variables
 detect_llvm_from_env() {
     local llvm_versions=(
+        "LLVM_SYS_221_PREFIX:llvm22-1"
         "LLVM_SYS_211_PREFIX:llvm21-1"
         "LLVM_SYS_201_PREFIX:llvm20-1"
         "LLVM_SYS_191_PREFIX:llvm19-1"

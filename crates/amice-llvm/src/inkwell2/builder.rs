@@ -51,6 +51,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
+            feature = "llvm22-1",
         )))]
         return unsafe { self.build_gep(ptr, ordered_indexes, name) };
 
@@ -62,6 +63,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
+            feature = "llvm22-1",
         ))]
         return unsafe { self.build_gep(pointee_ty, ptr, ordered_indexes, name) };
     }
@@ -80,6 +82,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
+            feature = "llvm22-1",
         )))]
         return self.build_load(ptr, name);
 
@@ -91,6 +94,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
+            feature = "llvm22-1",
         ))]
         return self.build_load(pointee_ty, ptr, name);
     }
@@ -110,6 +114,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
+            feature = "llvm22-1",
         )))]
         return unsafe { self.build_in_bounds_gep(ptr, ordered_indexes, name) };
 
@@ -121,6 +126,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
+            feature = "llvm22-1",
         ))]
         return unsafe { self.build_in_bounds_gep(pointee_ty, ptr, ordered_indexes, name) };
     }

@@ -12,7 +12,7 @@ Amice 是一个基于 Rust、`llvm-plugin` 和 `inkwell` 构建的 LLVM Pass 插
 
 ### 1. 构建插件
 
-默认 LLVM feature 是 `llvm21-1`，需要 LLVM 21 开发包或可用的 `llvm-config`。
+默认 LLVM feature 是 `llvm21-1`，需要 LLVM 21 开发包或可用的 `llvm-config`。LLVM 22.1 也已支持，可通过 `llvm22-1` feature 显式启用。
 
 ```bash
 # macOS
@@ -123,12 +123,16 @@ cargo build --release
 切换非默认 LLVM 版本时，Cargo feature 和 `LLVM_SYS_*_PREFIX` 需要匹配：
 
 ```bash
+# LLVM 22 示例
+export LLVM_SYS_221_PREFIX=/usr/lib64/llvm22
+cargo build --release --no-default-features --features llvm22-1
+
 # LLVM 18 示例
 export LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
 cargo build --release --no-default-features --features llvm18-1
 ```
 
-支持的 LLVM feature：`llvm11-0` 到 `llvm21-1`。
+支持的 LLVM feature：`llvm11-0` 到 `llvm22-1`。
 
 ### macOS
 
@@ -136,6 +140,11 @@ cargo build --release --no-default-features --features llvm18-1
 brew install llvm@21
 export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
 cargo build --release
+
+# LLVM 22 示例
+brew install llvm@22
+export LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)
+cargo build --release --no-default-features --features llvm22-1
 ```
 
 ### Windows
@@ -194,6 +203,9 @@ fi
 cargo test --release --no-default-features --features llvm21-1
 cargo test --release --no-default-features --features llvm21-1 --test string_encryption
 cargo test --release --no-default-features --features llvm21-1 test_md5
+
+# LLVM 22 示例
+LLVM_SYS_221_PREFIX=/usr/lib64/llvm22 cargo test --release --no-default-features --features llvm22-1
 ```
 
 更多测试说明见 [crates/amice/tests/README.md](crates/amice/tests/README.md)。

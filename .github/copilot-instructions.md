@@ -9,7 +9,7 @@ Amice is an LLVM plugin written in Rust that provides code obfuscation transform
 - Target: LLVM plugin (libamice.so) for use with clang
 - Virtual Cargo workspace with all Rust crates under `crates/`
 - Configuration-driven with environment variable overrides
-- Supports LLVM versions 11.0 through 21.1 via feature flags
+- Supports LLVM versions 11.0 through 22.1 via feature flags
 
 ## Critical Build Requirements
 
@@ -18,7 +18,7 @@ Amice is an LLVM plugin written in Rust that provides code obfuscation transform
 export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21
 ```
 
-The default Cargo feature is `llvm21-1`, matching the local LLVM 21.1 environment.
+The default Cargo feature is `llvm21-1`, matching the local LLVM 21.1 environment. LLVM 22.1 can be selected with `--no-default-features --features llvm22-1` and `LLVM_SYS_221_PREFIX`.
 
 ## Build Instructions
 
@@ -28,6 +28,9 @@ Check LLVM installation before building:
 # Verify LLVM 21 is available
 llvm-config --version  # Should output: 21.1.x
 clang --version        # Should show clang 21.x
+
+# Optional LLVM 22 check
+/usr/lib64/llvm22/bin/llvm-config --version  # Should output: 22.1.x
 ```
 
 ### Build Commands (Required Order)
@@ -156,8 +159,9 @@ clang -fpass-plugin=target/release/libamice.so \
 ### Build Failures
 
 **"No suitable version of LLVM was found"**
-- Cause: Missing or incorrect LLVM_SYS_211_PREFIX
-- Solution: `export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21`
+- Cause: Missing or incorrect `LLVM_SYS_*_PREFIX`
+- Solution for the default build: `export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21`
+- Solution for LLVM 22: `export LLVM_SYS_221_PREFIX=/usr/lib64/llvm22` and pass `--no-default-features --features llvm22-1`
 
 **"cargo build failed" in tests**
 - Cause: Tests expect release build to exist
@@ -167,7 +171,7 @@ clang -fpass-plugin=target/release/libamice.so \
 
 **"undefined symbol" when loading plugin**
 - Cause: LLVM dynamic linking issues
-- Solution: Verify LLVM 21 development packages are installed
+- Solution: Verify the matching LLVM development packages are installed
 
 **Plugin not applying transformations**
 - Cause: Missing environment variables for specific techniques
@@ -183,8 +187,8 @@ clang -fpass-plugin=target/release/libamice.so \
 ## Dependencies and Workarounds
 
 ### External Dependencies
-- **LLVM 21**: Must be dynamically linkable version (apt/homebrew packages work)
-- **Clang 21**: For testing plugin functionality
+- **LLVM 21/22**: Must be dynamically linkable version (apt/homebrew packages work)
+- **Clang 21/22**: For testing plugin functionality
 - **Standard Rust toolchain**: Edition 2024 features required
 
 ### Forked Dependencies

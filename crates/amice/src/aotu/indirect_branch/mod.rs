@@ -138,7 +138,8 @@ impl AmicePass for IndirectBranch {
                 // br label %2
                 // br i1 %5, label %6, label %7
                 let mut future_branches = [None::<BasicBlock>; 2];
-                if br_inst.is_conditional() {
+                let is_conditional = br_inst.is_conditional()?;
+                if is_conditional {
                     // future_branches的[1]是内存下标，get_successor(0)为真块
                     // 当为真时，把bool扩展为i32,则这个i32的值是1，直接作为下标使用即future_branches[1]应该保存真分支
                     future_branches[1] = br_inst.get_successor(0);
@@ -164,7 +165,7 @@ impl AmicePass for IndirectBranch {
 
                 // 如果是条件跳转或者是没有被收集的基本块（why？），构建局部跳转表
                 let indirect_branch_table =
-                    if br_inst.is_conditional() || !non_entry_bb_addrs_refs.contains(&future_branches_address[0]) {
+                    if is_conditional || !non_entry_bb_addrs_refs.contains(&future_branches_address[0]) {
                         let future_branches_ptrs: Vec<_> = successors
                             .iter()
                             .filter_map(|next_basic_block| unsafe { next_basic_block.get_address() })
@@ -202,7 +203,7 @@ impl AmicePass for IndirectBranch {
                     None
                 };
                 // 获取一下下标，如果是条件跳转，就把i8扩展成i32就好了
-                let index = if br_inst.is_conditional() {
+                let index = if is_conditional {
                     let cond = br_inst.get_operand(0).unwrap().value().unwrap().into_int_value();
                     builder
                         .build_int_z_extend(cond, i32_type, "")

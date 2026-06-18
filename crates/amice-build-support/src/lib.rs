@@ -47,6 +47,7 @@ const LLVM_FEATURES: &[((u32, u32), &str)] = &[
     ((19, 1), "CARGO_FEATURE_LLVM19_1"),
     ((20, 1), "CARGO_FEATURE_LLVM20_1"),
     ((21, 1), "CARGO_FEATURE_LLVM21_1"),
+    ((22, 1), "CARGO_FEATURE_LLVM22_1"),
 ];
 
 /// Determine the LLVM `(major, minor)` from the consuming crate's enabled
@@ -61,7 +62,7 @@ pub fn llvm_version_from_features() -> (u32, u32) {
     }
     panic!(
         "amice-build-support: the consuming crate has no `llvmXX-Y` feature enabled \
-         (expected exactly one of llvm11-0 .. llvm21-1)"
+         (expected exactly one of llvm11-0 .. llvm22-1)"
     );
 }
 

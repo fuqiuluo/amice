@@ -24,14 +24,14 @@ llvm18-1 = ["inkwell/llvm18-1-no-llvm-linking"]
 llvm19-1 = ["inkwell/llvm19-1-no-llvm-linking"]
 llvm20-1 = ["inkwell/llvm20-1-no-llvm-linking"]
 llvm21-1 = ["inkwell/llvm21-1-no-llvm-linking"]
+llvm22-1 = ["inkwell/llvm22-1-no-llvm-linking"]
 
 [dependencies]
 lazy_static = "1.5.0"
-inkwell = { version = "0.7", default-features = false }
+inkwell = { version = "0.9", default-features = false }
 strum = "0.27"
 strum_macros = "0.27"
 
 [build-dependencies]
 amice-build-support.workspace = true
 cc = "1"
-

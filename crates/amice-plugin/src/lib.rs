@@ -153,6 +153,8 @@ pub struct PassPluginLibraryInfo {
     pub plugin_name: *const u8,
     pub plugin_version: *const u8,
     pub plugin_registrar: unsafe extern "C" fn(*mut std::ffi::c_void),
+    #[cfg(feature = "llvm22-1")]
+    pub pre_code_gen_callback: *const std::ffi::c_void,
 }
 
 #[cfg(feature = "macros")]

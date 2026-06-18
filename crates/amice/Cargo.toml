@@ -29,6 +29,7 @@ llvm18-1 = ["amice-plugin/llvm18-1", "amice-llvm/llvm18-1"]
 llvm19-1 = ["amice-plugin/llvm19-1", "amice-llvm/llvm19-1"]
 llvm20-1 = ["amice-plugin/llvm20-1", "amice-llvm/llvm20-1"]
 llvm21-1 = ["amice-plugin/llvm21-1", "amice-llvm/llvm21-1"]
+llvm22-1 = ["amice-plugin/llvm22-1", "amice-llvm/llvm22-1"]
 
 [dependencies]
 amice-llvm.workspace = true

@@ -83,7 +83,7 @@ impl BogusControlFlowAlgo for BogusControlFlowPolarisPrimes {
             }
 
             let terminator = terminator.into_branch_inst();
-            if terminator.is_conditional() {
+            if terminator.is_conditional()? {
                 continue;
             }
 

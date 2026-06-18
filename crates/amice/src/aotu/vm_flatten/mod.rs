@@ -218,7 +218,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
 
     let first_basic_block = match entry_terminator_inst.get_opcode() {
         InstructionOpcode::Br => {
-            if entry_terminator_inst.is_conditional() || entry_terminator_inst.get_num_operands() > 1 {
+            if entry_terminator_inst.is_conditional()? || entry_terminator_inst.get_num_operands() > 1 {
                 split_entry_terminator_block(function, entry_block, entry_terminator_inst, ".no.conditional.br")?
             } else {
                 // 无条件跳转，直接取目标块为第一个实际执行的块
@@ -263,7 +263,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
     for node in &mut all_nodes {
         for inst in node.block.get_instructions() {
             if inst.get_opcode() == InstructionOpcode::Br {
-                if inst.is_conditional() || inst.get_num_operands() > 1 {
+                if inst.is_conditional()? || inst.get_num_operands() > 1 {
                     let branch_inst = inst.into_branch_inst();
                     let left = branch_inst.get_successor(0);
                     let right = branch_inst.get_successor(1);
@@ -485,7 +485,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
 
                 if inst.get_opcode() == InstructionOpcode::Br {
                     builder.position_before(&inst);
-                    let new_br = if inst.is_conditional() && inst.get_num_operands() == 3 {
+                    let new_br = if inst.is_conditional()? && inst.get_num_operands() == 3 {
                         let result = inst
                             .get_operand(0)
                             .ok_or(anyhow!("inst.get_operand(inst.get_num_operands() - 1)"))?

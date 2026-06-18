@@ -12,7 +12,7 @@ The repository is now a Cargo workspace. The main plugin crate lives in `crates/
 
 ### 1. Build the Plugin
 
-The default LLVM feature is `llvm21-1`, so LLVM 21 development files or a usable `llvm-config` are required.
+The default LLVM feature is `llvm21-1`, so LLVM 21 development files or a usable `llvm-config` are required. LLVM 22.1 is also supported and can be selected explicitly with the `llvm22-1` feature.
 
 ```bash
 # macOS
@@ -123,12 +123,16 @@ cargo build --release
 When using a non-default LLVM version, the Cargo feature and `LLVM_SYS_*_PREFIX` must match:
 
 ```bash
+# LLVM 22 example
+export LLVM_SYS_221_PREFIX=/usr/lib64/llvm22
+cargo build --release --no-default-features --features llvm22-1
+
 # LLVM 18 example
 export LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
 cargo build --release --no-default-features --features llvm18-1
 ```
 
-Supported LLVM features: `llvm11-0` through `llvm21-1`.
+Supported LLVM features: `llvm11-0` through `llvm22-1`.
 
 ### macOS
 
@@ -136,6 +140,11 @@ Supported LLVM features: `llvm11-0` through `llvm21-1`.
 brew install llvm@21
 export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
 cargo build --release
+
+# LLVM 22 example
+brew install llvm@22
+export LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)
+cargo build --release --no-default-features --features llvm22-1
 ```
 
 ### Windows
@@ -194,6 +203,9 @@ Integration tests invoke clang with the release plugin, so use `--release`. The 
 cargo test --release --no-default-features --features llvm21-1
 cargo test --release --no-default-features --features llvm21-1 --test string_encryption
 cargo test --release --no-default-features --features llvm21-1 test_md5
+
+# LLVM 22 example
+LLVM_SYS_221_PREFIX=/usr/lib64/llvm22 cargo test --release --no-default-features --features llvm22-1
 ```
 
 See [crates/amice/tests/README.md](crates/amice/tests/README.md) for more testing details.

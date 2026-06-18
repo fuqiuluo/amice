@@ -168,7 +168,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
         if let Some(terminator) = bb.get_terminator() {
             match terminator.get_opcode() {
                 InstructionOpcode::Br => {
-                    if terminator.is_conditional() {
+                    if terminator.is_conditional()? {
                         conditional_br.push(terminator.into_branch_inst());
                     } else {
                         unconditional_br.push(terminator.into_branch_inst());

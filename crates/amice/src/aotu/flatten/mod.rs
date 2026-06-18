@@ -101,7 +101,7 @@ fn split_entry_block_for_flatten<'a>(
 
     let first_basic_block = match entry_terminator.get_opcode() {
         InstructionOpcode::Br => {
-            if entry_terminator.is_conditional() || entry_terminator.get_num_operands() > 1 {
+            if entry_terminator.is_conditional()? || entry_terminator.get_num_operands() > 1 {
                 split_entry_terminator_block(function, entry_block, entry_terminator, ".no.conditional.br")?
             } else {
                 // 无条件跳转，直接取目标块为第一个实际执行的块

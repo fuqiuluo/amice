@@ -49,14 +49,20 @@ crates/amice/tests/
 1. 安装 Rust 工具链
 2. 安装 LLVM 并设置环境变量：
    ```bash
-   # Linux (以 LLVM 21 为例)
+   # Linux (默认 LLVM 21)
    export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21
+   # Linux (LLVM 22)
+   export LLVM_SYS_221_PREFIX=/usr/lib64/llvm22
 
    # macOS (Homebrew)
    export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
+   # 或 LLVM 22
+   export LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)
 
    # Windows
    setx LLVM_SYS_211_PREFIX "C:\llvm"
+   # 或 LLVM 22
+   setx LLVM_SYS_221_PREFIX "C:\llvm22"
    ```
 3. 确保 `clang` 在 PATH 中
 
@@ -80,6 +86,9 @@ cargo test --release --no-default-features --features llvm21-1
 
 # 仅运行单元测试（不包含集成测试）
 cargo test --no-default-features --features llvm21-1 --lib
+
+# LLVM 22 示例
+cargo test --release --no-default-features --features llvm22-1
 ```
 
 **注意：** 集成测试必须使用 `--release` 模式运行，因为测试依赖于 release 构建的 FFI 库。
@@ -230,6 +239,9 @@ target/test-outputs/
 
 ```bash
 cargo build --release --no-default-features --features llvm21-1
+
+# LLVM 22
+cargo build --release --no-default-features --features llvm22-1
 ```
 
 或使用测试脚本的 `--build` 选项。
@@ -240,6 +252,9 @@ Windows 需要额外的链接特性：
 
 ```bash
 cargo build --release --no-default-features --features llvm21-1,win-link-lld
+
+# LLVM 22
+cargo build --release --no-default-features --features llvm22-1,win-link-lld
 ```
 
 ### Q: 如何只运行特定测试

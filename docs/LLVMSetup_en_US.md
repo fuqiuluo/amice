@@ -6,6 +6,7 @@ The environment variable format is `LLVM_SYS_<MAJOR><MINOR>_PREFIX`:
 
 | LLVM Version | Environment Variable  |
 |--------------|-----------------------|
+| 22.1         | `LLVM_SYS_221_PREFIX` |
 | 21.1         | `LLVM_SYS_211_PREFIX` |
 | 20.1         | `LLVM_SYS_201_PREFIX` |
 | 19.1         | `LLVM_SYS_191_PREFIX` |
@@ -28,8 +29,8 @@ dnf search llvm
 # Install latest stable
 sudo dnf install llvm llvm-devel clang clang-devel
 
-# Or install specific version (e.g., LLVM 18)
-sudo dnf install llvm18 llvm18-devel clang18 clang18-devel
+# Or install specific version (e.g., LLVM 22)
+sudo dnf install llvm22 llvm22-devel clang22 clang22-devel
 ```
 
 ### Verify
@@ -43,7 +44,7 @@ llvm-config --prefix
 ### Set Environment Variable
 
 ```bash
-export LLVM_SYS_181_PREFIX=$(llvm-config --prefix)
+export LLVM_SYS_221_PREFIX=$(llvm-config --prefix)
 ```
 
 ---
@@ -57,7 +58,7 @@ sudo apt update
 sudo apt install llvm llvm-dev clang libclang-dev
 
 # Or install specific version
-sudo apt install llvm-18 llvm-18-dev clang-18 libclang-18-dev
+sudo apt install llvm-22 llvm-22-dev clang-22 libclang-22-dev
 ```
 
 ### Verify
@@ -70,7 +71,7 @@ llvm-config --prefix
 ### Set Environment Variable
 
 ```bash
-export LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
+export LLVM_SYS_221_PREFIX=/usr/lib/llvm-22
 ```
 
 ---
@@ -84,17 +85,17 @@ export LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
 brew install llvm
 
 # Or install specific version
-brew install llvm@18
+brew install llvm@22
 ```
 
 ### Set Environment Variable
 
 ```bash
 # Latest version
-export LLVM_SYS_181_PREFIX=$(brew --prefix llvm)
+export LLVM_SYS_221_PREFIX=$(brew --prefix llvm)
 
 # Specific version
-export LLVM_SYS_181_PREFIX=$(brew --prefix llvm@18)
+export LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)
 ```
 
 ### Add to PATH (optional)
@@ -118,13 +119,13 @@ Download from: https://releases.llvm.org/
 ### Set Environment Variable
 
 ```cmd
-setx LLVM_SYS_181_PREFIX "C:\Program Files\LLVM"
+setx LLVM_SYS_221_PREFIX "C:\Program Files\LLVM"
 ```
 
 Or in PowerShell:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("LLVM_SYS_181_PREFIX", "C:\Program Files\LLVM", "User")
+[Environment]::SetEnvironmentVariable("LLVM_SYS_221_PREFIX", "C:\Program Files\LLVM", "User")
 ```
 
 ### Build Flags
