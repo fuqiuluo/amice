@@ -3,13 +3,13 @@ use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{FunctionExt, InstructionExt, LLVMValueRefExt, ModuleExt};
 use amice_macro::amice;
 use amice_plugin::PreservedAnalyses;
-use amice_plugin::inkwell::attributes::AttributeLoc;
+use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use amice_plugin::inkwell::context::ContextRef;
 use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use amice_plugin::inkwell::module::{Linkage, Module};
 use amice_plugin::inkwell::types::BasicTypeEnum;
 use amice_plugin::inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, FunctionValue, InstructionOpcode, InstructionValue, ValueKind,
+    AsValueRef, BasicMetadataValueEnum, CallSiteValue, FunctionValue, InstructionOpcode, InstructionValue, ValueKind,
 };
 use rand::Rng;
 
@@ -209,9 +209,11 @@ fn create_wrapper_function<'a>(
 
     // Create the wrapper function with the same signature as the called function
     let wrapper_function = module.add_function(&wrapper_name, called_fn_type, Some(Linkage::Internal));
+    let original_call_site = (*call_inst).into_call_inst().into_call_site_value();
 
-    // Copy some attributes from the original function (simplified)
     copy_function_attributes(&wrapper_function, &called_function);
+    copy_call_site_attributes_to_function(&wrapper_function, original_call_site);
+    wrapper_function.set_call_conventions(original_call_site.get_call_convention());
 
     // Mark as used to prevent elimination
     module.append_to_compiler_used(wrapper_function.as_global_value());
@@ -250,25 +252,77 @@ fn generate_wrapper_name() -> String {
 
 /// Copy function attributes from source to target
 fn copy_function_attributes<'a>(target: &FunctionValue<'a>, source: &FunctionValue<'a>) {
-    let fun_attributes = source.attributes(AttributeLoc::Function);
-    let mut params_attributes = Vec::new();
+    target.set_call_conventions(source.get_call_conventions());
+    copy_function_attributes_at(target, *source, AttributeLoc::Function);
+    copy_function_attributes_at(target, *source, AttributeLoc::Return);
+
     for i in 0..source.count_params() {
-        params_attributes.push(source.attributes(AttributeLoc::Param(i)));
+        copy_function_attributes_at(target, *source, AttributeLoc::Param(i));
     }
-    let return_attributes = source.attributes(AttributeLoc::Return);
+}
 
-    for x in fun_attributes {
-        target.add_attribute(AttributeLoc::Function, x);
+fn copy_function_attributes_at<'a>(target: &FunctionValue<'a>, source: FunctionValue<'a>, loc: AttributeLoc) {
+    for attr in source.attributes(loc) {
+        add_function_attribute_if_missing(target, loc, attr);
+    }
+}
+
+fn copy_call_site_attributes_to_function<'a>(target: &FunctionValue<'a>, source: CallSiteValue<'a>) {
+    copy_call_site_attributes_to_function_at(target, source, AttributeLoc::Return);
+
+    for i in 0..source.count_arguments() {
+        copy_call_site_attributes_to_function_at(target, source, AttributeLoc::Param(i));
+    }
+}
+
+fn copy_call_site_attributes_to_function_at<'a>(
+    target: &FunctionValue<'a>,
+    source: CallSiteValue<'a>,
+    loc: AttributeLoc,
+) {
+    for attr in source.attributes(loc) {
+        add_function_attribute_if_missing(target, loc, attr);
+    }
+}
+
+fn add_function_attribute_if_missing<'a>(function: &FunctionValue<'a>, loc: AttributeLoc, attr: Attribute) {
+    if !function.attributes(loc).contains(&attr) {
+        function.add_attribute(loc, attr);
+    }
+}
+
+fn copy_call_site_attributes<'a>(target: CallSiteValue<'a>, source: CallSiteValue<'a>) {
+    target.set_call_convention(source.get_call_convention());
+
+    #[cfg(any(
+        feature = "llvm21-1",
+        feature = "llvm22-1",
+        feature = "llvm20-1",
+        feature = "llvm19-1",
+        feature = "llvm18-1"
+    ))]
+    {
+        target.set_tail_call(source.is_tail_call());
+        target.set_tail_call_kind(source.get_tail_call_kind());
     }
 
-    for x in return_attributes {
-        target.add_attribute(AttributeLoc::Return, x);
-    }
+    copy_call_site_attributes_at(target, source, AttributeLoc::Function);
+    copy_call_site_attributes_at(target, source, AttributeLoc::Return);
 
-    for (index, attr) in params_attributes.iter().enumerate() {
-        for x in attr {
-            target.add_attribute(AttributeLoc::Param(index as u32), *x);
-        }
+    for i in 0..source.count_arguments() {
+        copy_call_site_attributes_at(target, source, AttributeLoc::Param(i));
+    }
+}
+
+fn copy_call_site_attributes_at<'a>(target: CallSiteValue<'a>, source: CallSiteValue<'a>, loc: AttributeLoc) {
+    for attr in source.attributes(loc) {
+        add_call_site_attribute_if_missing(target, loc, attr);
+    }
+}
+
+fn add_call_site_attribute_if_missing<'a>(call_site: CallSiteValue<'a>, loc: AttributeLoc, attr: Attribute) {
+    if !call_site.attributes(loc).contains(&attr) {
+        call_site.add_attribute(loc, attr);
     }
 }
 
@@ -287,6 +341,9 @@ fn create_wrapper_body<'a>(
 
     // Create call to the original function
     let call_result = builder.build_call(*called_function, &args, "wrapped_call")?;
+    call_result.set_call_convention(called_function.get_call_conventions());
+    copy_function_attributes_to_call_site(call_result, called_function);
+    copy_function_attributes_to_call_site(call_result, wrapper_function);
 
     // Handle return based on function return type
     let return_type = wrapper_function.get_type().get_return_type();
@@ -314,6 +371,24 @@ fn create_wrapper_body<'a>(
     Ok(())
 }
 
+fn copy_function_attributes_to_call_site<'a>(target: CallSiteValue<'a>, source: &FunctionValue<'a>) {
+    copy_function_attributes_to_call_site_at(target, *source, AttributeLoc::Return);
+
+    for i in 0..source.count_params() {
+        copy_function_attributes_to_call_site_at(target, *source, AttributeLoc::Param(i));
+    }
+}
+
+fn copy_function_attributes_to_call_site_at<'a>(
+    target: CallSiteValue<'a>,
+    source: FunctionValue<'a>,
+    loc: AttributeLoc,
+) {
+    for attr in source.attributes(loc) {
+        add_call_site_attribute_if_missing(target, loc, attr);
+    }
+}
+
 /// Replace the original call instruction with a call to the wrapper function
 fn replace_call_with_wrapper<'a>(
     call_inst: &InstructionValue<'a>,
@@ -337,7 +412,9 @@ fn replace_call_with_wrapper<'a>(
     }
 
     // Create new call to wrapper function
+    let old_call = (*call_inst).into_call_inst().into_call_site_value();
     let new_call = builder.build_call(*wrapper_function, &args, "wrapper_call")?;
+    copy_call_site_attributes(new_call, old_call);
 
     // Replace all uses of the old instruction with the new call
     if !call_inst.get_type().is_void_type() {
@@ -351,4 +428,85 @@ fn replace_call_with_wrapper<'a>(
     // Return the new call instruction
     let new_call_inst = (new_call.as_value_ref() as LLVMValueRef).into_instruction_value();
     Ok(Some(new_call_inst))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use amice_plugin::inkwell::AddressSpace;
+    use amice_plugin::inkwell::context::Context;
+    use amice_plugin::inkwell::types::AnyType;
+    use amice_plugin::inkwell::values::BasicValue;
+
+    fn has_attribute(call_site: CallSiteValue<'_>, loc: AttributeLoc, attr: Attribute) -> bool {
+        call_site.attributes(loc).contains(&attr)
+    }
+
+    fn function_has_attribute(function: FunctionValue<'_>, loc: AttributeLoc, attr: Attribute) -> bool {
+        function.attributes(loc).contains(&attr)
+    }
+
+    #[test]
+    fn preserves_sret_attributes_for_wrapper_calls() {
+        let context = Context::create();
+        let mut module = context.create_module("issue_83_sret");
+        let builder = context.create_builder();
+
+        let i64_type = context.i64_type();
+        let ptr_type = context.ptr_type(AddressSpace::default());
+        let result_type = context.struct_type(&[i64_type.into()], false);
+        let sret_attr = context.create_type_attribute(
+            Attribute::get_named_enum_kind_id("sret"),
+            result_type.as_any_type_enum(),
+        );
+
+        let callee_type = context.void_type().fn_type(
+            &[ptr_type.into(), ptr_type.into(), i64_type.into(), i64_type.into()],
+            false,
+        );
+        let callee = module.add_function("substr_like", callee_type, None);
+        callee.add_attribute(AttributeLoc::Param(0), sret_attr);
+
+        let caller_type = context.void_type().fn_type(&[], false);
+        let caller = module.add_function("caller", caller_type, None);
+        let entry = context.append_basic_block(caller, "entry");
+        builder.position_at_end(entry);
+
+        let result_slot = builder.build_alloca(result_type, "result").unwrap();
+        let self_slot = builder.build_alloca(result_type, "self").unwrap();
+        let original_call = builder
+            .build_call(
+                callee,
+                &[
+                    result_slot.as_basic_value_enum().into(),
+                    self_slot.as_basic_value_enum().into(),
+                    i64_type.const_int(0, false).into(),
+                    i64_type.const_int(u64::MAX, false).into(),
+                ],
+                "substr_call",
+            )
+            .unwrap();
+        original_call.add_attribute(AttributeLoc::Param(0), sret_attr);
+        builder.build_return(None).unwrap();
+
+        let original_inst = (original_call.as_value_ref() as LLVMValueRef).into_instruction_value();
+        let new_inst = create_wrapper_function(&mut module, &original_inst, callee)
+            .unwrap()
+            .expect("call should be wrapped");
+        let new_call = new_inst.into_call_inst().into_call_site_value();
+        let wrapper = get_called_function(&new_inst).expect("wrapper call should be direct");
+        let inner_call = wrapper
+            .get_first_basic_block()
+            .expect("wrapper should have an entry block")
+            .get_instructions()
+            .find(|inst| inst.get_opcode() == InstructionOpcode::Call)
+            .expect("wrapper should call the original function")
+            .into_call_inst()
+            .into_call_site_value();
+
+        assert!(function_has_attribute(wrapper, AttributeLoc::Param(0), sret_attr));
+        assert!(has_attribute(new_call, AttributeLoc::Param(0), sret_attr));
+        assert!(has_attribute(inner_call, AttributeLoc::Param(0), sret_attr));
+        module.verify().expect("transformed module should verify");
+    }
 }
