@@ -26,7 +26,7 @@ use amice_plugin::inkwell::llvm_sys::core::{
     LLVMIsACallInst, LLVMSetOperand, LLVMSetValueName2,
 };
 use amice_plugin::inkwell::module::{Linkage, Module};
-use amice_plugin::inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
+use amice_plugin::inkwell::types::{AsTypeRef, BasicMetadataTypeEnum, BasicTypeEnum};
 use amice_plugin::inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, UnnamedAddress,
 };
@@ -432,7 +432,9 @@ fn emit_native_call_thunk<'ctx>(
             // native thunk 是通用 VM x-register 值和 callee LLVM 函数类型之间的 ABI 防火墙。
             // 固定 thunk 宽度能让 bytecode call_native 保持 profile 可序列化，同时在真实调用点保留
             // 指针/整数重建逻辑。
-            if target.param_is_pointer[arg_index] != matches!(ty, BasicMetadataTypeEnum::PointerType(_)) {
+            if target.param_is_pointer[arg_index] != matches!(ty, BasicMetadataTypeEnum::PointerType(_))
+                || target.param_is_float[arg_index] != matches!(ty, BasicMetadataTypeEnum::FloatType(_))
+            {
                 anyhow::bail!("native thunk parameter kind mismatch");
             }
             let raw = thunk
@@ -444,7 +446,8 @@ fn emit_native_call_thunk<'ctx>(
                 BasicMetadataTypeEnum::PointerType(ptr_ty) => builder
                     .build_int_to_ptr(raw, *ptr_ty, "amice.vm.native.arg.ptr")?
                     .into(),
-                _ => anyhow::bail!("native thunk target has a non-integer/non-pointer parameter"),
+                BasicMetadataTypeEnum::FloatType(float_ty) => float_from_i64_bits(&builder, raw, *float_ty)?.into(),
+                _ => anyhow::bail!("native thunk target has a non-scalar parameter"),
             };
             Ok(value)
         })
@@ -544,7 +547,7 @@ fn rewrite_as_wrapper<'ctx>(
     args.push(const_pool_ptr.into());
     args.push(i64_type.const_int(bytecode.const_pool_len as u64, false).into());
     args.push(i64_type.const_int(bytecode.key, false).into());
-    args.push(i64_type.const_int(bytecode.instruction_count as u64, false).into());
+    args.push(i64_type.const_int(bytecode.code_len as u64, false).into());
     args.push(native_table_global.as_pointer_value().into());
     args.push(i64_type.const_int(native_call_count as u64, false).into());
     args.push(ret_slots.into());
@@ -554,7 +557,13 @@ fn rewrite_as_wrapper<'ctx>(
             let param = wrapper
                 .get_nth_param(index as u32)
                 .ok_or_else(|| anyhow::anyhow!("missing wrapper parameter {index}"))?;
-            wrapper_param_to_i64(&builder, i64_type, param, signature.param_is_pointer[index])?
+            wrapper_param_to_i64(
+                &builder,
+                i64_type,
+                param,
+                signature.param_is_pointer[index],
+                signature.param_is_float[index],
+            )?
         } else {
             i64_type.const_zero()
         };
@@ -590,6 +599,9 @@ fn rewrite_as_wrapper<'ctx>(
 
     if signature.return_is_pointer {
         let ret = builder.build_int_to_ptr(ret64, return_type.into_pointer_type(), "amice.vm.ret.ptr")?;
+        builder.build_return(Some(&ret))?;
+    } else if signature.return_is_float {
+        let ret = return_float_from_i64_bits(&builder, ret64, return_type)?;
         builder.build_return(Some(&ret))?;
     } else {
         let return_type = return_type.into_int_type();
@@ -798,11 +810,64 @@ fn wrapper_param_to_i64<'ctx>(
     i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
     value: BasicValueEnum<'ctx>,
     is_pointer: bool,
+    is_float: bool,
 ) -> anyhow::Result<amice_plugin::inkwell::values::IntValue<'ctx>> {
     if is_pointer {
         Ok(builder.build_ptr_to_int(value.into_pointer_value(), i64_type, "amice.vm.arg.ptr")?)
+    } else if is_float {
+        float_to_i64_bits(builder, i64_type, value)
     } else {
         int_to_i64(builder, i64_type, value.into_int_value())
+    }
+}
+
+fn float_to_i64_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
+    value: BasicValueEnum<'ctx>,
+) -> anyhow::Result<amice_plugin::inkwell::values::IntValue<'ctx>> {
+    let float = value.into_float_value();
+    let width = translator::float_value_width(float)?;
+    if width == 32 {
+        let i32_type = i64_type.get_context().i32_type();
+        let bits = builder
+            .build_bit_cast(float, i32_type, "amice.vm.float.arg.bits32")?
+            .into_int_value();
+        Ok(builder.build_int_z_extend(bits, i64_type, "amice.vm.float.arg.bits64")?)
+    } else {
+        Ok(builder
+            .build_bit_cast(float, i64_type, "amice.vm.float.arg.bits64")?
+            .into_int_value())
+    }
+}
+
+fn return_float_from_i64_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    value: amice_plugin::inkwell::values::IntValue<'ctx>,
+    target_type: BasicTypeEnum<'ctx>,
+) -> anyhow::Result<BasicValueEnum<'ctx>> {
+    let BasicTypeEnum::FloatType(float_type) = target_type else {
+        anyhow::bail!("float signature return type is not a float");
+    };
+    Ok(float_from_i64_bits(builder, value, float_type)?.into())
+}
+
+fn float_from_i64_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    value: amice_plugin::inkwell::values::IntValue<'ctx>,
+    float_type: amice_plugin::inkwell::types::FloatType<'ctx>,
+) -> anyhow::Result<amice_plugin::inkwell::values::FloatValue<'ctx>> {
+    let width = translator::float_type_width(float_type.as_type_ref())?;
+    if width == 32 {
+        let i32_type = value.get_type().get_context().i32_type();
+        let bits = builder.build_int_truncate(value, i32_type, "amice.vm.float.ret.bits32")?;
+        Ok(builder
+            .build_bit_cast(bits, float_type, "amice.vm.float.ret.f32")?
+            .into_float_value())
+    } else {
+        Ok(builder
+            .build_bit_cast(value, float_type, "amice.vm.float.ret.f64")?
+            .into_float_value())
     }
 }
 
@@ -824,11 +889,13 @@ fn native_return_to_i64<'ctx>(
     value: BasicValueEnum<'ctx>,
     field: translator::ReturnField,
 ) -> anyhow::Result<amice_plugin::inkwell::values::IntValue<'ctx>> {
-    if field.is_pointer {
-        return Ok(builder.build_ptr_to_int(value.into_pointer_value(), i64_type, "amice.vm.native.ret.ptr")?);
+    match field.kind {
+        translator::ScalarKind::Pointer => {
+            Ok(builder.build_ptr_to_int(value.into_pointer_value(), i64_type, "amice.vm.native.ret.ptr")?)
+        },
+        translator::ScalarKind::Integer => int_to_i64(builder, i64_type, value.into_int_value()),
+        translator::ScalarKind::Float => float_to_i64_bits(builder, i64_type, value),
     }
-
-    int_to_i64(builder, i64_type, value.into_int_value())
 }
 
 fn return_slot_to_value<'ctx>(
@@ -849,6 +916,7 @@ fn return_slot_to_value<'ctx>(
         BasicTypeEnum::PointerType(ptr_ty) => Ok(builder
             .build_int_to_ptr(value, ptr_ty, "amice.vm.ret.field.ptr")?
             .into()),
+        BasicTypeEnum::FloatType(float_ty) => Ok(float_from_i64_bits(builder, value, float_ty)?.into()),
         other => anyhow::bail!("unsupported aggregate return field type: {other:?}"),
     }
 }

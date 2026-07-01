@@ -15,27 +15,40 @@
 //! 因而这里宁可保守跳过，也不能生成不完整 VM IR。
 
 use amice_llvm::inkwell2::{CallInst, FunctionExt, GepInst, InstructionExt, PhiInst, SwitchInst};
-use amice_plugin::inkwell::IntPredicate;
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::llvm_sys::LLVMTypeKind;
-use amice_plugin::inkwell::llvm_sys::core::{LLVMGetElementType, LLVMGetGEPSourceElementType, LLVMGetTypeKind};
+use amice_plugin::inkwell::llvm_sys::core::{
+    LLVMCountStructElementTypes, LLVMGetAlignment, LLVMGetAtomicSyncScopeID, LLVMGetCmpXchgFailureOrdering,
+    LLVMGetCmpXchgSuccessOrdering, LLVMGetElementType, LLVMGetGEPSourceElementType, LLVMGetTypeKind, LLVMGetWeak,
+    LLVMStructGetTypeAtIndex,
+};
 use amice_plugin::inkwell::llvm_sys::prelude::LLVMTypeRef;
-use amice_plugin::inkwell::llvm_sys::target::LLVMStoreSizeOfType;
+use amice_plugin::inkwell::llvm_sys::target::{LLVMOffsetOfElement, LLVMStoreSizeOfType};
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::targets::TargetData;
-use amice_plugin::inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum};
-use amice_plugin::inkwell::values::{AsValueRef, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue};
+use amice_plugin::inkwell::types::{AnyTypeEnum, AsTypeRef, BasicMetadataTypeEnum, BasicTypeEnum};
+use amice_plugin::inkwell::values::{
+    AnyValue, AsValueRef, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
+};
+use amice_plugin::inkwell::{AtomicOrdering, AtomicRMWBinOp, FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use amice_vm::abi::{AbiProfile, VmRegister};
-use amice_vm::isa::{BinOp, CastOp, CmpPredicate, HandlerSemantic, InstructionDesc, IsaProfile, OperandKind};
+use amice_vm::isa::{
+    AtomicRmwOp, BinOp, CastOp, CmpPredicate, FloatBinOp, FloatCastOp, FloatPredicate as VmFloatPredicate,
+    FloatUnaryOp, HandlerSemantic, InstructionDesc, IntTernaryOp, IntUnaryOp, IsaProfile, MemoryOrdering, OperandKind,
+};
 use amice_vm::profile::{LoweringAction, LoweringProfile, LoweringRule, lowering_match_pattern};
 use amice_vm::{
     LabelId, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, NativeReturn, VmFunction, VmFunctionBuilder, VmInstruction,
+    fuse_superinstructions,
 };
 use anyhow::{Context, bail};
 use std::collections::{HashMap, HashSet};
 
 type ValueKey = usize;
 type BlockKey = usize;
+
+const MAX_MEMORY_INTRINSIC_INLINE_BYTES: u64 = 64;
+const LLVM_SYSTEM_SYNC_SCOPE_ID: u32 = 1;
 
 #[derive(Debug, Clone, Copy)]
 struct ValueBinding {
@@ -46,11 +59,88 @@ struct ValueBinding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarKind {
+    // 使用 x 寄存器保存普通整数。
+    Integer,
+    // 使用 x 寄存器保存指针地址。
+    Pointer,
+    // 使用 x 寄存器保存 f32/f64 的原始 bit。
+    Float,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryIntrinsicKind {
+    Memcpy,
+    Memmove,
+    Memset,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum IntegerIntrinsicKind {
+    CtPop,
+    BSwap,
+    BitReverse,
+    FShl,
+    FShr,
+}
+
+impl IntegerIntrinsicKind {
+    fn lowering_rule(self) -> &'static str {
+        match self {
+            Self::CtPop => "llvm.ctpop.integer",
+            Self::BSwap => "llvm.bswap.integer",
+            Self::BitReverse => "llvm.bitreverse.integer",
+            Self::FShl => "llvm.fshl.integer",
+            Self::FShr => "llvm.fshr.integer",
+        }
+    }
+
+    fn semantic(self) -> HandlerSemantic {
+        match self {
+            Self::CtPop => HandlerSemantic::IntUnary(IntUnaryOp::CtPop),
+            Self::BSwap => HandlerSemantic::IntUnary(IntUnaryOp::BSwap),
+            Self::BitReverse => HandlerSemantic::IntUnary(IntUnaryOp::BitReverse),
+            Self::FShl => HandlerSemantic::IntTernary(IntTernaryOp::FShl),
+            Self::FShr => HandlerSemantic::IntTernary(IntTernaryOp::FShr),
+        }
+    }
+
+    fn arity(self) -> u32 {
+        match self {
+            Self::CtPop | Self::BSwap | Self::BitReverse => 1,
+            Self::FShl | Self::FShr => 3,
+        }
+    }
+}
+
+impl MemoryIntrinsicKind {
+    fn lowering_rule(self) -> &'static str {
+        match self {
+            Self::Memcpy => "llvm.memcpy.fixed",
+            Self::Memmove => "llvm.memmove.fixed",
+            Self::Memset => "llvm.memset.fixed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MemoryChunk {
+    offset: u64,
+    width: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoadedMemoryChunk {
+    chunk: MemoryChunk,
+    value: ValueBinding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReturnField {
     // aggregate/native return 字段的标量位宽。
     pub width: u8,
-    // 字段是否需要在 wrapper/thunk 边界做 ptr<->i64 转换。
-    pub is_pointer: bool,
+    // 字段在 wrapper/thunk 边界的标量类别。
+    pub kind: ScalarKind,
 }
 
 #[derive(Debug)]
@@ -61,7 +151,9 @@ pub struct FunctionSignature {
     pub param_widths: Vec<u8>,
     pub returns_void: bool,
     pub return_is_pointer: bool,
+    pub return_is_float: bool,
     pub param_is_pointer: Vec<bool>,
+    pub param_is_float: Vec<bool>,
     // 非空表示直接 struct aggregate return；字段会通过 wrapper ret_slots 重建。
     pub aggregate_return_fields: Vec<ReturnField>,
 }
@@ -90,6 +182,7 @@ pub struct NativeCallTarget<'ctx> {
     // thunk 统一返回固定 i64 tuple；这里描述哪些 tuple slot 有效以及如何截断。
     pub return_fields: Vec<ReturnField>,
     pub param_is_pointer: Vec<bool>,
+    pub param_is_float: Vec<bool>,
 }
 
 #[derive(Debug)]
@@ -111,10 +204,15 @@ pub fn supported_signature(function: FunctionValue<'_>) -> anyhow::Result<Functi
     }
 
     let mut aggregate_return_fields = Vec::new();
-    let (returns_void, return_width, return_is_pointer) = match fn_type.get_return_type() {
-        None => (true, 64, false),
-        Some(BasicTypeEnum::IntType(return_type)) => (false, checked_width(return_type.get_bit_width())?, false),
-        Some(BasicTypeEnum::PointerType(_)) => (false, 64, true),
+    let (returns_void, return_width, return_kind) = match fn_type.get_return_type() {
+        None => (true, 64, ScalarKind::Integer),
+        Some(BasicTypeEnum::IntType(return_type)) => {
+            (false, checked_width(return_type.get_bit_width())?, ScalarKind::Integer)
+        },
+        Some(BasicTypeEnum::PointerType(_)) => (false, 64, ScalarKind::Pointer),
+        Some(BasicTypeEnum::FloatType(return_type)) => {
+            (false, float_type_width(return_type.as_type_ref())?, ScalarKind::Float)
+        },
         Some(BasicTypeEnum::StructType(return_type)) => {
             aggregate_return_fields = return_type
                 .get_field_types()
@@ -125,32 +223,39 @@ pub fn supported_signature(function: FunctionValue<'_>) -> anyhow::Result<Functi
             if aggregate_return_fields.is_empty() {
                 bail!("empty aggregate returns are not supported");
             }
-            (false, aggregate_return_fields[0].width, false)
+            (false, aggregate_return_fields[0].width, ScalarKind::Integer)
         },
-        Some(_) => bail!("only void, scalar integer, pointer, and direct struct aggregate returns are supported"),
+        Some(_) => {
+            bail!("only void, scalar integer, pointer, float, and direct struct aggregate returns are supported")
+        },
     };
 
     let param_types = fn_type.get_param_types();
     if param_types.len() > 8 {
-        bail!("only up to 8 scalar integer parameters are supported");
+        bail!("only up to 8 scalar integer/pointer/float parameters are supported");
     }
 
     let params = param_types
         .iter()
         .map(|ty| match ty {
-            BasicMetadataTypeEnum::IntType(int_ty) => Ok((checked_width(int_ty.get_bit_width())?, false)),
-            BasicMetadataTypeEnum::PointerType(_) => Ok((64, true)),
-            _ => bail!("only scalar integer and pointer parameters are supported"),
+            BasicMetadataTypeEnum::IntType(int_ty) => Ok((checked_width(int_ty.get_bit_width())?, ScalarKind::Integer)),
+            BasicMetadataTypeEnum::PointerType(_) => Ok((64, ScalarKind::Pointer)),
+            BasicMetadataTypeEnum::FloatType(float_ty) => {
+                Ok((float_type_width(float_ty.as_type_ref())?, ScalarKind::Float))
+            },
+            _ => bail!("only scalar integer, pointer, and float parameters are supported"),
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let (param_widths, param_is_pointer) = params.into_iter().unzip();
+    let (param_widths, param_kinds): (Vec<_>, Vec<_>) = params.into_iter().unzip();
 
     Ok(FunctionSignature {
         return_width,
         param_widths,
         returns_void,
-        return_is_pointer,
-        param_is_pointer,
+        return_is_pointer: return_kind == ScalarKind::Pointer,
+        return_is_float: return_kind == ScalarKind::Float,
+        param_is_pointer: param_kinds.iter().map(|kind| *kind == ScalarKind::Pointer).collect(),
+        param_is_float: param_kinds.iter().map(|kind| *kind == ScalarKind::Float).collect(),
         aggregate_return_fields,
     })
 }
@@ -484,7 +589,11 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             self.lower_block(block)?;
         }
 
-        Ok((self.builder.finish()?, self.native_calls))
+        let function = self.builder.finish()?;
+        Ok((
+            fuse_superinstructions(function, self.isa, self.lowering),
+            self.native_calls,
+        ))
     }
 
     fn prepare_register_reuse(&mut self, basic_blocks: &[BasicBlock<'ctx>]) -> anyhow::Result<()> {
@@ -692,6 +801,9 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         self.begin_block(block);
         for instruction in block.get_instructions() {
             self.begin_instruction(instruction)?;
+            if let Some(reason) = unsupported_control_flow_reason(instruction.get_opcode()) {
+                bail!("{reason}");
+            }
             match instruction.get_opcode() {
                 InstructionOpcode::Phi => {},
                 InstructionOpcode::Add
@@ -707,16 +819,34 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 | InstructionOpcode::Shl
                 | InstructionOpcode::LShr
                 | InstructionOpcode::AShr => self.lower_binop(instruction)?,
+                InstructionOpcode::FAdd
+                | InstructionOpcode::FSub
+                | InstructionOpcode::FMul
+                | InstructionOpcode::FDiv
+                | InstructionOpcode::FRem => self.lower_float_binop(instruction)?,
+                InstructionOpcode::FNeg => self.lower_float_unary(instruction)?,
+                InstructionOpcode::SIToFP
+                | InstructionOpcode::UIToFP
+                | InstructionOpcode::FPToSI
+                | InstructionOpcode::FPToUI
+                | InstructionOpcode::FPTrunc
+                | InstructionOpcode::FPExt => self.lower_float_cast(instruction)?,
                 InstructionOpcode::ICmp => self.lower_icmp(instruction)?,
+                InstructionOpcode::FCmp => self.lower_fcmp(instruction)?,
                 InstructionOpcode::ZExt
                 | InstructionOpcode::SExt
                 | InstructionOpcode::Trunc
                 | InstructionOpcode::BitCast
                 | InstructionOpcode::PtrToInt
-                | InstructionOpcode::IntToPtr => self.lower_cast(instruction)?,
+                | InstructionOpcode::IntToPtr
+                | InstructionOpcode::AddrSpaceCast => self.lower_cast(instruction)?,
+                InstructionOpcode::Freeze => self.lower_freeze(instruction)?,
                 InstructionOpcode::Alloca => self.lower_alloca(instruction)?,
                 InstructionOpcode::Load => self.lower_load(instruction)?,
                 InstructionOpcode::Store => self.lower_store(instruction)?,
+                InstructionOpcode::AtomicRMW => self.lower_atomic_rmw(instruction)?,
+                InstructionOpcode::AtomicCmpXchg => self.lower_cmpxchg(instruction)?,
+                InstructionOpcode::Fence => self.lower_fence(instruction)?,
                 InstructionOpcode::GetElementPtr => self.lower_gep(instruction)?,
                 InstructionOpcode::Call => self.lower_call(instruction)?,
                 InstructionOpcode::Select => self.lower_select(instruction)?,
@@ -916,6 +1046,72 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 self.builder
                     .push_profile(VmInstruction::ConstLoad { dst, value, width }, desc.name.clone());
             },
+            HandlerSemantic::Super(amice_vm::isa::SuperOp::AddXor) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let lhs = self.profile_reg(desc, &args, "lhs")?;
+                let rhs = self.profile_reg(desc, &args, "rhs")?;
+                let xor_rhs = self.profile_reg(desc, &args, "xor_rhs")?;
+                let width = checked_width_u64(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::SuperAddXor {
+                        dst,
+                        lhs,
+                        rhs,
+                        xor_rhs,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::Super(amice_vm::isa::SuperOp::IcmpBrIf) => {
+                let pred = predicate_from_u64(args.imm("pred")?)?;
+                let lhs = self.profile_reg(desc, &args, "lhs")?;
+                let rhs = self.profile_reg(desc, &args, "rhs")?;
+                let width = checked_width_u64(args.imm("width")?)?;
+                let then_label = args.label("then_pc")?;
+                let else_label = args.label("else_pc")?;
+                self.builder.push_profile(
+                    VmInstruction::SuperIcmpBrIf {
+                        pred,
+                        lhs,
+                        rhs,
+                        width,
+                        then_label,
+                        else_label,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::Super(amice_vm::isa::SuperOp::GepLoad) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let base = self.profile_reg(desc, &args, "base")?;
+                let offset = args.imm("offset")?;
+                let width = checked_width_u64(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::SuperGepLoad {
+                        dst,
+                        base,
+                        offset,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::Super(amice_vm::isa::SuperOp::LoadAdd) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let addend = self.profile_reg(desc, &args, "addend")?;
+                let width = checked_width_u64(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::SuperLoadAdd {
+                        dst,
+                        ptr,
+                        addend,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
+            },
             HandlerSemantic::Mov => {
                 let dst = self.profile_reg(desc, &args, "dst")?;
                 let src = self.profile_reg(desc, &args, "src")?;
@@ -939,6 +1135,85 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     desc.name.clone(),
                 );
             },
+            HandlerSemantic::IntUnary(op) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let src = self.profile_reg(desc, &args, "src")?;
+                let width = checked_intrinsic_integer_width(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::IntUnary {
+                        op: *op,
+                        dst,
+                        src,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::IntTernary(op) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let lhs = self.profile_reg(desc, &args, "lhs")?;
+                let rhs = self.profile_reg(desc, &args, "rhs")?;
+                let third = self.profile_reg(desc, &args, "third")?;
+                let width = checked_intrinsic_integer_width(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::IntTernary {
+                        op: *op,
+                        dst,
+                        lhs,
+                        rhs,
+                        third,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::FloatBin(op) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let lhs = self.profile_reg(desc, &args, "lhs")?;
+                let rhs = self.profile_reg(desc, &args, "rhs")?;
+                let width = checked_float_width(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::FloatBin {
+                        op: *op,
+                        dst,
+                        lhs,
+                        rhs,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::FloatUnary(op) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let src = self.profile_reg(desc, &args, "src")?;
+                let width = checked_float_width(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::FloatUnary {
+                        op: *op,
+                        dst,
+                        src,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::FloatCast(op) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let src = self.profile_reg(desc, &args, "src")?;
+                let from_width = checked_width_u64(args.imm("from_width")?)?;
+                let to_width = checked_width_u64(args.imm("to_width")?)?;
+                self.validate_float_cast_widths(*op, from_width, to_width)?;
+                self.builder.push_profile(
+                    VmInstruction::FloatCast {
+                        op: *op,
+                        dst,
+                        src,
+                        from_width,
+                        to_width,
+                    },
+                    desc.name.clone(),
+                );
+            },
             HandlerSemantic::Icmp => {
                 let pred = predicate_from_u64(args.imm("pred")?)?;
                 let dst = self.profile_reg(desc, &args, "dst")?;
@@ -947,6 +1222,23 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 let width = checked_width_u64(args.imm("width")?)?;
                 self.builder.push_profile(
                     VmInstruction::Icmp {
+                        pred,
+                        dst,
+                        lhs,
+                        rhs,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::Fcmp => {
+                let pred = float_predicate_from_u64(args.imm("pred")?)?;
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let lhs = self.profile_reg(desc, &args, "lhs")?;
+                let rhs = self.profile_reg(desc, &args, "rhs")?;
+                let width = checked_float_width(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::Fcmp {
                         pred,
                         dst,
                         lhs,
@@ -992,6 +1284,82 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 let width = checked_width_u64(args.imm("width")?)?;
                 self.builder
                     .push_profile(VmInstruction::Store { src, ptr, width }, desc.name.clone());
+            },
+            HandlerSemantic::AtomicLoad => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let width = checked_atomic_memory_width(args.imm("width")?)?;
+                let ordering = memory_ordering_from_u64(args.imm("ordering")?)?;
+                self.builder.push_profile(
+                    VmInstruction::AtomicLoad {
+                        dst,
+                        ptr,
+                        width,
+                        ordering,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::AtomicStore => {
+                let src = self.profile_reg(desc, &args, "src")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let width = checked_atomic_memory_width(args.imm("width")?)?;
+                let ordering = memory_ordering_from_u64(args.imm("ordering")?)?;
+                self.builder.push_profile(
+                    VmInstruction::AtomicStore {
+                        src,
+                        ptr,
+                        width,
+                        ordering,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::AtomicRmw(op) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let src = self.profile_reg(desc, &args, "src")?;
+                let width = checked_atomic_memory_width(args.imm("width")?)?;
+                let ordering = memory_ordering_from_u64(args.imm("ordering")?)?;
+                self.builder.push_profile(
+                    VmInstruction::AtomicRmw {
+                        op: *op,
+                        dst,
+                        ptr,
+                        src,
+                        width,
+                        ordering,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::CmpXchg => {
+                let old = self.profile_reg(desc, &args, "old")?;
+                let success = self.profile_reg(desc, &args, "success")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let cmp = self.profile_reg(desc, &args, "cmp")?;
+                let new = self.profile_reg(desc, &args, "new")?;
+                let width = checked_atomic_memory_width(args.imm("width")?)?;
+                let success_ordering = memory_ordering_from_u64(args.imm("success_ordering")?)?;
+                let failure_ordering = memory_ordering_from_u64(args.imm("failure_ordering")?)?;
+                self.builder.push_profile(
+                    VmInstruction::CmpXchg {
+                        old,
+                        success,
+                        ptr,
+                        cmp,
+                        new,
+                        width,
+                        success_ordering,
+                        failure_ordering,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::Fence => {
+                let ordering = memory_ordering_from_u64(args.imm("ordering")?)?;
+                self.builder
+                    .push_profile(VmInstruction::Fence { ordering }, desc.name.clone());
             },
             HandlerSemantic::Gep => {
                 let dst = self.profile_reg(desc, &args, "dst")?;
@@ -1136,6 +1504,104 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         Ok(())
     }
 
+    fn lower_float_binop(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let (rule, semantic) = match instruction.get_opcode() {
+            InstructionOpcode::FAdd => ("llvm.fadd.float", HandlerSemantic::FloatBin(FloatBinOp::Add)),
+            InstructionOpcode::FSub => ("llvm.fsub.float", HandlerSemantic::FloatBin(FloatBinOp::Sub)),
+            InstructionOpcode::FMul => ("llvm.fmul.float", HandlerSemantic::FloatBin(FloatBinOp::Mul)),
+            InstructionOpcode::FDiv => ("llvm.fdiv.float", HandlerSemantic::FloatBin(FloatBinOp::Div)),
+            InstructionOpcode::FRem => ("llvm.frem.float", HandlerSemantic::FloatBin(FloatBinOp::Rem)),
+            opcode => bail!("unsupported floating binop opcode: {opcode:?}"),
+        };
+        let lhs = instruction_operand_value(instruction, 0)?;
+        let rhs = instruction_operand_value(instruction, 1)?;
+        let width = instruction_result_width(instruction)?.context("floating binop result has no scalar width")?;
+        let env = LoweringEnv::new()
+            .llvm_source("%a", lhs)
+            .llvm_source("%b", rhs)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64);
+        self.execute_lowering_rule(rule, env, Some(semantic))?;
+        Ok(())
+    }
+
+    fn lower_float_unary(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let (rule, semantic) = match instruction.get_opcode() {
+            InstructionOpcode::FNeg => ("llvm.fneg.float", HandlerSemantic::FloatUnary(FloatUnaryOp::Neg)),
+            opcode => bail!("unsupported floating unary opcode: {opcode:?}"),
+        };
+        let src = instruction_operand_value(instruction, 0)?;
+        let width = instruction_result_width(instruction)?.context("floating unary result has no scalar width")?;
+        let env = LoweringEnv::new()
+            .llvm_source("%a", src)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64);
+        self.execute_lowering_rule(rule, env, Some(semantic))?;
+        Ok(())
+    }
+
+    fn lower_float_cast(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let src = instruction_operand_value(instruction, 0)?;
+        let src_width = value_width(src)?;
+        let dst_width = instruction_result_width(instruction)?.context("floating cast result has no scalar width")?;
+        let (rule, semantic) = match instruction.get_opcode() {
+            InstructionOpcode::SIToFP => (
+                "llvm.sitofp.float",
+                HandlerSemantic::FloatCast(FloatCastOp::SignedIntToFloat),
+            ),
+            InstructionOpcode::UIToFP => (
+                "llvm.uitofp.float",
+                HandlerSemantic::FloatCast(FloatCastOp::UnsignedIntToFloat),
+            ),
+            InstructionOpcode::FPToSI => (
+                "llvm.fptosi.float",
+                HandlerSemantic::FloatCast(FloatCastOp::FloatToSignedInt),
+            ),
+            InstructionOpcode::FPToUI => (
+                "llvm.fptoui.float",
+                HandlerSemantic::FloatCast(FloatCastOp::FloatToUnsignedInt),
+            ),
+            InstructionOpcode::FPTrunc => (
+                "llvm.fptrunc.float",
+                HandlerSemantic::FloatCast(FloatCastOp::FloatTrunc),
+            ),
+            InstructionOpcode::FPExt => ("llvm.fpext.float", HandlerSemantic::FloatCast(FloatCastOp::FloatExt)),
+            opcode => bail!("unsupported floating cast opcode: {opcode:?}"),
+        };
+        if let HandlerSemantic::FloatCast(op) = semantic {
+            self.validate_float_cast_widths(op, src_width, dst_width)?;
+        }
+        let env = LoweringEnv::new()
+            .llvm_source("%a", src)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%a)", src_width as u64)
+            .imm("type_width(%r)", dst_width as u64);
+        self.execute_lowering_rule(rule, env, Some(semantic))?;
+        Ok(())
+    }
+
+    fn validate_float_cast_widths(&self, op: FloatCastOp, from_width: u8, to_width: u8) -> anyhow::Result<()> {
+        match op {
+            FloatCastOp::SignedIntToFloat | FloatCastOp::UnsignedIntToFloat => {
+                checked_float_width(to_width as u64)?;
+            },
+            FloatCastOp::FloatToSignedInt | FloatCastOp::FloatToUnsignedInt => {
+                checked_float_width(from_width as u64)?;
+            },
+            FloatCastOp::FloatTrunc => {
+                if from_width != 64 || to_width != 32 {
+                    bail!("only double-to-float fptrunc is supported by vm_virtualize");
+                }
+            },
+            FloatCastOp::FloatExt => {
+                if from_width != 32 || to_width != 64 {
+                    bail!("only float-to-double fpext is supported by vm_virtualize");
+                }
+            },
+        }
+        Ok(())
+    }
+
     fn lower_alloca(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
         let allocated_type = instruction
             .get_allocated_type()
@@ -1161,6 +1627,11 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 
     fn lower_load(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        ensure_non_volatile_memory(instruction, "load")?;
+        let ordering = memory_ordering(instruction, "load")?;
+        if ordering != AtomicOrdering::NotAtomic {
+            return self.lower_atomic_load(instruction, ordering);
+        }
         let ptr = instruction_operand_value(instruction, 0)?;
         let width = instruction_result_width(instruction)?.context("load result has no scalar width")?;
         let env = LoweringEnv::new()
@@ -1172,6 +1643,11 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 
     fn lower_store(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        ensure_non_volatile_memory(instruction, "store")?;
+        let ordering = memory_ordering(instruction, "store")?;
+        if ordering != AtomicOrdering::NotAtomic {
+            return self.lower_atomic_store(instruction, ordering);
+        }
         let src = self.materialize_operand(instruction, 0)?;
         let ptr = instruction_operand_value(instruction, 1)?;
         let env = LoweringEnv::new()
@@ -1180,6 +1656,160 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .binding("%vv", src)
             .imm("memory_width(%ptr)", src.width as u64);
         self.execute_lowering_rule("llvm.memory.scalar", env, Some(HandlerSemantic::Store))?;
+        Ok(())
+    }
+
+    fn lower_atomic_load(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        ordering: AtomicOrdering,
+    ) -> anyhow::Result<()> {
+        ensure_default_atomic_syncscope(instruction, "load")?;
+        let ptr = instruction_operand_value(instruction, 0)?;
+        let width = instruction_result_width(instruction)?.context("atomic load result has no scalar width")?;
+        ensure_atomic_value_type(instruction.get_type(), "load")?;
+        ensure_naturally_aligned_atomic(instruction, "load", width)?;
+        let ordering = atomic_ordering_for_load(ordering)?;
+        let env = LoweringEnv::new()
+            .llvm_source("%ptr", ptr)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("memory_width(%ptr)", width as u64)
+            .imm("memory_ordering(%ptr)", ordering as u64);
+        self.execute_lowering_rule("llvm.atomic.load.scalar", env, Some(HandlerSemantic::AtomicLoad))?;
+        Ok(())
+    }
+
+    fn lower_atomic_store(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        ordering: AtomicOrdering,
+    ) -> anyhow::Result<()> {
+        ensure_default_atomic_syncscope(instruction, "store")?;
+        let src_value = instruction_operand_value(instruction, 0)?;
+        ensure_atomic_basic_value_type(src_value.get_type(), "store")?;
+        let src = self.materialize_operand(instruction, 0)?;
+        ensure_naturally_aligned_atomic(instruction, "store", src.width)?;
+        let ordering = atomic_ordering_for_store(ordering)?;
+        let ptr = instruction_operand_value(instruction, 1)?;
+        let env = LoweringEnv::new()
+            .llvm_source("%ptr", ptr)
+            .binding("%value", src)
+            .binding("%vv", src)
+            .imm("memory_width(%ptr)", src.width as u64)
+            .imm("memory_ordering(%ptr)", ordering as u64);
+        self.execute_lowering_rule("llvm.atomic.store.scalar", env, Some(HandlerSemantic::AtomicStore))?;
+        Ok(())
+    }
+
+    fn lower_atomic_rmw(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        ensure_non_volatile_memory(instruction, "atomicrmw")?;
+        ensure_default_atomic_syncscope(instruction, "atomicrmw")?;
+        let ordering = memory_ordering(instruction, "atomicrmw")?;
+        let op = instruction
+            .get_atomic_rmw_bin_op()
+            .context("atomicrmw operation cannot be read")?;
+        let op = map_atomic_rmw_op(op)?;
+        let ptr = instruction_operand_value(instruction, 0)?;
+        let src_value = instruction_operand_value(instruction, 1)?;
+        ensure_atomic_basic_value_type(src_value.get_type(), "atomicrmw")?;
+        let src = self.materialize_operand(instruction, 1)?;
+        ensure_naturally_aligned_atomic(instruction, "atomicrmw", src.width)?;
+        let ordering = atomic_ordering_for_rmw(ordering)?;
+        let width = instruction_result_width(instruction)?.context("atomicrmw result has no scalar width")?;
+        if width != src.width {
+            bail!(
+                "atomicrmw result width {} differs from operand width {}",
+                width,
+                src.width
+            );
+        }
+
+        let env = LoweringEnv::new()
+            .llvm_source("%ptr", ptr)
+            .binding("%value", src)
+            .binding("%vv", src)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("memory_width(%ptr)", width as u64)
+            .imm("memory_ordering(%ptr)", ordering as u64);
+        self.execute_lowering_rule("llvm.atomic.rmw.scalar", env, Some(HandlerSemantic::AtomicRmw(op)))?;
+        Ok(())
+    }
+
+    fn lower_cmpxchg(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        ensure_non_volatile_memory(instruction, "cmpxchg")?;
+        ensure_default_atomic_syncscope(instruction, "cmpxchg")?;
+        // SAFETY: `instruction` 是当前 module 中的 live `cmpxchg` instruction；
+        // LLVMGetWeak 只读取该 instruction 的 weak bit，不访问用户内存。
+        if unsafe { LLVMGetWeak(instruction.as_value_ref()) } != 0 {
+            bail!("weak cmpxchg is not supported by vm_virtualize");
+        }
+
+        let ptr = instruction_operand_value(instruction, 0)?;
+        let cmp_value = instruction_operand_value(instruction, 1)?;
+        let new_value = instruction_operand_value(instruction, 2)?;
+        ensure_atomic_basic_value_type(cmp_value.get_type(), "cmpxchg")?;
+        if cmp_value.get_type() != new_value.get_type() {
+            bail!("cmpxchg compare and new value types differ");
+        }
+        let cmp = self.materialize_operand(instruction, 1)?;
+        let new = self.materialize_operand(instruction, 2)?;
+        if cmp.width != new.width {
+            bail!(
+                "cmpxchg compare width {} differs from new width {}",
+                cmp.width,
+                new.width
+            );
+        }
+        ensure_naturally_aligned_atomic(instruction, "cmpxchg", cmp.width)?;
+        // SAFETY: `instruction` 已由 opcode dispatch 限定为 cmpxchg；LLVM 这里只读取
+        // success/failure ordering metadata。非法组合随后按 VMP 支持边界安全跳过。
+        let success_ordering = unsafe { LLVMGetCmpXchgSuccessOrdering(instruction.as_value_ref()) }.into();
+        // SAFETY: 同上，读取同一 live cmpxchg instruction 的 failure ordering metadata。
+        let failure_ordering = unsafe { LLVMGetCmpXchgFailureOrdering(instruction.as_value_ref()) }.into();
+        let success_ordering = cmpxchg_success_ordering(success_ordering)?;
+        let failure_ordering = cmpxchg_failure_ordering(failure_ordering)?;
+        ensure_cmpxchg_ordering(success_ordering, failure_ordering)?;
+
+        let env = LoweringEnv::new()
+            .llvm_source("%ptr", ptr)
+            .binding("%vc", cmp)
+            .binding("%vn", new)
+            .imm("memory_width(%ptr)", cmp.width as u64)
+            .imm("success_ordering(%ptr)", success_ordering as u64)
+            .imm("failure_ordering(%ptr)", failure_ordering as u64);
+        let env = self.execute_lowering_rule("llvm.cmpxchg.scalar", env, Some(HandlerSemantic::CmpXchg))?;
+        let old = match env.get("%old")? {
+            LoweringValue::Reg(binding) => binding,
+            LoweringValue::Imm(_) | LoweringValue::Label(_) => bail!("cmpxchg old result must be a register"),
+        };
+        let success = match env.get("%ok")? {
+            LoweringValue::Reg(binding) => binding,
+            LoweringValue::Imm(_) | LoweringValue::Label(_) => bail!("cmpxchg success result must be a register"),
+        };
+        if old.width != cmp.width {
+            bail!(
+                "cmpxchg old result width {} differs from compare width {}",
+                old.width,
+                cmp.width
+            );
+        }
+        if success.width != 1 {
+            bail!("cmpxchg success result must be i1, got i{}", success.width);
+        }
+        self.aggregates.insert(
+            instruction_key(instruction),
+            AggregateBinding {
+                fields: vec![Some(old), Some(success)],
+            },
+        );
+        Ok(())
+    }
+
+    fn lower_fence(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        ensure_default_atomic_syncscope(instruction, "fence")?;
+        let ordering = atomic_ordering_for_fence(memory_ordering(instruction, "fence")?)?;
+        let env = LoweringEnv::new().imm("memory_ordering(%fence)", ordering as u64);
+        self.execute_lowering_rule("llvm.fence", env, Some(HandlerSemantic::Fence))?;
         Ok(())
     }
 
@@ -1214,7 +1844,18 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         // dynamic GEP 被拆成：base + sum(index_i * element_size_i) + constant_offset。
         // 每个乘加都必须通过 profile 中的 llvm.gep.dynamic rule emit，不能在这里绕过 ISA。
         if terms.dynamic.is_empty() {
-            if address != dst.reg {
+            if terms.constant_offset != 0 {
+                let gep_action = self.emit_action_for_shape(
+                    "llvm.gep.constant",
+                    &HandlerSemantic::Gep,
+                    &[("dst", "%vr"), ("base", "%vb"), ("offset", "constant_gep_offset(%r)")],
+                )?;
+                let env = LoweringEnv::new()
+                    .reg("%vr", dst.reg, 64)
+                    .reg("%vb", address, 64)
+                    .imm("constant_gep_offset(%r)", terms.constant_offset as u64);
+                self.emit_profile_action(&gep_action, &env)?;
+            } else if address != dst.reg {
                 let action = self.emit_action_for_shape(
                     "llvm.phi.edge_move",
                     &HandlerSemantic::Mov,
@@ -1281,6 +1922,24 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 
     fn lower_call(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let call = CallInst::new(instruction);
+        let callee = call
+            .get_call_function()
+            .context("indirect calls are not supported by vm_virtualize")?;
+        if let Some(kind) = memory_intrinsic_kind(callee) {
+            return self.lower_memory_intrinsic(instruction, kind);
+        }
+        if let Some(kind) = integer_intrinsic_kind(callee) {
+            return match kind.arity() {
+                1 => self.lower_integer_intrinsic(instruction, kind),
+                3 => self.lower_integer_ternary_intrinsic(instruction, kind),
+                _ => bail!("unsupported integer intrinsic arity {}", kind.arity()),
+            };
+        }
+        if callee.get_intrinsic_id() != 0 || callee.is_llvm_function() {
+            bail!("LLVM intrinsic calls are not supported by vm_virtualize");
+        }
+
         let call_action = self.emit_action_for_shape(
             "llvm.call.direct",
             &HandlerSemantic::CallNative,
@@ -1290,14 +1949,6 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 ("ret_count", "return_count(%callee)"),
             ],
         )?;
-        let call = CallInst::new(instruction);
-        let callee = call
-            .get_call_function()
-            .context("indirect calls are not supported by vm_virtualize")?;
-        if callee.get_intrinsic_id() != 0 || callee.is_llvm_function() {
-            bail!("LLVM intrinsic calls are not supported by vm_virtualize");
-        }
-
         let target = native_call_target(callee)?;
         if target.param_widths.len() > self.native_arg_registers.len() {
             bail!(
@@ -1348,13 +1999,14 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         self.emit_parallel_register_moves(arg_moves)?;
 
         let call_id = u16::try_from(self.native_calls.len()).context("native call table has too many entries")?;
-        let native_returns = target
-            .return_fields
+        // `call_native` handler 的 record 已经携带 retN 目标寄存器。这里直接把 native thunk
+        // 返回 tuple 写进最终 SSA 结果寄存器，避免生成紧跟在 call 后面的 VM 内部返回槽 copy。
+        // native_return_registers 仍在上面的 ABI 覆盖检查中约束 profile 声明的返回槽容量。
+        let call_return_slots = final_returns
             .iter()
-            .enumerate()
-            .map(|(index, field)| NativeReturn {
-                dst: self.native_return_registers[index],
-                width: field.width,
+            .map(|binding| NativeReturn {
+                dst: binding.reg,
+                width: binding.width,
             })
             .collect::<Vec<_>>();
         self.native_calls.push(target);
@@ -1363,14 +2015,14 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .imm("callee", call_id as u64)
             .imm("arg_count(%callee)", args.len() as u64)
             .imm("argc", args.len() as u64)
-            .imm("return_count(%callee)", native_returns.len() as u64)
-            .imm("ret_count", native_returns.len() as u64);
+            .imm("return_count(%callee)", call_return_slots.len() as u64)
+            .imm("ret_count", call_return_slots.len() as u64);
         for index in 0..NATIVE_CALL_MAX_ARGS {
             let reg = self.native_arg_registers.get(index).copied().unwrap_or(0);
             env = env.reg(format!("arg{index}"), reg, 64);
         }
         for index in 0..NATIVE_CALL_MAX_RETURNS {
-            let ret = native_returns
+            let ret = call_return_slots
                 .get(index)
                 .copied()
                 .unwrap_or(NativeReturn { dst: 0, width: 64 });
@@ -1379,12 +2031,6 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 .imm(format!("ret{index}_width"), ret.width as u64);
         }
         self.emit_profile_action(&call_action, &env)?;
-
-        for (native, final_return) in native_returns.iter().zip(final_returns.iter()) {
-            if native.dst != final_return.reg {
-                self.emit_profile_mov_direct(final_return.reg, native.dst, final_return.width)?;
-            }
-        }
 
         if final_returns.len() > 1 {
             self.aggregates.insert(
@@ -1396,6 +2042,238 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         }
         self.restore_native_touched_registers(saved, &result_regs)?;
         Ok(())
+    }
+
+    fn lower_integer_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: IntegerIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        if instruction.get_num_operands().saturating_sub(1) != 1 {
+            bail!("integer intrinsic {:?} expects exactly one argument", kind);
+        }
+        let src = self.materialize_operand(instruction, 0)?;
+        let width = instruction_result_width(instruction)?.context("integer intrinsic result has no scalar width")?;
+        if src.width != width {
+            bail!(
+                "integer intrinsic result width {} differs from operand width {}",
+                width,
+                src.width
+            );
+        }
+        checked_intrinsic_integer_width(u64::from(width))?;
+
+        let env = LoweringEnv::new()
+            .binding("%value", src)
+            .binding("%src", src)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64);
+        self.execute_lowering_rule(kind.lowering_rule(), env, Some(kind.semantic()))?;
+        Ok(())
+    }
+
+    fn lower_integer_ternary_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: IntegerIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        if instruction.get_num_operands().saturating_sub(1) != 3 {
+            bail!("integer intrinsic {:?} expects exactly three arguments", kind);
+        }
+        let lhs = self.materialize_operand(instruction, 0)?;
+        let rhs = self.materialize_operand(instruction, 1)?;
+        let third = self.materialize_operand(instruction, 2)?;
+        let width = instruction_result_width(instruction)?.context("integer intrinsic result has no scalar width")?;
+        for (name, value) in [("lhs", lhs), ("rhs", rhs), ("third", third)] {
+            if value.width != width {
+                bail!(
+                    "integer intrinsic result width {} differs from {name} operand width {}",
+                    width,
+                    value.width
+                );
+            }
+        }
+        checked_intrinsic_integer_width(u64::from(width))?;
+
+        let env = LoweringEnv::new()
+            .binding("%a", lhs)
+            .binding("%b", rhs)
+            .binding("%shift", third)
+            .binding("%lhs", lhs)
+            .binding("%rhs", rhs)
+            .binding("%third", third)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64);
+        self.execute_lowering_rule(kind.lowering_rule(), env, Some(kind.semantic()))?;
+        Ok(())
+    }
+
+    fn lower_memory_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: MemoryIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        match kind {
+            MemoryIntrinsicKind::Memcpy | MemoryIntrinsicKind::Memmove => {
+                self.lower_memory_copy_intrinsic(instruction, kind)
+            },
+            MemoryIntrinsicKind::Memset => self.lower_memset_intrinsic(instruction),
+        }
+    }
+
+    fn lower_memory_copy_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: MemoryIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        let rule = kind.lowering_rule();
+        let dst = self.materialize_operand(instruction, 0)?;
+        let src = self.materialize_operand(instruction, 1)?;
+        let len = constant_int_operand(instruction, 2, "memory intrinsic length")?;
+        ensure_supported_memory_intrinsic_len(len)?;
+        ensure_intrinsic_not_volatile(instruction, 3)?;
+
+        let direct_load = self.emit_action_for_shape(
+            rule,
+            &HandlerSemantic::Load,
+            &[("dst", "%tmp"), ("ptr", "%vs"), ("width", "copy_width")],
+        )?;
+        let offset_load = self.emit_action_for_shape(
+            rule,
+            &HandlerSemantic::Load,
+            &[("dst", "%tmp"), ("ptr", "%addr"), ("width", "copy_width")],
+        )?;
+        let direct_store = self.emit_action_for_shape(
+            rule,
+            &HandlerSemantic::Store,
+            &[("src", "%tmp"), ("ptr", "%vd"), ("width", "copy_width")],
+        )?;
+        let offset_store = self.emit_action_for_shape(
+            rule,
+            &HandlerSemantic::Store,
+            &[("src", "%tmp"), ("ptr", "%addr"), ("width", "copy_width")],
+        )?;
+        let src_gep = self.emit_action_for_shape(
+            rule,
+            &HandlerSemantic::Gep,
+            &[("dst", "%addr"), ("base", "%vs"), ("offset", "copy_offset")],
+        )?;
+        let dst_gep = self.emit_action_for_shape(
+            rule,
+            &HandlerSemantic::Gep,
+            &[("dst", "%addr"), ("base", "%vd"), ("offset", "copy_offset")],
+        )?;
+
+        let mut loaded = Vec::new();
+        for chunk in memory_copy_chunks(len) {
+            let value = ValueBinding {
+                reg: self.alloc_temporary_vreg()?,
+                width: chunk.width,
+            };
+            let (ptr, action) = if chunk.offset == 0 {
+                (src, &direct_load)
+            } else {
+                (
+                    self.emit_memory_intrinsic_gep(rule, &src_gep, "%vs", src, "copy_offset", chunk.offset)?,
+                    &offset_load,
+                )
+            };
+            let env = LoweringEnv::new()
+                .binding("%vs", src)
+                .binding("%addr", ptr)
+                .binding("%tmp", value)
+                .imm("copy_width", chunk.width as u64);
+            self.emit_profile_action(action, &env)?;
+            loaded.push(LoadedMemoryChunk { chunk, value });
+        }
+
+        for loaded in loaded {
+            let (ptr, action) = if loaded.chunk.offset == 0 {
+                (dst, &direct_store)
+            } else {
+                (
+                    self.emit_memory_intrinsic_gep(rule, &dst_gep, "%vd", dst, "copy_offset", loaded.chunk.offset)?,
+                    &offset_store,
+                )
+            };
+            let env = LoweringEnv::new()
+                .binding("%vd", dst)
+                .binding("%addr", ptr)
+                .binding("%tmp", loaded.value)
+                .imm("copy_width", loaded.chunk.width as u64);
+            self.emit_profile_action(action, &env)?;
+        }
+
+        Ok(())
+    }
+
+    fn lower_memset_intrinsic(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let rule = MemoryIntrinsicKind::Memset.lowering_rule();
+        let dst = self.materialize_operand(instruction, 0)?;
+        let value = self.materialize_operand(instruction, 1)?;
+        if value.width != 8 {
+            bail!("llvm.memset value must be i8, got i{}", value.width);
+        }
+        let len = constant_int_operand(instruction, 2, "memory intrinsic length")?;
+        ensure_supported_memory_intrinsic_len(len)?;
+        ensure_intrinsic_not_volatile(instruction, 3)?;
+
+        let direct_store = self.emit_action_for_shape(
+            rule,
+            &HandlerSemantic::Store,
+            &[("src", "%vv"), ("ptr", "%vd"), ("width", "set_width")],
+        )?;
+        let offset_store = self.emit_action_for_shape(
+            rule,
+            &HandlerSemantic::Store,
+            &[("src", "%vv"), ("ptr", "%addr"), ("width", "set_width")],
+        )?;
+        let dst_gep = self.emit_action_for_shape(
+            rule,
+            &HandlerSemantic::Gep,
+            &[("dst", "%addr"), ("base", "%vd"), ("offset", "set_offset")],
+        )?;
+
+        for offset in 0..len {
+            let (ptr, action) = if offset == 0 {
+                (dst, &direct_store)
+            } else {
+                (
+                    self.emit_memory_intrinsic_gep(rule, &dst_gep, "%vd", dst, "set_offset", offset)?,
+                    &offset_store,
+                )
+            };
+            let env = LoweringEnv::new()
+                .binding("%vd", dst)
+                .binding("%addr", ptr)
+                .binding("%vv", value)
+                .imm("set_width", 8);
+            self.emit_profile_action(action, &env)?;
+        }
+
+        Ok(())
+    }
+
+    fn emit_memory_intrinsic_gep(
+        &mut self,
+        rule: &str,
+        action: &LoweringAction,
+        base_expr: &str,
+        base: ValueBinding,
+        offset_expr: &str,
+        offset: u64,
+    ) -> anyhow::Result<ValueBinding> {
+        let ptr = ValueBinding {
+            reg: self.alloc_temporary_vreg()?,
+            width: 64,
+        };
+        let env = LoweringEnv::new()
+            .binding(base_expr, base)
+            .binding("%addr", ptr)
+            .imm(offset_expr, offset);
+        self.emit_profile_action(action, &env)
+            .with_context(|| format!("while lowering {rule} offset {offset}"))?;
+        Ok(ptr)
     }
 
     fn native_call_final_returns(
@@ -1526,6 +2404,28 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         Ok(())
     }
 
+    fn lower_fcmp(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let lhs = instruction_operand_value(instruction, 0)?;
+        let rhs = instruction_operand_value(instruction, 1)?;
+        let pred = instruction
+            .get_fcmp_predicate()
+            .context("fcmp instruction has no predicate")?;
+        let lhs_width = value_width(lhs)?;
+        let rhs_width = value_width(rhs)?;
+        if lhs_width != rhs_width {
+            bail!("fcmp operands have mismatched widths: {lhs_width} and {rhs_width}");
+        }
+
+        let env = LoweringEnv::new()
+            .llvm_source("%a", lhs)
+            .llvm_source("%b", rhs)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("predicate(%r)", map_float_predicate(pred) as u64)
+            .imm("operand_width(%a,%b)", lhs_width as u64);
+        self.execute_lowering_rule("llvm.fcmp.float", env, Some(HandlerSemantic::Fcmp))?;
+        Ok(())
+    }
+
     fn lower_cast(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
         let src = instruction_operand_value(instruction, 0)?;
         let src_width = value_width(src)?;
@@ -1549,6 +2449,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     ("llvm.cast.pointer", HandlerSemantic::Cast(CastOp::Bitcast))
                 }
             },
+            InstructionOpcode::AddrSpaceCast => ("llvm.cast.pointer", HandlerSemantic::Cast(CastOp::Bitcast)),
             opcode => bail!("unsupported cast opcode: {opcode:?}"),
         };
         let env = LoweringEnv::new()
@@ -1557,6 +2458,18 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .imm("type_width(%a)", src_width as u64)
             .imm("type_width(%r)", dst_width as u64);
         self.execute_lowering_rule(rule, env, Some(required))?;
+        Ok(())
+    }
+
+    fn lower_freeze(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let value = instruction_operand_value(instruction, 0)?;
+        let width = instruction_result_width(instruction)?.context("freeze result has no scalar width")?;
+        let frozen = self.materialize_freeze_value(value, width)?;
+        let env = LoweringEnv::new()
+            .binding("%value", frozen)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64);
+        self.execute_lowering_rule("llvm.freeze.scalar", env, Some(HandlerSemantic::Mov))?;
         Ok(())
     }
 
@@ -1569,19 +2482,19 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         let else_label = self.builder.new_label();
         let join_label = self.builder.new_label();
         let br_if = self.emit_action_for_shape(
-            "llvm.select.integer",
+            "llvm.select.scalar",
             &HandlerSemantic::BrCond,
             &[("cond", "%vc"), ("then_pc", "then_label"), ("else_pc", "else_label")],
         )?;
         let then_mov = self.emit_action_for_shape(
-            "llvm.select.integer",
+            "llvm.select.scalar",
             &HandlerSemantic::Mov,
             &[("dst", "%vr"), ("src", "%vt"), ("width", "type_width(%r)")],
         )?;
         let then_br =
-            self.emit_action_for_shape("llvm.select.integer", &HandlerSemantic::Br, &[("target", "join_label")])?;
+            self.emit_action_for_shape("llvm.select.scalar", &HandlerSemantic::Br, &[("target", "join_label")])?;
         let else_mov = self.emit_action_for_shape(
-            "llvm.select.integer",
+            "llvm.select.scalar",
             &HandlerSemantic::Mov,
             &[("dst", "%vr"), ("src", "%ve"), ("width", "type_width(%r)")],
         )?;
@@ -1909,6 +2822,10 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             return Ok(binding);
         }
 
+        if is_undef_or_poison_value(value) {
+            bail!("undef/poison values must be frozen before VM materialization");
+        }
+
         if value.is_int_value() {
             let int_value = value.into_int_value();
             if let Some(imm) = int_value.get_zero_extended_constant() {
@@ -1919,7 +2836,41 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             }
         }
 
-        bail!("only integer constants and previously lowered SSA values can be materialized")
+        if value.is_float_value() {
+            let float_value = value.into_float_value();
+            let width = float_type_width(float_value.get_type().as_type_ref())?;
+            if let Some((constant, _lossy)) = float_value.get_constant() {
+                let imm = match width {
+                    32 => u64::from((constant as f32).to_bits()),
+                    64 => constant.to_bits(),
+                    _ => unreachable!("float_type_width only returns 32 or 64"),
+                };
+                let reg = self.alloc_temporary_vreg()?;
+                self.push_constant(reg, imm, width)?;
+                return Ok(ValueBinding { reg, width });
+            }
+        }
+
+        if value.is_pointer_value() {
+            let pointer_value = value.into_pointer_value();
+            if pointer_value.is_null() {
+                let reg = self.alloc_temporary_vreg()?;
+                self.push_constant(reg, 0, 64)?;
+                return Ok(ValueBinding { reg, width: 64 });
+            }
+        }
+
+        bail!("only integer/float constants and previously lowered SSA values can be materialized")
+    }
+
+    fn materialize_freeze_value(&mut self, value: BasicValueEnum<'ctx>, width: u8) -> anyhow::Result<ValueBinding> {
+        if is_undef_or_poison_value(value) {
+            let reg = self.alloc_temporary_vreg()?;
+            self.push_constant(reg, 0, width)?;
+            return Ok(ValueBinding { reg, width });
+        }
+
+        self.materialize_value(value)
     }
 
     fn push_constant(&mut self, dst: u8, imm: u64, width: u8) -> anyhow::Result<()> {
@@ -1975,19 +2926,19 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
 
         for (index_position, index) in gep.get_indices().into_iter().enumerate() {
             let index = index.context("getelementptr index has no value")?;
-            let (scale, next_type) =
-                gep_index_scale_and_next_type(&self.target_data, current_type, index_position, index)?;
-            if let Some(constant) = index.into_int_value().get_sign_extended_constant() {
-                let scaled = constant
-                    .checked_mul(scale as i64)
-                    .context("getelementptr constant offset overflow")?;
+            let step = gep_index_step(&self.target_data, current_type, index_position, index)?;
+            if let Some(offset) = step.constant_offset {
                 constant_offset = constant_offset
-                    .checked_add(scaled)
+                    .checked_add(offset)
+                    .context("getelementptr constant offset overflow")?;
+            } else if let Some(constant) = index.into_int_value().get_sign_extended_constant() {
+                constant_offset = constant_offset
+                    .checked_add(scaled_gep_offset(constant, step.scale)?)
                     .context("getelementptr constant offset overflow")?;
             } else {
-                dynamic.push((self.materialize_value(index)?, scale));
+                dynamic.push((self.materialize_value(index)?, step.scale));
             }
-            current_type = next_type;
+            current_type = step.next_type;
         }
 
         Ok(GepTerms {
@@ -2009,14 +2960,21 @@ fn native_call_target<'ctx>(function: FunctionValue<'ctx>) -> anyhow::Result<Nat
             false,
             vec![ReturnField {
                 width: checked_width(return_type.get_bit_width())?,
-                is_pointer: false,
+                kind: ScalarKind::Integer,
             }],
         ),
         Some(BasicTypeEnum::PointerType(_)) => (
             false,
             vec![ReturnField {
                 width: 64,
-                is_pointer: true,
+                kind: ScalarKind::Pointer,
+            }],
+        ),
+        Some(BasicTypeEnum::FloatType(return_type)) => (
+            false,
+            vec![ReturnField {
+                width: float_type_width(return_type.as_type_ref())?,
+                kind: ScalarKind::Float,
             }],
         ),
         Some(BasicTypeEnum::StructType(return_type)) => {
@@ -2031,22 +2989,32 @@ fn native_call_target<'ctx>(function: FunctionValue<'ctx>) -> anyhow::Result<Nat
             }
             (false, fields)
         },
-        Some(_) => bail!("only void, scalar integer, pointer, and direct struct native call returns are supported"),
+        Some(_) => {
+            bail!("only void, scalar integer, pointer, float, and direct struct native call returns are supported")
+        },
     };
 
     let param_types = fn_type.get_param_types();
     if param_types.len() > 8 {
-        bail!("only up to 8 scalar integer native call arguments are supported");
+        bail!("only up to 8 scalar integer/pointer/float native call arguments are supported");
     }
     let params = param_types
         .iter()
         .map(|ty| match ty {
-            BasicMetadataTypeEnum::IntType(int_ty) => Ok((checked_width(int_ty.get_bit_width())?, false)),
-            BasicMetadataTypeEnum::PointerType(_) => Ok((64, true)),
-            _ => bail!("only scalar integer and pointer native call arguments are supported"),
+            BasicMetadataTypeEnum::IntType(int_ty) => Ok((checked_width(int_ty.get_bit_width())?, false, false)),
+            BasicMetadataTypeEnum::PointerType(_) => Ok((64, true, false)),
+            BasicMetadataTypeEnum::FloatType(float_ty) => Ok((float_type_width(float_ty.as_type_ref())?, false, true)),
+            _ => bail!("only scalar integer, pointer, and float native call arguments are supported"),
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let (param_widths, param_is_pointer) = params.into_iter().unzip();
+    let mut param_widths = Vec::with_capacity(params.len());
+    let mut param_is_pointer = Vec::with_capacity(params.len());
+    let mut param_is_float = Vec::with_capacity(params.len());
+    for (width, is_pointer, is_float) in params {
+        param_widths.push(width);
+        param_is_pointer.push(is_pointer);
+        param_is_float.push(is_float);
+    }
 
     Ok(NativeCallTarget {
         function,
@@ -2054,6 +3022,7 @@ fn native_call_target<'ctx>(function: FunctionValue<'ctx>) -> anyhow::Result<Nat
         returns_void,
         return_fields,
         param_is_pointer,
+        param_is_float,
     })
 }
 
@@ -2078,18 +3047,28 @@ struct GepTerms {
     dynamic: Vec<(ValueBinding, u64)>,
 }
 
-fn gep_index_scale_and_next_type(
+struct GepIndexStep {
+    scale: u64,
+    constant_offset: Option<i64>,
+    next_type: LLVMTypeRef,
+}
+
+fn gep_index_step(
     target_data: &TargetData,
     current_type: LLVMTypeRef,
     index_position: usize,
     index: BasicValueEnum<'_>,
-) -> anyhow::Result<(u64, LLVMTypeRef)> {
+) -> anyhow::Result<GepIndexStep> {
     if !index.is_int_value() {
         bail!("getelementptr index is not an integer");
     }
 
     if index_position == 0 {
-        return Ok((store_size(target_data, current_type)?, current_type));
+        return Ok(GepIndexStep {
+            scale: store_size(target_data, current_type)?,
+            constant_offset: None,
+            next_type: current_type,
+        });
     }
 
     // SAFETY: `current_type` 来自 LLVM 的 GEP source type，或来自 LLVM 先前返回的 element type。
@@ -2102,11 +3081,59 @@ fn gep_index_scale_and_next_type(
             if element_type.is_null() {
                 bail!("getelementptr aggregate element type is unavailable");
             }
-            Ok((store_size(target_data, element_type)?, element_type))
+            Ok(GepIndexStep {
+                scale: store_size(target_data, element_type)?,
+                constant_offset: None,
+                next_type: element_type,
+            })
         },
-        LLVMTypeKind::LLVMStructTypeKind => bail!("dynamic getelementptr through struct fields is not supported"),
-        _ => Ok((store_size(target_data, current_type)?, current_type)),
+        LLVMTypeKind::LLVMStructTypeKind => {
+            let field = gep_struct_field_index(index)?;
+            // SAFETY: `current_type` 已由 LLVM 标识为 struct type；这里只读取字段数量元数据。
+            let field_count = unsafe { LLVMCountStructElementTypes(current_type) };
+            if field >= field_count {
+                bail!("getelementptr struct field index {field} is out of range {field_count}");
+            }
+
+            // SAFETY: `field` 已检查在 struct 字段范围内，LLVM 只返回该字段的 type 元数据。
+            let element_type = unsafe { LLVMStructGetTypeAtIndex(current_type, field) };
+            if element_type.is_null() {
+                bail!("getelementptr struct field type is unavailable");
+            }
+
+            // SAFETY: `target_data` 来自当前 module data layout，`current_type` 是 struct type，
+            // `field` 已做范围检查；LLVM 在这里仅查询该字段的 ABI 字节偏移。
+            let offset = unsafe { LLVMOffsetOfElement(target_data.as_mut_ptr(), current_type, field) };
+            Ok(GepIndexStep {
+                scale: 0,
+                constant_offset: Some(i64::try_from(offset).context("getelementptr struct field offset overflow")?),
+                next_type: element_type,
+            })
+        },
+        _ => Ok(GepIndexStep {
+            scale: store_size(target_data, current_type)?,
+            constant_offset: None,
+            next_type: current_type,
+        }),
     }
+}
+
+fn gep_struct_field_index(index: BasicValueEnum<'_>) -> anyhow::Result<u32> {
+    let field = index
+        .into_int_value()
+        .get_sign_extended_constant()
+        .context("getelementptr struct field index must be constant")?;
+    if field < 0 {
+        bail!("getelementptr struct field index must be non-negative");
+    }
+    u32::try_from(field).context("getelementptr struct field index is too large")
+}
+
+fn scaled_gep_offset(index: i64, scale: u64) -> anyhow::Result<i64> {
+    let scale = i64::try_from(scale).context("getelementptr element size is too large")?;
+    index
+        .checked_mul(scale)
+        .context("getelementptr constant offset overflow")
 }
 
 fn store_size(target_data: &TargetData, ty: LLVMTypeRef) -> anyhow::Result<u64> {
@@ -2139,6 +3166,10 @@ fn phi_incoming_value<'ctx>(
 }
 
 fn instruction_result_width(instruction: InstructionValue<'_>) -> anyhow::Result<Option<u8>> {
+    if let Some(reason) = unsupported_control_flow_reason(instruction.get_opcode()) {
+        bail!("{reason}");
+    }
+
     match instruction.get_opcode() {
         InstructionOpcode::Br
         | InstructionOpcode::Return
@@ -2151,10 +3182,237 @@ fn instruction_result_width(instruction: InstructionValue<'_>) -> anyhow::Result
 
     match instruction.get_type() {
         AnyTypeEnum::IntType(int_ty) => checked_width(int_ty.get_bit_width()).map(Some),
+        AnyTypeEnum::FloatType(float_ty) => float_type_width(float_ty.as_type_ref()).map(Some),
         AnyTypeEnum::PointerType(_) => Ok(Some(64)),
         AnyTypeEnum::VoidType(_) => Ok(None),
-        AnyTypeEnum::StructType(_) if instruction.get_opcode() == InstructionOpcode::Call => Ok(None),
+        AnyTypeEnum::StructType(_)
+            if matches!(
+                instruction.get_opcode(),
+                InstructionOpcode::Call | InstructionOpcode::AtomicCmpXchg
+            ) =>
+        {
+            Ok(None)
+        },
         other => bail!("unsupported instruction result type: {other:?}"),
+    }
+}
+
+fn ensure_non_volatile_memory(instruction: InstructionValue<'_>, kind: &str) -> anyhow::Result<()> {
+    if instruction
+        .get_volatile()
+        .with_context(|| format!("{kind} volatile flag cannot be read"))?
+    {
+        bail!("{kind} volatile memory access is not supported by vm_virtualize");
+    }
+
+    Ok(())
+}
+
+fn ensure_default_atomic_syncscope(instruction: InstructionValue<'_>, kind: &str) -> anyhow::Result<()> {
+    // SAFETY: `instruction` 是当前 module 中的 live atomic/fence instruction；C API
+    // 只读取 syncscope metadata，不访问用户内存。LLVM 21 在 LLVMContext.h 中定义
+    // `SyncScope::System = 1`，其它 scope 先按保守边界跳过。
+    let scope = unsafe { LLVMGetAtomicSyncScopeID(instruction.as_value_ref()) };
+    if scope != LLVM_SYSTEM_SYNC_SCOPE_ID {
+        bail!("{kind} non-default atomic syncscope is not supported by vm_virtualize");
+    }
+    Ok(())
+}
+
+fn memory_ordering(instruction: InstructionValue<'_>, kind: &str) -> anyhow::Result<AtomicOrdering> {
+    instruction
+        .get_atomic_ordering()
+        .with_context(|| format!("{kind} atomic ordering cannot be read"))
+}
+
+fn ensure_atomic_value_type(ty: AnyTypeEnum<'_>, kind: &str) -> anyhow::Result<()> {
+    match ty {
+        AnyTypeEnum::IntType(_) | AnyTypeEnum::PointerType(_) => Ok(()),
+        AnyTypeEnum::FloatType(_) => {
+            bail!("{kind} atomic floating-point memory access is not supported by vm_virtualize")
+        },
+        other => bail!("{kind} atomic memory type is not supported by vm_virtualize: {other:?}"),
+    }
+}
+
+fn ensure_atomic_basic_value_type(ty: BasicTypeEnum<'_>, kind: &str) -> anyhow::Result<()> {
+    match ty {
+        BasicTypeEnum::IntType(_) | BasicTypeEnum::PointerType(_) => Ok(()),
+        BasicTypeEnum::FloatType(_) => {
+            bail!("{kind} atomic floating-point memory access is not supported by vm_virtualize")
+        },
+        other => bail!("{kind} atomic memory type is not supported by vm_virtualize: {other:?}"),
+    }
+}
+
+fn ensure_naturally_aligned_atomic(instruction: InstructionValue<'_>, kind: &str, width: u8) -> anyhow::Result<()> {
+    let bytes = match width {
+        8 | 16 | 32 | 64 => u32::from(width) / 8,
+        _ => bail!("{kind} atomic width i{width} is not supported by vm_virtualize"),
+    };
+    let alignment = instruction
+        .alignment()
+        .with_context(|| format!("{kind} atomic alignment cannot be read"))?;
+    if alignment < bytes {
+        bail!("{kind} atomic memory access requires natural alignment {bytes}, got {alignment}");
+    }
+    Ok(())
+}
+
+trait InstructionAlignment {
+    fn alignment(self) -> anyhow::Result<u32>;
+}
+
+impl InstructionAlignment for InstructionValue<'_> {
+    fn alignment(self) -> anyhow::Result<u32> {
+        match self.get_opcode() {
+            InstructionOpcode::AtomicRMW | InstructionOpcode::AtomicCmpXchg => {
+                // SAFETY: `self` 是当前 module 中的 live atomic instruction；LLVMGetAlignment 只读取
+                // atomicrmw/cmpxchg 的 alignment metadata。0 表示 IR 未声明可用对齐，调用方会拒绝。
+                let alignment = unsafe { LLVMGetAlignment(self.as_value_ref()) };
+                if alignment == 0 {
+                    bail!("atomic instruction does not declare alignment");
+                }
+                Ok(alignment)
+            },
+            _ => self.get_alignment().map_err(|error| anyhow::anyhow!("{error}")),
+        }
+    }
+}
+
+fn atomic_ordering_for_load(ordering: AtomicOrdering) -> anyhow::Result<MemoryOrdering> {
+    match ordering {
+        AtomicOrdering::Unordered => Ok(MemoryOrdering::Unordered),
+        AtomicOrdering::Monotonic => Ok(MemoryOrdering::Monotonic),
+        AtomicOrdering::Acquire => Ok(MemoryOrdering::Acquire),
+        AtomicOrdering::SequentiallyConsistent => Ok(MemoryOrdering::SequentiallyConsistent),
+        AtomicOrdering::Release => bail!("load release atomic ordering is invalid for vm_virtualize"),
+        AtomicOrdering::AcquireRelease => bail!("load acquire-release atomic ordering is invalid for vm_virtualize"),
+        AtomicOrdering::NotAtomic => bail!("load atomic lowering received non-atomic ordering"),
+    }
+}
+
+fn atomic_ordering_for_store(ordering: AtomicOrdering) -> anyhow::Result<MemoryOrdering> {
+    match ordering {
+        AtomicOrdering::Unordered => Ok(MemoryOrdering::Unordered),
+        AtomicOrdering::Monotonic => Ok(MemoryOrdering::Monotonic),
+        AtomicOrdering::Release => Ok(MemoryOrdering::Release),
+        AtomicOrdering::SequentiallyConsistent => Ok(MemoryOrdering::SequentiallyConsistent),
+        AtomicOrdering::Acquire => bail!("store acquire atomic ordering is invalid for vm_virtualize"),
+        AtomicOrdering::AcquireRelease => bail!("store acquire-release atomic ordering is invalid for vm_virtualize"),
+        AtomicOrdering::NotAtomic => bail!("store atomic lowering received non-atomic ordering"),
+    }
+}
+
+fn atomic_ordering_for_fence(ordering: AtomicOrdering) -> anyhow::Result<MemoryOrdering> {
+    match ordering {
+        AtomicOrdering::Acquire => Ok(MemoryOrdering::Acquire),
+        AtomicOrdering::Release => Ok(MemoryOrdering::Release),
+        AtomicOrdering::AcquireRelease => Ok(MemoryOrdering::AcquireRelease),
+        AtomicOrdering::SequentiallyConsistent => Ok(MemoryOrdering::SequentiallyConsistent),
+        AtomicOrdering::Unordered => bail!("fence unordered atomic ordering is invalid for vm_virtualize"),
+        AtomicOrdering::Monotonic => bail!("fence monotonic atomic ordering is invalid for vm_virtualize"),
+        AtomicOrdering::NotAtomic => bail!("fence lowering received non-atomic ordering"),
+    }
+}
+
+fn atomic_ordering_for_rmw(ordering: AtomicOrdering) -> anyhow::Result<MemoryOrdering> {
+    match ordering {
+        AtomicOrdering::Monotonic => Ok(MemoryOrdering::Monotonic),
+        AtomicOrdering::Acquire => Ok(MemoryOrdering::Acquire),
+        AtomicOrdering::Release => Ok(MemoryOrdering::Release),
+        AtomicOrdering::AcquireRelease => Ok(MemoryOrdering::AcquireRelease),
+        AtomicOrdering::SequentiallyConsistent => Ok(MemoryOrdering::SequentiallyConsistent),
+        AtomicOrdering::Unordered => bail!("atomicrmw unordered atomic ordering is invalid for vm_virtualize"),
+        AtomicOrdering::NotAtomic => bail!("atomicrmw lowering received non-atomic ordering"),
+    }
+}
+
+fn cmpxchg_success_ordering(ordering: AtomicOrdering) -> anyhow::Result<MemoryOrdering> {
+    match ordering {
+        AtomicOrdering::Monotonic => Ok(MemoryOrdering::Monotonic),
+        AtomicOrdering::Acquire => Ok(MemoryOrdering::Acquire),
+        AtomicOrdering::Release => Ok(MemoryOrdering::Release),
+        AtomicOrdering::AcquireRelease => Ok(MemoryOrdering::AcquireRelease),
+        AtomicOrdering::SequentiallyConsistent => Ok(MemoryOrdering::SequentiallyConsistent),
+        AtomicOrdering::Unordered => bail!("cmpxchg unordered success ordering is invalid for vm_virtualize"),
+        AtomicOrdering::NotAtomic => bail!("cmpxchg lowering received non-atomic success ordering"),
+    }
+}
+
+fn cmpxchg_failure_ordering(ordering: AtomicOrdering) -> anyhow::Result<MemoryOrdering> {
+    match ordering {
+        AtomicOrdering::Monotonic => Ok(MemoryOrdering::Monotonic),
+        AtomicOrdering::Acquire => Ok(MemoryOrdering::Acquire),
+        AtomicOrdering::SequentiallyConsistent => Ok(MemoryOrdering::SequentiallyConsistent),
+        AtomicOrdering::Unordered => bail!("cmpxchg unordered failure ordering is invalid for vm_virtualize"),
+        AtomicOrdering::Release => bail!("cmpxchg release failure ordering is invalid for vm_virtualize"),
+        AtomicOrdering::AcquireRelease => {
+            bail!("cmpxchg acquire-release failure ordering is invalid for vm_virtualize")
+        },
+        AtomicOrdering::NotAtomic => bail!("cmpxchg lowering received non-atomic failure ordering"),
+    }
+}
+
+fn ensure_cmpxchg_ordering(success: MemoryOrdering, failure: MemoryOrdering) -> anyhow::Result<()> {
+    if memory_ordering_rank(failure) > memory_ordering_rank(success) {
+        bail!("cmpxchg failure ordering cannot be stronger than success ordering");
+    }
+    Ok(())
+}
+
+fn memory_ordering_rank(ordering: MemoryOrdering) -> u8 {
+    match ordering {
+        MemoryOrdering::Unordered => 1,
+        MemoryOrdering::Monotonic => 2,
+        MemoryOrdering::Acquire => 3,
+        MemoryOrdering::Release => 4,
+        MemoryOrdering::AcquireRelease => 5,
+        MemoryOrdering::SequentiallyConsistent => 6,
+    }
+}
+
+fn map_atomic_rmw_op(op: AtomicRMWBinOp) -> anyhow::Result<AtomicRmwOp> {
+    match op {
+        AtomicRMWBinOp::Xchg => Ok(AtomicRmwOp::Xchg),
+        AtomicRMWBinOp::Add => Ok(AtomicRmwOp::Add),
+        AtomicRMWBinOp::Sub => Ok(AtomicRmwOp::Sub),
+        AtomicRMWBinOp::And => Ok(AtomicRmwOp::And),
+        AtomicRMWBinOp::Or => Ok(AtomicRmwOp::Or),
+        AtomicRMWBinOp::Xor => Ok(AtomicRmwOp::Xor),
+        AtomicRMWBinOp::Nand => Ok(AtomicRmwOp::Nand),
+        AtomicRMWBinOp::Max => Ok(AtomicRmwOp::Max),
+        AtomicRMWBinOp::Min => Ok(AtomicRmwOp::Min),
+        AtomicRMWBinOp::UMax => Ok(AtomicRmwOp::UMax),
+        AtomicRMWBinOp::UMin => Ok(AtomicRmwOp::UMin),
+        AtomicRMWBinOp::FAdd
+        | AtomicRMWBinOp::FSub
+        | AtomicRMWBinOp::FMax
+        | AtomicRMWBinOp::FMin
+        | AtomicRMWBinOp::UIncWrap
+        | AtomicRMWBinOp::UDecWrap
+        | AtomicRMWBinOp::USubCond
+        | AtomicRMWBinOp::USubSat
+        | AtomicRMWBinOp::FMaximum
+        | AtomicRMWBinOp::FMinimum => bail!("atomicrmw operation {op:?} is not supported by vm_virtualize"),
+    }
+}
+
+fn unsupported_control_flow_reason(opcode: InstructionOpcode) -> Option<&'static str> {
+    match opcode {
+        InstructionOpcode::Invoke => Some("invoke exception edges are not supported by vm_virtualize"),
+        InstructionOpcode::CallBr => Some("callbr is not supported by vm_virtualize"),
+        InstructionOpcode::IndirectBr => Some("indirectbr is not supported by vm_virtualize"),
+        InstructionOpcode::LandingPad => Some("landingpad is not supported by vm_virtualize"),
+        InstructionOpcode::Resume => Some("resume is not supported by vm_virtualize"),
+        InstructionOpcode::CatchSwitch => Some("catchswitch is not supported by vm_virtualize"),
+        InstructionOpcode::CatchRet => Some("catchret is not supported by vm_virtualize"),
+        InstructionOpcode::CleanupRet => Some("cleanupret is not supported by vm_virtualize"),
+        InstructionOpcode::CatchPad => Some("catchpad is not supported by vm_virtualize"),
+        InstructionOpcode::CleanupPad => Some("cleanuppad is not supported by vm_virtualize"),
+        InstructionOpcode::VAArg => Some("va_arg is not supported by vm_virtualize"),
+        InstructionOpcode::Unreachable => Some("unreachable terminator is not supported by vm_virtualize"),
+        _ => None,
     }
 }
 
@@ -2162,11 +3420,15 @@ fn return_field_from_type(ty: BasicTypeEnum<'_>) -> anyhow::Result<ReturnField> 
     match ty {
         BasicTypeEnum::IntType(int_ty) => Ok(ReturnField {
             width: checked_width(int_ty.get_bit_width())?,
-            is_pointer: false,
+            kind: ScalarKind::Integer,
         }),
         BasicTypeEnum::PointerType(_) => Ok(ReturnField {
             width: 64,
-            is_pointer: true,
+            kind: ScalarKind::Pointer,
+        }),
+        BasicTypeEnum::FloatType(float_ty) => Ok(ReturnField {
+            width: float_type_width(float_ty.as_type_ref())?,
+            kind: ScalarKind::Float,
         }),
         other => bail!("unsupported aggregate return field type: {other:?}"),
     }
@@ -2206,11 +3468,134 @@ fn instruction_operand_value(instruction: InstructionValue<'_>, index: u32) -> a
         .with_context(|| format!("missing value operand {index}"))
 }
 
+fn memory_intrinsic_kind(function: FunctionValue<'_>) -> Option<MemoryIntrinsicKind> {
+    let name = function.get_name().to_string_lossy();
+    if name.starts_with("llvm.memcpy.") || name.starts_with("llvm.memcpy.inline.") {
+        Some(MemoryIntrinsicKind::Memcpy)
+    } else if name.starts_with("llvm.memmove.") {
+        Some(MemoryIntrinsicKind::Memmove)
+    } else if name.starts_with("llvm.memset.") || name.starts_with("llvm.memset.inline.") {
+        Some(MemoryIntrinsicKind::Memset)
+    } else {
+        None
+    }
+}
+
+fn integer_intrinsic_kind(function: FunctionValue<'_>) -> Option<IntegerIntrinsicKind> {
+    let name = function.get_name().to_string_lossy();
+    if name.starts_with("llvm.ctpop.") {
+        Some(IntegerIntrinsicKind::CtPop)
+    } else if name.starts_with("llvm.bswap.") {
+        Some(IntegerIntrinsicKind::BSwap)
+    } else if name.starts_with("llvm.bitreverse.") {
+        Some(IntegerIntrinsicKind::BitReverse)
+    } else if name.starts_with("llvm.fshl.") {
+        Some(IntegerIntrinsicKind::FShl)
+    } else if name.starts_with("llvm.fshr.") {
+        Some(IntegerIntrinsicKind::FShr)
+    } else {
+        None
+    }
+}
+
+fn constant_int_operand(instruction: InstructionValue<'_>, index: u32, name: &str) -> anyhow::Result<u64> {
+    let value = instruction_operand_value(instruction, index)?;
+    if is_undef_or_poison_value(value) {
+        bail!("{name} cannot be undef or poison");
+    }
+    if !value.is_int_value() {
+        bail!("{name} must be an integer constant");
+    }
+    value
+        .into_int_value()
+        .get_zero_extended_constant()
+        .with_context(|| format!("{name} must be a compile-time constant"))
+}
+
+fn ensure_supported_memory_intrinsic_len(len: u64) -> anyhow::Result<()> {
+    if len > MAX_MEMORY_INTRINSIC_INLINE_BYTES {
+        bail!("memory intrinsic length {len} exceeds inline limit {MAX_MEMORY_INTRINSIC_INLINE_BYTES}");
+    }
+    Ok(())
+}
+
+fn ensure_intrinsic_not_volatile(instruction: InstructionValue<'_>, volatile_index: u32) -> anyhow::Result<()> {
+    let Some(value) = instruction
+        .get_operand(volatile_index)
+        .and_then(|operand| operand.value())
+    else {
+        return Ok(());
+    };
+    if value.is_int_value() && value.into_int_value().get_zero_extended_constant() == Some(0) {
+        return Ok(());
+    }
+    bail!("volatile memory intrinsics are not supported by vm_virtualize")
+}
+
+fn memory_copy_chunks(len: u64) -> Vec<MemoryChunk> {
+    let mut chunks = Vec::new();
+    let mut offset = 0_u64;
+    while offset < len {
+        let remaining = len - offset;
+        let (bytes, width) = if remaining >= 8 {
+            (8, 64)
+        } else if remaining >= 4 {
+            (4, 32)
+        } else if remaining >= 2 {
+            (2, 16)
+        } else {
+            (1, 8)
+        };
+        chunks.push(MemoryChunk { offset, width });
+        offset += bytes;
+    }
+    chunks
+}
+
 fn value_width(value: BasicValueEnum<'_>) -> anyhow::Result<u8> {
     match value.get_type() {
         BasicTypeEnum::IntType(int_ty) => checked_width(int_ty.get_bit_width()),
+        BasicTypeEnum::FloatType(float_ty) => float_type_width(float_ty.as_type_ref()),
         BasicTypeEnum::PointerType(_) => Ok(64),
         other => bail!("unsupported scalar value type: {other:?}"),
+    }
+}
+
+/// 返回当前 VMP 标量浮点路径支持的 LLVM float value 位宽。
+///
+/// # Errors
+/// 当 value 不是 `float` 或 `double` 时返回错误；更宽或特殊浮点类型暂不进入 x-register lowering。
+pub fn float_value_width(value: amice_plugin::inkwell::values::FloatValue<'_>) -> anyhow::Result<u8> {
+    float_type_width(value.get_type().as_type_ref())
+}
+
+/// 返回当前 VMP 标量浮点路径支持的 LLVM float type 位宽。
+///
+/// # Errors
+/// 仅接受 LLVM `float` 和 `double`，其它浮点类型会作为 safe-skip 边界返回错误。
+pub fn float_type_width(type_ref: LLVMTypeRef) -> anyhow::Result<u8> {
+    // SAFETY: caller passes an LLVM type reference from the current module/context. This only
+    // inspects the type kind and does not dereference user memory.
+    match unsafe { LLVMGetTypeKind(type_ref) } {
+        LLVMTypeKind::LLVMFloatTypeKind => Ok(32),
+        LLVMTypeKind::LLVMDoubleTypeKind => Ok(64),
+        other => bail!("unsupported floating point type kind: {other:?}"),
+    }
+}
+
+fn is_undef_or_poison_value(value: BasicValueEnum<'_>) -> bool {
+    value_is_undef(value) || value.is_poison()
+}
+
+fn value_is_undef(value: BasicValueEnum<'_>) -> bool {
+    match value {
+        BasicValueEnum::ArrayValue(value) => value.is_undef(),
+        BasicValueEnum::IntValue(value) => value.is_undef(),
+        BasicValueEnum::FloatValue(value) => value.is_undef(),
+        BasicValueEnum::PointerValue(value) => value.is_undef(),
+        BasicValueEnum::StructValue(value) => value.is_undef(),
+        BasicValueEnum::VectorValue(value) => value.is_undef(),
+        BasicValueEnum::ScalableVectorValue(value) => value.is_undef(),
     }
 }
 
@@ -2228,6 +3613,30 @@ fn checked_width_u64(width: u64) -> anyhow::Result<u8> {
         .and_then(checked_width)
 }
 
+fn checked_intrinsic_integer_width(width: u64) -> anyhow::Result<u8> {
+    if matches!(width, 8 | 16 | 32 | 64) {
+        Ok(width as u8)
+    } else {
+        bail!("integer intrinsic width i{width} is not supported by vm_virtualize")
+    }
+}
+
+fn checked_atomic_memory_width(width: u64) -> anyhow::Result<u8> {
+    if matches!(width, 8 | 16 | 32 | 64) {
+        Ok(width as u8)
+    } else {
+        bail!("unsupported atomic memory width: {width}")
+    }
+}
+
+fn checked_float_width(width: u64) -> anyhow::Result<u8> {
+    if matches!(width, 32 | 64) {
+        Ok(width as u8)
+    } else {
+        bail!("unsupported floating point width: {width}")
+    }
+}
+
 fn width_from_operand_type(value_type: &str) -> u8 {
     value_type
         .strip_prefix('i')
@@ -2241,8 +3650,13 @@ fn width_from_lowering_value_type(value_type: &str, env: &LoweringEnv<'_>) -> an
         return checked_width_u64(width);
     }
 
-    if matches!(value_type, "integer" | "call_result" | "aggregate") {
-        for expression in ["type_width(%r)", "memory_width(%ptr)", "type_width(%field)"] {
+    if matches!(value_type, "integer" | "float" | "scalar" | "call_result" | "aggregate") {
+        for expression in [
+            "type_width(%r)",
+            "memory_width(%ptr)",
+            "type_width(%field)",
+            "operand_width(%a,%b)",
+        ] {
             if let Ok(LoweringValue::Imm(width)) = env.get(expression) {
                 return checked_width_u64(width);
             }
@@ -2250,6 +3664,18 @@ fn width_from_lowering_value_type(value_type: &str, env: &LoweringEnv<'_>) -> an
     }
 
     Ok(width_from_operand_type(value_type))
+}
+
+fn memory_ordering_from_u64(value: u64) -> anyhow::Result<MemoryOrdering> {
+    match value {
+        value if value == MemoryOrdering::Unordered as u64 => Ok(MemoryOrdering::Unordered),
+        value if value == MemoryOrdering::Monotonic as u64 => Ok(MemoryOrdering::Monotonic),
+        value if value == MemoryOrdering::Acquire as u64 => Ok(MemoryOrdering::Acquire),
+        value if value == MemoryOrdering::Release as u64 => Ok(MemoryOrdering::Release),
+        value if value == MemoryOrdering::AcquireRelease as u64 => Ok(MemoryOrdering::AcquireRelease),
+        value if value == MemoryOrdering::SequentiallyConsistent as u64 => Ok(MemoryOrdering::SequentiallyConsistent),
+        other => bail!("unsupported atomic memory ordering value {other}"),
+    }
 }
 
 fn parse_u64_literal(value: &str) -> Option<u64> {
@@ -2274,6 +3700,28 @@ fn predicate_from_u64(value: u64) -> anyhow::Result<CmpPredicate> {
     }
 }
 
+fn float_predicate_from_u64(value: u64) -> anyhow::Result<VmFloatPredicate> {
+    match value {
+        value if value == VmFloatPredicate::False as u64 => Ok(VmFloatPredicate::False),
+        value if value == VmFloatPredicate::Oeq as u64 => Ok(VmFloatPredicate::Oeq),
+        value if value == VmFloatPredicate::Ogt as u64 => Ok(VmFloatPredicate::Ogt),
+        value if value == VmFloatPredicate::Oge as u64 => Ok(VmFloatPredicate::Oge),
+        value if value == VmFloatPredicate::Olt as u64 => Ok(VmFloatPredicate::Olt),
+        value if value == VmFloatPredicate::Ole as u64 => Ok(VmFloatPredicate::Ole),
+        value if value == VmFloatPredicate::One as u64 => Ok(VmFloatPredicate::One),
+        value if value == VmFloatPredicate::Ord as u64 => Ok(VmFloatPredicate::Ord),
+        value if value == VmFloatPredicate::Uno as u64 => Ok(VmFloatPredicate::Uno),
+        value if value == VmFloatPredicate::Ueq as u64 => Ok(VmFloatPredicate::Ueq),
+        value if value == VmFloatPredicate::Ugt as u64 => Ok(VmFloatPredicate::Ugt),
+        value if value == VmFloatPredicate::Uge as u64 => Ok(VmFloatPredicate::Uge),
+        value if value == VmFloatPredicate::Ult as u64 => Ok(VmFloatPredicate::Ult),
+        value if value == VmFloatPredicate::Ule as u64 => Ok(VmFloatPredicate::Ule),
+        value if value == VmFloatPredicate::Une as u64 => Ok(VmFloatPredicate::Une),
+        value if value == VmFloatPredicate::True as u64 => Ok(VmFloatPredicate::True),
+        other => bail!("unsupported floating comparison predicate value {other}"),
+    }
+}
+
 fn map_predicate(predicate: IntPredicate) -> CmpPredicate {
     match predicate {
         IntPredicate::EQ => CmpPredicate::Eq,
@@ -2289,6 +3737,27 @@ fn map_predicate(predicate: IntPredicate) -> CmpPredicate {
     }
 }
 
+fn map_float_predicate(predicate: LlvmFloatPredicate) -> VmFloatPredicate {
+    match predicate {
+        LlvmFloatPredicate::PredicateFalse => VmFloatPredicate::False,
+        LlvmFloatPredicate::OEQ => VmFloatPredicate::Oeq,
+        LlvmFloatPredicate::OGT => VmFloatPredicate::Ogt,
+        LlvmFloatPredicate::OGE => VmFloatPredicate::Oge,
+        LlvmFloatPredicate::OLT => VmFloatPredicate::Olt,
+        LlvmFloatPredicate::OLE => VmFloatPredicate::Ole,
+        LlvmFloatPredicate::ONE => VmFloatPredicate::One,
+        LlvmFloatPredicate::ORD => VmFloatPredicate::Ord,
+        LlvmFloatPredicate::UNO => VmFloatPredicate::Uno,
+        LlvmFloatPredicate::UEQ => VmFloatPredicate::Ueq,
+        LlvmFloatPredicate::UGT => VmFloatPredicate::Ugt,
+        LlvmFloatPredicate::UGE => VmFloatPredicate::Uge,
+        LlvmFloatPredicate::ULT => VmFloatPredicate::Ult,
+        LlvmFloatPredicate::ULE => VmFloatPredicate::Ule,
+        LlvmFloatPredicate::UNE => VmFloatPredicate::Une,
+        LlvmFloatPredicate::PredicateTrue => VmFloatPredicate::True,
+    }
+}
+
 fn value_key(value: BasicValueEnum<'_>) -> ValueKey {
     value.as_value_ref() as usize
 }
@@ -2299,4 +3768,41 @@ fn instruction_key(instruction: InstructionValue<'_>) -> ValueKey {
 
 fn block_key(block: BasicBlock<'_>) -> BlockKey {
     block.as_mut_ptr() as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_control_flow_reason_covers_exception_pad_opcodes() {
+        for (opcode, expected) in [
+            (
+                InstructionOpcode::CatchSwitch,
+                "catchswitch is not supported by vm_virtualize",
+            ),
+            (
+                InstructionOpcode::CatchPad,
+                "catchpad is not supported by vm_virtualize",
+            ),
+            (
+                InstructionOpcode::CatchRet,
+                "catchret is not supported by vm_virtualize",
+            ),
+            (
+                InstructionOpcode::CleanupPad,
+                "cleanuppad is not supported by vm_virtualize",
+            ),
+            (
+                InstructionOpcode::CleanupRet,
+                "cleanupret is not supported by vm_virtualize",
+            ),
+            (
+                InstructionOpcode::Unreachable,
+                "unreachable terminator is not supported by vm_virtualize",
+            ),
+        ] {
+            assert_eq!(unsupported_control_flow_reason(opcode), Some(expected));
+        }
+    }
 }

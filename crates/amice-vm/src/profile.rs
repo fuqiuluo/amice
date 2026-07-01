@@ -15,8 +15,10 @@
 
 use crate::abi::{AbiProfile, NativeCallPolicy, VmRegister};
 use crate::isa::{
-    BinOp, CastOp, HandlerEffect, HandlerSemantic, InstructionDesc, IsaProfile, Opcode, OperandDesc, OperandKind,
-    PcEffect, PcExpr, SemanticBinOp, SemanticExpr, SemanticProgram, SemanticStmt,
+    AtomicRmwOp, BinOp, CastOp, FloatBinOp, FloatCastOp, FloatUnaryOp, HandlerEffect, HandlerSemantic, InstructionDesc,
+    IntTernaryOp, IntUnaryOp, IsaProfile, Opcode, OperandDesc, OperandKind, PcEffect, PcExpr, SUPPORTED_DECODED_WIDTHS,
+    SemanticAtomicRmwOp, SemanticBinOp, SemanticExpr, SemanticFloatBinOp, SemanticFloatCastOp, SemanticFloatUnaryOp,
+    SemanticIntTernaryOp, SemanticIntUnaryOp, SemanticProgram, SemanticStmt, SuperOp,
 };
 use crate::runtime::{
     ControlStateSlot, DispatchStrategy, HandlerClonePolicy, RegisterBank, RuntimeProfile, WideRegisterPolicy,
@@ -196,6 +198,10 @@ pub struct InstructionRecordProfile {
     pub opcode: OpcodeEncoding,
     /// operand 字段使用的编码。
     pub operands: OperandEncoding,
+    /// profile 允许的 decoded record 宽度集合。
+    pub decoded_widths: Vec<u8>,
+    /// 未在 `isa.vm` 单条指令上覆盖时使用的 decoded record 宽度。
+    pub default_decoded_width: u8,
 }
 
 /// `bytecode.vm` 声明的 opcode 字段编码。
@@ -307,6 +313,8 @@ pub struct DecoderProfile {
 pub struct LoweringProfile {
     /// 按 profile 顺序解析出的 lowering rule。
     pub rules: Vec<LoweringRule>,
+    /// 按 profile 顺序解析出的 VM IR 超级指令融合规则。
+    pub fusions: Vec<LoweringFusion>,
     /// 解析 lowering rule 时发现的文本形式 q-register 引用。
     pub q_register_references: Vec<String>,
 }
@@ -320,18 +328,45 @@ pub const REQUIRED_LOWERING_MATCHES: &[(&str, &str)] = &[
     ("llvm.sdiv.integer", "%r = llvm.sdiv integer %a, %b"),
     ("llvm.urem.integer", "%r = llvm.urem integer %a, %b"),
     ("llvm.srem.integer", "%r = llvm.srem integer %a, %b"),
+    ("llvm.ctpop.integer", "%r = llvm.ctpop integer %value"),
+    ("llvm.bswap.integer", "%r = llvm.bswap integer %value"),
+    ("llvm.bitreverse.integer", "%r = llvm.bitreverse integer %value"),
+    ("llvm.fshl.integer", "%r = llvm.fshl integer %a, %b, %shift"),
+    ("llvm.fshr.integer", "%r = llvm.fshr integer %a, %b, %shift"),
+    ("llvm.fadd.float", "%r = llvm.fadd float %a, %b"),
+    ("llvm.fsub.float", "%r = llvm.fsub float %a, %b"),
+    ("llvm.fmul.float", "%r = llvm.fmul float %a, %b"),
+    ("llvm.fdiv.float", "%r = llvm.fdiv float %a, %b"),
+    ("llvm.frem.float", "%r = llvm.frem float %a, %b"),
+    ("llvm.fneg.float", "%r = llvm.fneg float %a"),
+    ("llvm.sitofp.float", "%r = llvm.sitofp scalar %a"),
+    ("llvm.uitofp.float", "%r = llvm.uitofp scalar %a"),
+    ("llvm.fptosi.float", "%r = llvm.fptosi scalar %a"),
+    ("llvm.fptoui.float", "%r = llvm.fptoui scalar %a"),
+    ("llvm.fptrunc.float", "%r = llvm.fptrunc scalar %a"),
+    ("llvm.fpext.float", "%r = llvm.fpext scalar %a"),
     ("llvm.bitops.integer", "%r = llvm.bitop integer %a, %b"),
     ("llvm.shift.integer", "%r = llvm.shift integer %a, %b"),
     ("llvm.icmp.integer", "%r = llvm.icmp integer %a, %b"),
+    ("llvm.fcmp.float", "%r = llvm.fcmp float %a, %b"),
     ("llvm.cast.integer", "%r = llvm.cast integer %a"),
     ("llvm.cast.pointer", "%r = llvm.cast pointer %a"),
+    ("llvm.freeze.scalar", "%r = llvm.freeze scalar %value"),
     ("llvm.const_pool.materialize", "%v = llvm.constant integer"),
     ("llvm.alloca.stack", "%r = llvm.alloca fixed %ty"),
     ("llvm.memory.scalar", "llvm.memory scalar %ptr"),
+    ("llvm.atomic.load.scalar", "%r = llvm.atomic.load scalar %ptr"),
+    ("llvm.atomic.store.scalar", "llvm.atomic.store scalar %ptr"),
+    ("llvm.atomic.rmw.scalar", "%r = llvm.atomic.rmw scalar %ptr, %value"),
+    ("llvm.cmpxchg.scalar", "llvm.cmpxchg scalar %ptr, %cmp, %new"),
+    ("llvm.fence", "llvm.fence ordering"),
+    ("llvm.memcpy.fixed", "llvm.memcpy fixed %dst, %src, %len"),
+    ("llvm.memmove.fixed", "llvm.memmove fixed %dst, %src, %len"),
+    ("llvm.memset.fixed", "llvm.memset fixed %dst, %value, %len"),
     ("llvm.gep.constant", "%r = llvm.gep constant %base"),
     ("llvm.gep.dynamic", "%r = llvm.gep dynamic %base, %index"),
     ("llvm.call.direct", "%r = llvm.call direct %callee"),
-    ("llvm.select.integer", "%r = llvm.select integer %cond, %then, %else"),
+    ("llvm.select.scalar", "%r = llvm.select scalar %cond, %then, %else"),
     ("llvm.aggregate.insert", "%r = llvm.insertvalue aggregate %agg, %field"),
     ("llvm.aggregate.extract", "%r = llvm.extractvalue aggregate %agg"),
     ("llvm.br.control", "llvm.br terminator"),
@@ -363,6 +398,11 @@ impl LoweringProfile {
             .find(|rule| rule.matcher.as_ref().is_some_and(|matcher| matcher.pattern == pattern))
     }
 
+    /// 返回指定目标 ISA 指令名对应的 VM IR fusion 声明。
+    pub fn fusion_for_target(&self, target: &str) -> Option<&LoweringFusion> {
+        self.fusions.iter().find(|fusion| fusion.target == target)
+    }
+
     /// 当 rule 存在且会 emit 所有请求的 VM 指令时返回 true。
     pub fn covers(&self, name: &str, required_emits: &[&str]) -> bool {
         self.rule(name).is_some_and(|rule| {
@@ -384,6 +424,19 @@ pub struct LoweringRule {
     pub actions: Vec<LoweringAction>,
     /// 此 rule emit 的指令名；缓存后供 verifier 检查。
     pub emitted_instructions: Vec<String>,
+}
+
+/// `lowering.vm` 中声明的保守 VM IR 超级指令融合规则。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoweringFusion {
+    /// fusion 名称，通常形如 `super.iadd_xor`。
+    pub name: String,
+    /// 融合后发射的 profile ISA 指令名。
+    pub target: String,
+    /// 线性相邻的源 VM 指令名序列。
+    pub sequence: Vec<String>,
+    /// translator 必须满足的保守条件名称。
+    pub requirements: Vec<String>,
 }
 
 /// lowering rule 内的声明式 `match` 行。
@@ -527,12 +580,15 @@ impl ProfilePackage {
             return Err(ProfileError::UnsupportedVersion(manifest.version));
         }
 
+        let bytecode = parse_bytecode(bytecode_source)?;
+        let default_decoded_width = bytecode.instruction_record.default_decoded_width;
+
         Ok(Self {
             manifest,
             abi: parse_abi(abi_source)?,
-            isa: parse_isa(isa_source)?,
+            isa: parse_isa(isa_source, default_decoded_width)?,
             lowering: parse_lowering(lowering_source)?,
-            bytecode: parse_bytecode(bytecode_source)?,
+            bytecode,
             decoder: parse_decoder(decoder_source)?,
             runtime: parse_runtime(runtime_source)?,
         })
@@ -725,7 +781,7 @@ fn expand_register_range(first: VmRegister, last: VmRegister) -> Result<Vec<VmRe
     }
 }
 
-fn parse_isa(source: &str) -> Result<IsaProfile, ProfileError> {
+fn parse_isa(source: &str, default_decoded_width: u8) -> Result<IsaProfile, ProfileError> {
     let mut instructions = Vec::new();
     let mut current = None;
 
@@ -737,12 +793,17 @@ fn parse_isa(source: &str) -> Result<IsaProfile, ProfileError> {
                     name,
                     operand_descs,
                     opcodes: Vec::new(),
+                    decoded_width: None,
                     semantic: Vec::new(),
                     depth: brace_delta(&line),
                 });
 
                 if current.as_ref().is_some_and(|instruction| instruction.depth == 0) {
-                    push_instruction(&mut instructions, current.take().expect("current instruction exists"))?;
+                    push_instruction(
+                        &mut instructions,
+                        current.take().expect("current instruction exists"),
+                        default_decoded_width,
+                    )?;
                 }
             } else if !line.is_empty() {
                 return Err(ProfileError::Invalid(format!(
@@ -758,6 +819,14 @@ fn parse_isa(source: &str) -> Result<IsaProfile, ProfileError> {
                 .expect("current instruction exists")
                 .opcodes
                 .extend(opcodes);
+        } else if let Some(width) = parse_decoded_width_override(&line)? {
+            let instruction = current.as_mut().expect("current instruction exists");
+            if instruction.decoded_width.replace(width).is_some() {
+                return Err(ProfileError::Invalid(format!(
+                    "ISA instruction {} declares decoded_width more than once",
+                    instruction.name
+                )));
+            }
         } else if let Some(instruction) = current.as_mut() {
             instruction.semantic.push(line.clone());
         }
@@ -765,7 +834,11 @@ fn parse_isa(source: &str) -> Result<IsaProfile, ProfileError> {
         if let Some(instruction) = current.as_mut() {
             instruction.depth += brace_delta(&line);
             if instruction.depth == 0 {
-                push_instruction(&mut instructions, current.take().expect("current instruction exists"))?;
+                push_instruction(
+                    &mut instructions,
+                    current.take().expect("current instruction exists"),
+                    default_decoded_width,
+                )?;
             }
         }
     }
@@ -788,44 +861,99 @@ fn parse_isa(source: &str) -> Result<IsaProfile, ProfileError> {
 
 fn parse_lowering(source: &str) -> Result<LoweringProfile, ProfileError> {
     let mut rules = Vec::new();
+    let mut fusions = Vec::new();
     let mut q_register_references = Vec::new();
-    let mut current: Option<LoweringRuleBuilder> = None;
+    let mut current: Option<LoweringBlockBuilder> = None;
 
     for line in semantic_lines(source) {
         collect_q_register_refs(&line, &mut q_register_references);
 
         if current.is_none() {
-            let Some(header) = line.strip_prefix("rule ") else {
+            if let Some(header) = line.strip_prefix("rule ") {
+                current = Some(LoweringBlockBuilder::Rule(LoweringRuleBuilder::new(header)?));
+            } else if let Some(header) = line.strip_prefix("fusion ") {
+                current = Some(LoweringBlockBuilder::Fusion(LoweringFusionBuilder::new(header)?));
+            } else {
                 return Err(ProfileError::Invalid(format!(
                     "lowering.vm has unsupported top-level statement: {line}"
                 )));
-            };
-            current = Some(LoweringRuleBuilder::new(header)?);
-            if current.as_ref().is_some_and(|rule| rule.depth == 0) {
-                rules.push(current.take().expect("current lowering rule exists").finish()?);
+            }
+            if current.as_ref().is_some_and(LoweringBlockBuilder::is_done) {
+                current
+                    .take()
+                    .expect("current lowering block exists")
+                    .finish_into(&mut rules, &mut fusions)?;
             }
             continue;
         }
 
-        let rule = current.as_mut().expect("current lowering rule exists");
-        rule.apply_line(&line)?;
-        rule.depth += brace_delta(&line);
-        if rule.depth == 0 {
-            rules.push(current.take().expect("current lowering rule exists").finish()?);
+        let block = current.as_mut().expect("current lowering block exists");
+        block.apply_line(&line)?;
+        block.add_depth(brace_delta(&line));
+        if block.is_done() {
+            current
+                .take()
+                .expect("current lowering block exists")
+                .finish_into(&mut rules, &mut fusions)?;
         }
     }
 
-    if let Some(rule) = current {
+    if let Some(block) = current {
         return Err(ProfileError::Invalid(format!(
-            "unterminated lowering rule {}",
-            rule.name
+            "unterminated lowering block {}",
+            block.name()
         )));
     }
 
     Ok(LoweringProfile {
         rules,
+        fusions,
         q_register_references,
     })
+}
+
+#[derive(Debug)]
+enum LoweringBlockBuilder {
+    Rule(LoweringRuleBuilder),
+    Fusion(LoweringFusionBuilder),
+}
+
+impl LoweringBlockBuilder {
+    fn name(&self) -> &str {
+        match self {
+            Self::Rule(rule) => &rule.name,
+            Self::Fusion(fusion) => &fusion.name,
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        match self {
+            Self::Rule(rule) => rule.depth == 0,
+            Self::Fusion(fusion) => fusion.depth == 0,
+        }
+    }
+
+    fn add_depth(&mut self, delta: i32) {
+        match self {
+            Self::Rule(rule) => rule.depth += delta,
+            Self::Fusion(fusion) => fusion.depth += delta,
+        }
+    }
+
+    fn apply_line(&mut self, line: &str) -> Result<(), ProfileError> {
+        match self {
+            Self::Rule(rule) => rule.apply_line(line),
+            Self::Fusion(fusion) => fusion.apply_line(line),
+        }
+    }
+
+    fn finish_into(self, rules: &mut Vec<LoweringRule>, fusions: &mut Vec<LoweringFusion>) -> Result<(), ProfileError> {
+        match self {
+            Self::Rule(rule) => rules.push(rule.finish()?),
+            Self::Fusion(fusion) => fusions.push(fusion.finish()?),
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -906,6 +1034,91 @@ impl LoweringRuleBuilder {
     }
 }
 
+#[derive(Debug)]
+struct LoweringFusionBuilder {
+    name: String,
+    target: Option<String>,
+    sequence: Vec<String>,
+    requirements: Vec<String>,
+    depth: i32,
+}
+
+impl LoweringFusionBuilder {
+    fn new(header: &str) -> Result<Self, ProfileError> {
+        let name = header
+            .split([' ', '{'])
+            .next()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| ProfileError::Invalid(format!("invalid lowering fusion header: fusion {header}")))?;
+        Ok(Self {
+            name: name.to_owned(),
+            target: None,
+            sequence: Vec::new(),
+            requirements: Vec::new(),
+            depth: brace_delta(&format!("fusion {header}")),
+        })
+    }
+
+    fn apply_line(&mut self, line: &str) -> Result<(), ProfileError> {
+        if line == "}" {
+            return Ok(());
+        }
+        if let Some(target) = line.strip_prefix("target ") {
+            if self.target.replace(target.trim().to_owned()).is_some() {
+                return Err(ProfileError::Invalid(format!(
+                    "lowering fusion {} declares target more than once",
+                    self.name
+                )));
+            }
+        } else if let Some(sequence) = line.strip_prefix("sequence ") {
+            if !self.sequence.is_empty() {
+                return Err(ProfileError::Invalid(format!(
+                    "lowering fusion {} declares sequence more than once",
+                    self.name
+                )));
+            }
+            self.sequence = split_call_args(sequence)?
+                .into_iter()
+                .map(|item| item.trim().to_owned())
+                .filter(|item| !item.is_empty())
+                .collect();
+        } else if let Some(requirement) = line.strip_prefix("require ") {
+            self.requirements.push(requirement.trim().to_owned());
+        } else {
+            return Err(ProfileError::Invalid(format!(
+                "lowering fusion {} has unsupported statement: {line}",
+                self.name
+            )));
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<LoweringFusion, ProfileError> {
+        let target = self
+            .target
+            .ok_or_else(|| ProfileError::Invalid(format!("lowering fusion {} must declare target", self.name)))?;
+        if self.sequence.is_empty() {
+            return Err(ProfileError::Invalid(format!(
+                "lowering fusion {} must declare sequence",
+                self.name
+            )));
+        }
+        if self.requirements.is_empty() {
+            return Err(ProfileError::Invalid(format!(
+                "lowering fusion {} must declare at least one require line",
+                self.name
+            )));
+        }
+
+        Ok(LoweringFusion {
+            name: self.name,
+            target,
+            sequence: self.sequence,
+            requirements: self.requirements,
+        })
+    }
+}
+
 fn parse_lowering_action(line: &str) -> Result<Option<LoweringAction>, ProfileError> {
     if let Some(rest) = line.strip_prefix("emit ") {
         let (instruction, operands) = rest
@@ -968,6 +1181,8 @@ fn parse_bytecode(source: &str) -> Result<BytecodeProfile, ProfileError> {
     let mut segments = Vec::new();
     let mut opcode = None;
     let mut operands = None;
+    let mut decoded_widths = None;
+    let mut default_decoded_width = None;
     let mut relocations = Vec::new();
     let mut current_reloc: Option<RelocBuilder> = None;
     let mut const_pool_encryption = None;
@@ -1008,6 +1223,10 @@ fn parse_bytecode(source: &str) -> Result<BytecodeProfile, ProfileError> {
             opcode = Some(parse_opcode_encoding(value.trim())?);
         } else if let Some(value) = line.strip_prefix("operands:") {
             operands = Some(parse_operand_encoding(value.trim())?);
+        } else if let Some(value) = line.strip_prefix("decoded_width:") {
+            let parsed = parse_record_decoded_widths(value.trim())?;
+            decoded_widths = Some(parsed.allowed);
+            default_decoded_width = Some(parsed.default);
         } else if let Some(rest) = line.strip_prefix("reloc ") {
             current_reloc = Some(RelocBuilder::new(rest)?);
         } else if let Some(value) = line.strip_prefix("const_pool encryption") {
@@ -1036,6 +1255,11 @@ fn parse_bytecode(source: &str) -> Result<BytecodeProfile, ProfileError> {
         opcode: opcode.ok_or_else(|| ProfileError::Invalid("bytecode.vm record instr missing opcode".to_owned()))?,
         operands: operands
             .ok_or_else(|| ProfileError::Invalid("bytecode.vm record instr missing operands".to_owned()))?,
+        decoded_widths: decoded_widths
+            .ok_or_else(|| ProfileError::Invalid("bytecode.vm record instr missing decoded_width".to_owned()))?,
+        default_decoded_width: default_decoded_width.ok_or_else(|| {
+            ProfileError::Invalid("bytecode.vm record instr missing decoded_width default".to_owned())
+        })?,
     };
     let code_segment = segments
         .iter()
@@ -1108,6 +1332,58 @@ fn parse_operand_encoding(value: &str) -> Result<OperandEncoding, ProfileError> 
     Ok(OperandEncoding::Bitpack {
         schema: schema.to_owned(),
     })
+}
+
+#[derive(Debug)]
+struct ParsedRecordWidths {
+    allowed: Vec<u8>,
+    default: u8,
+}
+
+fn parse_record_decoded_widths(value: &str) -> Result<ParsedRecordWidths, ProfileError> {
+    let allowed = value
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("one_of="))
+        .ok_or_else(|| ProfileError::Invalid(format!("decoded_width missing one_of list in {value}")))
+        .and_then(parse_decoded_width_list)?;
+    let default = value
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("default="))
+        .ok_or_else(|| ProfileError::Invalid(format!("decoded_width missing default in {value}")))
+        .and_then(parse_decoded_width_literal)?;
+
+    if allowed.is_empty() {
+        return Err(ProfileError::Invalid("decoded_width one_of list is empty".to_owned()));
+    }
+    if !allowed.contains(&default) {
+        return Err(ProfileError::Invalid(format!(
+            "decoded_width default {default} is not listed in {:?}",
+            allowed
+        )));
+    }
+
+    Ok(ParsedRecordWidths { allowed, default })
+}
+
+fn parse_decoded_width_list(value: &str) -> Result<Vec<u8>, ProfileError> {
+    let Some(body) = value.strip_prefix('[').and_then(|value| value.strip_suffix(']')) else {
+        return Err(ProfileError::Invalid(format!(
+            "decoded_width one_of must use [..], got {value}"
+        )));
+    };
+
+    let mut widths = Vec::new();
+    for item in body.split(',').map(str::trim).filter(|item| !item.is_empty()) {
+        let width = parse_decoded_width_literal(item)?;
+        if widths.contains(&width) {
+            return Err(ProfileError::Invalid(format!(
+                "decoded_width one_of declares duplicate width {width}"
+            )));
+        }
+        widths.push(width);
+    }
+
+    Ok(widths)
 }
 
 #[derive(Debug)]
@@ -1309,6 +1585,7 @@ struct ParsedInstruction {
     name: String,
     operand_descs: Vec<OperandDesc>,
     opcodes: Vec<Opcode>,
+    decoded_width: Option<u8>,
     semantic: Vec<String>,
     depth: i32,
 }
@@ -1391,6 +1668,27 @@ fn parse_opcode_aliases(line: &str) -> Result<Option<Vec<Opcode>>, ProfileError>
     Ok(Some(parsed))
 }
 
+fn parse_decoded_width_override(line: &str) -> Result<Option<u8>, ProfileError> {
+    let Some(value) = line.strip_prefix("decoded_width =") else {
+        return Ok(None);
+    };
+
+    Ok(Some(parse_decoded_width_literal(value.trim())?))
+}
+
+fn parse_decoded_width_literal(value: &str) -> Result<u8, ProfileError> {
+    let width = value
+        .parse::<u8>()
+        .map_err(|_| ProfileError::Invalid(format!("invalid decoded_width {value}")))?;
+    if !SUPPORTED_DECODED_WIDTHS.contains(&width) {
+        return Err(ProfileError::Invalid(format!(
+            "decoded_width must be one of {:?}, got {width}",
+            SUPPORTED_DECODED_WIDTHS
+        )));
+    }
+    Ok(width)
+}
+
 fn parse_opcode_literal(value: &str) -> Option<Opcode> {
     let parsed = if let Some(hex) = value.strip_prefix("0x") {
         u32::from_str_radix(hex, 16).ok()?
@@ -1407,6 +1705,7 @@ fn brace_delta(line: &str) -> i32 {
 fn push_instruction(
     instructions: &mut Vec<InstructionDesc>,
     instruction: ParsedInstruction,
+    default_decoded_width: u8,
 ) -> Result<(), ProfileError> {
     if instruction.opcodes.is_empty() {
         return Err(ProfileError::Invalid(format!(
@@ -1428,6 +1727,7 @@ fn push_instruction(
         instruction.name,
         instruction.opcodes,
         instruction.operand_descs.len() as u8,
+        instruction.decoded_width.unwrap_or(default_decoded_width),
         instruction.operand_descs,
         semantic,
         semantic_program,
@@ -1506,6 +1806,59 @@ fn parse_semantic_statement(line: &str) -> Result<SemanticStmt, ProfileError> {
             width: parse_semantic_expr(&args[2])?,
         });
     }
+    if let Some(args) = line
+        .strip_prefix("atomic_store_width(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 4 {
+            return Err(ProfileError::Invalid(format!(
+                "atomic_store_width expects 4 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::AtomicStoreWidth {
+            ptr: parse_semantic_expr(&args[0])?,
+            value: parse_semantic_expr(&args[1])?,
+            width: parse_semantic_expr(&args[2])?,
+            ordering: parse_semantic_expr(&args[3])?,
+        });
+    }
+    if let Some(args) = line.strip_prefix("cmpxchg(").and_then(|rest| rest.strip_suffix(')')) {
+        let args = split_call_args(args)?;
+        if args.len() != 8 {
+            return Err(ProfileError::Invalid(format!(
+                "cmpxchg expects 8 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::CmpXchg {
+            old: parse_register_lvalue(&args[0]).ok_or_else(|| {
+                ProfileError::Invalid(format!("cmpxchg old result must be a register lvalue in {line}"))
+            })?,
+            success: parse_register_lvalue(&args[1]).ok_or_else(|| {
+                ProfileError::Invalid(format!("cmpxchg success result must be a register lvalue in {line}"))
+            })?,
+            ptr: parse_semantic_expr(&args[2])?,
+            compare: parse_semantic_expr(&args[3])?,
+            new: parse_semantic_expr(&args[4])?,
+            width: parse_semantic_expr(&args[5])?,
+            success_ordering: parse_semantic_expr(&args[6])?,
+            failure_ordering: parse_semantic_expr(&args[7])?,
+        });
+    }
+    if let Some(args) = line.strip_prefix("fence(").and_then(|rest| rest.strip_suffix(')')) {
+        let args = split_call_args(args)?;
+        if args.len() != 1 {
+            return Err(ProfileError::Invalid(format!(
+                "fence expects 1 argument, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::Fence {
+            ordering: parse_semantic_expr(&args[0])?,
+        });
+    }
     if let Some((left, right)) = line.split_once('=') {
         if let Some(dst) = parse_register_lvalue(left.trim()) {
             return Ok(SemanticStmt::AssignReg {
@@ -1576,9 +1929,17 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
         "zero_extend",
         "sign_extend",
         "bitcast_width",
+        "int_unary",
+        "int_ternary",
         "compare",
+        "float_bin",
+        "float_unary",
+        "float_cast",
+        "float_compare",
         "stack_alloc",
         "load_width",
+        "atomic_load_width",
+        "atomic_rmw",
     ] {
         let Some(args) = parse_named_call(value, name)? else {
             continue;
@@ -1586,8 +1947,16 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
         let valid_arity = match name {
             "sign_extend" => matches!(args.len(), 2 | 3),
             "trunc_width" | "stack_alloc" | "load_width" => args.len() == 2,
+            "atomic_load_width" => args.len() == 3,
+            "atomic_rmw" => args.len() == 5,
             "zero_extend" | "bitcast_width" => args.len() == 3,
+            "int_unary" => args.len() == 3,
+            "int_ternary" => args.len() == 5,
             "compare" => args.len() == 4,
+            "float_bin" => args.len() == 4,
+            "float_unary" => args.len() == 3,
+            "float_cast" => args.len() == 4,
+            "float_compare" => args.len() == 4,
             _ => false,
         };
         if !valid_arity {
@@ -1619,7 +1988,42 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
                 from_width: Box::new(parse_semantic_expr(&args[1])?),
                 to_width: Box::new(parse_semantic_expr(&args[2])?),
             },
+            "int_unary" => SemanticExpr::IntUnary {
+                op: parse_int_unary_op(&args[0])?,
+                value: Box::new(parse_semantic_expr(&args[1])?),
+                width: Box::new(parse_semantic_expr(&args[2])?),
+            },
+            "int_ternary" => SemanticExpr::IntTernary {
+                op: parse_int_ternary_op(&args[0])?,
+                lhs: Box::new(parse_semantic_expr(&args[1])?),
+                rhs: Box::new(parse_semantic_expr(&args[2])?),
+                third: Box::new(parse_semantic_expr(&args[3])?),
+                width: Box::new(parse_semantic_expr(&args[4])?),
+            },
             "compare" => SemanticExpr::Compare {
+                pred: Box::new(parse_semantic_expr(&args[0])?),
+                lhs: Box::new(parse_semantic_expr(&args[1])?),
+                rhs: Box::new(parse_semantic_expr(&args[2])?),
+                width: Box::new(parse_semantic_expr(&args[3])?),
+            },
+            "float_bin" => SemanticExpr::FloatBinary {
+                op: parse_float_bin_op(&args[0])?,
+                lhs: Box::new(parse_semantic_expr(&args[1])?),
+                rhs: Box::new(parse_semantic_expr(&args[2])?),
+                width: Box::new(parse_semantic_expr(&args[3])?),
+            },
+            "float_unary" => SemanticExpr::FloatUnary {
+                op: parse_float_unary_op(&args[0])?,
+                value: Box::new(parse_semantic_expr(&args[1])?),
+                width: Box::new(parse_semantic_expr(&args[2])?),
+            },
+            "float_cast" => SemanticExpr::FloatCast {
+                op: parse_float_cast_op(&args[0])?,
+                value: Box::new(parse_semantic_expr(&args[1])?),
+                from_width: Box::new(parse_semantic_expr(&args[2])?),
+                to_width: Box::new(parse_semantic_expr(&args[3])?),
+            },
+            "float_compare" => SemanticExpr::FloatCompare {
                 pred: Box::new(parse_semantic_expr(&args[0])?),
                 lhs: Box::new(parse_semantic_expr(&args[1])?),
                 rhs: Box::new(parse_semantic_expr(&args[2])?),
@@ -1633,11 +2037,99 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
                 ptr: Box::new(parse_semantic_expr(&args[0])?),
                 width: Box::new(parse_semantic_expr(&args[1])?),
             },
+            "atomic_load_width" => SemanticExpr::AtomicLoadWidth {
+                ptr: Box::new(parse_semantic_expr(&args[0])?),
+                width: Box::new(parse_semantic_expr(&args[1])?),
+                ordering: Box::new(parse_semantic_expr(&args[2])?),
+            },
+            "atomic_rmw" => SemanticExpr::AtomicRmw {
+                op: parse_atomic_rmw_op(&args[0])?,
+                ptr: Box::new(parse_semantic_expr(&args[1])?),
+                value: Box::new(parse_semantic_expr(&args[2])?),
+                width: Box::new(parse_semantic_expr(&args[3])?),
+                ordering: Box::new(parse_semantic_expr(&args[4])?),
+            },
             _ => unreachable!("function name is selected from fixed table"),
         }));
     }
 
     Ok(None)
+}
+
+fn parse_float_bin_op(value: &str) -> Result<SemanticFloatBinOp, ProfileError> {
+    match value.trim() {
+        "fadd" => Ok(SemanticFloatBinOp::Add),
+        "fsub" => Ok(SemanticFloatBinOp::Sub),
+        "fmul" => Ok(SemanticFloatBinOp::Mul),
+        "fdiv" => Ok(SemanticFloatBinOp::Div),
+        "frem" => Ok(SemanticFloatBinOp::Rem),
+        other => Err(ProfileError::Invalid(format!(
+            "unsupported float_bin operation {other}"
+        ))),
+    }
+}
+
+fn parse_int_unary_op(value: &str) -> Result<SemanticIntUnaryOp, ProfileError> {
+    match value.trim() {
+        "ctpop" => Ok(SemanticIntUnaryOp::CtPop),
+        "bswap" => Ok(SemanticIntUnaryOp::BSwap),
+        "bitreverse" => Ok(SemanticIntUnaryOp::BitReverse),
+        other => Err(ProfileError::Invalid(format!(
+            "unsupported int_unary operation {other}"
+        ))),
+    }
+}
+
+fn parse_int_ternary_op(value: &str) -> Result<SemanticIntTernaryOp, ProfileError> {
+    match value.trim() {
+        "fshl" => Ok(SemanticIntTernaryOp::FShl),
+        "fshr" => Ok(SemanticIntTernaryOp::FShr),
+        other => Err(ProfileError::Invalid(format!(
+            "unsupported int_ternary operation {other}"
+        ))),
+    }
+}
+
+fn parse_float_unary_op(value: &str) -> Result<SemanticFloatUnaryOp, ProfileError> {
+    match value.trim() {
+        "fneg" => Ok(SemanticFloatUnaryOp::Neg),
+        other => Err(ProfileError::Invalid(format!(
+            "unsupported float_unary operation {other}"
+        ))),
+    }
+}
+
+fn parse_float_cast_op(value: &str) -> Result<SemanticFloatCastOp, ProfileError> {
+    match value.trim() {
+        "sitofp" => Ok(SemanticFloatCastOp::SignedIntToFloat),
+        "uitofp" => Ok(SemanticFloatCastOp::UnsignedIntToFloat),
+        "fptosi" => Ok(SemanticFloatCastOp::FloatToSignedInt),
+        "fptoui" => Ok(SemanticFloatCastOp::FloatToUnsignedInt),
+        "fptrunc" => Ok(SemanticFloatCastOp::FloatTrunc),
+        "fpext" => Ok(SemanticFloatCastOp::FloatExt),
+        other => Err(ProfileError::Invalid(format!(
+            "unsupported float_cast operation {other}"
+        ))),
+    }
+}
+
+fn parse_atomic_rmw_op(value: &str) -> Result<SemanticAtomicRmwOp, ProfileError> {
+    match value.trim() {
+        "xchg" => Ok(SemanticAtomicRmwOp::Xchg),
+        "add" => Ok(SemanticAtomicRmwOp::Add),
+        "sub" => Ok(SemanticAtomicRmwOp::Sub),
+        "and" => Ok(SemanticAtomicRmwOp::And),
+        "or" => Ok(SemanticAtomicRmwOp::Or),
+        "xor" => Ok(SemanticAtomicRmwOp::Xor),
+        "nand" => Ok(SemanticAtomicRmwOp::Nand),
+        "max" => Ok(SemanticAtomicRmwOp::Max),
+        "min" => Ok(SemanticAtomicRmwOp::Min),
+        "umax" => Ok(SemanticAtomicRmwOp::UMax),
+        "umin" => Ok(SemanticAtomicRmwOp::UMin),
+        other => Err(ProfileError::Invalid(format!(
+            "unsupported atomic_rmw operation {other}"
+        ))),
+    }
 }
 
 fn parse_binary_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError> {
@@ -1787,6 +2279,14 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         && pc_next(statements)
     {
         Some(Mov)
+    } else if add_xor_template(statements) {
+        Some(Super(SuperOp::AddXor))
+    } else if icmp_br_if_template(statements) {
+        Some(Super(SuperOp::IcmpBrIf))
+    } else if gep_load_template(statements) {
+        Some(Super(SuperOp::GepLoad))
+    } else if load_add_template(statements) {
+        Some(Super(SuperOp::LoadAdd))
     } else if bin_template(statements, SemanticBinOp::Add) {
         Some(Bin(Add))
     } else if bin_template(statements, SemanticBinOp::Sub) {
@@ -1813,6 +2313,30 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         Some(Bin(LShr))
     } else if ashr_template(statements) {
         Some(Bin(AShr))
+    } else if float_bin_template(statements, SemanticFloatBinOp::Add) {
+        Some(FloatBin(FloatBinOp::Add))
+    } else if float_bin_template(statements, SemanticFloatBinOp::Sub) {
+        Some(FloatBin(FloatBinOp::Sub))
+    } else if float_bin_template(statements, SemanticFloatBinOp::Mul) {
+        Some(FloatBin(FloatBinOp::Mul))
+    } else if float_bin_template(statements, SemanticFloatBinOp::Div) {
+        Some(FloatBin(FloatBinOp::Div))
+    } else if float_bin_template(statements, SemanticFloatBinOp::Rem) {
+        Some(FloatBin(FloatBinOp::Rem))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::Neg) {
+        Some(FloatUnary(FloatUnaryOp::Neg))
+    } else if float_cast_template(statements, SemanticFloatCastOp::SignedIntToFloat) {
+        Some(FloatCast(FloatCastOp::SignedIntToFloat))
+    } else if float_cast_template(statements, SemanticFloatCastOp::UnsignedIntToFloat) {
+        Some(FloatCast(FloatCastOp::UnsignedIntToFloat))
+    } else if float_cast_template(statements, SemanticFloatCastOp::FloatToSignedInt) {
+        Some(FloatCast(FloatCastOp::FloatToSignedInt))
+    } else if float_cast_template(statements, SemanticFloatCastOp::FloatToUnsignedInt) {
+        Some(FloatCast(FloatCastOp::FloatToUnsignedInt))
+    } else if float_cast_template(statements, SemanticFloatCastOp::FloatTrunc) {
+        Some(FloatCast(FloatCastOp::FloatTrunc))
+    } else if float_cast_template(statements, SemanticFloatCastOp::FloatExt) {
+        Some(FloatCast(FloatCastOp::FloatExt))
     } else if matches_assign_reg_expr(
         statements,
         "dst",
@@ -1825,6 +2349,28 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
     ) && pc_next(statements)
     {
         Some(Icmp)
+    } else if int_unary_template(statements, SemanticIntUnaryOp::CtPop) {
+        Some(IntUnary(IntUnaryOp::CtPop))
+    } else if int_unary_template(statements, SemanticIntUnaryOp::BSwap) {
+        Some(IntUnary(IntUnaryOp::BSwap))
+    } else if int_unary_template(statements, SemanticIntUnaryOp::BitReverse) {
+        Some(IntUnary(IntUnaryOp::BitReverse))
+    } else if int_ternary_template(statements, SemanticIntTernaryOp::FShl) {
+        Some(IntTernary(IntTernaryOp::FShl))
+    } else if int_ternary_template(statements, SemanticIntTernaryOp::FShr) {
+        Some(IntTernary(IntTernaryOp::FShr))
+    } else if matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::FloatCompare {
+            pred: Box::new(operand("pred")),
+            lhs: Box::new(reg("lhs")),
+            rhs: Box::new(reg("rhs")),
+            width: Box::new(operand("width")),
+        },
+    ) && pc_next(statements)
+    {
+        Some(Fcmp)
     } else if matches_assign_reg_expr(statements, "dst", &zero_extend()) && pc_next(statements) {
         Some(Cast(ZExt))
     } else if matches_assign_reg_expr(statements, "dst", &sign_extend_three_arg()) && pc_next(statements) {
@@ -1855,8 +2401,47 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
     ) && pc_next(statements)
     {
         Some(Load)
+    } else if matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::AtomicLoadWidth {
+            ptr: Box::new(reg("ptr")),
+            width: Box::new(operand("width")),
+            ordering: Box::new(operand("ordering")),
+        },
+    ) && pc_next(statements)
+    {
+        Some(AtomicLoad)
     } else if store_template(statements) {
         Some(Store)
+    } else if atomic_store_template(statements) {
+        Some(AtomicStore)
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Xchg) {
+        Some(AtomicRmw(AtomicRmwOp::Xchg))
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Add) {
+        Some(AtomicRmw(AtomicRmwOp::Add))
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Sub) {
+        Some(AtomicRmw(AtomicRmwOp::Sub))
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::And) {
+        Some(AtomicRmw(AtomicRmwOp::And))
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Or) {
+        Some(AtomicRmw(AtomicRmwOp::Or))
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Xor) {
+        Some(AtomicRmw(AtomicRmwOp::Xor))
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Nand) {
+        Some(AtomicRmw(AtomicRmwOp::Nand))
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Max) {
+        Some(AtomicRmw(AtomicRmwOp::Max))
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Min) {
+        Some(AtomicRmw(AtomicRmwOp::Min))
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::UMax) {
+        Some(AtomicRmw(AtomicRmwOp::UMax))
+    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::UMin) {
+        Some(AtomicRmw(AtomicRmwOp::UMin))
+    } else if cmpxchg_template(statements) {
+        Some(CmpXchg)
+    } else if fence_template(statements) {
+        Some(Fence)
     } else if matches_assign_reg_expr(
         statements,
         "dst",
@@ -1891,6 +2476,58 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
     }
 }
 
+fn float_bin_template(statements: &[SemanticStmt], op: SemanticFloatBinOp) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::FloatBinary {
+            op,
+            lhs: Box::new(reg("lhs")),
+            rhs: Box::new(reg("rhs")),
+            width: Box::new(operand("width")),
+        },
+    ) && pc_next(statements)
+}
+
+fn int_ternary_template(statements: &[SemanticStmt], op: SemanticIntTernaryOp) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::IntTernary {
+            op,
+            lhs: Box::new(reg("lhs")),
+            rhs: Box::new(reg("rhs")),
+            third: Box::new(reg("third")),
+            width: Box::new(operand("width")),
+        },
+    ) && pc_next(statements)
+}
+
+fn float_unary_template(statements: &[SemanticStmt], op: SemanticFloatUnaryOp) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::FloatUnary {
+            op,
+            value: Box::new(reg("src")),
+            width: Box::new(operand("width")),
+        },
+    ) && pc_next(statements)
+}
+
+fn float_cast_template(statements: &[SemanticStmt], op: SemanticFloatCastOp) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::FloatCast {
+            op,
+            value: Box::new(reg("src")),
+            from_width: Box::new(operand("from_width")),
+            to_width: Box::new(operand("to_width")),
+        },
+    ) && pc_next(statements)
+}
+
 fn analyze_semantic_effect(statements: &[SemanticStmt]) -> Result<HandlerEffect, ProfileError> {
     let mut pc = None;
     let mut reads = Vec::new();
@@ -1903,6 +2540,9 @@ fn analyze_semantic_effect(statements: &[SemanticStmt]) -> Result<HandlerEffect,
         match statement {
             SemanticStmt::AssignReg { dst, value } => {
                 push_unique(&mut writes, dst.clone());
+                if matches!(value, SemanticExpr::AtomicRmw { .. }) {
+                    memory_write = true;
+                }
                 collect_expr_effects(value, &mut reads, &mut memory_read, &mut native_call);
             },
             SemanticStmt::AssignPc { value } => {
@@ -1923,6 +2563,44 @@ fn analyze_semantic_effect(statements: &[SemanticStmt]) -> Result<HandlerEffect,
                 collect_expr_effects(ptr, &mut reads, &mut memory_read, &mut native_call);
                 collect_expr_effects(value, &mut reads, &mut memory_read, &mut native_call);
                 collect_expr_effects(width, &mut reads, &mut memory_read, &mut native_call);
+            },
+            SemanticStmt::AtomicStoreWidth {
+                ptr,
+                value,
+                width,
+                ordering,
+            } => {
+                memory_write = true;
+                collect_expr_effects(ptr, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(value, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(width, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(ordering, &mut reads, &mut memory_read, &mut native_call);
+            },
+            SemanticStmt::CmpXchg {
+                old,
+                success,
+                ptr,
+                compare,
+                new,
+                width,
+                success_ordering,
+                failure_ordering,
+            } => {
+                push_unique(&mut writes, old.clone());
+                push_unique(&mut writes, success.clone());
+                collect_expr_effects(ptr, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(compare, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(new, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(width, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(success_ordering, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(failure_ordering, &mut reads, &mut memory_read, &mut native_call);
+                memory_read = true;
+                memory_write = true;
+            },
+            SemanticStmt::Fence { ordering } => {
+                collect_expr_effects(ordering, &mut reads, &mut memory_read, &mut native_call);
+                memory_read = true;
+                memory_write = true;
             },
             SemanticStmt::StateUnchanged => {},
         }
@@ -1945,6 +2623,81 @@ fn matches_assign_reg_expr(statements: &[SemanticStmt], dst: &str, expected: &Se
             SemanticStmt::AssignReg { dst: actual, value } if actual == dst && value == expected
         )
     })
+}
+
+fn add_xor_template(statements: &[SemanticStmt]) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &trunc_width(
+            SemanticExpr::Binary {
+                op: SemanticBinOp::Xor,
+                lhs: Box::new(SemanticExpr::Binary {
+                    op: SemanticBinOp::Add,
+                    lhs: Box::new(reg("lhs")),
+                    rhs: Box::new(reg("rhs")),
+                }),
+                rhs: Box::new(reg("xor_rhs")),
+            },
+            operand("width"),
+        ),
+    ) && pc_next(statements)
+}
+
+fn icmp_br_if_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::AssignPc {
+                value: PcExpr::Select {
+                    cond,
+                    then_pc,
+                    else_pc,
+                }
+            } if cond.as_ref()
+                == &SemanticExpr::Compare {
+                    pred: Box::new(operand("pred")),
+                    lhs: Box::new(reg("lhs")),
+                    rhs: Box::new(reg("rhs")),
+                    width: Box::new(operand("width")),
+                }
+                && then_pc == "then_pc"
+                && else_pc == "else_pc"
+        )
+    })
+}
+
+fn gep_load_template(statements: &[SemanticStmt]) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::LoadWidth {
+            ptr: Box::new(SemanticExpr::Binary {
+                op: SemanticBinOp::Add,
+                lhs: Box::new(reg("base")),
+                rhs: Box::new(operand("offset")),
+            }),
+            width: Box::new(operand("width")),
+        },
+    ) && pc_next(statements)
+}
+
+fn load_add_template(statements: &[SemanticStmt]) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &trunc_width(
+            SemanticExpr::Binary {
+                op: SemanticBinOp::Add,
+                lhs: Box::new(SemanticExpr::LoadWidth {
+                    ptr: Box::new(reg("ptr")),
+                    width: Box::new(operand("width")),
+                }),
+                rhs: Box::new(reg("addend")),
+            },
+            operand("width"),
+        ),
+    ) && pc_next(statements)
 }
 
 fn bin_template(statements: &[SemanticStmt], op: SemanticBinOp) -> bool {
@@ -1989,6 +2742,81 @@ fn store_template(statements: &[SemanticStmt]) -> bool {
                 if ptr == &reg("ptr") && value == &reg("src") && width == &operand("width")
         )
     }) && pc_next(statements)
+}
+
+fn atomic_store_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::AtomicStoreWidth {
+                ptr,
+                value,
+                width,
+                ordering,
+            } if ptr == &reg("ptr")
+                && value == &reg("src")
+                && width == &operand("width")
+                && ordering == &operand("ordering")
+        )
+    }) && pc_next(statements)
+}
+
+fn atomic_rmw_template(statements: &[SemanticStmt], op: SemanticAtomicRmwOp) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::AtomicRmw {
+            op,
+            ptr: Box::new(reg("ptr")),
+            value: Box::new(reg("src")),
+            width: Box::new(operand("width")),
+            ordering: Box::new(operand("ordering")),
+        },
+    ) && pc_next(statements)
+}
+
+fn int_unary_template(statements: &[SemanticStmt], op: SemanticIntUnaryOp) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::IntUnary {
+            op,
+            value: Box::new(reg("src")),
+            width: Box::new(operand("width")),
+        },
+    ) && pc_next(statements)
+}
+
+fn cmpxchg_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::CmpXchg {
+                old,
+                success,
+                ptr,
+                compare,
+                new,
+                width,
+                success_ordering,
+                failure_ordering,
+            } if old == "old"
+                && success == "success"
+                && ptr == &reg("ptr")
+                && compare == &reg("cmp")
+                && new == &reg("new")
+                && width == &operand("width")
+                && success_ordering == &operand("success_ordering")
+                && failure_ordering == &operand("failure_ordering")
+        )
+    }) && pc_next(statements)
+}
+
+fn fence_template(statements: &[SemanticStmt]) -> bool {
+    statements
+        .iter()
+        .any(|stmt| matches!(stmt, SemanticStmt::Fence { ordering } if ordering == &operand("ordering")))
+        && pc_next(statements)
 }
 
 fn call_native_template(statements: &[SemanticStmt]) -> bool {
@@ -2136,7 +2964,44 @@ fn collect_expr_effects(expr: &SemanticExpr, reads: &mut Vec<String>, memory_rea
             collect_expr_effects(lhs, reads, memory_read, native_call);
             collect_expr_effects(rhs, reads, memory_read, native_call);
         },
+        SemanticExpr::IntUnary { value, width, .. } => {
+            collect_expr_effects(value, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+        },
+        SemanticExpr::IntTernary {
+            lhs, rhs, third, width, ..
+        } => {
+            collect_expr_effects(lhs, reads, memory_read, native_call);
+            collect_expr_effects(rhs, reads, memory_read, native_call);
+            collect_expr_effects(third, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+        },
         SemanticExpr::Compare { pred, lhs, rhs, width } => {
+            collect_expr_effects(pred, reads, memory_read, native_call);
+            collect_expr_effects(lhs, reads, memory_read, native_call);
+            collect_expr_effects(rhs, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+        },
+        SemanticExpr::FloatBinary { lhs, rhs, width, .. } => {
+            collect_expr_effects(lhs, reads, memory_read, native_call);
+            collect_expr_effects(rhs, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+        },
+        SemanticExpr::FloatUnary { value, width, .. } => {
+            collect_expr_effects(value, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+        },
+        SemanticExpr::FloatCast {
+            value,
+            from_width,
+            to_width,
+            ..
+        } => {
+            collect_expr_effects(value, reads, memory_read, native_call);
+            collect_expr_effects(from_width, reads, memory_read, native_call);
+            collect_expr_effects(to_width, reads, memory_read, native_call);
+        },
+        SemanticExpr::FloatCompare { pred, lhs, rhs, width } => {
             collect_expr_effects(pred, reads, memory_read, native_call);
             collect_expr_effects(lhs, reads, memory_read, native_call);
             collect_expr_effects(rhs, reads, memory_read, native_call);
@@ -2159,6 +3024,25 @@ fn collect_expr_effects(expr: &SemanticExpr, reads: &mut Vec<String>, memory_rea
             *memory_read = true;
             collect_expr_effects(ptr, reads, memory_read, native_call);
             collect_expr_effects(width, reads, memory_read, native_call);
+        },
+        SemanticExpr::AtomicLoadWidth { ptr, width, ordering } => {
+            *memory_read = true;
+            collect_expr_effects(ptr, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+            collect_expr_effects(ordering, reads, memory_read, native_call);
+        },
+        SemanticExpr::AtomicRmw {
+            ptr,
+            value,
+            width,
+            ordering,
+            ..
+        } => {
+            *memory_read = true;
+            collect_expr_effects(ptr, reads, memory_read, native_call);
+            collect_expr_effects(value, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+            collect_expr_effects(ordering, reads, memory_read, native_call);
         },
         SemanticExpr::CallTableReturn { args, .. } => {
             *native_call = true;
@@ -2358,6 +3242,11 @@ mod tests {
             }
         );
         assert_eq!(
+            profile.bytecode.instruction_record.decoded_widths,
+            [4, 8, 16, 32, 48, 64]
+        );
+        assert_eq!(profile.bytecode.instruction_record.default_decoded_width, 32);
+        assert_eq!(
             profile.bytecode.relocation("label_pc").unwrap().width,
             RelocWidth::Varint
         );
@@ -2396,14 +3285,145 @@ mod tests {
                 .iter()
                 .map(|instruction| instruction.opcodes().len())
                 .sum::<usize>(),
-            147
+            264
         );
+        let ctpop = profile
+            .isa
+            .by_semantic(&HandlerSemantic::IntUnary(IntUnaryOp::CtPop))
+            .unwrap();
+        assert_eq!(ctpop.opcodes().len(), 2);
+        assert_eq!(ctpop.effect.register_reads, ["src"]);
+        assert_eq!(ctpop.effect.register_writes, ["dst"]);
+        let fshl = profile
+            .isa
+            .by_semantic(&HandlerSemantic::IntTernary(IntTernaryOp::FShl))
+            .unwrap();
+        assert_eq!(fshl.opcodes().len(), 2);
+        assert_eq!(fshl.decoded_width, 48);
+        assert_eq!(fshl.effect.register_reads, ["lhs", "rhs", "third"]);
+        assert_eq!(fshl.effect.register_writes, ["dst"]);
+        let iadd_xor = profile
+            .isa
+            .by_semantic(&HandlerSemantic::Super(SuperOp::AddXor))
+            .unwrap();
+        assert_eq!(iadd_xor.opcodes().len(), 2);
+        assert_eq!(iadd_xor.decoded_width, 48);
+        assert_eq!(iadd_xor.effect.register_reads, ["lhs", "rhs", "xor_rhs"]);
+        assert_eq!(iadd_xor.effect.register_writes, ["dst"]);
+        let icmp_br_if = profile
+            .isa
+            .by_semantic(&HandlerSemantic::Super(SuperOp::IcmpBrIf))
+            .unwrap();
+        assert_eq!(icmp_br_if.opcodes().len(), 2);
+        assert_eq!(icmp_br_if.decoded_width, 32);
+        assert_eq!(icmp_br_if.effect.register_reads, ["lhs", "rhs"]);
+        assert!(icmp_br_if.effect.register_writes.is_empty());
+        let gep_load = profile
+            .isa
+            .by_semantic(&HandlerSemantic::Super(SuperOp::GepLoad))
+            .unwrap();
+        assert_eq!(gep_load.opcodes().len(), 2);
+        assert_eq!(gep_load.decoded_width, 32);
+        assert_eq!(gep_load.effect.register_reads, ["base"]);
+        assert_eq!(gep_load.effect.register_writes, ["dst"]);
+        assert!(gep_load.effect.memory_read);
+        let load_iadd = profile
+            .isa
+            .by_semantic(&HandlerSemantic::Super(SuperOp::LoadAdd))
+            .unwrap();
+        assert_eq!(load_iadd.opcodes().len(), 2);
+        assert_eq!(load_iadd.decoded_width, 32);
+        assert_eq!(load_iadd.effect.register_reads, ["ptr", "addend"]);
+        assert_eq!(load_iadd.effect.register_writes, ["dst"]);
+        assert!(load_iadd.effect.memory_read);
+        let add_xor_fusion = profile
+            .lowering
+            .fusion_for_target("iadd_xor")
+            .expect("built-in profile should declare iadd_xor fusion");
+        assert_eq!(add_xor_fusion.sequence, ["iadd", "ixor"]);
+        assert_eq!(
+            add_xor_fusion.requirements,
+            ["adjacent", "no_label_between", "temp_single_use", "same_width"]
+        );
+        let icmp_fusion = profile
+            .lowering
+            .fusion_for_target("icmp_br_if")
+            .expect("built-in profile should declare icmp_br_if fusion");
+        assert_eq!(icmp_fusion.sequence, ["icmp", "br_if"]);
+        let gep_fusion = profile
+            .lowering
+            .fusion_for_target("gep_load")
+            .expect("built-in profile should declare gep_load fusion");
+        assert_eq!(gep_fusion.sequence, ["gep", "load"]);
+        let load_add_fusion = profile
+            .lowering
+            .fusion_for_target("load_iadd")
+            .expect("built-in profile should declare load_iadd fusion");
+        assert_eq!(load_add_fusion.sequence, ["load", "iadd"]);
+        let atomic_umax = profile
+            .isa
+            .by_semantic(&HandlerSemantic::AtomicRmw(AtomicRmwOp::UMax))
+            .unwrap();
+        assert_eq!(atomic_umax.opcodes().len(), 2);
+        assert!(atomic_umax.effect.memory_read);
+        assert!(atomic_umax.effect.memory_write);
+        let cmpxchg = profile.isa.by_semantic(&HandlerSemantic::CmpXchg).unwrap();
+        assert_eq!(cmpxchg.opcodes().len(), 2);
+        assert!(cmpxchg.effect.memory_read);
+        assert!(cmpxchg.effect.memory_write);
+        let fence = profile.isa.by_semantic(&HandlerSemantic::Fence).unwrap();
+        assert_eq!(fence.opcodes().len(), 2);
+        assert!(fence.effect.memory_read);
+        assert!(fence.effect.memory_write);
         assert_eq!(profile.isa.by_semantic(&HandlerSemantic::MovImm).unwrap().opcode, 0x01);
         let mov_imm = profile.isa.by_semantic(&HandlerSemantic::MovImm).unwrap();
         assert_eq!(mov_imm.effect.pc, PcEffect::Next);
         assert_eq!(mov_imm.effect.register_reads, Vec::<String>::new());
         assert_eq!(mov_imm.effect.register_writes, ["dst"]);
+        let freeze_rule = profile
+            .lowering
+            .rule("llvm.freeze.scalar")
+            .expect("built-in profile should declare freeze lowering");
+        assert_eq!(freeze_rule.emitted_instructions, ["mov"]);
+        for rule_name in ["llvm.memcpy.fixed", "llvm.memmove.fixed"] {
+            let rule = profile
+                .lowering
+                .rule(rule_name)
+                .expect("built-in profile should declare fixed memory-copy intrinsic lowering");
+            assert!(rule.emitted_instructions.contains(&"load".to_owned()));
+            assert!(rule.emitted_instructions.contains(&"store".to_owned()));
+            assert!(rule.emitted_instructions.contains(&"gep".to_owned()));
+        }
+        let memset_rule = profile
+            .lowering
+            .rule("llvm.memset.fixed")
+            .expect("built-in profile should declare fixed memset intrinsic lowering");
+        assert!(memset_rule.emitted_instructions.contains(&"store".to_owned()));
+        assert!(memset_rule.emitted_instructions.contains(&"gep".to_owned()));
         verify_profile(&profile).expect("built-in profile should verify");
+    }
+
+    #[test]
+    fn verifier_requires_lowering_fusion_for_super_instruction() {
+        let manifest: Manifest =
+            toml::from_str(include_str!("../profiles/amice-simple-vmp/manifest.toml")).expect("manifest");
+        let lowering = include_str!("../profiles/amice-simple-vmp/lowering.vm").replace(
+            "fusion super.gep_load { # 声明 gep 后紧跟 load 的超级内存读取融合模板\n  target gep_load # 融合后发射 isa.vm 中的 gep_load 指令\n  sequence gep, load # 只允许把连续的 gep 与 load 两条 VM 指令融合\n  require adjacent # 两条源指令必须在线性 VM IR 中相邻\n  require no_label_between # 第二条源指令位置不能是任何 VM label 的目标\n  require temp_single_use # gep 产生的临时指针寄存器只能被紧邻的 load 使用\n} # 结束 gep_load 融合模板\n\n",
+            "",
+        );
+        let profile = ProfilePackage::from_sources(
+            manifest,
+            include_str!("../profiles/amice-simple-vmp/abi.vm"),
+            include_str!("../profiles/amice-simple-vmp/isa.vm"),
+            &lowering,
+            include_str!("../profiles/amice-simple-vmp/bytecode.vm"),
+            include_str!("../profiles/amice-simple-vmp/decoder.vm"),
+            include_str!("../profiles/amice-simple-vmp/runtime.vm"),
+        )
+        .expect("profile should parse before verifier checks fusion coverage");
+
+        let err = verify_profile(&profile).expect_err("missing super fusion must fail verification");
+        assert!(err.to_string().contains("fusion super.gep_load"));
     }
 
     #[test]
@@ -2444,6 +3464,20 @@ mod tests {
             ]
         );
         assert!(profile.isa.has_unique_opcodes());
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.freeze.scalar")
+                .expect("ruoke profile should declare freeze lowering")
+                .emitted_instructions,
+            ["mov"]
+        );
+        for rule_name in ["llvm.memcpy.fixed", "llvm.memmove.fixed", "llvm.memset.fixed"] {
+            assert!(
+                profile.lowering.rule(rule_name).is_some(),
+                "ruoke profile should declare {rule_name}"
+            );
+        }
         assert_eq!(
             profile
                 .isa
@@ -2621,6 +3655,52 @@ mod tests {
     }
 
     #[test]
+    fn decoded_width_override_must_use_supported_width() {
+        let manifest: Manifest =
+            toml::from_str(include_str!("../profiles/amice-simple-vmp/manifest.toml")).expect("manifest");
+        let isa = include_str!("../profiles/amice-simple-vmp/isa.vm").replace(
+            "decoded_width = 8 # mov 的 opcode 和三个短操作数固定放入 8 字节 decoded record",
+            "decoded_width = 12 # 故意声明非法宽度，解析器必须拒绝",
+        );
+
+        let err = ProfilePackage::from_sources(
+            manifest,
+            include_str!("../profiles/amice-simple-vmp/abi.vm"),
+            &isa,
+            include_str!("../profiles/amice-simple-vmp/lowering.vm"),
+            include_str!("../profiles/amice-simple-vmp/bytecode.vm"),
+            include_str!("../profiles/amice-simple-vmp/decoder.vm"),
+            include_str!("../profiles/amice-simple-vmp/runtime.vm"),
+        )
+        .expect_err("unsupported decoded_width must fail parsing");
+
+        assert!(err.to_string().contains("decoded_width"));
+    }
+
+    #[test]
+    fn verifier_rejects_record_width_too_small_for_schema() {
+        let manifest: Manifest =
+            toml::from_str(include_str!("../profiles/amice-simple-vmp/manifest.toml")).expect("manifest");
+        let isa = include_str!("../profiles/amice-simple-vmp/isa.vm").replace(
+            "decoded_width = 8 # mov 的 opcode 和三个短操作数固定放入 8 字节 decoded record",
+            "decoded_width = 4 # 故意压缩到放不下三个操作数，校验器必须拒绝",
+        );
+        let profile = ProfilePackage::from_sources(
+            manifest,
+            include_str!("../profiles/amice-simple-vmp/abi.vm"),
+            &isa,
+            include_str!("../profiles/amice-simple-vmp/lowering.vm"),
+            include_str!("../profiles/amice-simple-vmp/bytecode.vm"),
+            include_str!("../profiles/amice-simple-vmp/decoder.vm"),
+            include_str!("../profiles/amice-simple-vmp/runtime.vm"),
+        )
+        .expect("profile should parse before verifier checks capacity");
+
+        let err = verify_profile(&profile).expect_err("narrow decoded_width must fail verification");
+        assert!(err.to_string().contains("cannot hold opcode/operands"));
+    }
+
+    #[test]
     fn example_profile_effective_lines_have_chinese_comments() {
         for (path, source) in [
             (
@@ -2683,7 +3763,7 @@ mod tests {
             toml::from_str(include_str!("../profiles/amice-simple-vmp/manifest.toml")).expect("manifest");
         let isa = include_str!("../profiles/amice-simple-vmp/isa.vm").replacen(
             "opcode alias [0x01, 0x0e, 0x4f, 0x60, 0x65]",
-            "opcode alias [0xa1, 0xa2]",
+            "opcode alias [0x1f2, 0x1f3]",
             1,
         );
         let profile = ProfilePackage::from_sources(
@@ -2699,8 +3779,8 @@ mod tests {
 
         let mov_imm = profile.isa.by_semantic(&HandlerSemantic::MovImm).unwrap();
 
-        assert_eq!(mov_imm.opcode, 0xa1);
-        assert_eq!(mov_imm.opcodes(), &[0xa1, 0xa2]);
+        assert_eq!(mov_imm.opcode, 0x1f2);
+        assert_eq!(mov_imm.opcodes(), &[0x1f2, 0x1f3]);
         verify_profile(&profile).expect("profile with opcode aliases should verify");
     }
 
@@ -2717,6 +3797,14 @@ mod tests {
             .replace(
                 "emit iadd dst=%vr, lhs=%vb, rhs=%vs, width=64 # 缩放偏移与基址相加",
                 "emit add_alias dst=%vr, lhs=%vb, rhs=%vs, width=64 # 缩放偏移与基址相加",
+            )
+            .replace(
+                "sequence iadd, ixor # 只允许把连续的 iadd 与 ixor 两条 VM 指令融合",
+                "sequence add_alias, ixor # 只允许把连续的改名加法与 ixor 两条 VM 指令融合",
+            )
+            .replace(
+                "sequence load, iadd # 只允许把连续的 load 与 iadd 两条 VM 指令融合",
+                "sequence load, add_alias # 只允许把连续的 load 与改名加法两条 VM 指令融合",
             );
         let profile = ProfilePackage::from_sources(
             manifest,

@@ -12,7 +12,10 @@
 //! - lowering action 必须在 `emit`/`bind` 消费值前先定义这些值。
 
 use crate::abi::{NativeCallPolicy, VmRegister};
-use crate::isa::{BinOp, CastOp, HandlerSemantic, OperandKind};
+use crate::isa::{
+    AtomicRmwOp, BinOp, CastOp, FloatBinOp, FloatCastOp, FloatUnaryOp, HandlerSemantic, InstructionDesc, IntTernaryOp,
+    IntUnaryOp, OperandDesc, OperandKind, SUPPORTED_DECODED_WIDTHS, SuperOp,
+};
 use crate::lowering::{NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS};
 use crate::profile::{
     ConstPoolEncryption, DecoderStep, LoweringAction, OpcodeEncoding, OperandEncoding, ProfileError, ProfilePackage,
@@ -102,6 +105,7 @@ pub fn verify_profile(profile: &ProfilePackage) -> Result<(), ProfileError> {
 
     verify_instruction_effects(profile)?;
     verify_instruction_operands(profile)?;
+    verify_instruction_record_widths(profile)?;
     verify_required_isa(profile)?;
     verify_lowering_rules(profile)?;
     verify_bytecode(profile)?;
@@ -152,6 +156,95 @@ fn verify_instruction_operands(profile: &ProfilePackage) -> Result<(), ProfileEr
     Ok(())
 }
 
+fn verify_instruction_record_widths(profile: &ProfilePackage) -> Result<(), ProfileError> {
+    let allowed = &profile.bytecode.instruction_record.decoded_widths;
+    if allowed.is_empty() {
+        return Err(ProfileError::Invalid(
+            "bytecode.vm decoded_width one_of list must not be empty".to_owned(),
+        ));
+    }
+    for width in allowed {
+        if !SUPPORTED_DECODED_WIDTHS.contains(width) {
+            return Err(ProfileError::Invalid(format!(
+                "bytecode.vm decoded_width {width} is not supported; supported widths are {:?}",
+                SUPPORTED_DECODED_WIDTHS
+            )));
+        }
+    }
+    if !allowed.contains(&profile.bytecode.instruction_record.default_decoded_width) {
+        return Err(ProfileError::Invalid(format!(
+            "bytecode.vm decoded_width default {} is not in {:?}",
+            profile.bytecode.instruction_record.default_decoded_width, allowed
+        )));
+    }
+
+    for instruction in &profile.isa.instructions {
+        if !allowed.contains(&instruction.decoded_width) {
+            return Err(ProfileError::Invalid(format!(
+                "isa.vm instruction {} decoded_width {} is not allowed by bytecode.vm {:?}",
+                instruction.name, instruction.decoded_width, allowed
+            )));
+        }
+        let needed = worst_case_record_len(instruction)?;
+        if needed > instruction.decoded_width as usize {
+            return Err(ProfileError::Invalid(format!(
+                "isa.vm instruction {} decoded_width {} cannot hold opcode/operands; worst case needs {needed} bytes",
+                instruction.name, instruction.decoded_width
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn worst_case_record_len(instruction: &InstructionDesc) -> Result<usize, ProfileError> {
+    let max_opcode = instruction
+        .opcodes()
+        .iter()
+        .copied()
+        .max()
+        .ok_or_else(|| ProfileError::Invalid(format!("ISA instruction {} has no opcode", instruction.name)))?;
+    let opcode_len = varint_len(max_opcode as u64);
+    let operand_len = instruction
+        .operand_descs
+        .iter()
+        .map(worst_case_bitpacked_operand_len)
+        .sum::<Result<usize, _>>()?;
+    Ok(opcode_len + operand_len)
+}
+
+fn worst_case_bitpacked_operand_len(operand: &OperandDesc) -> Result<usize, ProfileError> {
+    let max_bits = match operand.kind {
+        OperandKind::VReg => 5,
+        OperandKind::Imm => immediate_type_bits(&operand.value_type)?,
+        OperandKind::ConstPoolIndex | OperandKind::Label => 64,
+        OperandKind::Unknown => 64,
+    };
+    Ok(1 + max_bits.div_ceil(7))
+}
+
+fn immediate_type_bits(value_type: &str) -> Result<usize, ProfileError> {
+    match value_type {
+        "i1" | "u1" => Ok(1),
+        "i8" | "u8" => Ok(7),
+        "i16" | "u16" => Ok(16),
+        "i32" | "u32" => Ok(32),
+        "i64" | "u64" | "ptr" | "usize" | "label" | "const_pool_index" => Ok(64),
+        other => Err(ProfileError::Invalid(format!(
+            "unsupported immediate operand value type {other} for decoded_width capacity check"
+        ))),
+    }
+}
+
+fn varint_len(mut value: u64) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
+}
+
 fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
     use HandlerSemantic::*;
     use OperandKind::*;
@@ -159,9 +252,48 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
     match semantic {
         MovImm => operands([("dst", VReg), ("imm", Imm), ("width", Imm)]),
         ConstLoad => operands([("dst", VReg), ("index", ConstPoolIndex), ("width", Imm)]),
+        Super(crate::isa::SuperOp::AddXor) => operands([
+            ("dst", VReg),
+            ("lhs", VReg),
+            ("rhs", VReg),
+            ("xor_rhs", VReg),
+            ("width", Imm),
+        ]),
+        Super(crate::isa::SuperOp::IcmpBrIf) => operands([
+            ("pred", Imm),
+            ("lhs", VReg),
+            ("rhs", VReg),
+            ("width", Imm),
+            ("then_pc", Label),
+            ("else_pc", Label),
+        ]),
+        Super(crate::isa::SuperOp::GepLoad) => {
+            operands([("dst", VReg), ("base", VReg), ("offset", Imm), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadAdd) => {
+            operands([("dst", VReg), ("ptr", VReg), ("addend", VReg), ("width", Imm)])
+        },
         Mov => operands([("dst", VReg), ("src", VReg), ("width", Imm)]),
         Bin(_) => operands([("dst", VReg), ("lhs", VReg), ("rhs", VReg), ("width", Imm)]),
+        IntUnary(_) => operands([("dst", VReg), ("src", VReg), ("width", Imm)]),
+        IntTernary(_) => operands([
+            ("dst", VReg),
+            ("lhs", VReg),
+            ("rhs", VReg),
+            ("third", VReg),
+            ("width", Imm),
+        ]),
+        FloatBin(_) => operands([("dst", VReg), ("lhs", VReg), ("rhs", VReg), ("width", Imm)]),
+        FloatUnary(_) => operands([("dst", VReg), ("src", VReg), ("width", Imm)]),
+        FloatCast(_) => operands([("dst", VReg), ("src", VReg), ("from_width", Imm), ("to_width", Imm)]),
         Icmp => operands([
+            ("pred", Imm),
+            ("dst", VReg),
+            ("lhs", VReg),
+            ("rhs", VReg),
+            ("width", Imm),
+        ]),
+        Fcmp => operands([
             ("pred", Imm),
             ("dst", VReg),
             ("lhs", VReg),
@@ -172,6 +304,26 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
         Alloca => operands([("dst", VReg), ("bytes", Imm), ("align", Imm)]),
         Load => operands([("dst", VReg), ("ptr", VReg), ("width", Imm)]),
         Store => operands([("src", VReg), ("ptr", VReg), ("width", Imm)]),
+        AtomicLoad => operands([("dst", VReg), ("ptr", VReg), ("width", Imm), ("ordering", Imm)]),
+        AtomicStore => operands([("src", VReg), ("ptr", VReg), ("width", Imm), ("ordering", Imm)]),
+        AtomicRmw(_) => operands([
+            ("dst", VReg),
+            ("ptr", VReg),
+            ("src", VReg),
+            ("width", Imm),
+            ("ordering", Imm),
+        ]),
+        CmpXchg => operands([
+            ("old", VReg),
+            ("success", VReg),
+            ("ptr", VReg),
+            ("cmp", VReg),
+            ("new", VReg),
+            ("width", Imm),
+            ("success_ordering", Imm),
+            ("failure_ordering", Imm),
+        ]),
+        Fence => operands([("ordering", Imm)]),
         Gep => operands([("dst", VReg), ("base", VReg), ("offset", Imm)]),
         CallNative => call_native_operand_contract(),
         Nop => Vec::new(),
@@ -579,7 +731,15 @@ fn reject_q_indices(name: &str, registers: &[u8]) -> Result<(), ProfileError> {
 fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
     use BinOp::*;
     use CastOp::*;
+    use FloatBinOp::{Add as FAdd, Div as FDiv, Mul as FMul, Rem as FRem, Sub as FSub};
+    use FloatCastOp::{
+        FloatExt as FFPExt, FloatToSignedInt as FFPToSI, FloatToUnsignedInt as FFPToUI, FloatTrunc as FFPTrunc,
+        SignedIntToFloat as FSIToFP, UnsignedIntToFloat as FUIToFP,
+    };
+    use FloatUnaryOp::Neg as FNeg;
     use HandlerSemantic::*;
+    use IntTernaryOp::{FShl, FShr};
+    use IntUnaryOp::{BSwap, BitReverse, CtPop};
 
     let required = [
         (MovImm, 3, "mov_imm"),
@@ -598,7 +758,25 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (Bin(Shl), 4, "ishl"),
         (Bin(LShr), 4, "ilshr"),
         (Bin(AShr), 4, "iashr"),
+        (IntUnary(CtPop), 3, "ctpop"),
+        (IntUnary(BSwap), 3, "bswap"),
+        (IntUnary(BitReverse), 3, "bitreverse"),
+        (IntTernary(FShl), 5, "fshl"),
+        (IntTernary(FShr), 5, "fshr"),
+        (FloatBin(FAdd), 4, "fadd"),
+        (FloatBin(FSub), 4, "fsub"),
+        (FloatBin(FMul), 4, "fmul"),
+        (FloatBin(FDiv), 4, "fdiv"),
+        (FloatBin(FRem), 4, "frem"),
+        (FloatUnary(FNeg), 3, "fneg"),
+        (FloatCast(FSIToFP), 4, "sitofp"),
+        (FloatCast(FUIToFP), 4, "uitofp"),
+        (FloatCast(FFPToSI), 4, "fptosi"),
+        (FloatCast(FFPToUI), 4, "fptoui"),
+        (FloatCast(FFPTrunc), 4, "fptrunc"),
+        (FloatCast(FFPExt), 4, "fpext"),
         (Icmp, 5, "icmp"),
+        (Fcmp, 5, "fcmp"),
         (Cast(ZExt), 4, "zext"),
         (Cast(SExt), 4, "sext"),
         (Cast(Trunc), 4, "trunc"),
@@ -606,6 +784,21 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (Alloca, 3, "alloca"),
         (Load, 3, "load"),
         (Store, 3, "store"),
+        (AtomicLoad, 4, "atomic_load"),
+        (AtomicStore, 4, "atomic_store"),
+        (AtomicRmw(AtomicRmwOp::Xchg), 5, "atomic_rmw_xchg"),
+        (AtomicRmw(AtomicRmwOp::Add), 5, "atomic_rmw_add"),
+        (AtomicRmw(AtomicRmwOp::Sub), 5, "atomic_rmw_sub"),
+        (AtomicRmw(AtomicRmwOp::And), 5, "atomic_rmw_and"),
+        (AtomicRmw(AtomicRmwOp::Or), 5, "atomic_rmw_or"),
+        (AtomicRmw(AtomicRmwOp::Xor), 5, "atomic_rmw_xor"),
+        (AtomicRmw(AtomicRmwOp::Nand), 5, "atomic_rmw_nand"),
+        (AtomicRmw(AtomicRmwOp::Max), 5, "atomic_rmw_max"),
+        (AtomicRmw(AtomicRmwOp::Min), 5, "atomic_rmw_min"),
+        (AtomicRmw(AtomicRmwOp::UMax), 5, "atomic_rmw_umax"),
+        (AtomicRmw(AtomicRmwOp::UMin), 5, "atomic_rmw_umin"),
+        (CmpXchg, 8, "cmpxchg"),
+        (Fence, 1, "fence"),
         (Gep, 3, "gep"),
         (CallNative, call_native_operand_contract().len() as u8, "call_native"),
         (Br, 1, "br"),
@@ -677,6 +870,153 @@ fn verify_lowering_rules(profile: &ProfilePackage) -> Result<(), ProfileError> {
             }
         }
         verify_lowering_action_flow(profile, rule)?;
+    }
+
+    verify_lowering_fusions(profile, &isa_names)?;
+
+    Ok(())
+}
+
+fn verify_lowering_fusions(profile: &ProfilePackage, isa_names: &HashSet<&str>) -> Result<(), ProfileError> {
+    let mut names = HashSet::new();
+    let mut targets = HashSet::new();
+    for fusion in &profile.lowering.fusions {
+        if !names.insert(fusion.name.as_str()) {
+            return Err(ProfileError::Invalid(format!(
+                "lowering.vm fusion {} is declared more than once",
+                fusion.name
+            )));
+        }
+        if !targets.insert(fusion.target.as_str()) {
+            return Err(ProfileError::Invalid(format!(
+                "lowering.vm declares more than one fusion for target {}",
+                fusion.target
+            )));
+        }
+        let target = profile
+            .isa
+            .instructions
+            .iter()
+            .find(|desc| desc.name == fusion.target)
+            .ok_or_else(|| {
+                ProfileError::Invalid(format!(
+                    "lowering.vm fusion {} targets {} but isa.vm does not declare it",
+                    fusion.name, fusion.target
+                ))
+            })?;
+        if !matches!(target.semantic, HandlerSemantic::Super(_)) {
+            return Err(ProfileError::Invalid(format!(
+                "lowering.vm fusion {} target {} is not a Super semantic instruction",
+                fusion.name, fusion.target
+            )));
+        }
+        for source in &fusion.sequence {
+            if !isa_names.contains(source.as_str()) {
+                return Err(ProfileError::Invalid(format!(
+                    "lowering.vm fusion {} references source instruction {source} but isa.vm does not declare it",
+                    fusion.name
+                )));
+            }
+        }
+        verify_supported_fusion_template(profile, &target.semantic, fusion)?;
+    }
+
+    for (super_op, name) in [
+        (SuperOp::AddXor, "iadd_xor"),
+        (SuperOp::IcmpBrIf, "icmp_br_if"),
+        (SuperOp::GepLoad, "gep_load"),
+        (SuperOp::LoadAdd, "load_iadd"),
+    ] {
+        if let Some(desc) = profile.isa.by_semantic(&HandlerSemantic::Super(super_op)) {
+            if profile.lowering.fusion_for_target(&desc.name).is_none() {
+                return Err(ProfileError::Invalid(format!(
+                    "lowering.vm must declare fusion super.{name} for isa.vm instruction {}",
+                    desc.name
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_supported_fusion_template(
+    profile: &ProfilePackage,
+    semantic: &HandlerSemantic,
+    fusion: &crate::profile::LoweringFusion,
+) -> Result<(), ProfileError> {
+    let (expected_sequence, expected_names, required) = match semantic {
+        HandlerSemantic::Super(SuperOp::AddXor) => (
+            &[HandlerSemantic::Bin(BinOp::Add), HandlerSemantic::Bin(BinOp::Xor)][..],
+            &["iadd", "ixor"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::IcmpBrIf) => (
+            &[HandlerSemantic::Icmp, HandlerSemantic::BrCond][..],
+            &["icmp", "br_if"][..],
+            &["adjacent", "no_label_between", "temp_single_use"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::GepLoad) => (
+            &[HandlerSemantic::Gep, HandlerSemantic::Load][..],
+            &["gep", "load"][..],
+            &["adjacent", "no_label_between", "temp_single_use"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadAdd) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::Add)][..],
+            &["load", "iadd"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        other => {
+            return Err(ProfileError::Invalid(format!(
+                "lowering.vm fusion {} target semantic {other:?} is not supported",
+                fusion.name
+            )));
+        },
+    };
+
+    let sequence_semantics = fusion
+        .sequence
+        .iter()
+        .map(|source| {
+            profile
+                .isa
+                .instructions
+                .iter()
+                .find(|desc| desc.name == *source)
+                .map(|desc| desc.semantic.clone())
+                .ok_or_else(|| {
+                    ProfileError::Invalid(format!(
+                        "lowering.vm fusion {} references source instruction {source} but isa.vm does not declare it",
+                        fusion.name
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if sequence_semantics != expected_sequence {
+        return Err(ProfileError::Invalid(format!(
+            "lowering.vm fusion {} sequence must have semantics {}",
+            fusion.name,
+            expected_names.join(", ")
+        )));
+    }
+
+    let declared = fusion.requirements.iter().map(String::as_str).collect::<HashSet<_>>();
+    for requirement in required {
+        if !declared.contains(requirement) {
+            return Err(ProfileError::Invalid(format!(
+                "lowering.vm fusion {} must require {requirement}",
+                fusion.name
+            )));
+        }
+    }
+    for requirement in &fusion.requirements {
+        if !required.contains(&requirement.as_str()) {
+            return Err(ProfileError::Invalid(format!(
+                "lowering.vm fusion {} declares unsupported requirement {requirement}",
+                fusion.name
+            )));
+        }
     }
 
     Ok(())

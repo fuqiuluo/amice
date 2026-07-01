@@ -39,7 +39,7 @@ VMP int vm_switch(int x) {
 }
 
 VMP int vm_memory(int x) {
-    volatile int slots[3];
+    int slots[3];
     slots[0] = x + 1;
     slots[1] = slots[0] * 2;
     slots[2] = slots[1] - x;
@@ -66,7 +66,7 @@ VMP int vm_dynamic_gep2(int matrix[4][5], int i, int j) {
 }
 
 VMP int vm_reg_reuse_chain(int x, int y) {
-    volatile unsigned salt = (unsigned)y | 1u;
+    unsigned salt = (unsigned)y | 1u;
     unsigned a = (unsigned)x + salt;
     a = ((a << 1) ^ (salt + 1u)) + 3u;
     a = ((a << 1) ^ (salt + 2u)) + 5u;
@@ -108,7 +108,7 @@ VMP int vm_reg_reuse_chain(int x, int y) {
 }
 
 VMP int vm_multiblock_reuse(int x) {
-    volatile unsigned salt = (unsigned)x | 3u;
+    unsigned salt = (unsigned)x | 3u;
     if ((x & 1) != 0) {
         unsigned a = salt + 1u;
         a = ((a << 1) ^ (salt + 2u)) + 3u;
@@ -155,7 +155,7 @@ VMP int vm_multiblock_reuse(int x) {
 }
 
 VMP int vm_const_pool(int x) {
-    volatile int salt = x;
+    int salt = x;
     return (salt ^ 0x12345678) + 0x0fedcba9;
 }
 
@@ -177,6 +177,8 @@ typedef struct {
     long a;
     long b;
 } SmallPair;
+
+typedef int Vec4 __attribute__((vector_size(16)));
 
 VMP SmallPair vm_pair(long x) {
     SmallPair result;
@@ -204,6 +206,10 @@ __attribute__((noinline)) static BigResult native_big(long x) {
     return result;
 }
 
+__attribute__((noinline)) static double native_float_callee(float x, double y) {
+    return (double)x * 1.25 + y / 2.0;
+}
+
 VMP int vm_safe_skip_call(int x) {
     return native_callee(x) * 2;
 }
@@ -218,8 +224,47 @@ VMP long vm_native_sret(long x) {
     return result.a + result.b + result.c;
 }
 
-VMP double vm_safe_skip_float(double x) {
-    return x + 0.25;
+VMP double vm_native_float(double x) {
+    float narrowed = (float)(x + 1.5);
+    double mixed = native_float_callee(narrowed, x - 0.25);
+    return mixed + (double)narrowed;
+}
+
+VMP float vm_float32_mix(float x) {
+    float nx = -x;
+    float a = nx - 0.25f;
+    float b = a * -1.5f;
+    float c = b / 2.0f;
+    if (c > x) {
+        return -(c - x);
+    }
+    return -(x - c);
+}
+
+VMP double vm_float64_mix(double x) {
+    double nx = -x;
+    double a = nx - 0.25;
+    double b = a * -1.75;
+    double c = b / 3.0;
+    if (c <= x) {
+        return -(x - c);
+    }
+    return -(c - x);
+}
+
+VMP double vm_float_cast_mix(int x, unsigned y, float z, double w) {
+    float sx = (float)x;
+    double uy = (double)y;
+    int zi = (int)z;
+    unsigned wu = (unsigned)w;
+    float wt = (float)w;
+    double ze = (double)z;
+    return (double)sx + uy + (double)zi + (double)wu + (double)wt + ze;
+}
+
+VMP int vm_vector_skip(Vec4 value) {
+    Vec4 mixed = value + (Vec4){ 1, 2, 3, 4 };
+    return mixed[0] ^ mixed[3];
 }
 
 int main(int argc, char **argv) {
@@ -247,10 +292,15 @@ int main(int argc, char **argv) {
     int f = vm_safe_skip_call(seed);
     long np = vm_native_pair(h.b);
     long ns = vm_native_sret(h.c);
-    double u = vm_safe_skip_float((double)seed);
+    double nf = vm_native_float((double)seed + 0.5);
+    float u = vm_float32_mix((float)seed);
+    double v = vm_float64_mix((double)seed);
+    double t = vm_float_cast_mix(seed, (unsigned)(seed + 3), (float)seed + 0.75f, (double)seed + 1.25);
+    Vec4 vec = { seed, seed + 1, seed + 2, seed + 3 };
+    int vk = vm_vector_skip(vec);
     int mr = vm_multiblock_reuse(seed + gr);
     printf(
-        "%d %d %d %d %d %d %ld %d %d %d %d %ld %ld %ld %ld %ld %ld %ld %d %.2f\n",
+        "%d %d %d %d %d %d %ld %d %d %d %d %ld %ld %ld %ld %ld %ld %ld %.2f %d %.2f %.2f %.2f %d\n",
         a,
         b,
         c,
@@ -269,8 +319,12 @@ int main(int argc, char **argv) {
         p.b,
         np,
         ns,
+        nf,
         slots[3],
-        u
+        u,
+        v,
+        t,
+        vk
     );
     return 0;
 }

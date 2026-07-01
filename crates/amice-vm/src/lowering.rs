@@ -9,7 +9,11 @@
 //! `push` 只服务测试和内置默认值。profile 驱动 lowering 必须使用 `push_profile`，
 //! 这样同语义的两条指令仍能编码成不同 opcode 和 layout。
 
-use crate::isa::{BinOp, CastOp, CmpPredicate};
+use crate::isa::{
+    AtomicRmwOp, BinOp, CastOp, CmpPredicate, FloatBinOp, FloatCastOp, FloatPredicate, FloatUnaryOp, HandlerSemantic,
+    IntTernaryOp, IntUnaryOp, IsaProfile, MemoryOrdering, SuperOp,
+};
+use crate::profile::LoweringProfile;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -55,6 +59,56 @@ pub enum VmInstruction {
         /// 结果位宽。
         width: u8,
     },
+    /// 超级指令：先执行整数加法，再与第三个操作数做 xor。
+    SuperAddXor {
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 加法左操作数 `x` 寄存器。
+        lhs: u8,
+        /// 加法右操作数 `x` 寄存器。
+        rhs: u8,
+        /// xor 右操作数 `x` 寄存器。
+        xor_rhs: u8,
+        /// 结果位宽。
+        width: u8,
+    },
+    /// 超级指令：整数比较后直接选择两个 bytecode 分支目标。
+    SuperIcmpBrIf {
+        /// 归一化为 VM 形式的 LLVM 比较谓词。
+        pred: CmpPredicate,
+        /// 比较左操作数 `x` 寄存器。
+        lhs: u8,
+        /// 比较右操作数 `x` 寄存器。
+        rhs: u8,
+        /// 比较操作数位宽。
+        width: u8,
+        /// 比较为 true 时的目标 label。
+        then_label: LabelId,
+        /// 比较为 false 时的目标 label。
+        else_label: LabelId,
+    },
+    /// 超级指令：常量字节偏移 GEP 后立即读取标量。
+    SuperGepLoad {
+        /// 加载目标 `x` 寄存器。
+        dst: u8,
+        /// 基址指针寄存器。
+        base: u8,
+        /// 加到基址上的字节偏移。
+        offset: u64,
+        /// 加载位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再与寄存器加数做整数加法。
+    SuperLoadAdd {
+        /// 加法结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 加到已加载值上的寄存器。
+        addend: u8,
+        /// 加载和加法结果位宽。
+        width: u8,
+    },
     /// 在两个 VM 寄存器之间复制值。
     Mov {
         /// 目标 `x` 寄存器。
@@ -77,6 +131,32 @@ pub enum VmInstruction {
         /// 结果位宽。
         width: u8,
     },
+    /// 整数一元运算。
+    IntUnary {
+        /// lowering 选中的后端语义运算。
+        op: IntUnaryOp,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 源 `x` 寄存器。
+        src: u8,
+        /// 操作数位宽。
+        width: u8,
+    },
+    /// 整数三元运算。
+    IntTernary {
+        /// lowering 选中的后端语义运算。
+        op: IntTernaryOp,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 左操作数 `x` 寄存器。
+        lhs: u8,
+        /// 右操作数 `x` 寄存器。
+        rhs: u8,
+        /// 第三个操作数 `x` 寄存器。
+        third: u8,
+        /// 操作数位宽。
+        width: u8,
+    },
     /// 整数比较，在 `x` 寄存器中生成 `i1` 值。
     Icmp {
         /// 归一化为 VM 形式的 LLVM 比较谓词。
@@ -88,6 +168,56 @@ pub enum VmInstruction {
         /// 右操作数 `x` 寄存器。
         rhs: u8,
         /// 操作数位宽。
+        width: u8,
+    },
+    /// 标量浮点二元运算，输入和输出都以原始 bit 存在 `x` 寄存器中。
+    FloatBin {
+        /// lowering 选中的后端浮点运算。
+        op: FloatBinOp,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 左操作数 `x` 寄存器。
+        lhs: u8,
+        /// 右操作数 `x` 寄存器。
+        rhs: u8,
+        /// 浮点位宽，仅支持 32 或 64。
+        width: u8,
+    },
+    /// 标量浮点一元运算，输入和输出都以原始 bit 存在 `x` 寄存器中。
+    FloatUnary {
+        /// lowering 选中的后端浮点一元运算。
+        op: FloatUnaryOp,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 源 `x` 寄存器。
+        src: u8,
+        /// 浮点位宽，仅支持 32 或 64。
+        width: u8,
+    },
+    /// 标量整数/浮点转换，整数值和浮点 bit 都存放在 `x` 寄存器中。
+    FloatCast {
+        /// lowering 选中的后端转换操作。
+        op: FloatCastOp,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 源 `x` 寄存器。
+        src: u8,
+        /// 源位宽。
+        from_width: u8,
+        /// 目标位宽。
+        to_width: u8,
+    },
+    /// 标量浮点比较，在 `x` 寄存器中生成 `i1` 值。
+    Fcmp {
+        /// 归一化为 VM 形式的 LLVM 浮点比较谓词。
+        pred: FloatPredicate,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 左操作数 `x` 寄存器。
+        lhs: u8,
+        /// 右操作数 `x` 寄存器。
+        rhs: u8,
+        /// 操作数位宽，仅支持 32 或 64。
         width: u8,
     },
     /// 整数或指针位宽转换。
@@ -129,6 +259,67 @@ pub enum VmInstruction {
         ptr: u8,
         /// 存储位宽。
         width: u8,
+    },
+    /// 从 `x` 寄存器保存的地址执行标量 atomic load。
+    AtomicLoad {
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 指针寄存器。
+        ptr: u8,
+        /// 加载位宽。
+        width: u8,
+        /// LLVM atomic ordering 的 VM 编码。
+        ordering: MemoryOrdering,
+    },
+    /// 向 `x` 寄存器保存的地址执行标量 atomic store。
+    AtomicStore {
+        /// 源值寄存器。
+        src: u8,
+        /// 指针寄存器。
+        ptr: u8,
+        /// 存储位宽。
+        width: u8,
+        /// LLVM atomic ordering 的 VM 编码。
+        ordering: MemoryOrdering,
+    },
+    /// 对 `x` 寄存器保存的地址执行标量 atomic read-modify-write，结果是旧值。
+    AtomicRmw {
+        /// lowering 选中的 RMW 操作。
+        op: AtomicRmwOp,
+        /// 目标 `x` 寄存器，保存内存旧值。
+        dst: u8,
+        /// 指针寄存器。
+        ptr: u8,
+        /// 源值寄存器。
+        src: u8,
+        /// 操作位宽。
+        width: u8,
+        /// LLVM atomic ordering 的 VM 编码。
+        ordering: MemoryOrdering,
+    },
+    /// 对 `x` 寄存器保存的地址执行 scalar compare-exchange。
+    CmpXchg {
+        /// 保存内存旧值的目标 `x` 寄存器。
+        old: u8,
+        /// 保存成功标志的目标 `x` 寄存器。
+        success: u8,
+        /// 指针寄存器。
+        ptr: u8,
+        /// 期望旧值寄存器。
+        cmp: u8,
+        /// 成功时写入的新值寄存器。
+        new: u8,
+        /// 操作位宽。
+        width: u8,
+        /// LLVM cmpxchg success ordering 的 VM 编码。
+        success_ordering: MemoryOrdering,
+        /// LLVM cmpxchg failure ordering 的 VM 编码。
+        failure_ordering: MemoryOrdering,
+    },
+    /// 执行 LLVM atomic fence。
+    Fence {
+        /// LLVM fence ordering 的 VM 编码。
+        ordering: MemoryOrdering,
     },
     /// 常量字节偏移指针运算。
     Gep {
@@ -185,6 +376,10 @@ impl VmInstruction {
         match self {
             Self::MovImm { .. } => "mov_imm",
             Self::ConstLoad { .. } => "const_load",
+            Self::SuperAddXor { .. } => "iadd_xor",
+            Self::SuperIcmpBrIf { .. } => "icmp_br_if",
+            Self::SuperGepLoad { .. } => "gep_load",
+            Self::SuperLoadAdd { .. } => "load_iadd",
             Self::Mov { .. } => "mov",
             Self::Bin { op, .. } => match op {
                 BinOp::Add => "iadd",
@@ -201,7 +396,35 @@ impl VmInstruction {
                 BinOp::LShr => "ilshr",
                 BinOp::AShr => "iashr",
             },
+            Self::IntUnary { op, .. } => match op {
+                IntUnaryOp::CtPop => "ctpop",
+                IntUnaryOp::BSwap => "bswap",
+                IntUnaryOp::BitReverse => "bitreverse",
+            },
+            Self::IntTernary { op, .. } => match op {
+                IntTernaryOp::FShl => "fshl",
+                IntTernaryOp::FShr => "fshr",
+            },
             Self::Icmp { .. } => "icmp",
+            Self::FloatBin { op, .. } => match op {
+                FloatBinOp::Add => "fadd",
+                FloatBinOp::Sub => "fsub",
+                FloatBinOp::Mul => "fmul",
+                FloatBinOp::Div => "fdiv",
+                FloatBinOp::Rem => "frem",
+            },
+            Self::FloatUnary { op, .. } => match op {
+                FloatUnaryOp::Neg => "fneg",
+            },
+            Self::FloatCast { op, .. } => match op {
+                FloatCastOp::SignedIntToFloat => "sitofp",
+                FloatCastOp::UnsignedIntToFloat => "uitofp",
+                FloatCastOp::FloatToSignedInt => "fptosi",
+                FloatCastOp::FloatToUnsignedInt => "fptoui",
+                FloatCastOp::FloatTrunc => "fptrunc",
+                FloatCastOp::FloatExt => "fpext",
+            },
+            Self::Fcmp { .. } => "fcmp",
             Self::Cast { op, .. } => match op {
                 CastOp::ZExt => "zext",
                 CastOp::SExt => "sext",
@@ -211,6 +434,23 @@ impl VmInstruction {
             Self::Alloca { .. } => "alloca",
             Self::Load { .. } => "load",
             Self::Store { .. } => "store",
+            Self::AtomicLoad { .. } => "atomic_load",
+            Self::AtomicStore { .. } => "atomic_store",
+            Self::AtomicRmw { op, .. } => match op {
+                AtomicRmwOp::Xchg => "atomic_rmw_xchg",
+                AtomicRmwOp::Add => "atomic_rmw_add",
+                AtomicRmwOp::Sub => "atomic_rmw_sub",
+                AtomicRmwOp::And => "atomic_rmw_and",
+                AtomicRmwOp::Or => "atomic_rmw_or",
+                AtomicRmwOp::Xor => "atomic_rmw_xor",
+                AtomicRmwOp::Nand => "atomic_rmw_nand",
+                AtomicRmwOp::Max => "atomic_rmw_max",
+                AtomicRmwOp::Min => "atomic_rmw_min",
+                AtomicRmwOp::UMax => "atomic_rmw_umax",
+                AtomicRmwOp::UMin => "atomic_rmw_umin",
+            },
+            Self::CmpXchg { .. } => "cmpxchg",
+            Self::Fence { .. } => "fence",
             Self::Gep { .. } => "gep",
             Self::CallNative { .. } => "call_native",
             Self::Br { .. } => "br",
@@ -237,6 +477,422 @@ pub struct VmFunction {
     pub profile_instructions: Vec<String>,
     /// 每个 label 绑定到的 bytecode PC。
     pub label_pcs: HashMap<LabelId, usize>,
+}
+
+/// 根据 profile 声明的超级指令，对已经生成的 VM IR 做保守融合。
+///
+/// 当前支持：
+/// - `Super(AddXor)`：`iadd tmp, lhs, rhs` 紧跟 `ixor dst, tmp, xor_rhs`。
+/// - `Super(IcmpBrIf)`：`icmp tmp, lhs, rhs` 紧跟使用该 tmp 的 `br_if`。
+/// - `Super(GepLoad)`：`gep tmp, base, offset` 紧跟使用该 tmp 的 `load`。
+/// - `Super(LoadAdd)`：`load tmp, ptr` 紧跟使用该 tmp 的 `iadd`。
+///
+/// 如果中间位置是 label target，或临时值还有其它 use，就保持普通指令不变。
+pub fn fuse_superinstructions(function: VmFunction, isa: &IsaProfile, lowering: &LoweringProfile) -> VmFunction {
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::AddXor) {
+        fuse_add_xor(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::IcmpBrIf) {
+        fuse_icmp_br_if(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::GepLoad) {
+        fuse_gep_load(function, name)
+    } else {
+        function
+    };
+
+    if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadAdd) {
+        fuse_load_add(function, name)
+    } else {
+        function
+    }
+}
+
+fn enabled_super_instruction<'a>(isa: &'a IsaProfile, lowering: &LoweringProfile, op: SuperOp) -> Option<&'a str> {
+    let desc = isa.by_semantic(&HandlerSemantic::Super(op))?;
+    lowering.fusion_for_target(&desc.name)?;
+    Some(desc.name.as_str())
+}
+
+fn fuse_add_xor(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let read_counts = register_read_counts(&function.instructions);
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_add_xor(&function.instructions, &read_counts, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_add_xor(
+    instructions: &[VmInstruction],
+    read_counts: &[usize; 32],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Bin {
+        op: BinOp::Add,
+        dst: add_dst,
+        lhs,
+        rhs,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::Xor,
+        dst,
+        lhs: xor_lhs,
+        rhs: xor_rhs,
+        width: xor_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != xor_width || add_dst != xor_lhs || add_dst == xor_rhs || read_counts[*add_dst as usize] != 1 {
+        return None;
+    }
+
+    Some(VmInstruction::SuperAddXor {
+        dst: *dst,
+        lhs: *lhs,
+        rhs: *rhs,
+        xor_rhs: *xor_rhs,
+        width: *width,
+    })
+}
+
+fn fuse_icmp_br_if(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let read_counts = register_read_counts(&function.instructions);
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_icmp_br_if(&function.instructions, &read_counts, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_icmp_br_if(
+    instructions: &[VmInstruction],
+    read_counts: &[usize; 32],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Icmp {
+        pred,
+        dst: cmp_dst,
+        lhs,
+        rhs,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::BrCond {
+        cond,
+        then_label,
+        else_label,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if cmp_dst != cond || read_counts[*cmp_dst as usize] != 1 {
+        return None;
+    }
+
+    Some(VmInstruction::SuperIcmpBrIf {
+        pred: *pred,
+        lhs: *lhs,
+        rhs: *rhs,
+        width: *width,
+        then_label: *then_label,
+        else_label: *else_label,
+    })
+}
+
+fn fuse_gep_load(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let read_counts = register_read_counts(&function.instructions);
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_gep_load(&function.instructions, &read_counts, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_gep_load(
+    instructions: &[VmInstruction],
+    read_counts: &[usize; 32],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Gep {
+        dst: gep_dst,
+        base,
+        offset,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Load { dst, ptr, width } = instructions.get(index + 1)? else {
+        return None;
+    };
+    if gep_dst != ptr || read_counts[*gep_dst as usize] != 1 {
+        return None;
+    }
+
+    Some(VmInstruction::SuperGepLoad {
+        dst: *dst,
+        base: *base,
+        offset: *offset,
+        width: *width,
+    })
+}
+
+fn fuse_load_add(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let read_counts = register_read_counts(&function.instructions);
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_add(&function.instructions, &read_counts, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_add(
+    instructions: &[VmInstruction],
+    read_counts: &[usize; 32],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::Add,
+        dst,
+        lhs,
+        rhs,
+        width: add_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != add_width || read_counts[*load_dst as usize] != 1 {
+        return None;
+    }
+    let addend = if load_dst == lhs {
+        *rhs
+    } else if load_dst == rhs {
+        *lhs
+    } else {
+        return None;
+    };
+    if addend == *load_dst {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadAdd {
+        dst: *dst,
+        ptr: *ptr,
+        addend,
+        width: *width,
+    })
+}
+
+fn register_read_counts(instructions: &[VmInstruction]) -> [usize; 32] {
+    let mut counts = [0usize; 32];
+    for instruction in instructions {
+        for reg in instruction_register_reads(instruction) {
+            if let Some(count) = counts.get_mut(reg as usize) {
+                *count += 1;
+            }
+        }
+    }
+    counts
+}
+
+fn instruction_register_reads(instruction: &VmInstruction) -> Vec<u8> {
+    match instruction {
+        VmInstruction::Mov { src, .. } => vec![*src],
+        VmInstruction::Bin { lhs, rhs, .. } => vec![*lhs, *rhs],
+        VmInstruction::SuperAddXor { lhs, rhs, xor_rhs, .. } => vec![*lhs, *rhs, *xor_rhs],
+        VmInstruction::SuperIcmpBrIf { lhs, rhs, .. } => vec![*lhs, *rhs],
+        VmInstruction::SuperGepLoad { base, .. } => vec![*base],
+        VmInstruction::SuperLoadAdd { ptr, addend, .. } => vec![*ptr, *addend],
+        VmInstruction::IntUnary { src, .. } => vec![*src],
+        VmInstruction::IntTernary { lhs, rhs, third, .. } => vec![*lhs, *rhs, *third],
+        VmInstruction::Icmp { lhs, rhs, .. } | VmInstruction::Fcmp { lhs, rhs, .. } => vec![*lhs, *rhs],
+        VmInstruction::FloatBin { lhs, rhs, .. } => vec![*lhs, *rhs],
+        VmInstruction::FloatUnary { src, .. } | VmInstruction::FloatCast { src, .. } => vec![*src],
+        VmInstruction::Cast { src, .. } => vec![*src],
+        VmInstruction::Load { ptr, .. } => vec![*ptr],
+        VmInstruction::Store { src, ptr, .. } => vec![*src, *ptr],
+        VmInstruction::AtomicLoad { ptr, .. } => vec![*ptr],
+        VmInstruction::AtomicStore { src, ptr, .. } => vec![*src, *ptr],
+        VmInstruction::AtomicRmw { ptr, src, .. } => vec![*ptr, *src],
+        VmInstruction::CmpXchg { ptr, cmp, new, .. } => vec![*ptr, *cmp, *new],
+        VmInstruction::Gep { base, .. } => vec![*base],
+        VmInstruction::CallNative { args, .. } => args.clone(),
+        VmInstruction::BrCond { cond, .. } => vec![*cond],
+        VmInstruction::Ret { src } => vec![*src],
+        VmInstruction::MovImm { .. }
+        | VmInstruction::ConstLoad { .. }
+        | VmInstruction::Alloca { .. }
+        | VmInstruction::Fence { .. }
+        | VmInstruction::Br { .. }
+        | VmInstruction::VmCall { .. }
+        | VmInstruction::VmRet
+        | VmInstruction::RetVoid => Vec::new(),
+    }
 }
 
 /// 拥有 label 分配并校验所有 label 都已绑定的 builder。
@@ -373,15 +1029,32 @@ impl VmFunctionBuilder {
                 VmInstruction::BrCond {
                     then_label, else_label, ..
                 } => vec![*then_label, *else_label],
+                VmInstruction::SuperIcmpBrIf {
+                    then_label, else_label, ..
+                } => vec![*then_label, *else_label],
                 VmInstruction::MovImm { .. }
                 | VmInstruction::ConstLoad { .. }
+                | VmInstruction::SuperAddXor { .. }
+                | VmInstruction::SuperGepLoad { .. }
+                | VmInstruction::SuperLoadAdd { .. }
                 | VmInstruction::Mov { .. }
                 | VmInstruction::Bin { .. }
+                | VmInstruction::IntUnary { .. }
+                | VmInstruction::IntTernary { .. }
                 | VmInstruction::Icmp { .. }
+                | VmInstruction::FloatBin { .. }
+                | VmInstruction::FloatUnary { .. }
+                | VmInstruction::FloatCast { .. }
+                | VmInstruction::Fcmp { .. }
                 | VmInstruction::Cast { .. }
                 | VmInstruction::Alloca { .. }
                 | VmInstruction::Load { .. }
                 | VmInstruction::Store { .. }
+                | VmInstruction::AtomicLoad { .. }
+                | VmInstruction::AtomicStore { .. }
+                | VmInstruction::AtomicRmw { .. }
+                | VmInstruction::CmpXchg { .. }
+                | VmInstruction::Fence { .. }
                 | VmInstruction::Gep { .. }
                 | VmInstruction::CallNative { .. }
                 | VmInstruction::VmRet

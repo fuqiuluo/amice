@@ -13,12 +13,20 @@ use amice_llvm::inkwell2::BuilderExt;
 use amice_llvm::ptr_type;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use amice_plugin::inkwell::basic_block::BasicBlock;
+use amice_plugin::inkwell::llvm_sys::core::{LLVMBuildFence, LLVMSetAlignment};
 use amice_plugin::inkwell::module::{Linkage, Module};
 use amice_plugin::inkwell::types::{ArrayType, FunctionType, IntType, PointerType};
-use amice_plugin::inkwell::values::{BasicMetadataValueEnum, FunctionValue, IntValue, PointerValue, UnnamedAddress};
-use amice_plugin::inkwell::{AddressSpace, IntPredicate};
+use amice_plugin::inkwell::values::{
+    AsValueRef, BasicMetadataValueEnum, BasicValue, FloatValue, FunctionValue, IntValue, PointerValue, UnnamedAddress,
+};
+use amice_plugin::inkwell::{
+    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate as LlvmFloatPredicate, IntPredicate,
+};
 use amice_vm::isa::{
-    BinOp, CastOp, InstructionDesc, Opcode, PcExpr, SemanticBinOp, SemanticExpr, SemanticProgram, SemanticStmt,
+    AtomicRmwOp, BinOp, CastOp, FloatBinOp, FloatCastOp, FloatPredicate as VmFloatPredicate, FloatUnaryOp,
+    InstructionDesc, IntTernaryOp, IntUnaryOp, MemoryOrdering, Opcode, PcExpr, SemanticAtomicRmwOp, SemanticBinOp,
+    SemanticExpr, SemanticFloatBinOp, SemanticFloatCastOp, SemanticFloatUnaryOp, SemanticIntTernaryOp,
+    SemanticIntUnaryOp, SemanticProgram, SemanticStmt,
 };
 use amice_vm::profile::DecoderStep;
 use amice_vm::{NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, ProfilePackage, RuntimeScope};
@@ -431,8 +439,6 @@ fn emit_dispatch<'ctx>(
 
     let entry = ctx.append_basic_block(function, "entry");
     let loop_check = ctx.append_basic_block(function, "loop.check");
-    let scan_loop = ctx.append_basic_block(function, "scan.loop");
-    let skip_decode = ctx.append_basic_block(function, "skip.decode");
     let execute_decode = ctx.append_basic_block(function, "execute.decode");
     let default_return = ctx.append_basic_block(function, "default.return");
 
@@ -443,7 +449,6 @@ fn emit_dispatch<'ctx>(
     let _q_regs = builder.build_alloca(q_type, "q")?;
     let pc_ptr = builder.build_alloca(i64_type, "pc")?;
     let offset_ptr = builder.build_alloca(i64_type, "offset")?;
-    let scan_ptr = builder.build_alloca(i64_type, "scan")?;
     builder.build_store(pc_ptr, i64_type.const_zero())?;
 
     // wrapper 总是传 8 个 i64 参数槽；profile ABI 决定这些槽落到哪些 x 寄存器。
@@ -469,7 +474,7 @@ fn emit_dispatch<'ctx>(
     let const_pool = function.get_nth_param(2).unwrap().into_pointer_value();
     let const_pool_len = function.get_nth_param(3).unwrap().into_int_value();
     let key = function.get_nth_param(4).unwrap().into_int_value();
-    let inst_count = function.get_nth_param(5).unwrap().into_int_value();
+    let pc_limit = function.get_nth_param(5).unwrap().into_int_value();
     let native_table = function.get_nth_param(6).unwrap().into_pointer_value();
     let native_count = function.get_nth_param(7).unwrap().into_int_value();
     let ret_slots = function.get_nth_param(8).unwrap().into_pointer_value();
@@ -484,60 +489,11 @@ fn emit_dispatch<'ctx>(
 
     builder.position_at_end(loop_check);
     let pc = load_i64(&builder, i64_type, pc_ptr, "pc")?;
-    let pc_in_range = builder.build_int_compare(IntPredicate::ULT, pc, inst_count, "pc.in.range")?;
-    builder.build_store(offset_ptr, i64_type.const_zero())?;
-    builder.build_store(scan_ptr, i64_type.const_zero())?;
-    builder.build_conditional_branch(pc_in_range, scan_loop, default_return)?;
+    let pc_in_range = builder.build_int_compare(IntPredicate::ULT, pc, pc_limit, "pc.in.range")?;
+    builder.build_store(offset_ptr, pc)?;
+    builder.build_conditional_branch(pc_in_range, execute_decode, default_return)?;
 
-    builder.position_at_end(scan_loop);
-    // bytecode PC 是指令索引，不是字节偏移。dispatcher 从头扫描，解码并跳过 record，
-    // 直到 scan == pc 后，再用同一套 decoder pipeline 执行选中的指令。
-    let scan = load_i64(&builder, i64_type, scan_ptr, "scan")?;
-    let pc = load_i64(&builder, i64_type, pc_ptr, "pc.current")?;
-    let is_current = builder.build_int_compare(IntPredicate::EQ, scan, pc, "is.current")?;
-    builder.build_conditional_branch(is_current, execute_decode, skip_decode)?;
-
-    builder.position_at_end(skip_decode);
-    let skip_opcode = read_token(
-        &builder,
-        read_varint,
-        RuntimeArgs {
-            code,
-            len,
-            key,
-            offset_ptr,
-        },
-        "skip.opcode",
-    )?;
-    let skip_case_count = profile.isa.instructions.iter().map(|desc| desc.opcodes().len()).sum();
-    let mut skip_cases = Vec::with_capacity(skip_case_count);
     let handler_alias_order = handler_alias_order(profile, name);
-    // 跳过非当前 PC 的 record 时仍必须按 profile operand 数量解码 operand，
-    // 否则 offset 会停在错误位置，后续扫描无法找到正确 record。
-    for (instruction_index, opcode) in &handler_alias_order {
-        let desc = &profile.isa.instructions[*instruction_index];
-        let block = ctx.append_basic_block(function, &format!("skip.{}.op{opcode:02x}", desc.name));
-        skip_cases.push((i64_type.const_int(*opcode as u64, false), block));
-        builder.position_at_end(block);
-        for _ in 0..desc.operands {
-            let _ = read_token(
-                &builder,
-                read_operand,
-                RuntimeArgs {
-                    code,
-                    len,
-                    key,
-                    offset_ptr,
-                },
-                "skip.operand",
-            )?;
-        }
-        let next_scan = builder.build_int_add(scan, i64_type.const_int(1, false), "scan.next")?;
-        builder.build_store(scan_ptr, next_scan)?;
-        builder.build_unconditional_branch(scan_loop)?;
-    }
-    builder.position_at_end(skip_decode);
-    builder.build_switch(skip_opcode, default_return, &skip_cases)?;
 
     builder.position_at_end(execute_decode);
     let opcode = read_token(
@@ -604,6 +560,7 @@ fn emit_dispatch<'ctx>(
                 return_regs,
                 lr_register,
                 ret_slots,
+                decoded_width: desc.decoded_width,
             },
             &desc.semantic_program,
         )?;
@@ -641,6 +598,7 @@ fn emit_dispatch<'ctx>(
             return_regs,
             lr_register,
             ret_slots,
+            decoded_width: 0,
         },
     )?;
     builder.build_return(Some(&ret))?;
@@ -686,6 +644,8 @@ struct HandlerContext<'ctx, 'profile> {
     lr_register: u8,
     // wrapper 分配的返回槽数组，aggregate/sret 路径通过它带出多个值。
     ret_slots: PointerValue<'ctx>,
+    // 当前 handler 对应的 decoded record 字节宽度，来自 profile `decoded_width`。
+    decoded_width: u8,
 }
 
 #[derive(Debug)]
@@ -722,13 +682,28 @@ fn read_handler_operands<'ctx>(
 enum RuntimeHandlerTemplate {
     MovImm,
     ConstLoad,
+    SuperAddXor,
+    SuperIcmpBrIf,
+    SuperGepLoad,
+    SuperLoadAdd,
     Mov,
     Bin(BinOp),
+    IntUnary(IntUnaryOp),
+    IntTernary(IntTernaryOp),
+    FloatBin(FloatBinOp),
+    FloatUnary(FloatUnaryOp),
+    FloatCast(FloatCastOp),
     Icmp,
+    Fcmp,
     Cast(CastOp),
     Alloca,
     Load,
     Store,
+    AtomicLoad,
+    AtomicStore,
+    AtomicRmw(AtomicRmwOp),
+    CmpXchg,
+    Fence,
     Gep,
     CallNative,
     Nop,
@@ -750,12 +725,32 @@ impl RuntimeHandlerTemplate {
             Self::ConstLoad
         } else if has_assign_reg(statements, "dst", &trunc_width(reg("src"), operand("width"))) {
             Self::Mov
+        } else if add_xor_template(statements) {
+            Self::SuperAddXor
+        } else if icmp_br_if_template(statements) {
+            Self::SuperIcmpBrIf
+        } else if gep_load_template(statements) {
+            Self::SuperGepLoad
+        } else if load_add_template(statements) {
+            Self::SuperLoadAdd
         } else if let Some(op) = bin_template(statements) {
             Self::Bin(op)
         } else if ashr_template(statements) {
             Self::Bin(BinOp::AShr)
+        } else if let Some(op) = int_unary_template(statements) {
+            Self::IntUnary(op)
+        } else if let Some(op) = int_ternary_template(statements) {
+            Self::IntTernary(op)
+        } else if let Some(op) = float_bin_template(statements) {
+            Self::FloatBin(op)
+        } else if let Some(op) = float_unary_template(statements) {
+            Self::FloatUnary(op)
+        } else if let Some(op) = float_cast_template(statements) {
+            Self::FloatCast(op)
         } else if has_assign_reg(statements, "dst", &compare_expr()) {
             Self::Icmp
+        } else if has_assign_reg(statements, "dst", &float_compare_expr()) {
+            Self::Fcmp
         } else if has_assign_reg(statements, "dst", &zero_extend_expr()) {
             Self::Cast(CastOp::ZExt)
         } else if has_assign_reg(statements, "dst", &sign_extend_expr()) {
@@ -768,8 +763,18 @@ impl RuntimeHandlerTemplate {
             Self::Alloca
         } else if has_assign_reg(statements, "dst", &load_width_expr()) {
             Self::Load
+        } else if has_assign_reg(statements, "dst", &atomic_load_width_expr()) {
+            Self::AtomicLoad
         } else if store_template(statements) {
             Self::Store
+        } else if atomic_store_template(statements) {
+            Self::AtomicStore
+        } else if let Some(op) = atomic_rmw_template(statements) {
+            Self::AtomicRmw(op)
+        } else if cmpxchg_template(statements) {
+            Self::CmpXchg
+        } else if fence_template(statements) {
+            Self::Fence
         } else if has_assign_reg(statements, "dst", &gep_expr()) {
             Self::Gep
         } else if call_native_template(statements) {
@@ -813,7 +818,7 @@ fn emit_handler<'ctx, 'profile>(
             let width = operands.get("width")?;
             let value = mask_to_width(builder, ctx.i64_type, imm, width)?;
             store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
-            increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+            increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
             builder.build_unconditional_branch(ctx.loop_check)?;
         },
         RuntimeHandlerTemplate::ConstLoad => {
@@ -823,8 +828,20 @@ fn emit_handler<'ctx, 'profile>(
             let value = read_const_pool_value(builder, ctx, index)?;
             let value = mask_to_width(builder, ctx.i64_type, value, width)?;
             store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
-            increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+            increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
             builder.build_unconditional_branch(ctx.loop_check)?;
+        },
+        RuntimeHandlerTemplate::SuperAddXor => {
+            emit_super_add_xor_handler(builder, operands, ctx)?;
+        },
+        RuntimeHandlerTemplate::SuperIcmpBrIf => {
+            emit_super_icmp_br_if_handler(builder, operands, ctx)?;
+        },
+        RuntimeHandlerTemplate::SuperGepLoad => {
+            emit_super_gep_load_handler(builder, operands, ctx)?;
+        },
+        RuntimeHandlerTemplate::SuperLoadAdd => {
+            emit_super_load_add_handler(builder, operands, ctx)?;
         },
         RuntimeHandlerTemplate::Mov => {
             let dst = operands.get("dst")?;
@@ -833,14 +850,32 @@ fn emit_handler<'ctx, 'profile>(
             let value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, src, "mov.src")?;
             let value = mask_to_width(builder, ctx.i64_type, value, width)?;
             store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
-            increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+            increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
             builder.build_unconditional_branch(ctx.loop_check)?;
         },
         RuntimeHandlerTemplate::Bin(op) => {
             emit_bin_handler(builder, operands, ctx, op)?;
         },
+        RuntimeHandlerTemplate::IntUnary(op) => {
+            emit_int_unary_handler(builder, operands, ctx, op)?;
+        },
+        RuntimeHandlerTemplate::IntTernary(op) => {
+            emit_int_ternary_handler(builder, operands, ctx, op)?;
+        },
+        RuntimeHandlerTemplate::FloatBin(op) => {
+            emit_float_bin_handler(builder, operands, ctx, op)?;
+        },
+        RuntimeHandlerTemplate::FloatUnary(op) => {
+            emit_float_unary_handler(builder, operands, ctx, op)?;
+        },
+        RuntimeHandlerTemplate::FloatCast(op) => {
+            emit_float_cast_handler(builder, operands, ctx, op)?;
+        },
         RuntimeHandlerTemplate::Icmp => {
             emit_icmp_handler(builder, operands, ctx)?;
+        },
+        RuntimeHandlerTemplate::Fcmp => {
+            emit_fcmp_handler(builder, operands, ctx)?;
         },
         RuntimeHandlerTemplate::Cast(op) => {
             emit_cast_handler(builder, operands, ctx, op)?;
@@ -854,6 +889,21 @@ fn emit_handler<'ctx, 'profile>(
         RuntimeHandlerTemplate::Store => {
             emit_store_handler(builder, operands, ctx)?;
         },
+        RuntimeHandlerTemplate::AtomicLoad => {
+            emit_atomic_load_handler(builder, operands, ctx)?;
+        },
+        RuntimeHandlerTemplate::AtomicStore => {
+            emit_atomic_store_handler(builder, operands, ctx)?;
+        },
+        RuntimeHandlerTemplate::AtomicRmw(op) => {
+            emit_atomic_rmw_handler(builder, operands, ctx, op)?;
+        },
+        RuntimeHandlerTemplate::CmpXchg => {
+            emit_cmpxchg_handler(builder, operands, ctx)?;
+        },
+        RuntimeHandlerTemplate::Fence => {
+            emit_fence_handler(builder, operands, ctx)?;
+        },
         RuntimeHandlerTemplate::Gep => {
             let dst = operands.get("dst")?;
             let base = operands.get("base")?;
@@ -861,14 +911,14 @@ fn emit_handler<'ctx, 'profile>(
             let base_addr = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, base, "gep.base.addr")?;
             let addr = builder.build_int_add(base_addr, offset, "gep.addr")?;
             store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, addr)?;
-            increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+            increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
             builder.build_unconditional_branch(ctx.loop_check)?;
         },
         RuntimeHandlerTemplate::CallNative => {
             emit_call_native_handler(builder, operands, ctx)?;
         },
         RuntimeHandlerTemplate::Nop => {
-            increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+            increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
             builder.build_unconditional_branch(ctx.loop_check)?;
         },
         RuntimeHandlerTemplate::Br => {
@@ -892,7 +942,11 @@ fn emit_handler<'ctx, 'profile>(
         RuntimeHandlerTemplate::VmCall => {
             let target = operands.get("target")?;
             let pc = load_i64(builder, ctx.i64_type, ctx.pc_ptr, "vm.call.pc")?;
-            let return_pc = builder.build_int_add(pc, ctx.i64_type.const_int(1, false), "vm.call.return.pc")?;
+            let return_pc = builder.build_int_add(
+                pc,
+                ctx.i64_type.const_int(ctx.decoded_width as u64, false),
+                "vm.call.return.pc",
+            )?;
             store_reg(
                 builder,
                 ctx.i64_type,
@@ -944,6 +998,69 @@ fn has_assign_reg(statements: &[SemanticStmt], dst: &str, expected: &SemanticExp
     })
 }
 
+fn add_xor_template(statements: &[SemanticStmt]) -> bool {
+    has_assign_reg(
+        statements,
+        "dst",
+        &trunc_width(
+            SemanticExpr::Binary {
+                op: SemanticBinOp::Xor,
+                lhs: Box::new(SemanticExpr::Binary {
+                    op: SemanticBinOp::Add,
+                    lhs: Box::new(reg("lhs")),
+                    rhs: Box::new(reg("rhs")),
+                }),
+                rhs: Box::new(reg("xor_rhs")),
+            },
+            operand("width"),
+        ),
+    )
+}
+
+fn icmp_br_if_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::AssignPc {
+                value: PcExpr::Select {
+                    cond,
+                    then_pc,
+                    else_pc,
+                }
+            } if cond.as_ref() == &compare_expr() && then_pc == "then_pc" && else_pc == "else_pc"
+        )
+    })
+}
+
+fn gep_load_template(statements: &[SemanticStmt]) -> bool {
+    has_assign_reg(
+        statements,
+        "dst",
+        &SemanticExpr::LoadWidth {
+            ptr: Box::new(gep_expr()),
+            width: Box::new(operand("width")),
+        },
+    ) && pc_next(statements)
+}
+
+fn load_add_template(statements: &[SemanticStmt]) -> bool {
+    has_assign_reg(
+        statements,
+        "dst",
+        &trunc_width(
+            SemanticExpr::Binary {
+                op: SemanticBinOp::Add,
+                lhs: Box::new(SemanticExpr::LoadWidth {
+                    ptr: Box::new(reg("ptr")),
+                    width: Box::new(operand("width")),
+                }),
+                rhs: Box::new(reg("addend")),
+            },
+            operand("width"),
+        ),
+    ) && pc_next(statements)
+}
+
 fn bin_template(statements: &[SemanticStmt]) -> Option<BinOp> {
     [
         (SemanticBinOp::Add, BinOp::Add),
@@ -977,6 +1094,75 @@ fn bin_template(statements: &[SemanticStmt]) -> Option<BinOp> {
     })
 }
 
+fn int_unary_template(statements: &[SemanticStmt]) -> Option<IntUnaryOp> {
+    [
+        (SemanticIntUnaryOp::CtPop, IntUnaryOp::CtPop),
+        (SemanticIntUnaryOp::BSwap, IntUnaryOp::BSwap),
+        (SemanticIntUnaryOp::BitReverse, IntUnaryOp::BitReverse),
+    ]
+    .into_iter()
+    .find_map(|(semantic_op, runtime_op)| {
+        has_assign_reg(
+            statements,
+            "dst",
+            &SemanticExpr::IntUnary {
+                op: semantic_op,
+                value: Box::new(reg("src")),
+                width: Box::new(operand("width")),
+            },
+        )
+        .then_some(runtime_op)
+    })
+    .filter(|_| pc_next(statements))
+}
+
+fn int_ternary_template(statements: &[SemanticStmt]) -> Option<IntTernaryOp> {
+    [
+        (SemanticIntTernaryOp::FShl, IntTernaryOp::FShl),
+        (SemanticIntTernaryOp::FShr, IntTernaryOp::FShr),
+    ]
+    .into_iter()
+    .find_map(|(semantic_op, runtime_op)| {
+        has_assign_reg(
+            statements,
+            "dst",
+            &SemanticExpr::IntTernary {
+                op: semantic_op,
+                lhs: Box::new(reg("lhs")),
+                rhs: Box::new(reg("rhs")),
+                third: Box::new(reg("third")),
+                width: Box::new(operand("width")),
+            },
+        )
+        .then_some(runtime_op)
+    })
+    .filter(|_| pc_next(statements))
+}
+
+fn float_bin_template(statements: &[SemanticStmt]) -> Option<FloatBinOp> {
+    [
+        (SemanticFloatBinOp::Add, FloatBinOp::Add),
+        (SemanticFloatBinOp::Sub, FloatBinOp::Sub),
+        (SemanticFloatBinOp::Mul, FloatBinOp::Mul),
+        (SemanticFloatBinOp::Div, FloatBinOp::Div),
+        (SemanticFloatBinOp::Rem, FloatBinOp::Rem),
+    ]
+    .into_iter()
+    .find_map(|(semantic_op, bin_op)| {
+        has_assign_reg(
+            statements,
+            "dst",
+            &SemanticExpr::FloatBinary {
+                op: semantic_op,
+                lhs: Box::new(reg("lhs")),
+                rhs: Box::new(reg("rhs")),
+                width: Box::new(operand("width")),
+            },
+        )
+        .then_some(bin_op)
+    })
+}
+
 fn ashr_template(statements: &[SemanticStmt]) -> bool {
     has_assign_reg(
         statements,
@@ -1004,6 +1190,87 @@ fn store_template(statements: &[SemanticStmt]) -> bool {
                 if ptr == &reg("ptr") && value == &reg("src") && width == &operand("width")
         )
     })
+}
+
+fn atomic_store_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::AtomicStoreWidth {
+                ptr,
+                value,
+                width,
+                ordering,
+            } if ptr == &reg("ptr")
+                && value == &reg("src")
+                && width == &operand("width")
+                && ordering == &operand("ordering")
+        )
+    })
+}
+
+fn atomic_rmw_template(statements: &[SemanticStmt]) -> Option<AtomicRmwOp> {
+    [
+        (SemanticAtomicRmwOp::Xchg, AtomicRmwOp::Xchg),
+        (SemanticAtomicRmwOp::Add, AtomicRmwOp::Add),
+        (SemanticAtomicRmwOp::Sub, AtomicRmwOp::Sub),
+        (SemanticAtomicRmwOp::And, AtomicRmwOp::And),
+        (SemanticAtomicRmwOp::Or, AtomicRmwOp::Or),
+        (SemanticAtomicRmwOp::Xor, AtomicRmwOp::Xor),
+        (SemanticAtomicRmwOp::Nand, AtomicRmwOp::Nand),
+        (SemanticAtomicRmwOp::Max, AtomicRmwOp::Max),
+        (SemanticAtomicRmwOp::Min, AtomicRmwOp::Min),
+        (SemanticAtomicRmwOp::UMax, AtomicRmwOp::UMax),
+        (SemanticAtomicRmwOp::UMin, AtomicRmwOp::UMin),
+    ]
+    .into_iter()
+    .find_map(|(semantic_op, runtime_op)| {
+        has_assign_reg(
+            statements,
+            "dst",
+            &SemanticExpr::AtomicRmw {
+                op: semantic_op,
+                ptr: Box::new(reg("ptr")),
+                value: Box::new(reg("src")),
+                width: Box::new(operand("width")),
+                ordering: Box::new(operand("ordering")),
+            },
+        )
+        .then_some(runtime_op)
+    })
+    .filter(|_| pc_next(statements))
+}
+
+fn cmpxchg_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::CmpXchg {
+                old,
+                success,
+                ptr,
+                compare,
+                new,
+                width,
+                success_ordering,
+                failure_ordering,
+            } if old == "old"
+                && success == "success"
+                && ptr == &reg("ptr")
+                && compare == &reg("cmp")
+                && new == &reg("new")
+                && width == &operand("width")
+                && success_ordering == &operand("success_ordering")
+                && failure_ordering == &operand("failure_ordering")
+        )
+    }) && pc_next(statements)
+}
+
+fn fence_template(statements: &[SemanticStmt]) -> bool {
+    statements
+        .iter()
+        .any(|stmt| matches!(stmt, SemanticStmt::Fence { ordering } if ordering == &operand("ordering")))
+        && pc_next(statements)
 }
 
 fn call_native_template(statements: &[SemanticStmt]) -> bool {
@@ -1046,6 +1313,12 @@ fn pc_return(statements: &[SemanticStmt]) -> bool {
         .any(|stmt| matches!(stmt, SemanticStmt::AssignPc { value: PcExpr::Return }))
 }
 
+fn pc_next(statements: &[SemanticStmt]) -> bool {
+    statements
+        .iter()
+        .any(|stmt| matches!(stmt, SemanticStmt::AssignPc { value: PcExpr::Next }))
+}
+
 fn pc_select_template(statements: &[SemanticStmt]) -> bool {
     statements.iter().any(|stmt| {
         matches!(
@@ -1076,8 +1349,62 @@ fn trunc_width(value: SemanticExpr, width: SemanticExpr) -> SemanticExpr {
     }
 }
 
+fn float_unary_template(statements: &[SemanticStmt]) -> Option<FloatUnaryOp> {
+    let templates = [(SemanticFloatUnaryOp::Neg, FloatUnaryOp::Neg)];
+    templates
+        .iter()
+        .find_map(|(semantic_op, runtime_op)| {
+            has_assign_reg(
+                statements,
+                "dst",
+                &SemanticExpr::FloatUnary {
+                    op: *semantic_op,
+                    value: Box::new(reg("src")),
+                    width: Box::new(operand("width")),
+                },
+            )
+            .then_some(*runtime_op)
+        })
+        .filter(|_| pc_next(statements))
+}
+
+fn float_cast_template(statements: &[SemanticStmt]) -> Option<FloatCastOp> {
+    [
+        (SemanticFloatCastOp::SignedIntToFloat, FloatCastOp::SignedIntToFloat),
+        (SemanticFloatCastOp::UnsignedIntToFloat, FloatCastOp::UnsignedIntToFloat),
+        (SemanticFloatCastOp::FloatToSignedInt, FloatCastOp::FloatToSignedInt),
+        (SemanticFloatCastOp::FloatToUnsignedInt, FloatCastOp::FloatToUnsignedInt),
+        (SemanticFloatCastOp::FloatTrunc, FloatCastOp::FloatTrunc),
+        (SemanticFloatCastOp::FloatExt, FloatCastOp::FloatExt),
+    ]
+    .into_iter()
+    .find_map(|(semantic_op, runtime_op)| {
+        has_assign_reg(
+            statements,
+            "dst",
+            &SemanticExpr::FloatCast {
+                op: semantic_op,
+                value: Box::new(reg("src")),
+                from_width: Box::new(operand("from_width")),
+                to_width: Box::new(operand("to_width")),
+            },
+        )
+        .then_some(runtime_op)
+    })
+    .filter(|_| pc_next(statements))
+}
+
 fn compare_expr() -> SemanticExpr {
     SemanticExpr::Compare {
+        pred: Box::new(operand("pred")),
+        lhs: Box::new(reg("lhs")),
+        rhs: Box::new(reg("rhs")),
+        width: Box::new(operand("width")),
+    }
+}
+
+fn float_compare_expr() -> SemanticExpr {
+    SemanticExpr::FloatCompare {
         pred: Box::new(operand("pred")),
         lhs: Box::new(reg("lhs")),
         rhs: Box::new(reg("rhs")),
@@ -1120,6 +1447,14 @@ fn load_width_expr() -> SemanticExpr {
     SemanticExpr::LoadWidth {
         ptr: Box::new(reg("ptr")),
         width: Box::new(operand("width")),
+    }
+}
+
+fn atomic_load_width_expr() -> SemanticExpr {
+    SemanticExpr::AtomicLoadWidth {
+        ptr: Box::new(reg("ptr")),
+        width: Box::new(operand("width")),
+        ordering: Box::new(operand("ordering")),
     }
 }
 
@@ -1195,7 +1530,7 @@ fn emit_alloca_handler<'ctx>(
     let ptr = builder.build_array_alloca(ctx.i8_type, bytes, "vm.alloca")?;
     let addr = builder.build_ptr_to_int(ptr, ctx.i64_type, "vm.alloca.addr")?;
     store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, addr)?;
-    increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
     builder.build_unconditional_branch(ctx.loop_check)?;
     Ok(())
 }
@@ -1209,10 +1544,69 @@ fn emit_load_handler<'ctx>(
     let ptr_reg = operands.get("ptr")?;
     let width = operands.get("width")?;
     let base_addr = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, ptr_reg, "load.base")?;
+    emit_scalar_load_from_address(builder, ctx, dst, base_addr, width, "load")
+}
+
+fn emit_super_gep_load_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let base = operands.get("base")?;
+    let offset = operands.get("offset")?;
+    let width = operands.get("width")?;
+    let base_addr = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, base, "gep_load.base")?;
+    let addr = builder.build_int_add(base_addr, offset, "gep_load.addr")?;
+    emit_scalar_load_from_address(builder, ctx, dst, addr, width, "gep_load")
+}
+
+fn emit_super_load_add_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let ptr = operands.get("ptr")?;
+    let addend = operands.get("addend")?;
+    let width = operands.get("width")?;
+    let base_addr = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, ptr, "load_iadd.ptr")?;
+    let loaded = read_scalar_load_from_address(builder, ctx, base_addr, width, "load_iadd")?;
+    let addend_value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, addend, "load_iadd.addend")?;
+    let raw = builder.build_int_add(loaded, addend_value, "load_iadd.add")?;
+    let value = mask_to_width(builder, ctx.i64_type, raw, width)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_scalar_load_from_address<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    dst: IntValue<'ctx>,
+    base_addr: IntValue<'ctx>,
+    width: IntValue<'ctx>,
+    name: &str,
+) -> anyhow::Result<()> {
+    let result = read_scalar_load_from_address(builder, ctx, base_addr, width, name)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, result)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn read_scalar_load_from_address<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    base_addr: IntValue<'ctx>,
+    width: IntValue<'ctx>,
+    name: &str,
+) -> anyhow::Result<IntValue<'ctx>> {
     let byte_count = width_to_byte_count(builder, ctx.i64_type, width)?;
 
-    let index_ptr = builder.build_alloca(ctx.i64_type, "load.index")?;
-    let result_ptr = builder.build_alloca(ctx.i64_type, "load.result")?;
+    let index_ptr = builder.build_alloca(ctx.i64_type, &format!("{name}.index"))?;
+    let result_ptr = builder.build_alloca(ctx.i64_type, &format!("{name}.result"))?;
     builder.build_store(index_ptr, ctx.i64_type.const_zero())?;
     builder.build_store(result_ptr, ctx.i64_type.const_zero())?;
 
@@ -1220,47 +1614,43 @@ fn emit_load_handler<'ctx>(
         .function
         .get_type()
         .get_context()
-        .append_basic_block(ctx.function, "load.loop");
+        .append_basic_block(ctx.function, &format!("{name}.loop"));
     let body_block = ctx
         .function
         .get_type()
         .get_context()
-        .append_basic_block(ctx.function, "load.body");
+        .append_basic_block(ctx.function, &format!("{name}.body"));
     let done_block = ctx
         .function
         .get_type()
         .get_context()
-        .append_basic_block(ctx.function, "load.done");
+        .append_basic_block(ctx.function, &format!("{name}.done"));
     builder.build_unconditional_branch(loop_block)?;
 
     builder.position_at_end(loop_block);
-    let index = load_i64(builder, ctx.i64_type, index_ptr, "load.index.cur")?;
-    let in_range = builder.build_int_compare(IntPredicate::ULT, index, byte_count, "load.in.range")?;
+    let index = load_i64(builder, ctx.i64_type, index_ptr, &format!("{name}.index.cur"))?;
+    let in_range = builder.build_int_compare(IntPredicate::ULT, index, byte_count, &format!("{name}.in.range"))?;
     builder.build_conditional_branch(in_range, body_block, done_block)?;
 
     builder.position_at_end(body_block);
-    let byte_addr = builder.build_int_add(base_addr, index, "load.byte.addr")?;
-    let byte_ptr = builder.build_int_to_ptr(byte_addr, ctx.ptr_type, "load.byte.ptr")?;
+    let byte_addr = builder.build_int_add(base_addr, index, &format!("{name}.byte.addr"))?;
+    let byte_ptr = builder.build_int_to_ptr(byte_addr, ctx.ptr_type, &format!("{name}.byte.ptr"))?;
     let byte = builder
-        .build_load2(ctx.i8_type, byte_ptr, "load.byte")?
+        .build_load2(ctx.i8_type, byte_ptr, &format!("{name}.byte"))?
         .into_int_value();
-    let byte64 = builder.build_int_z_extend(byte, ctx.i64_type, "load.byte64")?;
-    let shift = builder.build_int_mul(index, ctx.i64_type.const_int(8, false), "load.shift")?;
-    let shifted = builder.build_left_shift(byte64, shift, "load.shifted")?;
-    let old_result = load_i64(builder, ctx.i64_type, result_ptr, "load.result.old")?;
-    let new_result = builder.build_or(old_result, shifted, "load.result.new")?;
+    let byte64 = builder.build_int_z_extend(byte, ctx.i64_type, &format!("{name}.byte64"))?;
+    let shift = builder.build_int_mul(index, ctx.i64_type.const_int(8, false), &format!("{name}.shift"))?;
+    let shifted = builder.build_left_shift(byte64, shift, &format!("{name}.shifted"))?;
+    let old_result = load_i64(builder, ctx.i64_type, result_ptr, &format!("{name}.result.old"))?;
+    let new_result = builder.build_or(old_result, shifted, &format!("{name}.result.new"))?;
     builder.build_store(result_ptr, new_result)?;
-    let next_index = builder.build_int_add(index, ctx.i64_type.const_int(1, false), "load.index.next")?;
+    let next_index = builder.build_int_add(index, ctx.i64_type.const_int(1, false), &format!("{name}.index.next"))?;
     builder.build_store(index_ptr, next_index)?;
     builder.build_unconditional_branch(loop_block)?;
 
     builder.position_at_end(done_block);
-    let result = load_i64(builder, ctx.i64_type, result_ptr, "load.result.final")?;
-    let result = mask_to_width(builder, ctx.i64_type, result, width)?;
-    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, result)?;
-    increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
-    builder.build_unconditional_branch(ctx.loop_check)?;
-    Ok(())
+    let result = load_i64(builder, ctx.i64_type, result_ptr, &format!("{name}.result.final"))?;
+    mask_to_width(builder, ctx.i64_type, result, width)
 }
 
 fn emit_store_handler<'ctx>(
@@ -1312,9 +1702,582 @@ fn emit_store_handler<'ctx>(
     builder.build_unconditional_branch(loop_block)?;
 
     builder.position_at_end(done_block);
-    increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
     builder.build_unconditional_branch(ctx.loop_check)?;
     Ok(())
+}
+
+fn emit_atomic_load_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let ptr_reg = operands.get("ptr")?;
+    let width = operands.get("width")?;
+    let ordering = operands.get("ordering")?;
+    let base_addr = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, ptr_reg, "atomic.load.base")?;
+    let done_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "atomic.load.done");
+
+    for (width_bits, llvm_ordering) in atomic_load_cases() {
+        let case_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "atomic.load.case");
+        let next_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "atomic.load.next");
+        let width_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            width,
+            ctx.i64_type.const_int(width_bits, false),
+            "atomic.load.width.match",
+        )?;
+        let ordering_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            ordering,
+            ctx.i64_type
+                .const_int(memory_ordering_tag_for_llvm(llvm_ordering), false),
+            "atomic.load.order.match",
+        )?;
+        let matched = builder.build_and(width_match, ordering_match, "atomic.load.match")?;
+        builder.build_conditional_branch(matched, case_block, next_block)?;
+
+        builder.position_at_end(case_block);
+        emit_atomic_load_case(builder, ctx, dst, base_addr, width_bits, llvm_ordering)?;
+        builder.build_unconditional_branch(done_block)?;
+        builder.position_at_end(next_block);
+    }
+
+    builder.build_unconditional_branch(done_block)?;
+    builder.position_at_end(done_block);
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_atomic_store_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let src = operands.get("src")?;
+    let ptr_reg = operands.get("ptr")?;
+    let width = operands.get("width")?;
+    let ordering = operands.get("ordering")?;
+    let value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, src, "atomic.store.value")?;
+    let base_addr = load_reg(
+        builder,
+        ctx.i64_type,
+        ctx.x_type,
+        ctx.regs,
+        ptr_reg,
+        "atomic.store.base",
+    )?;
+    let done_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "atomic.store.done");
+
+    for (width_bits, llvm_ordering) in atomic_store_cases() {
+        let case_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "atomic.store.case");
+        let next_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "atomic.store.next");
+        let width_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            width,
+            ctx.i64_type.const_int(width_bits, false),
+            "atomic.store.width.match",
+        )?;
+        let ordering_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            ordering,
+            ctx.i64_type
+                .const_int(memory_ordering_tag_for_llvm(llvm_ordering), false),
+            "atomic.store.order.match",
+        )?;
+        let matched = builder.build_and(width_match, ordering_match, "atomic.store.match")?;
+        builder.build_conditional_branch(matched, case_block, next_block)?;
+
+        builder.position_at_end(case_block);
+        emit_atomic_store_case(builder, ctx, value, base_addr, width_bits, llvm_ordering)?;
+        builder.build_unconditional_branch(done_block)?;
+        builder.position_at_end(next_block);
+    }
+
+    builder.build_unconditional_branch(done_block)?;
+    builder.position_at_end(done_block);
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_atomic_load_case<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    dst: IntValue<'ctx>,
+    base_addr: IntValue<'ctx>,
+    width_bits: u64,
+    ordering: AtomicOrdering,
+) -> anyhow::Result<()> {
+    let int_type = int_type_for_width(ctx, width_bits)?;
+    let ptr = builder.build_int_to_ptr(base_addr, ctx.ptr_type, "atomic.load.ptr")?;
+    let raw = builder
+        .build_load2(int_type, ptr, "atomic.load.value")?
+        .into_int_value();
+    let load_inst = raw
+        .as_instruction_value()
+        .context("atomic load should produce an instruction")?;
+    load_inst.set_atomic_ordering(ordering)?;
+    load_inst.set_alignment(atomic_alignment(width_bits)?)?;
+    let value = if width_bits == 64 {
+        raw
+    } else {
+        builder.build_int_z_extend(raw, ctx.i64_type, "atomic.load.zext")?
+    };
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    Ok(())
+}
+
+fn emit_atomic_store_case<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    value: IntValue<'ctx>,
+    base_addr: IntValue<'ctx>,
+    width_bits: u64,
+    ordering: AtomicOrdering,
+) -> anyhow::Result<()> {
+    let int_type = int_type_for_width(ctx, width_bits)?;
+    let ptr = builder.build_int_to_ptr(base_addr, ctx.ptr_type, "atomic.store.ptr")?;
+    let stored = if width_bits == 64 {
+        value
+    } else {
+        builder.build_int_truncate(value, int_type, "atomic.store.trunc")?
+    };
+    let store_inst = builder.build_store(ptr, stored)?;
+    store_inst.set_atomic_ordering(ordering)?;
+    store_inst.set_alignment(atomic_alignment(width_bits)?)?;
+    Ok(())
+}
+
+fn emit_atomic_rmw_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    op: AtomicRmwOp,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let ptr_reg = operands.get("ptr")?;
+    let src = operands.get("src")?;
+    let width = operands.get("width")?;
+    let ordering = operands.get("ordering")?;
+    let value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, src, "atomic.rmw.value")?;
+    let base_addr = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, ptr_reg, "atomic.rmw.base")?;
+    let done_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "atomic.rmw.done");
+
+    for (width_bits, llvm_ordering) in atomic_rmw_cases() {
+        let case_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "atomic.rmw.case");
+        let next_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "atomic.rmw.next");
+        let width_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            width,
+            ctx.i64_type.const_int(width_bits, false),
+            "atomic.rmw.width.match",
+        )?;
+        let ordering_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            ordering,
+            ctx.i64_type
+                .const_int(memory_ordering_tag_for_llvm(llvm_ordering), false),
+            "atomic.rmw.order.match",
+        )?;
+        let matched = builder.build_and(width_match, ordering_match, "atomic.rmw.match")?;
+        builder.build_conditional_branch(matched, case_block, next_block)?;
+
+        builder.position_at_end(case_block);
+        emit_atomic_rmw_case(builder, ctx, op, dst, value, base_addr, width_bits, llvm_ordering)?;
+        builder.build_unconditional_branch(done_block)?;
+        builder.position_at_end(next_block);
+    }
+
+    builder.build_unconditional_branch(done_block)?;
+    builder.position_at_end(done_block);
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_atomic_rmw_case<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    op: AtomicRmwOp,
+    dst: IntValue<'ctx>,
+    value: IntValue<'ctx>,
+    base_addr: IntValue<'ctx>,
+    width_bits: u64,
+    ordering: AtomicOrdering,
+) -> anyhow::Result<()> {
+    let int_type = int_type_for_width(ctx, width_bits)?;
+    let ptr = builder.build_int_to_ptr(base_addr, ctx.ptr_type, "atomic.rmw.ptr")?;
+    let operand = if width_bits == 64 {
+        value
+    } else {
+        builder.build_int_truncate(value, int_type, "atomic.rmw.trunc")?
+    };
+    let old = builder.build_atomicrmw(atomic_rmw_op_for_llvm(op), ptr, operand, ordering)?;
+    let old_inst = old
+        .as_instruction_value()
+        .context("atomicrmw should produce an instruction")?;
+    let alignment = atomic_alignment(width_bits)?;
+    // SAFETY: `old_inst` 是刚由 LLVMBuildAtomicRMW 创建的 live instruction；这里仅写入
+    // alignment metadata，且 alignment 来自已限制的 8/16/32/64 位自然对齐。
+    unsafe { LLVMSetAlignment(old_inst.as_value_ref(), alignment) };
+    let old = if width_bits == 64 {
+        old
+    } else {
+        builder.build_int_z_extend(old, ctx.i64_type, "atomic.rmw.old.zext")?
+    };
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, old)?;
+    Ok(())
+}
+
+fn emit_cmpxchg_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let old_dst = operands.get("old")?;
+    let success_dst = operands.get("success")?;
+    let ptr_reg = operands.get("ptr")?;
+    let cmp_reg = operands.get("cmp")?;
+    let new_reg = operands.get("new")?;
+    let width = operands.get("width")?;
+    let success_ordering = operands.get("success_ordering")?;
+    let failure_ordering = operands.get("failure_ordering")?;
+    let cmp = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, cmp_reg, "cmpxchg.cmp")?;
+    let new = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, new_reg, "cmpxchg.new")?;
+    let base_addr = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, ptr_reg, "cmpxchg.base")?;
+    let done_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "cmpxchg.done");
+
+    for (width_bits, success_order, failure_order) in cmpxchg_cases() {
+        let case_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "cmpxchg.case");
+        let next_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "cmpxchg.next");
+        let width_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            width,
+            ctx.i64_type.const_int(width_bits, false),
+            "cmpxchg.width.match",
+        )?;
+        let success_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            success_ordering,
+            ctx.i64_type
+                .const_int(memory_ordering_tag_for_llvm(success_order), false),
+            "cmpxchg.success.order.match",
+        )?;
+        let failure_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            failure_ordering,
+            ctx.i64_type
+                .const_int(memory_ordering_tag_for_llvm(failure_order), false),
+            "cmpxchg.failure.order.match",
+        )?;
+        let order_match = builder.build_and(success_match, failure_match, "cmpxchg.order.match")?;
+        let matched = builder.build_and(width_match, order_match, "cmpxchg.match")?;
+        builder.build_conditional_branch(matched, case_block, next_block)?;
+
+        builder.position_at_end(case_block);
+        emit_cmpxchg_case(
+            builder,
+            ctx,
+            old_dst,
+            success_dst,
+            cmp,
+            new,
+            base_addr,
+            width_bits,
+            success_order,
+            failure_order,
+        )?;
+        builder.build_unconditional_branch(done_block)?;
+        builder.position_at_end(next_block);
+    }
+
+    builder.build_unconditional_branch(done_block)?;
+    builder.position_at_end(done_block);
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_cmpxchg_case<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    old_dst: IntValue<'ctx>,
+    success_dst: IntValue<'ctx>,
+    cmp: IntValue<'ctx>,
+    new: IntValue<'ctx>,
+    base_addr: IntValue<'ctx>,
+    width_bits: u64,
+    success_ordering: AtomicOrdering,
+    failure_ordering: AtomicOrdering,
+) -> anyhow::Result<()> {
+    let int_type = int_type_for_width(ctx, width_bits)?;
+    let ptr = builder.build_int_to_ptr(base_addr, ctx.ptr_type, "cmpxchg.ptr")?;
+    let cmp = if width_bits == 64 {
+        cmp
+    } else {
+        builder.build_int_truncate(cmp, int_type, "cmpxchg.cmp.trunc")?
+    };
+    let new = if width_bits == 64 {
+        new
+    } else {
+        builder.build_int_truncate(new, int_type, "cmpxchg.new.trunc")?
+    };
+    let pair = builder.build_cmpxchg(ptr, cmp, new, success_ordering, failure_ordering)?;
+    let alignment = atomic_alignment(width_bits)?;
+    // SAFETY: `pair` 是刚由 LLVMBuildAtomicCmpXchg 创建的 live instruction；这里仅写入
+    // alignment metadata，且 alignment 来自已限制的 8/16/32/64 位自然对齐。
+    unsafe { LLVMSetAlignment(pair.as_value_ref(), alignment) };
+    let old = builder.build_extract_value(pair, 0, "cmpxchg.old")?.into_int_value();
+    let old = if width_bits == 64 {
+        old
+    } else {
+        builder.build_int_z_extend(old, ctx.i64_type, "cmpxchg.old.zext")?
+    };
+    let success = builder
+        .build_extract_value(pair, 1, "cmpxchg.success")?
+        .into_int_value();
+    let success = builder.build_int_z_extend(success, ctx.i64_type, "cmpxchg.success.zext")?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, old_dst, old)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, success_dst, success)?;
+    Ok(())
+}
+
+fn emit_fence_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let ordering = operands.get("ordering")?;
+    let done_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "fence.done");
+
+    for fence_ordering in fence_cases() {
+        let case_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "fence.case");
+        let next_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "fence.next");
+        let matched = builder.build_int_compare(
+            IntPredicate::EQ,
+            ordering,
+            ctx.i64_type
+                .const_int(memory_ordering_tag_for_llvm(fence_ordering), false),
+            "fence.order.match",
+        )?;
+        builder.build_conditional_branch(matched, case_block, next_block)?;
+
+        builder.position_at_end(case_block);
+        emit_fence_case(builder, fence_ordering);
+        builder.build_unconditional_branch(done_block)?;
+        builder.position_at_end(next_block);
+    }
+
+    builder.build_unconditional_branch(done_block)?;
+    builder.position_at_end(done_block);
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_fence_case(builder: &amice_plugin::inkwell::builder::Builder<'_>, ordering: AtomicOrdering) {
+    // SAFETY: `builder` belongs to the live dispatcher function and is positioned in
+    // a handler case block. `ordering` comes from the finite `fence_cases()` set, so
+    // LLVM receives only acquire/release/acq_rel/seq_cst fence orderings.
+    unsafe {
+        LLVMBuildFence(builder.as_mut_ptr(), ordering.into(), 0, c"".as_ptr());
+    }
+}
+
+fn atomic_load_cases() -> impl Iterator<Item = (u64, AtomicOrdering)> {
+    [8, 16, 32, 64].into_iter().flat_map(|width| {
+        [
+            AtomicOrdering::Unordered,
+            AtomicOrdering::Monotonic,
+            AtomicOrdering::Acquire,
+            AtomicOrdering::SequentiallyConsistent,
+        ]
+        .into_iter()
+        .map(move |ordering| (width, ordering))
+    })
+}
+
+fn atomic_store_cases() -> impl Iterator<Item = (u64, AtomicOrdering)> {
+    [8, 16, 32, 64].into_iter().flat_map(|width| {
+        [
+            AtomicOrdering::Unordered,
+            AtomicOrdering::Monotonic,
+            AtomicOrdering::Release,
+            AtomicOrdering::SequentiallyConsistent,
+        ]
+        .into_iter()
+        .map(move |ordering| (width, ordering))
+    })
+}
+
+fn atomic_rmw_cases() -> impl Iterator<Item = (u64, AtomicOrdering)> {
+    [8, 16, 32, 64].into_iter().flat_map(|width| {
+        [
+            AtomicOrdering::Monotonic,
+            AtomicOrdering::Acquire,
+            AtomicOrdering::Release,
+            AtomicOrdering::AcquireRelease,
+            AtomicOrdering::SequentiallyConsistent,
+        ]
+        .into_iter()
+        .map(move |ordering| (width, ordering))
+    })
+}
+
+fn cmpxchg_cases() -> impl Iterator<Item = (u64, AtomicOrdering, AtomicOrdering)> {
+    [8, 16, 32, 64].into_iter().flat_map(|width| {
+        [
+            AtomicOrdering::Monotonic,
+            AtomicOrdering::Acquire,
+            AtomicOrdering::Release,
+            AtomicOrdering::AcquireRelease,
+            AtomicOrdering::SequentiallyConsistent,
+        ]
+        .into_iter()
+        .flat_map(move |success| {
+            [
+                AtomicOrdering::Monotonic,
+                AtomicOrdering::Acquire,
+                AtomicOrdering::SequentiallyConsistent,
+            ]
+            .into_iter()
+            .filter(move |failure| {
+                atomic_ordering_rank_for_cmpxchg(*failure) <= atomic_ordering_rank_for_cmpxchg(success)
+            })
+            .map(move |failure| (width, success, failure))
+        })
+    })
+}
+
+fn fence_cases() -> impl Iterator<Item = AtomicOrdering> {
+    [
+        AtomicOrdering::Acquire,
+        AtomicOrdering::Release,
+        AtomicOrdering::AcquireRelease,
+        AtomicOrdering::SequentiallyConsistent,
+    ]
+    .into_iter()
+}
+
+fn atomic_ordering_rank_for_cmpxchg(ordering: AtomicOrdering) -> u8 {
+    match ordering {
+        AtomicOrdering::Unordered => 1,
+        AtomicOrdering::Monotonic => 2,
+        AtomicOrdering::Acquire => 3,
+        AtomicOrdering::Release => 4,
+        AtomicOrdering::AcquireRelease => 5,
+        AtomicOrdering::SequentiallyConsistent => 6,
+        AtomicOrdering::NotAtomic => 0,
+    }
+}
+
+fn atomic_rmw_op_for_llvm(op: AtomicRmwOp) -> AtomicRMWBinOp {
+    match op {
+        AtomicRmwOp::Xchg => AtomicRMWBinOp::Xchg,
+        AtomicRmwOp::Add => AtomicRMWBinOp::Add,
+        AtomicRmwOp::Sub => AtomicRMWBinOp::Sub,
+        AtomicRmwOp::And => AtomicRMWBinOp::And,
+        AtomicRmwOp::Or => AtomicRMWBinOp::Or,
+        AtomicRmwOp::Xor => AtomicRMWBinOp::Xor,
+        AtomicRmwOp::Nand => AtomicRMWBinOp::Nand,
+        AtomicRmwOp::Max => AtomicRMWBinOp::Max,
+        AtomicRmwOp::Min => AtomicRMWBinOp::Min,
+        AtomicRmwOp::UMax => AtomicRMWBinOp::UMax,
+        AtomicRmwOp::UMin => AtomicRMWBinOp::UMin,
+    }
+}
+
+fn memory_ordering_tag_for_llvm(ordering: AtomicOrdering) -> u64 {
+    match ordering {
+        AtomicOrdering::Unordered => MemoryOrdering::Unordered as u64,
+        AtomicOrdering::Monotonic => MemoryOrdering::Monotonic as u64,
+        AtomicOrdering::Acquire => MemoryOrdering::Acquire as u64,
+        AtomicOrdering::Release => MemoryOrdering::Release as u64,
+        AtomicOrdering::AcquireRelease => MemoryOrdering::AcquireRelease as u64,
+        AtomicOrdering::SequentiallyConsistent => MemoryOrdering::SequentiallyConsistent as u64,
+        AtomicOrdering::NotAtomic => 0,
+    }
+}
+
+fn int_type_for_width<'ctx>(ctx: HandlerContext<'ctx, '_>, width_bits: u64) -> anyhow::Result<IntType<'ctx>> {
+    let llvm_context = ctx.function.get_type().get_context();
+    match width_bits {
+        8 => Ok(ctx.i8_type),
+        16 => Ok(llvm_context.i16_type()),
+        32 => Ok(llvm_context.i32_type()),
+        64 => Ok(ctx.i64_type),
+        _ => anyhow::bail!("atomic handler only supports i8/i16/i32/i64 widths, got {width_bits}"),
+    }
+}
+
+fn atomic_alignment(width_bits: u64) -> anyhow::Result<u32> {
+    match width_bits {
+        8 | 16 | 32 | 64 => Ok((width_bits / 8) as u32),
+        _ => anyhow::bail!("atomic alignment requires i8/i16/i32/i64 width, got {width_bits}"),
+    }
 }
 
 fn emit_call_native_handler<'ctx>(
@@ -1440,7 +2403,7 @@ fn emit_call_native_handler<'ctx>(
     builder.build_unconditional_branch(done_block)?;
 
     builder.position_at_end(done_block);
-    increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
     builder.build_unconditional_branch(ctx.loop_check)?;
     Ok(())
 }
@@ -1494,9 +2457,710 @@ fn emit_bin_handler<'ctx>(
     };
     let value = mask_to_width(builder, ctx.i64_type, raw, width)?;
     store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
-    increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
     builder.build_unconditional_branch(ctx.loop_check)?;
     Ok(())
+}
+
+fn emit_super_add_xor_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let lhs = operands.get("lhs")?;
+    let rhs = operands.get("rhs")?;
+    let xor_rhs = operands.get("xor_rhs")?;
+    let width = operands.get("width")?;
+    let lhs_value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, lhs, "super.add.lhs")?;
+    let rhs_value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, rhs, "super.add.rhs")?;
+    let xor_rhs_value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, xor_rhs, "super.xor.rhs")?;
+    let added = builder.build_int_add(lhs_value, rhs_value, "super.add")?;
+    let xored = builder.build_xor(added, xor_rhs_value, "super.xor")?;
+    let value = mask_to_width(builder, ctx.i64_type, xored, width)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_int_unary_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    op: IntUnaryOp,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let src = operands.get("src")?;
+    let width = operands.get("width")?;
+    let src_value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, src, "iunary.src")?;
+    let masked = mask_to_width(builder, ctx.i64_type, src_value, width)?;
+    let raw = match op {
+        IntUnaryOp::CtPop => build_popcount_i64(builder, ctx.i64_type, masked)?,
+        IntUnaryOp::BSwap => build_bswap_i64(builder, ctx.i64_type, masked, width)?,
+        IntUnaryOp::BitReverse => build_bitreverse_i64(builder, ctx.i64_type, masked, width)?,
+    };
+    let value = mask_to_width(builder, ctx.i64_type, raw, width)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_int_ternary_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    op: IntTernaryOp,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let lhs = operands.get("lhs")?;
+    let rhs = operands.get("rhs")?;
+    let third = operands.get("third")?;
+    let width = operands.get("width")?;
+    let lhs_value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, lhs, "iternary.lhs")?;
+    let rhs_value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, rhs, "iternary.rhs")?;
+    let third_value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, third, "iternary.third")?;
+    let lhs_value = mask_to_width(builder, ctx.i64_type, lhs_value, width)?;
+    let rhs_value = mask_to_width(builder, ctx.i64_type, rhs_value, width)?;
+    let raw = match op {
+        IntTernaryOp::FShl => build_funnel_shift_left(builder, ctx.i64_type, lhs_value, rhs_value, third_value, width)?,
+        IntTernaryOp::FShr => {
+            build_funnel_shift_right(builder, ctx.i64_type, lhs_value, rhs_value, third_value, width)?
+        },
+    };
+    let value = mask_to_width(builder, ctx.i64_type, raw, width)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn build_funnel_shift_left<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    lhs: IntValue<'ctx>,
+    rhs: IntValue<'ctx>,
+    shift: IntValue<'ctx>,
+    width: IntValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let zero = i64_type.const_zero();
+    let shift = builder.build_int_unsigned_rem(shift, width, "fshl.shift.mod")?;
+    let is_zero = builder.build_int_compare(IntPredicate::EQ, shift, zero, "fshl.shift.zero")?;
+    let inverse = builder.build_int_sub(width, shift, "fshl.inverse.raw")?;
+    let inverse = builder
+        .build_select(is_zero, zero, inverse, "fshl.inverse")?
+        .into_int_value();
+    let left = builder.build_left_shift(lhs, shift, "fshl.left")?;
+    let right = builder.build_right_shift(rhs, inverse, false, "fshl.right")?;
+    let combined = builder.build_or(left, right, "fshl.combined")?;
+    Ok(builder
+        .build_select(is_zero, lhs, combined, "fshl.result")?
+        .into_int_value())
+}
+
+fn build_funnel_shift_right<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    lhs: IntValue<'ctx>,
+    rhs: IntValue<'ctx>,
+    shift: IntValue<'ctx>,
+    width: IntValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let zero = i64_type.const_zero();
+    let shift = builder.build_int_unsigned_rem(shift, width, "fshr.shift.mod")?;
+    let is_zero = builder.build_int_compare(IntPredicate::EQ, shift, zero, "fshr.shift.zero")?;
+    let inverse = builder.build_int_sub(width, shift, "fshr.inverse.raw")?;
+    let inverse = builder
+        .build_select(is_zero, zero, inverse, "fshr.inverse")?
+        .into_int_value();
+    let left = builder.build_left_shift(lhs, inverse, "fshr.left")?;
+    let right = builder.build_right_shift(rhs, shift, false, "fshr.right")?;
+    let combined = builder.build_or(left, right, "fshr.combined")?;
+    Ok(builder
+        .build_select(is_zero, rhs, combined, "fshr.result")?
+        .into_int_value())
+}
+
+fn build_popcount_i64<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    value: IntValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let m1 = i64_type.const_int(0x5555_5555_5555_5555, false);
+    let m2 = i64_type.const_int(0x3333_3333_3333_3333, false);
+    let m4 = i64_type.const_int(0x0f0f_0f0f_0f0f_0f0f, false);
+    let h01 = i64_type.const_int(0x0101_0101_0101_0101, false);
+    let right1 = builder.build_right_shift(value, i64_type.const_int(1, false), false, "ctpop.shr1")?;
+    let paired = builder.build_and(right1, m1, "ctpop.paired")?;
+    let value = builder.build_int_sub(value, paired, "ctpop.sub")?;
+    let low2 = builder.build_and(value, m2, "ctpop.low2")?;
+    let right2 = builder.build_right_shift(value, i64_type.const_int(2, false), false, "ctpop.shr2")?;
+    let high2 = builder.build_and(right2, m2, "ctpop.high2")?;
+    let value = builder.build_int_add(low2, high2, "ctpop.nibbles")?;
+    let right4 = builder.build_right_shift(value, i64_type.const_int(4, false), false, "ctpop.shr4")?;
+    let value = builder.build_int_add(value, right4, "ctpop.bytes.unmasked")?;
+    let value = builder.build_and(value, m4, "ctpop.bytes")?;
+    let value = builder.build_int_mul(value, h01, "ctpop.sum")?;
+    builder
+        .build_right_shift(value, i64_type.const_int(56, false), false, "ctpop.result")
+        .map_err(Into::into)
+}
+
+fn build_bswap_i64<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    value: IntValue<'ctx>,
+    width: IntValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let m8 = i64_type.const_int(0x00ff_00ff_00ff_00ff, false);
+    let m16 = i64_type.const_int(0x0000_ffff_0000_ffff, false);
+    let left8 = builder.build_left_shift(
+        builder.build_and(value, m8, "bswap.low8")?,
+        i64_type.const_int(8, false),
+        "bswap.left8",
+    )?;
+    let right8 = builder.build_and(
+        builder.build_right_shift(value, i64_type.const_int(8, false), false, "bswap.shr8")?,
+        m8,
+        "bswap.right8",
+    )?;
+    let value = builder.build_or(left8, right8, "bswap.swap8")?;
+    let left16 = builder.build_left_shift(
+        builder.build_and(value, m16, "bswap.low16")?,
+        i64_type.const_int(16, false),
+        "bswap.left16",
+    )?;
+    let right16 = builder.build_and(
+        builder.build_right_shift(value, i64_type.const_int(16, false), false, "bswap.shr16")?,
+        m16,
+        "bswap.right16",
+    )?;
+    let value = builder.build_or(left16, right16, "bswap.swap16")?;
+    let left32 = builder.build_left_shift(value, i64_type.const_int(32, false), "bswap.left32")?;
+    let right32 = builder.build_right_shift(value, i64_type.const_int(32, false), false, "bswap.right32")?;
+    let value = builder.build_or(left32, right32, "bswap.swap32")?;
+    shift_reversed_to_width(builder, i64_type, value, width, "bswap.result")
+}
+
+fn build_bitreverse_i64<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    value: IntValue<'ctx>,
+    width: IntValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let value = swap_bit_groups(builder, i64_type, value, 1, 0x5555_5555_5555_5555, "bitrev.1")?;
+    let value = swap_bit_groups(builder, i64_type, value, 2, 0x3333_3333_3333_3333, "bitrev.2")?;
+    let value = swap_bit_groups(builder, i64_type, value, 4, 0x0f0f_0f0f_0f0f_0f0f, "bitrev.4")?;
+    let value = swap_bit_groups(builder, i64_type, value, 8, 0x00ff_00ff_00ff_00ff, "bitrev.8")?;
+    let value = swap_bit_groups(builder, i64_type, value, 16, 0x0000_ffff_0000_ffff, "bitrev.16")?;
+    let left32 = builder.build_left_shift(value, i64_type.const_int(32, false), "bitrev.left32")?;
+    let right32 = builder.build_right_shift(value, i64_type.const_int(32, false), false, "bitrev.right32")?;
+    let value = builder.build_or(left32, right32, "bitrev.swap32")?;
+    shift_reversed_to_width(builder, i64_type, value, width, "bitrev.result")
+}
+
+fn swap_bit_groups<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    value: IntValue<'ctx>,
+    amount: u64,
+    mask: u64,
+    name: &str,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let mask = i64_type.const_int(mask, false);
+    let amount = i64_type.const_int(amount, false);
+    let low = builder.build_left_shift(
+        builder.build_and(value, mask, &format!("{name}.low"))?,
+        amount,
+        &format!("{name}.left"),
+    )?;
+    let high = builder.build_and(
+        builder.build_right_shift(value, amount, false, &format!("{name}.shr"))?,
+        mask,
+        &format!("{name}.high"),
+    )?;
+    builder.build_or(low, high, &format!("{name}.or")).map_err(Into::into)
+}
+
+fn shift_reversed_to_width<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    value: IntValue<'ctx>,
+    width: IntValue<'ctx>,
+    name: &str,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let shift = builder.build_int_sub(i64_type.const_int(64, false), width, &format!("{name}.shift"))?;
+    builder.build_right_shift(value, shift, false, name).map_err(Into::into)
+}
+
+fn emit_float_bin_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    op: FloatBinOp,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let lhs = operands.get("lhs")?;
+    let rhs = operands.get("rhs")?;
+    let width = operands.get("width")?;
+    let lhs_raw = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, lhs, "fbin.lhs.raw")?;
+    let rhs_raw = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, rhs, "fbin.rhs.raw")?;
+    let f32_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "fbin.f32");
+    let f64_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "fbin.f64");
+    let is_f32 = builder.build_int_compare(
+        IntPredicate::EQ,
+        width,
+        ctx.i64_type.const_int(32, false),
+        "fbin.is.f32",
+    )?;
+    builder.build_conditional_branch(is_f32, f32_block, f64_block)?;
+
+    builder.position_at_end(f32_block);
+    let value = build_f32_bin_bits(builder, ctx, lhs_raw, rhs_raw, op)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+
+    builder.position_at_end(f64_block);
+    let value = build_f64_bin_bits(builder, ctx, lhs_raw, rhs_raw, op)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn build_f32_bin_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    lhs_raw: IntValue<'ctx>,
+    rhs_raw: IntValue<'ctx>,
+    op: FloatBinOp,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let llvm_ctx = ctx.function.get_type().get_context();
+    let i32_type = llvm_ctx.i32_type();
+    let f32_type = llvm_ctx.f32_type();
+    let lhs_bits = builder.build_int_truncate(lhs_raw, i32_type, "fbin.lhs.i32")?;
+    let rhs_bits = builder.build_int_truncate(rhs_raw, i32_type, "fbin.rhs.i32")?;
+    let lhs = builder
+        .build_bit_cast(lhs_bits, f32_type, "fbin.lhs.f32")?
+        .into_float_value();
+    let rhs = builder
+        .build_bit_cast(rhs_bits, f32_type, "fbin.rhs.f32")?
+        .into_float_value();
+    let result = match op {
+        FloatBinOp::Add => builder.build_float_add(lhs, rhs, "fbin.f32.add")?,
+        FloatBinOp::Sub => builder.build_float_sub(lhs, rhs, "fbin.f32.sub")?,
+        FloatBinOp::Mul => builder.build_float_mul(lhs, rhs, "fbin.f32.mul")?,
+        FloatBinOp::Div => builder.build_float_div(lhs, rhs, "fbin.f32.div")?,
+        FloatBinOp::Rem => build_float_remainder(builder, ctx.i64_type, lhs, rhs, "fbin.f32")?,
+    };
+    let bits = builder
+        .build_bit_cast(result, i32_type, "fbin.f32.bits")?
+        .into_int_value();
+    Ok(builder.build_int_z_extend(bits, ctx.i64_type, "fbin.f32.bits64")?)
+}
+
+fn build_f64_bin_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    lhs_raw: IntValue<'ctx>,
+    rhs_raw: IntValue<'ctx>,
+    op: FloatBinOp,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let f64_type = ctx.function.get_type().get_context().f64_type();
+    let lhs = builder
+        .build_bit_cast(lhs_raw, f64_type, "fbin.lhs.f64")?
+        .into_float_value();
+    let rhs = builder
+        .build_bit_cast(rhs_raw, f64_type, "fbin.rhs.f64")?
+        .into_float_value();
+    let result = match op {
+        FloatBinOp::Add => builder.build_float_add(lhs, rhs, "fbin.f64.add")?,
+        FloatBinOp::Sub => builder.build_float_sub(lhs, rhs, "fbin.f64.sub")?,
+        FloatBinOp::Mul => builder.build_float_mul(lhs, rhs, "fbin.f64.mul")?,
+        FloatBinOp::Div => builder.build_float_div(lhs, rhs, "fbin.f64.div")?,
+        FloatBinOp::Rem => build_float_remainder(builder, ctx.i64_type, lhs, rhs, "fbin.f64")?,
+    };
+    Ok(builder
+        .build_bit_cast(result, ctx.i64_type, "fbin.f64.bits")?
+        .into_int_value())
+}
+
+fn emit_float_unary_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    op: FloatUnaryOp,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let src = operands.get("src")?;
+    let width = operands.get("width")?;
+    let src_raw = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, src, "funary.src")?;
+
+    let is_f32 = builder.build_int_compare(
+        IntPredicate::EQ,
+        width,
+        ctx.i64_type.const_int(32, false),
+        "funary.is.f32",
+    )?;
+    let current_block = builder
+        .get_insert_block()
+        .context("float unary handler has no insertion block")?;
+    let function = current_block
+        .get_parent()
+        .context("float unary block has no function")?;
+    let f32_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(function, "funary.f32");
+    let f64_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(function, "funary.f64");
+    builder.build_conditional_branch(is_f32, f32_block, f64_block)?;
+
+    builder.position_at_end(f32_block);
+    let f32_value = build_f32_unary_bits(builder, ctx, src_raw, op)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, f32_value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+
+    builder.position_at_end(f64_block);
+    let f64_value = build_f64_unary_bits(builder, ctx, src_raw, op)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, f64_value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn build_f32_unary_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    src_raw: IntValue<'ctx>,
+    op: FloatUnaryOp,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let llvm_ctx = ctx.function.get_type().get_context();
+    let i32_type = llvm_ctx.i32_type();
+    let f32_type = llvm_ctx.f32_type();
+    let src_bits = builder.build_int_truncate(src_raw, i32_type, "funary.src.i32")?;
+    let src = builder
+        .build_bit_cast(src_bits, f32_type, "funary.src.f32")?
+        .into_float_value();
+    let result = match op {
+        FloatUnaryOp::Neg => builder.build_float_neg(src, "funary.f32.neg")?,
+    };
+    let bits = builder
+        .build_bit_cast(result, i32_type, "funary.f32.bits")?
+        .into_int_value();
+    Ok(builder.build_int_z_extend(bits, ctx.i64_type, "funary.f32.bits64")?)
+}
+
+fn build_f64_unary_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    src_raw: IntValue<'ctx>,
+    op: FloatUnaryOp,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let f64_type = ctx.function.get_type().get_context().f64_type();
+    let src = builder
+        .build_bit_cast(src_raw, f64_type, "funary.src.f64")?
+        .into_float_value();
+    let result = match op {
+        FloatUnaryOp::Neg => builder.build_float_neg(src, "funary.f64.neg")?,
+    };
+    Ok(builder
+        .build_bit_cast(result, ctx.i64_type, "funary.f64.bits")?
+        .into_int_value())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum IntCastSignedness {
+    Signed,
+    Unsigned,
+}
+
+fn emit_float_cast_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    op: FloatCastOp,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let src = operands.get("src")?;
+    let raw = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, src, "fcast.src")?;
+    match op {
+        FloatCastOp::SignedIntToFloat => {
+            emit_int_to_float_cast_handler(builder, operands, ctx, dst, raw, IntCastSignedness::Signed)
+        },
+        FloatCastOp::UnsignedIntToFloat => {
+            emit_int_to_float_cast_handler(builder, operands, ctx, dst, raw, IntCastSignedness::Unsigned)
+        },
+        FloatCastOp::FloatToSignedInt => {
+            emit_float_to_int_cast_handler(builder, operands, ctx, dst, raw, IntCastSignedness::Signed)
+        },
+        FloatCastOp::FloatToUnsignedInt => {
+            emit_float_to_int_cast_handler(builder, operands, ctx, dst, raw, IntCastSignedness::Unsigned)
+        },
+        FloatCastOp::FloatTrunc => {
+            let value = build_fptrunc_bits(builder, ctx, raw)?;
+            finish_value_handler(builder, ctx, dst, value)
+        },
+        FloatCastOp::FloatExt => {
+            let value = build_fpext_bits(builder, ctx, raw)?;
+            finish_value_handler(builder, ctx, dst, value)
+        },
+    }
+}
+
+fn emit_int_to_float_cast_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    dst: IntValue<'ctx>,
+    raw: IntValue<'ctx>,
+    signedness: IntCastSignedness,
+) -> anyhow::Result<()> {
+    let from_width = operands.get("from_width")?;
+    let to_width = operands.get("to_width")?;
+    let is_f32 = builder.build_int_compare(
+        IntPredicate::EQ,
+        to_width,
+        ctx.i64_type.const_int(32, false),
+        "fcast.itof.is.f32",
+    )?;
+    let f32_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "fcast.itof.f32");
+    let f64_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "fcast.itof.f64");
+    builder.build_conditional_branch(is_f32, f32_block, f64_block)?;
+
+    builder.position_at_end(f32_block);
+    let f32_value = build_int_to_f32_bits(builder, ctx, raw, from_width, signedness)?;
+    finish_value_handler(builder, ctx, dst, f32_value)?;
+
+    builder.position_at_end(f64_block);
+    let f64_value = build_int_to_f64_bits(builder, ctx, raw, from_width, signedness)?;
+    finish_value_handler(builder, ctx, dst, f64_value)?;
+    Ok(())
+}
+
+fn emit_float_to_int_cast_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    dst: IntValue<'ctx>,
+    raw: IntValue<'ctx>,
+    signedness: IntCastSignedness,
+) -> anyhow::Result<()> {
+    let from_width = operands.get("from_width")?;
+    let to_width = operands.get("to_width")?;
+    let is_f32 = builder.build_int_compare(
+        IntPredicate::EQ,
+        from_width,
+        ctx.i64_type.const_int(32, false),
+        "fcast.ftoi.is.f32",
+    )?;
+    let f32_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "fcast.ftoi.f32");
+    let f64_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "fcast.ftoi.f64");
+    builder.build_conditional_branch(is_f32, f32_block, f64_block)?;
+
+    builder.position_at_end(f32_block);
+    let f32_value = build_f32_to_int_bits(builder, ctx, raw, to_width, signedness)?;
+    finish_value_handler(builder, ctx, dst, f32_value)?;
+
+    builder.position_at_end(f64_block);
+    let f64_value = build_f64_to_int_bits(builder, ctx, raw, to_width, signedness)?;
+    finish_value_handler(builder, ctx, dst, f64_value)?;
+    Ok(())
+}
+
+fn normalize_int_for_float_cast<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    raw: IntValue<'ctx>,
+    width: IntValue<'ctx>,
+    signedness: IntCastSignedness,
+) -> anyhow::Result<IntValue<'ctx>> {
+    match signedness {
+        IntCastSignedness::Signed => sign_extend_to_i64(builder, ctx.i64_type, raw, width),
+        IntCastSignedness::Unsigned => mask_to_width(builder, ctx.i64_type, raw, width),
+    }
+}
+
+fn build_int_to_f32_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    raw: IntValue<'ctx>,
+    from_width: IntValue<'ctx>,
+    signedness: IntCastSignedness,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let llvm_ctx = ctx.function.get_type().get_context();
+    let i32_type = llvm_ctx.i32_type();
+    let f32_type = llvm_ctx.f32_type();
+    let int_value = normalize_int_for_float_cast(builder, ctx, raw, from_width, signedness)?;
+    let float_value = match signedness {
+        IntCastSignedness::Signed => builder.build_signed_int_to_float(int_value, f32_type, "fcast.sitofp.f32")?,
+        IntCastSignedness::Unsigned => builder.build_unsigned_int_to_float(int_value, f32_type, "fcast.uitofp.f32")?,
+    };
+    let bits = builder
+        .build_bit_cast(float_value, i32_type, "fcast.itof.f32.bits")?
+        .into_int_value();
+    Ok(builder.build_int_z_extend(bits, ctx.i64_type, "fcast.itof.f32.bits64")?)
+}
+
+fn build_int_to_f64_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    raw: IntValue<'ctx>,
+    from_width: IntValue<'ctx>,
+    signedness: IntCastSignedness,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let f64_type = ctx.function.get_type().get_context().f64_type();
+    let int_value = normalize_int_for_float_cast(builder, ctx, raw, from_width, signedness)?;
+    let float_value = match signedness {
+        IntCastSignedness::Signed => builder.build_signed_int_to_float(int_value, f64_type, "fcast.sitofp.f64")?,
+        IntCastSignedness::Unsigned => builder.build_unsigned_int_to_float(int_value, f64_type, "fcast.uitofp.f64")?,
+    };
+    Ok(builder
+        .build_bit_cast(float_value, ctx.i64_type, "fcast.itof.f64.bits")?
+        .into_int_value())
+}
+
+fn build_f32_to_int_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    raw: IntValue<'ctx>,
+    to_width: IntValue<'ctx>,
+    signedness: IntCastSignedness,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let llvm_ctx = ctx.function.get_type().get_context();
+    let i32_type = llvm_ctx.i32_type();
+    let f32_type = llvm_ctx.f32_type();
+    let bits = builder.build_int_truncate(raw, i32_type, "fcast.ftoi.f32.src")?;
+    let float_value = builder
+        .build_bit_cast(bits, f32_type, "fcast.ftoi.f32")?
+        .into_float_value();
+    let int_value = match signedness {
+        IntCastSignedness::Signed => {
+            builder.build_float_to_signed_int(float_value, ctx.i64_type, "fcast.fptosi.f32")?
+        },
+        IntCastSignedness::Unsigned => {
+            builder.build_float_to_unsigned_int(float_value, ctx.i64_type, "fcast.fptoui.f32")?
+        },
+    };
+    mask_to_width(builder, ctx.i64_type, int_value, to_width)
+}
+
+fn build_f64_to_int_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    raw: IntValue<'ctx>,
+    to_width: IntValue<'ctx>,
+    signedness: IntCastSignedness,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let f64_type = ctx.function.get_type().get_context().f64_type();
+    let float_value = builder
+        .build_bit_cast(raw, f64_type, "fcast.ftoi.f64")?
+        .into_float_value();
+    let int_value = match signedness {
+        IntCastSignedness::Signed => {
+            builder.build_float_to_signed_int(float_value, ctx.i64_type, "fcast.fptosi.f64")?
+        },
+        IntCastSignedness::Unsigned => {
+            builder.build_float_to_unsigned_int(float_value, ctx.i64_type, "fcast.fptoui.f64")?
+        },
+    };
+    mask_to_width(builder, ctx.i64_type, int_value, to_width)
+}
+
+fn build_fptrunc_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    raw: IntValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let llvm_ctx = ctx.function.get_type().get_context();
+    let i32_type = llvm_ctx.i32_type();
+    let f32_type = llvm_ctx.f32_type();
+    let f64_type = llvm_ctx.f64_type();
+    let float_value = builder
+        .build_bit_cast(raw, f64_type, "fcast.fptrunc.src")?
+        .into_float_value();
+    let truncated = builder.build_float_trunc(float_value, f32_type, "fcast.fptrunc")?;
+    let bits = builder
+        .build_bit_cast(truncated, i32_type, "fcast.fptrunc.bits")?
+        .into_int_value();
+    Ok(builder.build_int_z_extend(bits, ctx.i64_type, "fcast.fptrunc.bits64")?)
+}
+
+fn build_fpext_bits<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    raw: IntValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let llvm_ctx = ctx.function.get_type().get_context();
+    let i32_type = llvm_ctx.i32_type();
+    let f32_type = llvm_ctx.f32_type();
+    let f64_type = llvm_ctx.f64_type();
+    let bits = builder.build_int_truncate(raw, i32_type, "fcast.fpext.src")?;
+    let float_value = builder
+        .build_bit_cast(bits, f32_type, "fcast.fpext.f32")?
+        .into_float_value();
+    let extended = builder.build_float_ext(float_value, f64_type, "fcast.fpext")?;
+    Ok(builder
+        .build_bit_cast(extended, ctx.i64_type, "fcast.fpext.bits")?
+        .into_int_value())
+}
+
+fn finish_value_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    dst: IntValue<'ctx>,
+    value: IntValue<'ctx>,
+) -> anyhow::Result<()> {
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn build_float_remainder<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    int_type: IntType<'ctx>,
+    lhs: FloatValue<'ctx>,
+    rhs: FloatValue<'ctx>,
+    name: &str,
+) -> anyhow::Result<FloatValue<'ctx>> {
+    let quotient = builder.build_float_div(lhs, rhs, &format!("{name}.rem.quot"))?;
+    let truncated = builder.build_float_to_signed_int(quotient, int_type, &format!("{name}.rem.trunc"))?;
+    let truncated_float =
+        builder.build_signed_int_to_float(truncated, lhs.get_type(), &format!("{name}.rem.trunc.f"))?;
+    let product = builder.build_float_mul(truncated_float, rhs, &format!("{name}.rem.product"))?;
+    Ok(builder.build_float_sub(lhs, product, &format!("{name}.rem"))?)
 }
 
 fn emit_icmp_handler<'ctx>(
@@ -1509,6 +3173,44 @@ fn emit_icmp_handler<'ctx>(
     let lhs = operands.get("lhs")?;
     let rhs = operands.get("rhs")?;
     let width = operands.get("width")?;
+    let selected = build_icmp_result(builder, ctx, pred, lhs, rhs, width, "icmp")?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, selected)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_super_icmp_br_if_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let pred = operands.get("pred")?;
+    let lhs = operands.get("lhs")?;
+    let rhs = operands.get("rhs")?;
+    let width = operands.get("width")?;
+    let then_pc = operands.get("then_pc")?;
+    let else_pc = operands.get("else_pc")?;
+    let selected = build_icmp_result(builder, ctx, pred, lhs, rhs, width, "icmp_br_if")?;
+    let is_true =
+        builder.build_int_compare(IntPredicate::NE, selected, ctx.i64_type.const_zero(), "icmp_br_if.true")?;
+    let next_pc = builder
+        .build_select(is_true, then_pc, else_pc, "icmp_br_if.next.pc")?
+        .into_int_value();
+    builder.build_store(ctx.pc_ptr, next_pc)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn build_icmp_result<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    pred: IntValue<'ctx>,
+    lhs: IntValue<'ctx>,
+    rhs: IntValue<'ctx>,
+    width: IntValue<'ctx>,
+    name: &str,
+) -> anyhow::Result<IntValue<'ctx>> {
     let lhs_raw = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, lhs, "icmp.lhs")?;
     let rhs_raw = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, rhs, "icmp.rhs")?;
     let lhs_u = mask_to_width(builder, ctx.i64_type, lhs_raw, width)?;
@@ -1558,14 +3260,138 @@ fn emit_icmp_handler<'ctx>(
             builder.build_int_compare(IntPredicate::EQ, pred, ctx.i64_type.const_int(tag, false), "pred.match")?;
         let cmp64 = builder.build_int_z_extend(cmp, ctx.i64_type, "cmp64")?;
         selected = builder
-            .build_select(tag_match, cmp64, selected, "icmp.selected")?
+            .build_select(tag_match, cmp64, selected, &format!("{name}.selected"))?
             .into_int_value();
     }
 
-    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, selected)?;
-    increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+    Ok(selected)
+}
+
+fn emit_fcmp_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let pred = operands.get("pred")?;
+    let dst = operands.get("dst")?;
+    let lhs = operands.get("lhs")?;
+    let rhs = operands.get("rhs")?;
+    let width = operands.get("width")?;
+    let lhs_raw = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, lhs, "fcmp.lhs.raw")?;
+    let rhs_raw = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, rhs, "fcmp.rhs.raw")?;
+    let f32_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "fcmp.f32");
+    let f64_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "fcmp.f64");
+    let is_f32 = builder.build_int_compare(
+        IntPredicate::EQ,
+        width,
+        ctx.i64_type.const_int(32, false),
+        "fcmp.is.f32",
+    )?;
+    builder.build_conditional_branch(is_f32, f32_block, f64_block)?;
+
+    builder.position_at_end(f32_block);
+    let value = build_f32_cmp_value(builder, ctx, pred, lhs_raw, rhs_raw)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+
+    builder.position_at_end(f64_block);
+    let value = build_f64_cmp_value(builder, ctx, pred, lhs_raw, rhs_raw)?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
     builder.build_unconditional_branch(ctx.loop_check)?;
     Ok(())
+}
+
+fn build_f32_cmp_value<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    pred: IntValue<'ctx>,
+    lhs_raw: IntValue<'ctx>,
+    rhs_raw: IntValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let llvm_ctx = ctx.function.get_type().get_context();
+    let i32_type = llvm_ctx.i32_type();
+    let f32_type = llvm_ctx.f32_type();
+    let lhs_bits = builder.build_int_truncate(lhs_raw, i32_type, "fcmp.lhs.i32")?;
+    let rhs_bits = builder.build_int_truncate(rhs_raw, i32_type, "fcmp.rhs.i32")?;
+    let lhs = builder
+        .build_bit_cast(lhs_bits, f32_type, "fcmp.lhs.f32")?
+        .into_float_value();
+    let rhs = builder
+        .build_bit_cast(rhs_bits, f32_type, "fcmp.rhs.f32")?
+        .into_float_value();
+    select_float_compare(builder, ctx.i64_type, pred, lhs, rhs)
+}
+
+fn build_f64_cmp_value<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    pred: IntValue<'ctx>,
+    lhs_raw: IntValue<'ctx>,
+    rhs_raw: IntValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let f64_type = ctx.function.get_type().get_context().f64_type();
+    let lhs = builder
+        .build_bit_cast(lhs_raw, f64_type, "fcmp.lhs.f64")?
+        .into_float_value();
+    let rhs = builder
+        .build_bit_cast(rhs_raw, f64_type, "fcmp.rhs.f64")?
+        .into_float_value();
+    select_float_compare(builder, ctx.i64_type, pred, lhs, rhs)
+}
+
+fn select_float_compare<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    pred: IntValue<'ctx>,
+    lhs: FloatValue<'ctx>,
+    rhs: FloatValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let mut selected = i64_type.const_zero();
+    for (tag, llvm_predicate) in float_predicate_tags() {
+        let cmp = builder.build_float_compare(llvm_predicate, lhs, rhs, "fcmp.value")?;
+        let tag_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            pred,
+            i64_type.const_int(tag, false),
+            "fcmp.pred.match",
+        )?;
+        let cmp64 = builder.build_int_z_extend(cmp, i64_type, "fcmp.value64")?;
+        selected = builder
+            .build_select(tag_match, cmp64, selected, "fcmp.selected")?
+            .into_int_value();
+    }
+    Ok(selected)
+}
+
+fn float_predicate_tags() -> [(u64, LlvmFloatPredicate); 16] {
+    [
+        (VmFloatPredicate::False as u64, LlvmFloatPredicate::PredicateFalse),
+        (VmFloatPredicate::Oeq as u64, LlvmFloatPredicate::OEQ),
+        (VmFloatPredicate::Ogt as u64, LlvmFloatPredicate::OGT),
+        (VmFloatPredicate::Oge as u64, LlvmFloatPredicate::OGE),
+        (VmFloatPredicate::Olt as u64, LlvmFloatPredicate::OLT),
+        (VmFloatPredicate::Ole as u64, LlvmFloatPredicate::OLE),
+        (VmFloatPredicate::One as u64, LlvmFloatPredicate::ONE),
+        (VmFloatPredicate::Ord as u64, LlvmFloatPredicate::ORD),
+        (VmFloatPredicate::Uno as u64, LlvmFloatPredicate::UNO),
+        (VmFloatPredicate::Ueq as u64, LlvmFloatPredicate::UEQ),
+        (VmFloatPredicate::Ugt as u64, LlvmFloatPredicate::UGT),
+        (VmFloatPredicate::Uge as u64, LlvmFloatPredicate::UGE),
+        (VmFloatPredicate::Ult as u64, LlvmFloatPredicate::ULT),
+        (VmFloatPredicate::Ule as u64, LlvmFloatPredicate::ULE),
+        (VmFloatPredicate::Une as u64, LlvmFloatPredicate::UNE),
+        (VmFloatPredicate::True as u64, LlvmFloatPredicate::PredicateTrue),
+    ]
 }
 
 fn emit_cast_handler<'ctx>(
@@ -1587,7 +3413,7 @@ fn emit_cast_handler<'ctx>(
         },
     };
     store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
-    increment_pc(builder, ctx.i64_type, ctx.pc_ptr)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
     builder.build_unconditional_branch(ctx.loop_check)?;
     Ok(())
 }
@@ -1714,9 +3540,10 @@ fn increment_pc<'ctx>(
     builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
     i64_type: IntType<'ctx>,
     pc_ptr: PointerValue<'ctx>,
+    decoded_width: u8,
 ) -> anyhow::Result<()> {
     let pc = load_i64(builder, i64_type, pc_ptr, "pc.old")?;
-    let next = builder.build_int_add(pc, i64_type.const_int(1, false), "pc.next")?;
+    let next = builder.build_int_add(pc, i64_type.const_int(decoded_width as u64, false), "pc.next")?;
     builder.build_store(pc_ptr, next)?;
     Ok(())
 }

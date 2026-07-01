@@ -27,5 +27,6 @@ pub mod verify;
 pub use bytecode::{BytecodeEncoder, BytecodeImage};
 pub use lowering::{
     LabelId, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, NativeReturn, VmFunction, VmFunctionBuilder, VmInstruction,
+    fuse_superinstructions,
 };
 pub use profile::{ProfileError, ProfilePackage, RuntimeScope};

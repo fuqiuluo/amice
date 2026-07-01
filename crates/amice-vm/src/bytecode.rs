@@ -13,7 +13,10 @@
 //! # 坑点
 //! `debug_dump` 只用于诊断文本。runtime 生成必须消费结构化 offset 和 `bytes` 字段。
 
-use crate::isa::{BinOp, CastOp, HandlerSemantic};
+use crate::isa::{
+    AtomicRmwOp, BinOp, CastOp, FloatBinOp, FloatCastOp, FloatUnaryOp, HandlerSemantic, IntTernaryOp, IntUnaryOp,
+    MemoryOrdering, SuperOp,
+};
 use crate::lowering::{
     LabelId, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, NativeReturn, VmFunction, VmInstruction,
 };
@@ -102,19 +105,20 @@ impl<'a> BytecodeEncoder<'a> {
         } else {
             0
         };
-        let expanded_label_pcs = expanded_label_pcs(function, fake_count)?;
+        let layout = expanded_layout(self.profile, function, fake_count, dead_count)?;
         let expanded_instruction_count = function.instructions.len() * (1 + fake_count) + dead_count;
         let mut records = Vec::with_capacity(expanded_instruction_count);
         let mut debug_lines = Vec::with_capacity(expanded_instruction_count);
+        let mut record_index = 0;
 
         for (pc, instruction) in function.instructions.iter().enumerate() {
-            let expanded_pc = pc * (1 + fake_count);
+            let expanded_pc = layout.record_offsets[record_index];
             let profile_instruction = function
                 .profile_instructions
                 .get(pc)
                 .ok_or_else(|| anyhow::anyhow!("missing profile instruction name for VM instruction at pc {pc}"))?;
             let tokens = self.instruction_tokens(
-                &expanded_label_pcs,
+                &layout.label_pcs,
                 &const_pool,
                 key,
                 expanded_pc,
@@ -122,26 +126,42 @@ impl<'a> BytecodeEncoder<'a> {
                 instruction,
             )?;
             debug_lines.push(format!(
-                "{expanded_pc:04}: {profile_instruction} {instruction:?} => {tokens:?}"
+                "{expanded_pc:04}: {profile_instruction} width={} opcode={} operands={:?} {instruction:?}",
+                tokens.decoded_width,
+                tokens.opcode(),
+                tokens.operands()
             ));
             records.push(tokens);
-            for fake_index in 0..fake_count {
-                let fake_pc = expanded_pc + fake_index + 1;
+            record_index += 1;
+            for _ in 0..fake_count {
+                let fake_pc = layout.record_offsets[record_index];
                 let tokens = self.fake_instruction_tokens(key, fake_pc)?;
-                debug_lines.push(format!("{fake_pc:04}: fake_nop => {tokens:?}"));
+                debug_lines.push(format!(
+                    "{fake_pc:04}: fake_nop width={} opcode={} operands={:?}",
+                    tokens.decoded_width,
+                    tokens.opcode(),
+                    tokens.operands()
+                ));
                 records.push(tokens);
+                record_index += 1;
             }
         }
 
-        for dead_index in 0..dead_count {
-            let dead_pc = function.instructions.len() * (1 + fake_count) + dead_index;
+        for _ in 0..dead_count {
+            let dead_pc = layout.record_offsets[record_index];
             let tokens = self.fake_instruction_tokens(key, dead_pc)?;
-            debug_lines.push(format!("{dead_pc:04}: dead_fake_nop => {tokens:?}"));
+            debug_lines.push(format!(
+                "{dead_pc:04}: dead_fake_nop width={} opcode={} operands={:?}",
+                tokens.decoded_width,
+                tokens.opcode(),
+                tokens.operands()
+            ));
             records.push(tokens);
+            record_index += 1;
         }
 
         let code_bytes = self.apply_encoder_pipeline(records, key)?;
-        let reloc_bytes = encode_label_pc_relocations(&expanded_label_pcs, expanded_instruction_count)?;
+        let reloc_bytes = encode_label_pc_relocations(&layout.label_pcs, code_bytes.len())?;
         let package = build_bytecode_package(
             key,
             expanded_instruction_count as u32,
@@ -172,7 +192,7 @@ impl<'a> BytecodeEncoder<'a> {
         pc: usize,
         profile_instruction: &str,
         instruction: &VmInstruction,
-    ) -> anyhow::Result<Vec<u64>> {
+    ) -> anyhow::Result<InstructionRecord> {
         match instruction {
             VmInstruction::MovImm { dst, imm, width } => record_tokens(
                 self.profile,
@@ -191,6 +211,84 @@ impl<'a> BytecodeEncoder<'a> {
                 operands([
                     ("dst", *dst as u64),
                     ("index", const_pool.index_of(*value)?),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperAddXor {
+                dst,
+                lhs,
+                rhs,
+                xor_rhs,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::AddXor),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("lhs", *lhs as u64),
+                    ("rhs", *rhs as u64),
+                    ("xor_rhs", *xor_rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperIcmpBrIf {
+                pred,
+                lhs,
+                rhs,
+                width,
+                then_label,
+                else_label,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::IcmpBrIf),
+                key,
+                pc,
+                operands([
+                    ("pred", *pred as u64),
+                    ("lhs", *lhs as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                    ("then_pc", label_pc(label_pcs, *then_label)? as u64),
+                    ("else_pc", label_pc(label_pcs, *else_label)? as u64),
+                ]),
+            ),
+            VmInstruction::SuperGepLoad {
+                dst,
+                base,
+                offset,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::GepLoad),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("base", *base as u64),
+                    ("offset", *offset),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadAdd {
+                dst,
+                ptr,
+                addend,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadAdd),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("addend", *addend as u64),
                     ("width", *width as u64),
                 ]),
             ),
@@ -231,6 +329,101 @@ impl<'a> BytecodeEncoder<'a> {
                 self.profile,
                 profile_instruction,
                 &HandlerSemantic::Icmp,
+                key,
+                pc,
+                operands([
+                    ("pred", *pred as u64),
+                    ("dst", *dst as u64),
+                    ("lhs", *lhs as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::IntUnary { op, dst, src, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::IntUnary(*op),
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("src", *src as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::IntTernary {
+                op,
+                dst,
+                lhs,
+                rhs,
+                third,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::IntTernary(*op),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("lhs", *lhs as u64),
+                    ("rhs", *rhs as u64),
+                    ("third", *third as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::FloatBin {
+                op,
+                dst,
+                lhs,
+                rhs,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::FloatBin(*op),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("lhs", *lhs as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::FloatUnary { op, dst, src, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::FloatUnary(*op),
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("src", *src as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::FloatCast {
+                op,
+                dst,
+                src,
+                from_width,
+                to_width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::FloatCast(*op),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("src", *src as u64),
+                    ("from_width", *from_width as u64),
+                    ("to_width", *to_width as u64),
+                ]),
+            ),
+            VmInstruction::Fcmp {
+                pred,
+                dst,
+                lhs,
+                rhs,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Fcmp,
                 key,
                 pc,
                 operands([
@@ -283,6 +476,97 @@ impl<'a> BytecodeEncoder<'a> {
                 key,
                 pc,
                 operands([("src", *src as u64), ("ptr", *ptr as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::AtomicLoad {
+                dst,
+                ptr,
+                width,
+                ordering,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::AtomicLoad,
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("width", *width as u64),
+                    ("ordering", memory_ordering_tag(*ordering) as u64),
+                ]),
+            ),
+            VmInstruction::AtomicStore {
+                src,
+                ptr,
+                width,
+                ordering,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::AtomicStore,
+                key,
+                pc,
+                operands([
+                    ("src", *src as u64),
+                    ("ptr", *ptr as u64),
+                    ("width", *width as u64),
+                    ("ordering", memory_ordering_tag(*ordering) as u64),
+                ]),
+            ),
+            VmInstruction::AtomicRmw {
+                op,
+                dst,
+                ptr,
+                src,
+                width,
+                ordering,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::AtomicRmw(*op),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("src", *src as u64),
+                    ("width", *width as u64),
+                    ("ordering", memory_ordering_tag(*ordering) as u64),
+                ]),
+            ),
+            VmInstruction::CmpXchg {
+                old,
+                success,
+                ptr,
+                cmp,
+                new,
+                width,
+                success_ordering,
+                failure_ordering,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::CmpXchg,
+                key,
+                pc,
+                operands([
+                    ("old", *old as u64),
+                    ("success", *success as u64),
+                    ("ptr", *ptr as u64),
+                    ("cmp", *cmp as u64),
+                    ("new", *new as u64),
+                    ("width", *width as u64),
+                    ("success_ordering", memory_ordering_tag(*success_ordering) as u64),
+                    ("failure_ordering", memory_ordering_tag(*failure_ordering) as u64),
+                ]),
+            ),
+            VmInstruction::Fence { ordering } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Fence,
+                key,
+                pc,
+                operands([("ordering", memory_ordering_tag(*ordering) as u64)]),
             ),
             VmInstruction::Gep { dst, base, offset } => record_tokens(
                 self.profile,
@@ -388,7 +672,7 @@ impl<'a> BytecodeEncoder<'a> {
         }
     }
 
-    fn fake_instruction_tokens(&self, key: u64, pc: usize) -> anyhow::Result<Vec<u64>> {
+    fn fake_instruction_tokens(&self, key: u64, pc: usize) -> anyhow::Result<InstructionRecord> {
         let desc = self
             .profile
             .isa
@@ -397,7 +681,7 @@ impl<'a> BytecodeEncoder<'a> {
         record_tokens(self.profile, &desc.name, &HandlerSemantic::Nop, key, pc, Vec::new())
     }
 
-    fn apply_encoder_pipeline(&self, records: Vec<Vec<u64>>, key: u64) -> anyhow::Result<Vec<u8>> {
+    fn apply_encoder_pipeline(&self, records: Vec<InstructionRecord>, key: u64) -> anyhow::Result<Vec<u8>> {
         let mut state = EncoderState::Records(records);
 
         // `decoder.vm` 描述的是 runtime 解码顺序。编译器必须反向遍历并应用每一步的逆变换；
@@ -407,12 +691,8 @@ impl<'a> BytecodeEncoder<'a> {
                 (DecoderStep::BitUnpack, EncoderState::Records(records)) => {
                     EncoderState::Tokens(pack_instruction_records(records)?)
                 },
-                (DecoderStep::VarintDecode, EncoderState::Tokens(tokens)) => {
-                    let mut bytes = Vec::new();
-                    for token in tokens {
-                        encode_varint(token, &mut bytes);
-                    }
-                    EncoderState::Bytes(bytes)
+                (DecoderStep::VarintDecode, EncoderState::Tokens(records)) => {
+                    EncoderState::Bytes(encode_varint_records(records)?)
                 },
                 (DecoderStep::Rol { amount }, EncoderState::Bytes(mut bytes)) => {
                     bytes
@@ -453,9 +733,25 @@ impl<'a> BytecodeEncoder<'a> {
 
 #[derive(Debug)]
 enum EncoderState {
-    Records(Vec<Vec<u64>>),
-    Tokens(Vec<u64>),
+    Records(Vec<InstructionRecord>),
+    Tokens(Vec<InstructionRecord>),
     Bytes(Vec<u8>),
+}
+
+#[derive(Debug, Clone)]
+struct InstructionRecord {
+    decoded_width: u8,
+    tokens: Vec<u64>,
+}
+
+impl InstructionRecord {
+    fn opcode(&self) -> u64 {
+        self.tokens[0]
+    }
+
+    fn operands(&self) -> &[u64] {
+        &self.tokens[1..]
+    }
 }
 
 #[derive(Debug)]
@@ -516,31 +812,82 @@ fn build_bytecode_package(
     })
 }
 
-fn expanded_label_pcs(function: &VmFunction, fake_count: usize) -> anyhow::Result<HashMap<LabelId, usize>> {
+#[derive(Debug)]
+struct ExpandedLayout {
+    record_offsets: Vec<usize>,
+    label_pcs: HashMap<LabelId, usize>,
+}
+
+fn expanded_layout(
+    profile: &ProfilePackage,
+    function: &VmFunction,
+    fake_count: usize,
+    dead_count: usize,
+) -> anyhow::Result<ExpandedLayout> {
+    let fake_desc = profile
+        .isa
+        .by_semantic(&HandlerSemantic::Nop)
+        .ok_or_else(|| anyhow::anyhow!("profile has no opcode for fake nop"))?;
+    let record_count = function.instructions.len() * (1 + fake_count) + dead_count;
+    let mut widths = Vec::with_capacity(record_count);
+
+    for (pc, _) in function.instructions.iter().enumerate() {
+        let profile_instruction = function
+            .profile_instructions
+            .get(pc)
+            .ok_or_else(|| anyhow::anyhow!("missing profile instruction name for VM instruction at pc {pc}"))?;
+        let desc = profile
+            .isa
+            .by_name(profile_instruction)
+            .ok_or_else(|| anyhow::anyhow!("profile has no instruction named {profile_instruction}"))?;
+        widths.push(desc.decoded_width as usize);
+        widths.extend(std::iter::repeat_n(fake_desc.decoded_width as usize, fake_count));
+    }
+    widths.extend(std::iter::repeat_n(fake_desc.decoded_width as usize, dead_count));
+
+    let mut record_offsets = Vec::with_capacity(widths.len());
+    let mut prefix = Vec::with_capacity(widths.len() + 1);
+    let mut offset = 0usize;
+    prefix.push(offset);
+    for width in widths {
+        record_offsets.push(offset);
+        offset = offset
+            .checked_add(width)
+            .ok_or_else(|| anyhow::anyhow!("expanded bytecode layout overflowed usize"))?;
+        prefix.push(offset);
+    }
+
     let stride = 1 + fake_count;
-    function
+    let label_pcs = function
         .label_pcs
         .iter()
         .map(|(label, pc)| {
             if *pc > function.instructions.len() {
                 anyhow::bail!("label {:?} points past instruction stream", label);
             }
-            Ok((*label, pc * stride))
+            let expanded_index = pc * stride;
+            let byte_pc = prefix
+                .get(expanded_index)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("label {:?} points past expanded bytecode", label))?;
+            Ok((*label, byte_pc))
         })
-        .collect()
+        .collect::<anyhow::Result<HashMap<_, _>>>()?;
+
+    Ok(ExpandedLayout {
+        record_offsets,
+        label_pcs,
+    })
 }
 
-fn encode_label_pc_relocations(
-    label_pcs: &HashMap<LabelId, usize>,
-    instruction_count: usize,
-) -> anyhow::Result<Vec<u8>> {
+fn encode_label_pc_relocations(label_pcs: &HashMap<LabelId, usize>, code_len: usize) -> anyhow::Result<Vec<u8>> {
     let mut labels = label_pcs.iter().map(|(label, pc)| (*label, *pc)).collect::<Vec<_>>();
     labels.sort_by_key(|(label, _)| label.0);
 
     let mut bytes = Vec::new();
     encode_varint(labels.len() as u64, &mut bytes);
     for (label, pc) in labels {
-        if pc > instruction_count {
+        if pc > code_len {
             anyhow::bail!("label {:?} points past instruction stream", label);
         }
         encode_varint(label.0 as u64, &mut bytes);
@@ -597,12 +944,27 @@ fn collect_const_pool_values(function: &VmFunction) -> Vec<u64> {
             VmInstruction::ConstLoad { value, .. } => constants.push(*value),
             VmInstruction::MovImm { .. }
             | VmInstruction::Mov { .. }
+            | VmInstruction::SuperAddXor { .. }
+            | VmInstruction::SuperIcmpBrIf { .. }
+            | VmInstruction::SuperGepLoad { .. }
+            | VmInstruction::SuperLoadAdd { .. }
             | VmInstruction::Bin { .. }
+            | VmInstruction::IntUnary { .. }
+            | VmInstruction::IntTernary { .. }
             | VmInstruction::Icmp { .. }
+            | VmInstruction::FloatBin { .. }
+            | VmInstruction::FloatUnary { .. }
+            | VmInstruction::FloatCast { .. }
+            | VmInstruction::Fcmp { .. }
             | VmInstruction::Cast { .. }
             | VmInstruction::Alloca { .. }
             | VmInstruction::Load { .. }
             | VmInstruction::Store { .. }
+            | VmInstruction::AtomicLoad { .. }
+            | VmInstruction::AtomicStore { .. }
+            | VmInstruction::AtomicRmw { .. }
+            | VmInstruction::CmpXchg { .. }
+            | VmInstruction::Fence { .. }
             | VmInstruction::Gep { .. }
             | VmInstruction::CallNative { .. }
             | VmInstruction::Br { .. }
@@ -630,21 +992,52 @@ fn write_u64_le(value: u64, out: &mut Vec<u8>) {
     out.extend(value.to_le_bytes());
 }
 
-fn pack_instruction_records(records: Vec<Vec<u64>>) -> anyhow::Result<Vec<u64>> {
-    let mut tokens = Vec::new();
+fn pack_instruction_records(records: Vec<InstructionRecord>) -> anyhow::Result<Vec<InstructionRecord>> {
+    let mut packed = Vec::with_capacity(records.len());
     for record in records {
-        if record.is_empty() {
+        if record.tokens.is_empty() {
             anyhow::bail!("empty VM instruction record");
         }
         let (opcode, operands) = record
+            .tokens
             .split_first()
             .ok_or_else(|| anyhow::anyhow!("empty VM instruction record"))?;
+        let mut tokens = Vec::new();
         tokens.push(*opcode);
         for operand in operands {
             bitpack_operand(*operand, &mut tokens);
         }
+        packed.push(InstructionRecord {
+            decoded_width: record.decoded_width,
+            tokens,
+        });
     }
-    Ok(tokens)
+    Ok(packed)
+}
+
+fn encode_varint_records(records: Vec<InstructionRecord>) -> anyhow::Result<Vec<u8>> {
+    let total_len = records
+        .iter()
+        .map(|record| record.decoded_width as usize)
+        .sum::<usize>();
+    let mut bytes = Vec::with_capacity(total_len);
+    for record in records {
+        let mut record_bytes = Vec::new();
+        for token in record.tokens {
+            encode_varint(token, &mut record_bytes);
+        }
+        let width = record.decoded_width as usize;
+        if record_bytes.len() > width {
+            anyhow::bail!(
+                "encoded VM instruction record needs {} decoded bytes but profile width is {}",
+                record_bytes.len(),
+                width
+            );
+        }
+        record_bytes.resize(width, 0);
+        bytes.extend(record_bytes);
+    }
+    Ok(bytes)
 }
 
 fn bitpack_operand(value: u64, out: &mut Vec<u64>) {
@@ -670,7 +1063,7 @@ fn record_tokens(
     key: u64,
     pc: usize,
     operands: impl IntoIterator<Item = (String, u64)>,
-) -> anyhow::Result<Vec<u64>> {
+) -> anyhow::Result<InstructionRecord> {
     let desc = profile
         .isa
         .by_name(instruction_name)
@@ -692,7 +1085,10 @@ fn record_tokens(
                 .ok_or_else(|| anyhow::anyhow!("missing operand {} for {}", operand.name, desc.name))?,
         );
     }
-    Ok(tokens)
+    Ok(InstructionRecord {
+        decoded_width: desc.decoded_width,
+        tokens,
+    })
 }
 
 fn label_pc(label_pcs: &HashMap<LabelId, usize>, label: LabelId) -> anyhow::Result<usize> {
@@ -749,6 +1145,7 @@ fn profile_key(profile: &ProfilePackage) -> u64 {
         instruction.name.hash(&mut hasher);
         instruction.opcodes().hash(&mut hasher);
         instruction.operands.hash(&mut hasher);
+        instruction.decoded_width.hash(&mut hasher);
     }
     for step in &profile.decoder.steps {
         decoder_step_tag(*step).hash(&mut hasher);
@@ -782,6 +1179,56 @@ impl Hash for VmInstruction {
                 value.hash(state);
                 width.hash(state);
             },
+            VmInstruction::SuperAddXor {
+                dst,
+                lhs,
+                rhs,
+                xor_rhs,
+                width,
+            } => {
+                dst.hash(state);
+                lhs.hash(state);
+                rhs.hash(state);
+                xor_rhs.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::SuperIcmpBrIf {
+                pred,
+                lhs,
+                rhs,
+                width,
+                then_label,
+                else_label,
+            } => {
+                (*pred as u8).hash(state);
+                lhs.hash(state);
+                rhs.hash(state);
+                width.hash(state);
+                then_label.hash(state);
+                else_label.hash(state);
+            },
+            VmInstruction::SuperGepLoad {
+                dst,
+                base,
+                offset,
+                width,
+            } => {
+                dst.hash(state);
+                base.hash(state);
+                offset.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::SuperLoadAdd {
+                dst,
+                ptr,
+                addend,
+                width,
+            } => {
+                dst.hash(state);
+                ptr.hash(state);
+                addend.hash(state);
+                width.hash(state);
+            },
             VmInstruction::Mov { dst, src, width } => {
                 dst.hash(state);
                 src.hash(state);
@@ -813,6 +1260,72 @@ impl Hash for VmInstruction {
                 rhs.hash(state);
                 width.hash(state);
             },
+            VmInstruction::FloatBin {
+                op,
+                dst,
+                lhs,
+                rhs,
+                width,
+            } => {
+                float_bin_tag(*op).hash(state);
+                dst.hash(state);
+                lhs.hash(state);
+                rhs.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::FloatUnary { op, dst, src, width } => {
+                float_unary_tag(*op).hash(state);
+                dst.hash(state);
+                src.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::FloatCast {
+                op,
+                dst,
+                src,
+                from_width,
+                to_width,
+            } => {
+                float_cast_tag(*op).hash(state);
+                dst.hash(state);
+                src.hash(state);
+                from_width.hash(state);
+                to_width.hash(state);
+            },
+            VmInstruction::Fcmp {
+                pred,
+                dst,
+                lhs,
+                rhs,
+                width,
+            } => {
+                (*pred as u8).hash(state);
+                dst.hash(state);
+                lhs.hash(state);
+                rhs.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::IntUnary { op, dst, src, width } => {
+                int_unary_tag(*op).hash(state);
+                dst.hash(state);
+                src.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::IntTernary {
+                op,
+                dst,
+                lhs,
+                rhs,
+                third,
+                width,
+            } => {
+                int_ternary_tag(*op).hash(state);
+                dst.hash(state);
+                lhs.hash(state);
+                rhs.hash(state);
+                third.hash(state);
+                width.hash(state);
+            },
             VmInstruction::Cast {
                 op,
                 dst,
@@ -840,6 +1353,65 @@ impl Hash for VmInstruction {
                 src.hash(state);
                 ptr.hash(state);
                 width.hash(state);
+            },
+            VmInstruction::AtomicLoad {
+                dst,
+                ptr,
+                width,
+                ordering,
+            } => {
+                dst.hash(state);
+                ptr.hash(state);
+                width.hash(state);
+                memory_ordering_tag(*ordering).hash(state);
+            },
+            VmInstruction::AtomicStore {
+                src,
+                ptr,
+                width,
+                ordering,
+            } => {
+                src.hash(state);
+                ptr.hash(state);
+                width.hash(state);
+                memory_ordering_tag(*ordering).hash(state);
+            },
+            VmInstruction::AtomicRmw {
+                op,
+                dst,
+                ptr,
+                src,
+                width,
+                ordering,
+            } => {
+                atomic_rmw_tag(*op).hash(state);
+                dst.hash(state);
+                ptr.hash(state);
+                src.hash(state);
+                width.hash(state);
+                memory_ordering_tag(*ordering).hash(state);
+            },
+            VmInstruction::CmpXchg {
+                old,
+                success,
+                ptr,
+                cmp,
+                new,
+                width,
+                success_ordering,
+                failure_ordering,
+            } => {
+                old.hash(state);
+                success.hash(state);
+                ptr.hash(state);
+                cmp.hash(state);
+                new.hash(state);
+                width.hash(state);
+                memory_ordering_tag(*success_ordering).hash(state);
+                memory_ordering_tag(*failure_ordering).hash(state);
+            },
+            VmInstruction::Fence { ordering } => {
+                memory_ordering_tag(*ordering).hash(state);
             },
             VmInstruction::Gep { dst, base, offset } => {
                 dst.hash(state);
@@ -890,6 +1462,48 @@ fn bin_tag(op: BinOp) -> u8 {
     }
 }
 
+fn int_unary_tag(op: IntUnaryOp) -> u8 {
+    match op {
+        IntUnaryOp::CtPop => 0,
+        IntUnaryOp::BSwap => 1,
+        IntUnaryOp::BitReverse => 2,
+    }
+}
+
+fn int_ternary_tag(op: IntTernaryOp) -> u8 {
+    match op {
+        IntTernaryOp::FShl => 0,
+        IntTernaryOp::FShr => 1,
+    }
+}
+
+fn float_bin_tag(op: FloatBinOp) -> u8 {
+    match op {
+        FloatBinOp::Add => 0,
+        FloatBinOp::Sub => 1,
+        FloatBinOp::Mul => 2,
+        FloatBinOp::Div => 3,
+        FloatBinOp::Rem => 4,
+    }
+}
+
+fn float_unary_tag(op: FloatUnaryOp) -> u8 {
+    match op {
+        FloatUnaryOp::Neg => 0,
+    }
+}
+
+fn float_cast_tag(op: FloatCastOp) -> u8 {
+    match op {
+        FloatCastOp::SignedIntToFloat => 0,
+        FloatCastOp::UnsignedIntToFloat => 1,
+        FloatCastOp::FloatToSignedInt => 2,
+        FloatCastOp::FloatToUnsignedInt => 3,
+        FloatCastOp::FloatTrunc => 4,
+        FloatCastOp::FloatExt => 5,
+    }
+}
+
 fn cast_tag(op: CastOp) -> u8 {
     match op {
         CastOp::ZExt => 0,
@@ -899,13 +1513,33 @@ fn cast_tag(op: CastOp) -> u8 {
     }
 }
 
+fn memory_ordering_tag(ordering: MemoryOrdering) -> u8 {
+    ordering as u8
+}
+
+fn atomic_rmw_tag(op: AtomicRmwOp) -> u8 {
+    match op {
+        AtomicRmwOp::Xchg => 0,
+        AtomicRmwOp::Add => 1,
+        AtomicRmwOp::Sub => 2,
+        AtomicRmwOp::And => 3,
+        AtomicRmwOp::Or => 4,
+        AtomicRmwOp::Xor => 5,
+        AtomicRmwOp::Nand => 6,
+        AtomicRmwOp::Max => 7,
+        AtomicRmwOp::Min => 8,
+        AtomicRmwOp::UMax => 9,
+        AtomicRmwOp::UMin => 10,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::isa::Opcode;
 
     use super::*;
     use crate::isa::CmpPredicate;
-    use crate::lowering::{NativeReturn, VmFunctionBuilder, VmInstruction};
+    use crate::lowering::{NativeReturn, VmFunctionBuilder, VmInstruction, fuse_superinstructions};
     use crate::profile::Manifest;
     use crate::verify::verify_profile;
 
@@ -920,6 +1554,291 @@ mod tests {
         assert!(!image.bytes.is_empty());
         assert!(!image.code_bytes().is_empty());
         assert_eq!(image.instruction_count, 6);
+        assert_eq!(image.code_len, 36);
+    }
+
+    #[test]
+    fn mixed_decoded_record_widths_are_profile_driven() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("mixed_widths", 4, 64);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::MovImm {
+            dst: 0,
+            imm: 0x1234_5678,
+            width: 64,
+        });
+        builder.push(VmInstruction::Mov {
+            dst: 1,
+            src: 0,
+            width: 64,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Add,
+            dst: 2,
+            lhs: 0,
+            rhs: 1,
+            width: 64,
+        });
+        builder.push(VmInstruction::IntTernary {
+            op: IntTernaryOp::FShl,
+            dst: 3,
+            lhs: 0,
+            rhs: 1,
+            third: 2,
+            width: 64,
+        });
+        builder.push(VmInstruction::CallNative {
+            call_id: 0,
+            args: vec![0, 1],
+            returns: vec![NativeReturn { dst: 0, width: 64 }],
+        });
+        builder.push(VmInstruction::Ret { src: 0 });
+        let function = builder.finish().expect("vm function");
+
+        let image = BytecodeEncoder::new(&profile).encode(&function).expect("bytecode");
+        let widths = decode_records_for_test(&profile, &image)
+            .into_iter()
+            .map(|record| record.decoded_width)
+            .collect::<Vec<_>>();
+
+        assert_eq!(widths, vec![32, 4, 8, 4, 16, 4, 48, 4, 64, 4, 4, 4, 4, 4]);
+        assert_eq!(image.code_len, widths.iter().sum::<usize>());
+    }
+
+    #[test]
+    fn super_add_xor_fusion_matches_unfused_behavior() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_add_xor", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Add,
+            dst: 3,
+            lhs: 0,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Xor,
+            dst: 0,
+            lhs: 3,
+            rhs: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 0 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "iadd_xor");
+        assert!(matches!(fused.instructions[0], VmInstruction::SuperAddXor { .. }));
+        let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+        assert_eq!(execute_for_test(&profile, &image, &[5, 7, 0x33]), (5 + 7) ^ 0x33);
+        assert!(image.debug_dump.contains("iadd_xor width=48"));
+    }
+
+    #[test]
+    fn super_add_xor_does_not_fuse_when_add_result_has_extra_use() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_add_xor_no_fuse", 5, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Add,
+            dst: 3,
+            lhs: 0,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Xor,
+            dst: 0,
+            lhs: 3,
+            rhs: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Mov {
+            dst: 4,
+            src: 3,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 0 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "iadd");
+        assert_eq!(fused.profile_instructions[1], "ixor");
+    }
+
+    #[test]
+    fn super_icmp_br_if_fusion_branches_with_relocated_labels() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_icmp_br_if", 3, 32);
+        let entry = builder.new_label();
+        let then_label = builder.new_label();
+        let else_label = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Icmp {
+            pred: CmpPredicate::Slt,
+            dst: 2,
+            lhs: 0,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::BrCond {
+            cond: 2,
+            then_label,
+            else_label,
+        });
+        builder.bind_label(then_label);
+        builder.push(VmInstruction::MovImm {
+            dst: 0,
+            imm: 111,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 0 });
+        builder.bind_label(else_label);
+        builder.push(VmInstruction::MovImm {
+            dst: 0,
+            imm: 222,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 0 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "icmp_br_if");
+        assert!(matches!(fused.instructions[0], VmInstruction::SuperIcmpBrIf { .. }));
+        let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+        assert_eq!(execute_for_test(&profile, &image, &[1, 2]), 111);
+        assert_eq!(execute_for_test(&profile, &image, &[3, 2]), 222);
+        assert!(image.debug_dump.contains("icmp_br_if width=32"));
+    }
+
+    #[test]
+    fn super_gep_load_fusion_uses_wide_record() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_gep_load", 3, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Gep {
+            dst: 1,
+            base: 0,
+            offset: 8,
+        });
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 2 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "gep_load");
+        assert!(matches!(fused.instructions[0], VmInstruction::SuperGepLoad { .. }));
+        let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+        assert!(image.debug_dump.contains("gep_load width=32"));
+    }
+
+    #[test]
+    fn super_gep_load_does_not_fuse_when_pointer_has_extra_use() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_gep_load_no_fuse", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Gep {
+            dst: 1,
+            base: 0,
+            offset: 8,
+        });
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Mov {
+            dst: 3,
+            src: 1,
+            width: 64,
+        });
+        builder.push(VmInstruction::Ret { src: 2 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "gep");
+        assert_eq!(fused.profile_instructions[1], "load");
+    }
+
+    #[test]
+    fn super_load_add_fusion_uses_wide_record() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_iadd", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Add,
+            dst: 3,
+            lhs: 2,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load_iadd");
+        assert!(matches!(fused.instructions[0], VmInstruction::SuperLoadAdd { .. }));
+        let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+        assert!(image.debug_dump.contains("load_iadd width=32"));
+    }
+
+    #[test]
+    fn super_load_add_does_not_fuse_when_loaded_value_has_extra_use() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_iadd_no_fuse", 5, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Add,
+            dst: 3,
+            lhs: 2,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Mov {
+            dst: 4,
+            src: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load");
+        assert_eq!(fused.profile_instructions[1], "iadd");
     }
 
     #[test]
@@ -1105,7 +2024,7 @@ mod tests {
             .isa
             .by_semantic(&HandlerSemantic::Ret)
             .expect("ret opcode")
-            .opcode_for_site(image.key, 2) as u64;
+            .opcode_for_site(image.key, 20) as u64;
         let fake_desc = profile.isa.by_semantic(&HandlerSemantic::Nop).expect("fake opcode");
         let flat_tokens = [
             add_opcode,
@@ -1113,12 +2032,12 @@ mod tests {
             0,
             1,
             32,
-            fake_desc.opcode_for_site(image.key, 1) as u64,
+            fake_desc.opcode_for_site(image.key, 16) as u64,
             ret_opcode,
             0,
-            fake_desc.opcode_for_site(image.key, 3) as u64,
-            fake_desc.opcode_for_site(image.key, 4) as u64,
-            fake_desc.opcode_for_site(image.key, 5) as u64,
+            fake_desc.opcode_for_site(image.key, 24) as u64,
+            fake_desc.opcode_for_site(image.key, 28) as u64,
+            fake_desc.opcode_for_site(image.key, 32) as u64,
         ];
 
         assert_ne!(packed_tokens, flat_tokens);
@@ -1148,7 +2067,7 @@ mod tests {
     fn opcode_alias_selection_uses_function_key() {
         let profile = profile_with_isa(&include_str!("../profiles/amice-simple-vmp/isa.vm").replace(
             "opcode alias [0x10, 0x2c, 0x5a, 0x6d, 0x7a]",
-            "opcode alias [0x10, 0xa3]",
+            "opcode alias [0x10, 0x1f0]",
         ));
         verify_profile(&profile).expect("profile with add aliases should verify");
 
@@ -1161,13 +2080,13 @@ mod tests {
         }
 
         assert!(seen.contains(&0x10));
-        assert!(seen.contains(&0xa3));
+        assert!(seen.contains(&0x1f0));
     }
 
     #[test]
     fn bytecode_uses_vm_ir_profile_instruction_identity() {
         let alt_iadd = r#"instr iadd_alt(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 第二条同语义整数加法处理器
-opcode alias [0xa4] # iadd_alt 使用独立操作码 0xa4
+opcode alias [0x1f1] # iadd_alt 使用独立操作码 0x1f1
 semantic { # iadd_alt 保持与 iadd 相同的加法语义
 reg[dst] = trunc_width(reg[lhs] + reg[rhs], width) # 加法结果按目标宽度掩码
 pc = next # 执行继续到下一条字节码指令
@@ -1478,7 +2397,12 @@ pc = next # 执行继续到下一条字节码指令
     }
 
     fn execute_for_test(profile: &ProfilePackage, image: &BytecodeImage, args: &[u64]) -> u64 {
-        let instructions = decode_for_test(profile, image);
+        let instructions = decode_records_for_test(profile, image);
+        let pc_to_index = instructions
+            .iter()
+            .enumerate()
+            .map(|(index, record)| (record.pc, index))
+            .collect::<HashMap<_, _>>();
         let mut regs = [0_u64; 32];
         for (index, value) in args.iter().enumerate() {
             regs[index] = *value;
@@ -1486,7 +2410,9 @@ pc = next # 执行继续到下一条字节码指令
 
         let mut pc = 0_usize;
         loop {
-            let operands = &instructions[pc];
+            let record_index = *pc_to_index.get(&pc).expect("valid bytecode pc");
+            let record = &instructions[record_index];
+            let operands = &record.operands;
             let semantic = &profile
                 .isa
                 .by_opcode(operands[0] as Opcode)
@@ -1496,12 +2422,35 @@ pc = next # 执行继续到下一条字节码指令
             match semantic {
                 HandlerSemantic::MovImm => {
                     regs[operands[1] as usize] = mask_width(operands[2], operands[3] as u8);
-                    pc += 1;
+                    pc += record.decoded_width;
                 },
                 HandlerSemantic::ConstLoad => {
                     let values = decrypted_const_pool_values_for_test(image);
                     regs[operands[1] as usize] = mask_width(values[operands[2] as usize], operands[3] as u8);
-                    pc += 1;
+                    pc += record.decoded_width;
+                },
+                HandlerSemantic::Super(SuperOp::AddXor) => {
+                    let dst = operands[1] as usize;
+                    let lhs = regs[operands[2] as usize];
+                    let rhs = regs[operands[3] as usize];
+                    let xor_rhs = regs[operands[4] as usize];
+                    let width = operands[5] as u8;
+                    regs[dst] = mask_width(lhs.wrapping_add(rhs) ^ xor_rhs, width);
+                    pc += record.decoded_width;
+                },
+                HandlerSemantic::Super(SuperOp::IcmpBrIf) => {
+                    let pred = operands[1];
+                    let lhs = regs[operands[2] as usize];
+                    let rhs = regs[operands[3] as usize];
+                    let width = operands[4] as u8;
+                    pc = if eval_icmp_for_test(pred, lhs, rhs, width) {
+                        operands[5] as usize
+                    } else {
+                        operands[6] as usize
+                    };
+                },
+                HandlerSemantic::Super(SuperOp::GepLoad | SuperOp::LoadAdd) => {
+                    unreachable!("not emitted by this test interpreter")
                 },
                 HandlerSemantic::Bin(op) => {
                     let dst = operands[1] as usize;
@@ -1524,7 +2473,7 @@ pc = next # 执行继续到下一条字节码指令
                         BinOp::AShr => (sign_extend(lhs, width) >> (rhs & 63)) as u64,
                     };
                     regs[dst] = mask_width(value, width);
-                    pc += 1;
+                    pc += record.decoded_width;
                 },
                 HandlerSemantic::Icmp => {
                     let pred = operands[1];
@@ -1532,18 +2481,26 @@ pc = next # 执行继续到下一条字节码指令
                     let lhs = regs[operands[3] as usize];
                     let rhs = regs[operands[4] as usize];
                     let width = operands[5] as u8;
-                    regs[dst] = match pred {
-                        8 => (sign_extend(lhs, width) < sign_extend(rhs, width)) as u64,
-                        _ => unreachable!("test only emits slt"),
-                    };
-                    pc += 1;
+                    regs[dst] = eval_icmp_for_test(pred, lhs, rhs, width) as u64;
+                    pc += record.decoded_width;
                 },
                 HandlerSemantic::Alloca
                 | HandlerSemantic::Load
                 | HandlerSemantic::Store
+                | HandlerSemantic::AtomicLoad
+                | HandlerSemantic::AtomicStore
+                | HandlerSemantic::AtomicRmw(_)
+                | HandlerSemantic::CmpXchg
+                | HandlerSemantic::Fence
                 | HandlerSemantic::Gep
-                | HandlerSemantic::CallNative => unreachable!("not emitted by this test"),
-                HandlerSemantic::Nop => pc += 1,
+                | HandlerSemantic::CallNative
+                | HandlerSemantic::IntUnary(_)
+                | HandlerSemantic::IntTernary(_)
+                | HandlerSemantic::FloatBin(_)
+                | HandlerSemantic::FloatUnary(_)
+                | HandlerSemantic::FloatCast(_)
+                | HandlerSemantic::Fcmp => unreachable!("not emitted by this test"),
+                HandlerSemantic::Nop => pc += record.decoded_width,
                 HandlerSemantic::Br => pc = operands[1] as usize,
                 HandlerSemantic::BrCond => {
                     pc = if regs[operands[1] as usize] != 0 {
@@ -1553,13 +2510,29 @@ pc = next # 执行继续到下一条字节码指令
                     };
                 },
                 HandlerSemantic::VmCall => {
-                    regs[30] = pc as u64 + 1;
+                    regs[30] = (pc + record.decoded_width) as u64;
                     pc = operands[1] as usize;
                 },
                 HandlerSemantic::VmRet => pc = regs[30] as usize,
                 HandlerSemantic::Ret => return regs[operands[1] as usize],
                 HandlerSemantic::Mov | HandlerSemantic::Cast(_) => unreachable!("not emitted by this test"),
             }
+        }
+    }
+
+    fn eval_icmp_for_test(pred: u64, lhs: u64, rhs: u64, width: u8) -> bool {
+        match pred {
+            0 => mask_width(lhs, width) == mask_width(rhs, width),
+            1 => mask_width(lhs, width) != mask_width(rhs, width),
+            2 => mask_width(lhs, width) > mask_width(rhs, width),
+            3 => mask_width(lhs, width) >= mask_width(rhs, width),
+            4 => mask_width(lhs, width) < mask_width(rhs, width),
+            5 => mask_width(lhs, width) <= mask_width(rhs, width),
+            6 => sign_extend(lhs, width) > sign_extend(rhs, width),
+            7 => sign_extend(lhs, width) >= sign_extend(rhs, width),
+            8 => sign_extend(lhs, width) < sign_extend(rhs, width),
+            9 => sign_extend(lhs, width) <= sign_extend(rhs, width),
+            _ => false,
         }
     }
 
@@ -1576,18 +2549,38 @@ pc = next # 执行继续到下一条字节码指令
             .collect()
     }
 
+    #[derive(Debug, Clone)]
+    struct DecodedRecordForTest {
+        pc: usize,
+        decoded_width: usize,
+        operands: Vec<u64>,
+    }
+
     fn decode_for_test(profile: &ProfilePackage, image: &BytecodeImage) -> Vec<Vec<u64>> {
+        decode_records_for_test(profile, image)
+            .into_iter()
+            .map(|record| record.operands)
+            .collect()
+    }
+
+    fn decode_records_for_test(profile: &ProfilePackage, image: &BytecodeImage) -> Vec<DecodedRecordForTest> {
         let bytes = decoded_byte_stream_for_test(profile, image);
         let mut offset = 0;
         let mut decoded = Vec::with_capacity(image.instruction_count as usize);
         while decoded.len() < image.instruction_count as usize {
+            let record_start = offset;
             let opcode = decode_varint_for_test(&bytes, &mut offset);
             let desc = profile.isa.by_opcode(opcode as Opcode).expect("known opcode");
             let mut operands = vec![opcode];
             for _ in 0..desc.operands {
                 operands.push(decode_bitpacked_operand_for_test(&bytes, &mut offset));
             }
-            decoded.push(operands);
+            offset = record_start + desc.decoded_width as usize;
+            decoded.push(DecodedRecordForTest {
+                pc: record_start,
+                decoded_width: desc.decoded_width as usize,
+                operands,
+            });
         }
         decoded
     }
