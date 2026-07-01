@@ -1,0 +1,29 @@
+abi host_to_vm { # 将宿主标量参数和返回值映射到 VM 的 x 寄存器组
+  arg0 -> x0 as i64 # 第 0 个整数或指针参数送入 x0
+  arg1 -> x1 as i64 # 第 1 个整数或指针参数送入 x1
+  arg2 -> x2 as i64 # 第 2 个整数或指针参数送入 x2
+  arg3 -> x3 as i64 # 第 3 个整数或指针参数送入 x3
+  arg4 -> x4 as i64 # 第 4 个整数或指针参数送入 x4
+  arg5 -> x5 as i64 # 第 5 个整数或指针参数送入 x5
+  arg6 -> x6 as i64 # 第 6 个整数或指针参数送入 x6
+  arg7 -> x7 as i64 # 第 7 个整数或指针参数送入 x7
+  ret0 <- x0 as i64 # 第 0 个返回槽从 x0 读回
+  ret1 <- x1 as i64 # 第 1 个返回槽从 x1 读回，用于简单结构体直接返回
+  ret2 <- x2 as i64 # 第 2 个返回槽从 x2 读回，用于验证 profile 驱动的多返回映射
+  max_returns = 3 # 该简单配置包支持最多三个返回槽
+} # 结束 host_to_vm ABI
+
+abi vm_call { # 声明 VM 内部调用约定，供 vm_call 和 vm_ret 处理器使用
+  call_args = [x0..x7] # 内部调用从调用者保存的 x 寄存器接收参数
+  call_link = lr # VM 调用将下一条字节码 PC 写入 lr
+  ret_pc <- lr # VM 返回从 lr 恢复执行位置
+  ret_values = [x0, x1, x2] # VM 调用通过 x0、x1 和 x2 暴露三个返回槽
+  max_returns = 3 # 内部调用约定同样保留三个返回槽
+} # 结束 vm_call ABI
+
+native_call default { # 声明原生调用策略，直接调用降低使用该约定
+  args = [x0..x7] # 原生标量参数从 x0 到 x7 读取
+  returns = [x0, x1, x2] # 原生返回值最多写回 x0、x1 和 x2 三个返回槽
+  clobbers = [x0..x15] # 原生调用可以破坏调用者保存的 x 寄存器
+  policy = direct # 原生调用重新生成为直接 LLVM 调用
+} # 结束原生调用策略

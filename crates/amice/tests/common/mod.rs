@@ -5,11 +5,13 @@
 //! - LLVM version detection and configuration
 //! - Compilation and execution helpers
 
+#![allow(dead_code, unused_imports)]
+
 pub mod cpp;
 pub mod rust;
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 // Re-export for convenience
@@ -126,8 +128,8 @@ pub fn llvm_config_from_env(env_var: &str, feature: &str) -> Option<LlvmConfig> 
 /// Returns the first matching LLVM installation found.
 pub fn detect_llvm_config() -> Option<LlvmConfig> {
     let llvm_versions = [
-        ("LLVM_SYS_221_PREFIX", "llvm22-1"),
         ("LLVM_SYS_211_PREFIX", "llvm21-1"),
+        ("LLVM_SYS_221_PREFIX", "llvm22-1"),
         ("LLVM_SYS_201_PREFIX", "llvm20-1"),
         ("LLVM_SYS_191_PREFIX", "llvm19-1"),
         ("LLVM_SYS_181_PREFIX", "llvm18-1"),
@@ -147,6 +149,48 @@ pub fn detect_llvm_config() -> Option<LlvmConfig> {
     }
 
     None
+}
+
+/// Extract the LLVM major version from a cargo feature name like `llvm21-1`.
+pub fn llvm_major_from_feature(feature: &str) -> u32 {
+    feature
+        .strip_prefix("llvm")
+        .and_then(|version| version.split_once('-'))
+        .and_then(|(major, _)| major.parse::<u32>().ok())
+        .unwrap_or(21)
+}
+
+/// Remove LLVM 22 IR spellings that LLVM 21's `opt` cannot parse.
+pub fn sanitize_ir_for_llvm21(path: &Path) {
+    let Ok(ir) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let sanitized = ir
+        .replace(", target_mem0: none", "")
+        .replace(", target_mem1: none", "")
+        .replace(", target_mem2: none", "")
+        .replace(", target_mem3: none", "")
+        .replace(" nocreateundeforpoison", "");
+    let sanitized = sanitized
+        .lines()
+        .filter(|line| !line.contains("@llvm.lifetime.start.") && !line.contains("@llvm.lifetime.end."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if sanitized != ir {
+        std::fs::write(path, sanitized).expect("failed to write LLVM21-compatible IR");
+    }
+}
+
+/// Returns the clang executable that matches the detected LLVM prefix when it exists.
+pub fn clang_compiler_path(is_cpp: bool) -> PathBuf {
+    let compiler = if is_cpp { "clang++" } else { "clang" };
+    if let Some(config) = detect_llvm_config() {
+        let candidate = PathBuf::from(config.prefix).join("bin").join(compiler);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from(compiler)
 }
 
 fn run_amice_build(config: Option<&LlvmConfig>) {
@@ -225,6 +269,11 @@ pub struct ObfuscationConfig {
     pub flatten_mode: Option<String>,
     pub bogus_control_flow: Option<bool>,
     pub vm_flatten: Option<bool>,
+    pub vm_virtualize: Option<bool>,
+    pub vm_profile_path: Option<String>,
+    pub vm_runtime_scope: Option<String>,
+    pub vm_dump_bytecode: Option<bool>,
+    pub vm_dump_lowering: Option<bool>,
 
     // Shuffle blocks
     pub shuffle_blocks: Option<bool>,
@@ -272,6 +321,11 @@ impl ObfuscationConfig {
             flatten: Some(false),
             bogus_control_flow: Some(false),
             vm_flatten: Some(false),
+            vm_virtualize: Some(false),
+            vm_profile_path: None,
+            vm_runtime_scope: None,
+            vm_dump_bytecode: None,
+            vm_dump_lowering: None,
             shuffle_blocks: Some(false),
             split_basic_block: Some(false),
             split_basic_block_num: None,
@@ -339,6 +393,11 @@ impl ObfuscationConfig {
         set_env_str!(cmd, "AMICE_FLATTEN_MODE", self.flatten_mode);
         set_env_bool!(cmd, "AMICE_BOGUS_CONTROL_FLOW", self.bogus_control_flow);
         set_env_bool!(cmd, "AMICE_VM_FLATTEN", self.vm_flatten);
+        set_env_bool!(cmd, "AMICE_VM_VIRTUALIZE", self.vm_virtualize);
+        set_env_str!(cmd, "AMICE_VM_PROFILE_PATH", self.vm_profile_path);
+        set_env_str!(cmd, "AMICE_VM_RUNTIME_SCOPE", self.vm_runtime_scope);
+        set_env_bool!(cmd, "AMICE_VM_DUMP_BYTECODE", self.vm_dump_bytecode);
+        set_env_bool!(cmd, "AMICE_VM_DUMP_LOWERING", self.vm_dump_lowering);
 
         // Shuffle blocks
         set_env_bool!(cmd, "AMICE_SHUFFLE_BLOCKS", self.shuffle_blocks);

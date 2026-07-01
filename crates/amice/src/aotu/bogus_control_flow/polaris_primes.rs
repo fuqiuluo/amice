@@ -1,23 +1,16 @@
 // translate from https://github.com/za233/Polaris-Obfuscator/blob/main/src/llvm/lib/Transforms/Obfuscation/BogusControlFlow.cpp
 // A little improvement
 
-use crate::aotu::bogus_control_flow::{BogusControlFlow, BogusControlFlowAlgo};
+use crate::aotu::bogus_control_flow::BogusControlFlowAlgo;
 use crate::config::BogusControlFlowConfig;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt};
 use amice_plugin::inkwell::IntPredicate;
-use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::builder::Builder;
-use amice_plugin::inkwell::context::{Context, ContextRef};
-use amice_plugin::inkwell::llvm_sys::core::LLVMAddIncoming;
-use amice_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
+use amice_plugin::inkwell::context::ContextRef;
 use amice_plugin::inkwell::module::Module;
-use amice_plugin::inkwell::types::IntType;
-use amice_plugin::inkwell::values::{
-    AsValueRef, FunctionValue, InstructionOpcode, InstructionValue, IntValue, PhiValue, PointerValue,
-};
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode, PointerValue};
 use anyhow::anyhow;
 use log::error;
-use rand::Rng;
 
 #[derive(Default)]
 pub struct BogusControlFlowPolarisPrimes;
@@ -336,6 +329,7 @@ fn get_inverse(a: u64, m: u64) -> Option<u64> {
     }
 }
 
+#[cfg(test)]
 fn mod_exp(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
     if modulus == 1 {
         return 0;
@@ -356,9 +350,9 @@ fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
+#[cfg(test)]
 mod tests {
     use crate::aotu::bogus_control_flow::polaris_primes::{PRIMES, exgcd, gcd, get_inverse, mod_exp};
-    use std::ops::{Rem, Sub};
 
     #[test]
     fn test_exgcd() {
@@ -380,9 +374,6 @@ mod tests {
 
     #[test]
     fn test_mod_inv() {
-        let mut var0 = 0;
-        let mut var1 = 0;
-
         let (module, x) = loop {
             let m = 0x100000000u64 - rand::random::<u32>() as u64;
             if m == 0 {
@@ -401,15 +392,16 @@ mod tests {
         println!("x = {}", x);
         println!("module = {}", module);
 
-        var0 = x;
-        var1 = x;
+        let mut var0 = x;
+        let var1 = x;
 
         let n = rand::random_range(100..10000);
         for i in 0..n {
             let b = rand::random::<u64>() % module;
             let inv = get_inverse(x, module).unwrap();
             let a = ((b * inv) % module + 1) % module;
-            var0 = (a * var0).rem(module).sub(b).rem(module);
+            let reduced = (a as u128 * var0 as u128) % module as u128;
+            var0 = ((reduced + module as u128 - b as u128) % module as u128) as u64;
             println!("[{}] var0 = {}, var1 = {}", i, var0, var1);
             assert_eq!(var0, var1)
         }
@@ -417,9 +409,6 @@ mod tests {
 
     #[test]
     fn test_double_inverse_affine_chain() {
-        let mut var0 = 0;
-        let mut var1 = 0;
-
         let (module, x) = loop {
             let m = 0x100000000u64 - rand::random::<u32>() as u64;
             if m == 0 {
@@ -438,8 +427,8 @@ mod tests {
         println!("x = {}", x);
         println!("module = {}", module);
 
-        var0 = x;
-        var1 = x;
+        let mut var0 = x;
+        let var1 = x;
 
         let n = 100;
 
@@ -459,8 +448,9 @@ mod tests {
             let inv_k = get_inverse(k, module).unwrap();
 
             // 双重模逆
-            var0 = ((var0 * k + c) % module + module - c) % module;
-            var0 = (var0 * inv_k) % module;
+            var0 = (((var0 as u128 * k as u128 + c as u128) % module as u128 + module as u128 - c as u128)
+                % module as u128) as u64;
+            var0 = ((var0 as u128 * inv_k as u128) % module as u128) as u64;
 
             println!("[{}] var0 = {}, var1 = {}, c = {}, k = {}", i, var0, var1, c, k);
             assert_eq!(var0, var1);
@@ -469,17 +459,14 @@ mod tests {
 
     #[test]
     fn test_fermat_little_theorem() {
-        let mut var0 = 0;
-        let mut var1 = 0;
-
         let p = PRIMES[rand::random_range(0..PRIMES.len())];
         let x = PRIMES[rand::random_range(0..PRIMES.len())] % p;
 
         println!("x = {}", x);
         println!("p = {}", p);
 
-        var0 = x;
-        var1 = x;
+        let mut var0 = x;
+        let var1 = x;
 
         let n = 1000;
 
@@ -490,7 +477,7 @@ mod tests {
             // 使用费马小定理保持 var0 不变
             let part1 = mod_exp(var0, r, p);
             let part2 = mod_exp(var0, (p - 1) - r, p);
-            var0 = (part1 * part2 % p) * var0 % p;
+            var0 = (((part1 as u128 * part2 as u128) % p as u128) * var0 as u128 % p as u128) as u64;
 
             println!("[{}] var0 = {}, var1 = {}", i, var0, var1);
             assert_eq!(var0, var1);

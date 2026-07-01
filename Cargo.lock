@@ -18,6 +18,7 @@ dependencies = [
  "amice-llvm",
  "amice-macro",
  "amice-plugin",
+ "amice-vm",
  "anyhow",
  "bitflags",
  "cc",
@@ -86,6 +87,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "amice-vm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

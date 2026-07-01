@@ -9,3 +9,4 @@ amice-llvm = { path = "crates/amice-llvm", default-features = false }
 amice-macro = { path = "crates/amice-macro", default-features = false }
 amice-plugin = { path = "crates/amice-plugin" }
 amice-plugin-macros = { path = "crates/amice-plugin-macros" }
+amice-vm = { path = "crates/amice-vm" }

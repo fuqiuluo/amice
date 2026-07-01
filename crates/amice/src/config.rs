@@ -25,6 +25,7 @@ use std::fs;
 use std::path::Path;
 pub use string_encryption::*;
 pub use vm_flatten::*;
+pub use vm_virtualize::*;
 
 mod alias_access;
 mod basic_block_outlining;
@@ -45,6 +46,7 @@ mod shuffle_blocks;
 mod split_basic_block;
 mod string_encryption;
 mod vm_flatten;
+mod vm_virtualize;
 
 lazy_static! {
     pub static ref CONFIG: Config = {
@@ -65,6 +67,7 @@ pub struct Config {
     pub function_wrapper: FunctionWrapperConfig,
     pub split_basic_block: SplitBasicBlockConfig,
     pub vm_flatten: VmFlattenConfig,
+    pub vm_virtualize: VmVirtualizeConfig,
     pub shuffle_blocks: ShuffleBlocksConfig,
     pub lower_switch: LowerSwitchConfig,
     pub flatten: FlattenConfig,

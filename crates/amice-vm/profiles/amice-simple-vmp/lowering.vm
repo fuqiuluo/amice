@@ -1,0 +1,256 @@
+rule llvm.add.integer { # 将 LLVM 整数 add 降低为 iadd VM 指令
+  match %r = llvm.add integer %a, %b # 匹配任意受支持整数宽度的 LLVM add
+  lower { # 开始声明 add 的 lowering 动作
+    %va = materialize %a as integer # 将左操作数物化为 VM 整数值
+    %vb = materialize %b as integer # 将右操作数物化为 VM 整数值
+    %vr = vreg integer # 为 add 结果分配一个 VM x 寄存器
+    emit iadd dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 iadd 指令
+    bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
+  } # 结束 add lowering 动作
+} # 结束 add 规则
+
+rule llvm.sub.integer { # 将 LLVM 整数 sub 降低为 isub VM 指令
+  match %r = llvm.sub integer %a, %b # 匹配任意受支持整数宽度的 LLVM sub
+  lower { # 开始声明 sub 的 lowering 动作
+    %va = materialize %a as integer # 将左操作数物化为 VM 整数值
+    %vb = materialize %b as integer # 将右操作数物化为 VM 整数值
+    %vr = vreg integer # 为 sub 结果分配一个 VM x 寄存器
+    emit isub dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 isub 指令
+    bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
+  } # 结束 sub lowering 动作
+} # 结束 sub 规则
+
+rule llvm.mul.integer { # 将 LLVM 整数 mul 降低为 imul VM 指令
+  match %r = llvm.mul integer %a, %b # 匹配任意受支持整数宽度的 LLVM mul
+  lower { # 开始声明 mul 的 lowering 动作
+    %va = materialize %a as integer # 将左操作数物化为 VM 整数值
+    %vb = materialize %b as integer # 将右操作数物化为 VM 整数值
+    %vr = vreg integer # 为 mul 结果分配一个 VM x 寄存器
+    emit imul dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 imul 指令
+    bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
+  } # 结束 mul lowering 动作
+} # 结束 mul 规则
+
+rule llvm.bitops.integer { # 将 LLVM xor、and、or 降低为位运算 VM 指令
+  match %r = llvm.bitop integer %a, %b # 匹配受支持的整数位运算
+  lower { # 开始声明 bitop 的 lowering 动作
+    %va = materialize %a as integer # 将左操作数物化为 VM 整数值
+    %vb = materialize %b as integer # 将右操作数物化为 VM 整数值
+    %vr = vreg integer # 为 bitop 结果分配一个 VM x 寄存器
+    emit ixor dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # xor 发射 ixor 指令
+    emit iand dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # and 发射 iand 指令
+    emit ior dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # or 发射 ior 指令
+    bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
+  } # 结束 bitop lowering 动作
+} # 结束 bitop 规则
+
+rule llvm.shift.integer { # 将 LLVM shl、lshr、ashr 降低为移位 VM 指令
+  match %r = llvm.shift integer %a, %b # 匹配受支持的整数移位
+  lower { # 开始声明 shift 的 lowering 动作
+    %va = materialize %a as integer # 将被移位值物化为 VM 整数值
+    %vb = materialize %b as integer # 将移位量物化为 VM 整数值
+    %vr = vreg integer # 为 shift 结果分配一个 VM x 寄存器
+    emit ishl dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # shl 发射 ishl 指令
+    emit ilshr dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # lshr 发射 ilshr 指令
+    emit iashr dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # ashr 发射 iashr 指令
+    bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
+  } # 结束 shift lowering 动作
+} # 结束 shift 规则
+
+rule llvm.icmp.integer { # 将 LLVM icmp 降低为 icmp VM 指令
+  match %r = llvm.icmp integer %a, %b # 匹配整数比较谓词
+  lower { # 开始声明 icmp 的 lowering 动作
+    %va = materialize %a as integer # 将左比较值物化为 VM 整数值
+    %vb = materialize %b as integer # 将右比较值物化为 VM 整数值
+    %vr = vreg i1 # 为比较结果分配一个布尔 VM x 寄存器
+    emit icmp pred=predicate(%r), dst=%vr, lhs=%va, rhs=%vb, width=operand_width(%a,%b) # 发射 profile ISA 中的 icmp 指令
+    bind %r = %vr # 记录 LLVM 比较结果到 VM 寄存器的绑定
+  } # 结束 icmp lowering 动作
+} # 结束 icmp 规则
+
+rule llvm.cast.integer { # 将 zext、sext、trunc、bitcast 降低为 VM 转换指令
+  match %r = llvm.cast integer %a # 匹配受支持整数转换
+  lower { # 开始声明整数转换 lowering 动作
+    %va = materialize %a as integer # 将源值物化为 VM 整数值
+    %vr = vreg integer # 为转换结果分配一个 VM x 寄存器
+    emit zext dst=%vr, src=%va, from_width=type_width(%a), to_width=type_width(%r) # zext 发射 zext 指令
+    emit sext dst=%vr, src=%va, from_width=type_width(%a), to_width=type_width(%r) # sext 发射 sext 指令
+    emit trunc dst=%vr, src=%va, from_width=type_width(%a), to_width=type_width(%r) # trunc 发射 trunc 指令
+    emit bitcast dst=%vr, src=%va, from_width=type_width(%a), to_width=type_width(%r) # bitcast 发射 bitcast 指令
+    bind %r = %vr # 记录 LLVM 转换结果到 VM 寄存器的绑定
+  } # 结束整数转换 lowering 动作
+} # 结束整数转换规则
+
+rule llvm.cast.pointer { # 将 ptrtoint 和 inttoptr 归一化为 x 寄存器中的宽度转换
+  match %r = llvm.cast pointer %a # 匹配指针与整数之间的转换
+  lower { # 开始声明指针转换 lowering 动作
+    %va = materialize %a as i64 # 将源指针或整数物化为 64 位 VM 值
+    %vr = vreg i64 # 为转换结果分配一个 VM x 寄存器
+    emit zext dst=%vr, src=%va, from_width=type_width(%a), to_width=type_width(%r) # 窄整数转指针时使用 zext
+    emit trunc dst=%vr, src=%va, from_width=type_width(%a), to_width=type_width(%r) # 指针转窄整数时使用 trunc
+    emit bitcast dst=%vr, src=%va, from_width=type_width(%a), to_width=type_width(%r) # 同宽转换使用 bitcast
+    bind %r = %vr # 记录 LLVM 转换结果到 VM 寄存器的绑定
+  } # 结束指针转换 lowering 动作
+} # 结束指针转换规则
+
+rule llvm.const_pool.materialize { # 将较大的 LLVM 整数常量降低为常量池读取
+  match %v = llvm.constant integer # 匹配需要放入常量池的整数常量
+  lower { # 开始声明常量池 materialize 动作
+    %vr = vreg integer # 为常量分配一个 VM x 寄存器
+    emit const_load dst=%vr, index=const_pool_index(%v), width=type_width(%v) # 从 profile 字节码常量池读取常量
+    bind %v = %vr # 记录常量到 VM 寄存器的绑定
+  } # 结束常量池 materialize 动作
+} # 结束常量池 materialize 规则
+
+rule llvm.alloca.stack { # 将固定大小 LLVM alloca 降低为 VM 栈分配
+  match %r = llvm.alloca fixed %ty # 匹配固定元素个数的 alloca
+  lower { # 开始声明 alloca lowering 动作
+    %vr = vreg ptr # 为栈槽地址分配一个 VM x 寄存器
+    emit alloca dst=%vr, bytes=alloc_size(%ty), align=alloc_align(%r) # 发射 VM 栈分配指令
+    bind %r = %vr # 记录 LLVM alloca 指针到 VM 寄存器的绑定
+  } # 结束 alloca lowering 动作
+} # 结束 alloca 规则
+
+rule llvm.memory.scalar { # 将标量整数 load/store 降低为 VM 地址寄存器访问
+  match llvm.memory scalar %ptr # 匹配标量 load 或 store
+  lower { # 开始声明内存 lowering 动作
+    %vp = materialize %ptr as ptr # 将内存地址物化为 VM 指针值
+    %vv = vreg integer # 为 load 结果或 store 源值保留 VM x 寄存器
+    emit load dst=%vv, ptr=%vp, width=memory_width(%ptr) # load 发射 load 指令
+    emit store src=%vv, ptr=%vp, width=memory_width(%ptr) # store 发射 store 指令
+    bind %r = %vv # load 时记录 LLVM 结果到 VM 寄存器，store 路径没有 %r 绑定目标
+  } # 结束内存 lowering 动作
+} # 结束内存规则
+
+rule llvm.gep.constant { # 将常量偏移 LLVM getelementptr 降低为 VM 指针算术
+  match %r = llvm.gep constant %base # 匹配可静态求字节偏移的 GEP
+  lower { # 开始声明常量 GEP lowering 动作
+    %vb = materialize %base as ptr # 将基址物化为 VM 指针值
+    %vr = vreg ptr # 为结果地址分配一个 VM x 寄存器
+    emit gep dst=%vr, base=%vb, offset=constant_gep_offset(%r) # 发射 VM 字节偏移指针算术
+    bind %r = %vr # 记录 LLVM GEP 结果到 VM 寄存器的绑定
+  } # 结束常量 GEP lowering 动作
+} # 结束常量 GEP 规则
+
+rule llvm.gep.dynamic { # 将动态数组下标 GEP 展开为乘法、加法和最终字节偏移
+  match %r = llvm.gep dynamic %base, %index # 匹配包含变量下标的 GEP
+  lower { # 开始声明动态 GEP lowering 动作
+    %vb = materialize %base as ptr # 将基址物化为 VM 指针值
+    %vi = materialize %index as i64 # 将动态下标物化为 VM 整数值
+    %vs = vreg i64 # 为缩放后的下标分配 VM x 寄存器
+    %vr = vreg ptr # 为最终地址分配 VM x 寄存器
+    emit imul dst=%vs, lhs=%vi, rhs=element_size(%base), width=64 # 变量下标先乘元素字节宽度
+    emit iadd dst=%vr, lhs=%vb, rhs=%vs, width=64 # 缩放偏移与基址相加
+    emit gep dst=%vr, base=%vr, offset=constant_gep_offset(%r) # 追加可静态求值的字节偏移
+    bind %r = %vr # 记录 LLVM GEP 结果到 VM 寄存器的绑定
+  } # 结束动态 GEP lowering 动作
+} # 结束动态 GEP 规则
+
+rule llvm.call.direct { # 将直接标量整数调用降低为生成的原生调用桥
+  match %r = llvm.call direct %callee # 匹配可解析 callee 的直接调用
+  lower { # 开始声明直接调用 lowering 动作
+    %vr = vreg call_result # 为原生调用返回槽保留 VM x 寄存器
+    emit call_native callee=native_id(%callee), argc=arg_count(%callee), arg0=arg0, ret_count=return_count(%callee) # 发射原生调用桥指令
+    bind %r = %vr # 记录直接调用结果到 VM 寄存器或聚合绑定
+  } # 结束直接调用 lowering 动作
+} # 结束直接调用规则
+
+rule llvm.select.integer { # 将 LLVM select 降低为条件分支和 mov 序列
+  match %r = llvm.select integer %cond, %then, %else # 匹配整数或指针 select
+  lower { # 开始声明 select lowering 动作
+    %vc = materialize %cond as i1 # 将条件物化为 VM 布尔值
+    %vt = materialize %then as integer # 将 then 值物化为 VM 值
+    %ve = materialize %else as integer # 将 else 值物化为 VM 值
+    %vr = vreg integer # 为 select 结果分配 VM x 寄存器
+    emit br_if cond=%vc, then_pc=then_label, else_pc=else_label # 根据条件跳转到 then 或 else 片段
+    emit mov dst=%vr, src=%vt, width=type_width(%r) # then 片段复制 then 值
+    emit br target=join_label # then 片段跳转到汇合点
+    emit mov dst=%vr, src=%ve, width=type_width(%r) # else 片段复制 else 值
+    bind %r = %vr # 记录 LLVM select 结果到 VM 寄存器的绑定
+  } # 结束 select lowering 动作
+} # 结束 select 规则
+
+rule llvm.aggregate.insert { # 将 insertvalue 记录为 VM 聚合字段绑定
+  match %r = llvm.insertvalue aggregate %agg, %field # 匹配单层结构体字段插入
+  lower { # 开始声明 insertvalue lowering 动作
+    %vf = materialize %field as integer # 将待插入字段物化为 VM 值
+    %vr = vreg aggregate # 为聚合绑定保留一个逻辑 VM 结果
+    emit mov dst=%vr, src=%vf, width=type_width(%field) # 字段值必要时通过 mov 稳定绑定
+    bind %r = %vr # 记录 LLVM 聚合结果到 VM 聚合绑定
+  } # 结束 insertvalue lowering 动作
+} # 结束 insertvalue 规则
+
+rule llvm.aggregate.extract { # 将 extractvalue 从 VM 聚合字段绑定中读取
+  match %r = llvm.extractvalue aggregate %agg # 匹配单层结构体字段读取
+  lower { # 开始声明 extractvalue lowering 动作
+    %va = materialize %agg as aggregate # 读取已有聚合绑定
+    %vr = vreg integer # 为字段结果分配 VM x 寄存器
+    emit mov dst=%vr, src=field(%va), width=type_width(%r) # 将聚合字段复制到结果寄存器
+    bind %r = %vr # 记录 LLVM 字段结果到 VM 寄存器的绑定
+  } # 结束 extractvalue lowering 动作
+} # 结束 extractvalue 规则
+
+rule llvm.br.control { # 将 LLVM 条件和无条件分支终结指令降低为 VM 控制流
+  match llvm.br terminator # 匹配 LLVM br 终结指令
+  lower { # 开始声明 br lowering 动作
+    %vc = materialize %cond as i1 # 条件分支时将条件物化为 VM 布尔值
+    emit br target=target_label # 无条件边发射 br 指令
+    emit br_if cond=%vc, then_pc=then_label, else_pc=else_label # 条件边发射 br_if 指令
+  } # 结束 br lowering 动作
+} # 结束分支规则
+
+rule llvm.switch.control { # 将 LLVM switch 终结指令降低为链式比较和分支
+  match llvm.switch terminator # 匹配 LLVM switch 终结指令
+  lower { # 开始声明 switch lowering 动作
+    %vc = materialize %cond as integer # 将 switch 条件物化为 VM 整数值
+    %vk = materialize %case as integer # 将 case 常量物化为 VM 整数值
+    %vm = vreg i1 # 为 case 命中结果分配 VM 布尔寄存器
+    emit icmp pred=eq, dst=%vm, lhs=%vc, rhs=%vk, width=type_width(%cond) # 每个 case 先发射相等比较
+    emit br_if cond=%vm, then_pc=case_label, else_pc=next_case_label # 命中时跳转 case，否则检查下一项
+    emit br target=default_label # 未命中任何 case 时跳转默认块
+  } # 结束 switch lowering 动作
+} # 结束 switch 规则
+
+rule llvm.ret.scalar { # 将 LLVM 标量整数 return 终结指令降低为 VM 返回
+  match llvm.ret scalar %value # 匹配标量或指针返回
+  lower { # 开始声明标量返回 lowering 动作
+    %vv = materialize %value as integer # 将返回值物化为 VM 值
+    emit ret src=%vv # 发射 VM 返回指令
+  } # 结束标量返回 lowering 动作
+} # 结束标量返回规则
+
+rule llvm.ret.void { # 将 LLVM void return 降低为退出 VM 分派但不读取返回寄存器
+  match llvm.ret void # 匹配 void 返回
+  lower { # 开始声明 void 返回 lowering 动作
+    emit ret src=x0 # 复用 ret 处理器退出分派，wrapper 忽略返回寄存器
+  } # 结束 void 返回 lowering 动作
+} # 结束 void 返回规则
+
+rule llvm.ret.aggregate { # 将直接结构体返回字段拆分到 ret0..retN ABI 返回槽
+  match llvm.ret aggregate %value # 匹配直接聚合返回
+  lower { # 开始声明聚合返回 lowering 动作
+    %vf = materialize %field as integer # 将每个聚合字段物化为 VM 值
+    emit mov dst=ret_slot, src=%vf, width=field_width(%field) # 将字段复制到 ABI 返回槽
+    emit ret src=ret0 # 发射 VM 返回指令退出分派
+  } # 结束聚合返回 lowering 动作
+} # 结束聚合返回规则
+
+rule llvm.ret.sret { # 将 sret 形式的结构体返回写入宿主 ABI 提供的返回指针
+  match llvm.ret sret %ptr # 匹配带 sret 返回缓冲区的 void 返回函数
+  lower { # 开始声明 sret 返回 lowering 动作
+    %vp = materialize %ptr as ptr # 将 sret 返回缓冲区物化为 VM 指针值
+    %vf = materialize %field as integer # 将待写回字段物化为 VM 值
+    emit store src=%vf, ptr=%vp, width=field_width(%field) # 将聚合字段写回宿主 ABI 返回缓冲区
+    emit ret src=x0 # 发射 VM 返回指令退出分派
+  } # 结束 sret lowering 动作
+} # 结束 sret 返回规则
+
+rule llvm.phi.edge_move { # 将 LLVM phi 规范化为前驱边上的 VM move
+  match %r = llvm.phi edge %incoming # 匹配 phi 的前驱边输入
+  lower { # 开始声明 phi edge lowering 动作
+    %vi = materialize %incoming as integer # 将前驱边输入物化为 VM 值
+    %vr = vreg integer # 复用 phi 目标的 VM 寄存器
+    emit mov dst=%vr, src=%vi, width=type_width(%r) # 在前驱边发射 mov 物化 phi 结果
+    bind %r = %vr # 记录 phi 结果到 VM 寄存器的绑定
+  } # 结束 phi edge lowering 动作
+} # 结束 phi 规则

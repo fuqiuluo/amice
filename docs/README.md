@@ -9,6 +9,7 @@
 | Enable passes with env vars | [Runtime Environment Variables](EnvConfig_en_US.md) | [运行时环境变量](EnvConfig_zh_CN.md) |
 | Enable/disable passes per function | [Function Annotations](FunctionAnnotations_en_US.md) | [函数注解](FunctionAnnotations_zh_CN.md) |
 | Control pass order | [Pass Execution Order](PassOrder_en_US.md) | [Pass 运行顺序](PassOrder_zh_CN.md) |
+| VMP virtualization implementation spec | - | [VMP 虚拟化实现规范](VMPDesign_zh_CN.md) |
 | Fix build/plugin-load errors | [Troubleshooting](Troubleshooting_en_US.md) | [故障排除](Troubleshooting_zh_CN.md) |
 
 ## Android NDK

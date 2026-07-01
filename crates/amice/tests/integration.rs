@@ -62,6 +62,23 @@ fn md5_obfuscation_config() -> ObfuscationConfig {
     }
 }
 
+fn crypto_pipeline_all_requested_passes_config() -> ObfuscationConfig {
+    ObfuscationConfig {
+        vm_virtualize: Some(true),
+        indirect_branch: Some(true),
+        indirect_branch_flags: Some("chained_dummy_blocks,encrypt_block_index,shuffle_table".to_string()),
+        string_encryption: Some(true),
+        string_algorithm: Some("xor".to_string()),
+        string_decrypt_timing: Some("lazy".to_string()),
+        string_stack_alloc: Some(false),
+        string_inline_decrypt_fn: Some(true),
+        indirect_call: Some(true),
+        flatten: Some(true),
+        flatten_mode: Some("basic".to_string()),
+        ..ObfuscationConfig::disabled()
+    }
+}
+
 #[test]
 fn test_md5_c() {
     ensure_plugin_built();
@@ -165,4 +182,43 @@ fn test_md5_full_obfuscation() {
 
     let lines = run.stdout_lines();
     check_md5_output(&lines);
+}
+
+#[test]
+fn test_crypto_pipeline_with_vmp_indirect_string_call_and_flatten() {
+    ensure_plugin_built();
+
+    let source = fixture_path("integration", "crypto_pipeline.c", Language::C);
+    let baseline = CppCompileBuilder::new(&source, "crypto_pipeline_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let config = crypto_pipeline_all_requested_passes_config();
+    let obfuscated = CppCompileBuilder::new(&source, "crypto_pipeline_full_obfuscation")
+        .optimization("O1")
+        .config(config.clone())
+        .compile();
+    obfuscated.assert_success();
+    let obfuscated_output = obfuscated.run();
+    obfuscated_output.assert_success();
+    assert_eq!(baseline_output.stdout(), obfuscated_output.stdout());
+
+    let ir = CppCompileBuilder::new(&source, "crypto_pipeline_full_obfuscation.ll")
+        .optimization("O1")
+        .config(config)
+        .arg("-S")
+        .arg("-emit-llvm")
+        .compile();
+    ir.assert_success();
+    let ir_text = std::fs::read_to_string(ir.binary_path).expect("obfuscated crypto pipeline IR should be readable");
+    assert!(ir_text.contains("AMICE_VMP_RUNTIME_BYTECODE"));
+    assert!(ir_text.contains(".amice.vm.bytecode"));
+    assert!(ir_text.contains(".amice_indirect_call_table"));
+    assert!(ir_text.contains("global_indirect_branch_table"));
+    assert!(ir_text.contains("__amice__decrypt_strings_"));
+    assert!(ir_text.contains("dispatcher"));
 }

@@ -10,7 +10,8 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/Passes/PassBuilder.h>
-#if __has_include(<llvm/Plugins/PassPlugin.h>)
+#include <llvm/Config/llvm-config.h>
+#if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR >= 22
 #include <llvm/Plugins/PassPlugin.h>
 #else
 #include <llvm/Passes/PassPlugin.h>

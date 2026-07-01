@@ -4,9 +4,8 @@ use crate::ffi::{
 use crate::inkwell2::{InstructionExt, LLVMBasicBlockRefExt, LLVMValueRefExt};
 use crate::to_c_str;
 use inkwell::basic_block::BasicBlock;
-use inkwell::llvm_sys::core::LLVMAddIncoming;
 use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
-use inkwell::values::{AsValueRef, InstructionOpcode, InstructionValue, PhiValue};
+use inkwell::values::{AsValueRef, InstructionOpcode, InstructionValue};
 
 pub trait BasicBlockExt<'ctx> {
     fn split_basic_block(&self, inst: InstructionValue<'ctx>, name: &str, before: bool) -> Option<BasicBlock<'ctx>>;
@@ -57,32 +56,12 @@ impl<'ctx> BasicBlockExt<'ctx> for BasicBlock<'ctx> {
                 continue;
             }
 
-            let phi = unsafe { PhiValue::new(phi.as_value_ref()) };
-            let incoming_vec = phi
-                .get_incomings()
-                .filter_map(|(value, pred)| {
-                    if pred == old_pred {
-                        (value, new_pred).into()
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            let (mut values, mut basic_blocks): (Vec<LLVMValueRef>, Vec<LLVMBasicBlockRef>) = {
-                incoming_vec
-                    .iter()
-                    .map(|&(v, bb)| (v.as_value_ref() as LLVMValueRef, bb.as_mut_ptr() as LLVMBasicBlockRef))
-                    .unzip()
-            };
-
             unsafe {
-                LLVMAddIncoming(
-                    phi.as_value_ref(),
-                    values.as_mut_ptr(),
-                    basic_blocks.as_mut_ptr(),
-                    incoming_vec.len() as u32,
-                );
+                amice_phi_replace_incoming_block_with(
+                    phi.as_value_ref() as LLVMValueRef,
+                    old_pred.as_mut_ptr() as LLVMBasicBlockRef,
+                    new_pred.as_mut_ptr() as LLVMBasicBlockRef,
+                )
             }
         }
     }

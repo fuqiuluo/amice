@@ -71,6 +71,18 @@ Source code: `src/aotu/vm_flatten`
 |------------------|--------------------------------------------------------------------|---------|
 | AMICE_VM_FLATTEN | Enable VM flatten:<br/>- `true` — enabled<br/>- `false` — disabled | false   |
 
+## VM Virtualize
+
+Source code: `src/aotu/vm_virtualize`
+
+| Variable                | Description                                                                                       | Default                         |
+|-------------------------|---------------------------------------------------------------------------------------------------|---------------------------------|
+| AMICE_VM_VIRTUALIZE     | Enable instruction-level VMP virtualization:<br/>- `true` — enabled<br/>- `false` — disabled      | false                           |
+| AMICE_VM_PROFILE_PATH   | Path to a VM profile package. If empty, AMICE uses the built-in `amice-simple-vmp` profile package | built-in `amice-simple-vmp`     |
+| AMICE_VM_RUNTIME_SCOPE  | Override profile runtime scope:<br/>- `func` — per-function runtime<br/>- `module` — shared module runtime | profile-declared runtime scope |
+| AMICE_VM_DUMP_BYTECODE  | Dump encoded VM bytecode through debug logs                                                       | false                           |
+| AMICE_VM_DUMP_LOWERING  | Dump LLVM IR to VM IR lowering through debug logs                                                 | false                           |
+
 ## Control Flow Flattening
 
 Source code: `src/aotu/flatten`

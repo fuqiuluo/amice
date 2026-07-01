@@ -1,0 +1,24 @@
+bytecode { # 声明字节码包的段布局
+  segment header fixed # 头部元数据为固定宽度，并作为 AMICE 全局变量发射
+  segment const_pool fixed # 常量池保存不适合内联立即数表示的常量
+  segment code compressed # 代码段是经过编码流水线保护后的 u8 字节流
+  segment reloc fixed # 标签 PC 在编译器侧重定位后再发射
+} # 结束字节码包布局
+
+bytecode.scope = func # 每个被保护函数拥有独立的字节码包和重定位表
+
+record instr { # 声明一条字节码指令记录
+  opcode: varint encrypted # 操作码采用变长整数编码，并由解码器的逆步骤保护
+  operands: bitpack schema=operand_stream # 操作数按声明顺序序列化为变长整数令牌
+} # 结束指令记录声明
+
+reloc label_pc { # 声明标签到 PC 的重定位
+  width = varint # 标签 PC 使用变长整数令牌表示
+  base = code_start # 标签 PC 是相对代码段起点的指令索引
+} # 结束标签重定位声明
+
+const_pool encryption xor_stream key=function_key # 常量池段使用按函数派生密钥的异或字节流保护
+
+fake_instruction enabled count=1 # 每条真实指令后插入一条不改变状态的假指令
+
+dead_bytecode enabled count=2 # 每个函数末尾追加两条不可达的死字节码记录

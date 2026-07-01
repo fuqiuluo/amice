@@ -1,0 +1,227 @@
+instr mov_imm(dst: vreg<i64>, imm: imm<u64>, width: imm<u8>) { # 将立即数物化到 VM 的 x 寄存器
+  opcode alias [0x01, 0x0e, 0x4f, 0x60, 0x65] # mov_imm 使用主操作码 0x01，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(imm, width) # 立即数字段按请求的整数宽度截断或掩码
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 mov_imm 指令
+
+instr const_load(dst: vreg<i64>, index: const_pool_index, width: imm<u8>) { # 从加密常量池按索引物化常量
+  opcode alias [0x03, 0x0a, 0x45, 0x5d, 0x5f] # const_load 使用主操作码 0x03，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = const_pool[index] # runtime 先解密常量池，再按 index 读取对应常量
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 const_load 指令
+
+instr mov(dst: vreg<i64>, src: vreg<i64>, width: imm<u8>) { # 将一个 VM x 寄存器复制到另一个寄存器
+  opcode alias [0x02, 0x06, 0x3a, 0x56, 0x75] # mov 使用主操作码 0x02，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(reg[src], width) # 源寄存器低位复制到目标寄存器并按 width 掩码
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 mov 指令
+
+instr iadd(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数加法处理器
+  opcode alias [0x10, 0x2c, 0x5a, 0x6d, 0x7a] # iadd 使用主操作码 0x10，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(reg[lhs] + reg[rhs], width) # 加法结果按目标宽度掩码
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 iadd 指令
+
+instr isub(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数减法处理器
+  opcode alias [0x11, 0x3d, 0x57, 0x66, 0x7e] # isub 使用主操作码 0x11，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(reg[lhs] - reg[rhs], width) # 减法结果按目标宽度掩码
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 isub 指令
+
+instr imul(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数乘法处理器
+  opcode alias [0x12, 0x1d, 0x28, 0x4a, 0x79] # imul 使用主操作码 0x12，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(reg[lhs] * reg[rhs], width) # 乘法结果按目标宽度掩码
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 imul 指令
+
+instr ixor(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数 xor 处理器
+  opcode alias [0x13, 0x04, 0x21, 0x2a, 0x6b] # ixor 使用主操作码 0x13，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(reg[lhs] xor reg[rhs], width) # xor 结果按目标宽度掩码
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 ixor 指令
+
+instr iand(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数 and 处理器
+  opcode alias [0x14, 0x2d, 0x47, 0x72, 0x74] # iand 使用主操作码 0x14，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(reg[lhs] and reg[rhs], width) # and 结果按目标宽度掩码
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 iand 指令
+
+instr ior(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数 or 处理器
+  opcode alias [0x15, 0x2e, 0x68, 0x69, 0x6f] # ior 使用主操作码 0x15，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(reg[lhs] or reg[rhs], width) # or 结果按目标宽度掩码
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 ior 指令
+
+instr ishl(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数逻辑左移处理器
+  opcode alias [0x16, 0x2b, 0x3c, 0x53, 0x78] # ishl 使用主操作码 0x16，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(reg[lhs] << reg[rhs], width) # 移位结果按目标宽度掩码
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 ishl 指令
+
+instr ilshr(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数逻辑右移处理器
+  opcode alias [0x17, 0x4e, 0x5c, 0x6a, 0x6c] # ilshr 使用主操作码 0x17，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(reg[lhs] >>u reg[rhs], width) # 无符号右移结果按目标宽度掩码
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 ilshr 指令
+
+instr iashr(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数算术右移处理器
+  opcode alias [0x18, 0x08, 0x25, 0x4b, 0x50] # iashr 使用主操作码 0x18，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(sign_extend(reg[lhs], width) >>s reg[rhs], width) # lhs 先按 width 符号扩展再做有符号右移
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 iashr 指令
+
+instr icmp(pred: imm<u8>, dst: vreg<i1>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数比较处理器
+  opcode alias [0x20, 0x1f, 0x52, 0x5e, 0x76] # icmp 使用主操作码 0x20，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = compare(pred, reg[lhs], reg[rhs], width) # pred 决定使用有符号或无符号比较
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 icmp 指令
+
+instr zext(dst: vreg<i64>, src: vreg<i64>, from_width: imm<u8>, to_width: imm<u8>) { # 零扩展处理器
+  opcode alias [0x30, 0x23, 0x46, 0x54, 0x63] # zext 使用主操作码 0x30，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = zero_extend(reg[src], from_width, to_width) # 源值按 from_width 零扩展到 to_width
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 zext 指令
+
+instr sext(dst: vreg<i64>, src: vreg<i64>, from_width: imm<u8>, to_width: imm<u8>) { # 符号扩展处理器
+  opcode alias [0x31, 0x4d, 0x58, 0x61, 0x7d] # sext 使用主操作码 0x31，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = sign_extend(reg[src], from_width, to_width) # 源值按 from_width 符号扩展到 to_width
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 sext 指令
+
+instr trunc(dst: vreg<i64>, src: vreg<i64>, from_width: imm<u8>, to_width: imm<u8>) { # 整数截断处理器
+  opcode alias [0x32, 0x1b, 0x26, 0x2f] # trunc 使用主操作码 0x32，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = trunc_width(reg[src], to_width) # 源值高位被丢弃，仅保留 to_width 位
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 trunc 指令
+
+instr bitcast(dst: vreg<i64>, src: vreg<i64>, from_width: imm<u8>, to_width: imm<u8>) { # 整数 bitcast 处理器
+  opcode alias [0x33, 0x0d, 0x27, 0x3e] # bitcast 使用主操作码 0x33，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = bitcast_width(reg[src], from_width, to_width) # 整数 bitcast 保留低位比特
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 bitcast 指令
+
+instr alloca(dst: vreg<ptr>, bytes: imm<u64>, align: imm<u8>) { # 栈分配处理器
+  opcode alias [0x34, 0x05, 0x0b, 0x55] # alloca 使用主操作码 0x34，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = stack_alloc(bytes, align) # 运行时创建按字节寻址的栈槽
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 alloca 指令
+
+instr load(dst: vreg<i64>, ptr: vreg<ptr>, width: imm<u8>) { # 标量 load 处理器
+  opcode alias [0x35, 0x0f, 0x51, 0x7c] # load 使用主操作码 0x35，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = load_width(reg[ptr], width) # 运行时从地址寄存器读取 width 位
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 load 指令
+
+instr store(src: vreg<i64>, ptr: vreg<ptr>, width: imm<u8>) { # 标量 store 处理器
+  opcode alias [0x36, 0x24, 0x49, 0x7b] # store 使用主操作码 0x36，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    store_width(reg[ptr], reg[src], width) # 运行时将 width 位写入地址寄存器指向的位置
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 store 指令
+
+instr gep(dst: vreg<ptr>, base: vreg<ptr>, offset: imm<u64>) { # 常量字节偏移 GEP 处理器
+  opcode alias [0x37, 0x09, 0x1e, 0x22] # gep 使用主操作码 0x37，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = reg[base] + offset # 运行时计算按字节寻址的指针算术
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 gep 指令
+
+instr call_native(callee: imm<u16>, argc: imm<u8>, arg0: vreg<i64>, arg1: vreg<i64>, arg2: vreg<i64>, arg3: vreg<i64>, arg4: vreg<i64>, arg5: vreg<i64>, arg6: vreg<i64>, arg7: vreg<i64>, ret_count: imm<u8>, ret0: vreg<i64>, ret0_width: imm<u8>, ret1: vreg<i64>, ret1_width: imm<u8>, ret2: vreg<i64>, ret2_width: imm<u8>, ret3: vreg<i64>, ret3_width: imm<u8>, ret4: vreg<i64>, ret4_width: imm<u8>, ret5: vreg<i64>, ret5_width: imm<u8>, ret6: vreg<i64>, ret6_width: imm<u8>, ret7: vreg<i64>, ret7_width: imm<u8>) { # 直接原生调用桥接处理器，record 固定容纳八个返回槽
+  opcode alias [0x38, 0x5b, 0x73, 0x77] # call_native 使用主操作码 0x38，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[ret0] = call_table[callee].ret0(reg[arg0], reg[arg1], reg[arg2], reg[arg3], reg[arg4], reg[arg5], reg[arg6], reg[arg7], argc, ret_count, ret0_width) # 运行时通过生成的原生调用桥表写回第 0 个返回槽
+    reg[ret1] = call_table[callee].ret1(ret_count, ret1_width) # 若 ret_count 大于 1，运行时写回第 1 个返回槽
+    reg[ret2] = call_table[callee].ret2(ret_count, ret2_width) # 若 ret_count 大于 2，运行时写回第 2 个返回槽
+    reg[ret3] = call_table[callee].ret3(ret_count, ret3_width) # 若 ret_count 大于 3，运行时写回第 3 个返回槽
+    reg[ret4] = call_table[callee].ret4(ret_count, ret4_width) # 若 ret_count 大于 4，运行时写回第 4 个返回槽
+    reg[ret5] = call_table[callee].ret5(ret_count, ret5_width) # 若 ret_count 大于 5，运行时写回第 5 个返回槽
+    reg[ret6] = call_table[callee].ret6(ret_count, ret6_width) # 若 ret_count 大于 6，运行时写回第 6 个返回槽
+    reg[ret7] = call_table[callee].ret7(ret_count, ret7_width) # 若 ret_count 大于 7，运行时写回第 7 个返回槽
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 call_native 指令
+
+instr fake_nop() { # 假指令处理器，用于插入不改变 VM 状态的干扰字节码
+  opcode alias [0x39, 0x07, 0x48, 0x64] # fake_nop 使用主操作码 0x39，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    state = unchanged # 该指令不读取或写入任何 VM 数据寄存器
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 fake_nop 指令
+
+instr br(target: label) { # 无条件分支处理器
+  opcode alias [0x40, 0x1c, 0x4c, 0x67] # br 使用主操作码 0x40，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    pc = target # 执行跳转到目标字节码标签
+  } # 结束语义块
+} # 结束 br 指令
+
+instr br_if(cond: vreg<i1>, then_pc: label, else_pc: label) { # 条件分支处理器
+  opcode alias [0x41, 0x3b, 0x3f, 0x62] # br_if 使用主操作码 0x41，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    pc = select(reg[cond], then_pc, else_pc) # 条件寄存器选择下一条字节码标签
+  } # 结束语义块
+} # 结束 br_if 指令
+
+instr vm_call(target: label) { # VM 内部调用处理器
+  opcode alias [0x42, 0x6e, 0x70, 0x71] # vm_call 使用主操作码 0x42，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[lr] = next # 调用前把返回字节码 PC 写入 runtime.vm 定义的 lr 别名
+    pc = target # 执行跳转到目标字节码标签
+  } # 结束语义块
+} # 结束 vm_call 指令
+
+instr vm_ret() { # VM 内部返回处理器
+  opcode alias [0x43, 0x19, 0x29, 0x44] # vm_ret 使用主操作码 0x43，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    pc = reg[lr] # 从 lr 恢复调用点之后的字节码 PC
+  } # 结束语义块
+} # 结束 vm_ret 指令
+
+instr ret(src: vreg<i64>) { # 函数返回处理器
+  opcode alias [0x7f, 0x0c, 0x1a, 0x59] # ret 使用主操作码 0x7f，其余为等价混淆别名
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[ret0] = reg[src] # 返回值归一化写入 abi.vm 声明的第 0 个返回槽
+    pc = return # 分派循环在该指令后退出
+  } # 结束语义块
+} # 结束 ret 指令

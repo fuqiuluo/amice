@@ -1,5 +1,4 @@
 use num_traits::Num;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EloquentConfigValue {
@@ -45,7 +44,7 @@ impl EloquentConfigParser {
                 continue;
             }
 
-            for x in line.split(" ") {
+            for x in line.split(|ch: char| ch.is_whitespace() || ch == ',') {
                 if x.is_empty() {
                     continue;
                 }
@@ -142,26 +141,9 @@ impl EloquentConfigParser {
         matches!(value_str.to_lowercase().as_str(), "true" | "1" | "yes")
     }
 
+    #[cfg(test)]
     pub fn get_items(&self) -> &[EloquentConfigItem] {
         &self.items
-    }
-
-    /// 转换为HashMap
-    pub fn to_hashmap(&self) -> HashMap<String, EloquentConfigValue> {
-        let mut map = HashMap::new();
-
-        for item in &self.items {
-            match item {
-                EloquentConfigItem::Toggle { key, enabled } => {
-                    map.insert(key.clone(), EloquentConfigValue::String(enabled.to_string()));
-                },
-                EloquentConfigItem::KeyValue { key, value, .. } => {
-                    map.insert(key.clone(), value.clone());
-                },
-            }
-        }
-
-        map
     }
 
     /// 获取布尔值
@@ -315,5 +297,20 @@ mod tests {
         assert_eq!(parser.get_string("database").unwrap(), "postgres");
         assert_eq!(parser.get_bool("ssl").unwrap(), true);
         assert_eq!(parser.get_bool("compress").unwrap(), false);
+    }
+
+    #[test]
+    fn test_comma_separated_annotations() {
+        let mut parser = EloquentConfigParser::new();
+        parser
+            .parse("+vm_virtualize,vm_profile_path=/tmp/amice-simple-vmp,vm_runtime_scope=func")
+            .unwrap();
+
+        assert_eq!(parser.get_bool("vm_virtualize"), Some(true));
+        assert_eq!(
+            parser.get_string("vm_profile_path").as_deref(),
+            Some("/tmp/amice-simple-vmp")
+        );
+        assert_eq!(parser.get_string("vm_runtime_scope").as_deref(), Some("func"));
     }
 }

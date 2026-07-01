@@ -1,6 +1,6 @@
 use crate::aotu::string_encryption::{
-    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo, alloc_stack_string,
-    array_as_const_string, collect_insert_points,
+    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryptionAlgo, alloc_stack_string, array_as_const_string,
+    collect_insert_points,
 };
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
 use amice_llvm::const_array;
@@ -126,9 +126,6 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 // 这里的 stru 现在需要重新考虑，因为一个 global 可能对应多个字段
                 Some((global, stru, field_idx, arr))
             })
-        })
-        .inspect(|(a, b, c, d)| {
-            // do nothing!
         })
         .filter_map(|(global, stru, field_idx, arr)| {
             let s = array_as_const_string(&arr)?.to_vec();
@@ -446,7 +443,6 @@ fn emit_global_string_decryptor_ctor<'a>(
 ) -> anyhow::Result<()> {
     let ctx = module.get_context();
     let i32_ty = ctx.i32_type();
-    let i8_ptr = ptr_type!(ctx, i8_type);
     let i32_ptr = ptr_type!(ctx, i32_type);
 
     let decrypt_stub_ty = ctx.void_type().fn_type(&[], false);
@@ -507,7 +503,7 @@ fn add_decrypt_function<'a>(
     name: &str,
     has_flag: bool,
     inline_fn: bool,
-    stack_alloc: bool,
+    _stack_alloc: bool,
 ) -> anyhow::Result<FunctionValue<'a>> {
     // 密钥总是32字节的！必须是32字节的！
     // void @simd_xor_cipher(i8* src, i8* dst, i32 len, i8* key, i32* flag)
@@ -517,7 +513,6 @@ fn add_decrypt_function<'a>(
     let i8_ptr = ptr_type!(ctx, i8_type);
     let i32_ptr = ptr_type!(ctx, i32_type);
     let vector_256 = i8_ty.vec_type(32);
-    let vector_ptr_type = vector_256.ptr_type(AddressSpace::default());
 
     let fn_ty = i8_ptr.fn_type(
         &[
@@ -630,6 +625,13 @@ fn add_decrypt_function<'a>(
         builder.build_unconditional_branch(exit)?;
     } else {
         builder.build_unconditional_branch(key_prepare)?;
+        // global timing 不使用同步 flag，但这些预建 block 仍属于函数，必须有 terminator。
+        builder.position_at_end(entry_has_flags);
+        builder.build_unconditional_branch(key_prepare)?;
+        builder.position_at_end(spin_wait);
+        builder.build_unconditional_branch(exit)?;
+        builder.position_at_end(do_mark_done);
+        builder.build_unconditional_branch(exit)?;
     }
 
     builder.position_at_end(key_prepare);

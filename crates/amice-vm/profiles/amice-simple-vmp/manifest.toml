@@ -1,0 +1,15 @@
+version = 1 # AMICE VMP 接受的配置包格式版本
+name = "amice-simple-vmp" # 内置测试配置包的诊断名称
+
+[target] # 校验器检查的目标约束
+pointer_bits = 64 # AMICE VMP 当前通过 x 寄存器降低指针宽度值
+endian = "little" # 字节码和整数物化使用小端语义
+
+[profile] # 各个配置 DSL 片段的入口文件
+
+abi = "abi.vm" # 宿主 ABI 到 VM ABI 的映射
+isa = "isa.vm" # VM 指令集和处理语义声明
+lowering = "lowering.vm" # LLVM IR 到 VM IR 的降低覆盖声明
+bytecode = "bytecode.vm" # 字节码段和记录布局声明
+decoder = "decoder.vm" # 运行时解码流水线声明
+runtime = "runtime.vm" # VM 状态、别名、作用域和分派策略声明
