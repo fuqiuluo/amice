@@ -15,6 +15,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::lowering::NATIVE_CALL_MAX_RETURNS;
 
+/// profile 中声明的 opcode 值。
+///
+/// bytecode 仍用 varint 编码；这里用 `u16` 是为了让示例 profile 能覆盖超过 8 bit
+/// 的 opcode 空间，同时避免把寄存器编号等其它小整数类型一起放宽。
+pub type Opcode = u16;
+
 /// 内置 VM profile 支持的整数 ALU 操作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BinOp {
@@ -24,6 +30,14 @@ pub enum BinOp {
     Sub,
     /// wrapping 整数乘法。
     Mul,
+    /// 无符号整数除法；除数为 0 时沿用 LLVM 未定义行为。
+    UDiv,
+    /// 有符号整数除法；除数为 0 或最小值除以 -1 时沿用 LLVM 未定义行为。
+    SDiv,
+    /// 无符号整数取余；除数为 0 时沿用 LLVM 未定义行为。
+    URem,
+    /// 有符号整数取余；除数为 0 或最小值对 -1 取余时沿用 LLVM 未定义行为。
+    SRem,
     /// 按位异或。
     Xor,
     /// 按位与。
@@ -287,6 +301,14 @@ pub enum SemanticBinOp {
     Sub,
     /// wrapping 整数乘法。
     Mul,
+    /// 无符号整数除法。
+    UDiv,
+    /// 有符号整数除法。
+    SDiv,
+    /// 无符号整数取余。
+    URem,
+    /// 有符号整数取余。
+    SRem,
     /// 按位异或。
     Xor,
     /// 按位与。
@@ -468,9 +490,9 @@ pub struct InstructionDesc {
     /// 保留到 VM IR 和 bytecode 的 profile 指令名。
     pub name: String,
     /// 第一个 opcode alias；为兼容旧调用点而保留。
-    pub opcode: u8,
+    pub opcode: Opcode,
     /// runtime dispatcher 接受的完整 opcode alias 集合。
-    pub opcode_aliases: Vec<u8>,
+    pub opcode_aliases: Vec<Opcode>,
     /// 编码 operand 数量。
     pub operands: u8,
     /// 来自指令 header 的有序 operand 声明。
@@ -485,7 +507,7 @@ pub struct InstructionDesc {
 
 impl InstructionDesc {
     /// 用一个或多个 profile 声明的 opcode alias 创建指令描述。
-    pub fn new(name: impl Into<String>, opcode_aliases: Vec<u8>, operands: u8, semantic: HandlerSemantic) -> Self {
+    pub fn new(name: impl Into<String>, opcode_aliases: Vec<Opcode>, operands: u8, semantic: HandlerSemantic) -> Self {
         let semantic_program = SemanticProgram::from_template(&semantic);
         let effect = semantic_program.effect.clone();
         let operand_descs = (0..operands)
@@ -509,7 +531,7 @@ impl InstructionDesc {
     /// 用 parser 派生的副作用创建指令描述。
     pub fn new_with_semantic_program(
         name: impl Into<String>,
-        opcode_aliases: Vec<u8>,
+        opcode_aliases: Vec<Opcode>,
         operands: u8,
         operand_descs: Vec<OperandDesc>,
         semantic: HandlerSemantic,
@@ -534,12 +556,12 @@ impl InstructionDesc {
     }
 
     /// 返回此指令接受的所有 opcode。
-    pub fn opcodes(&self) -> &[u8] {
+    pub fn opcodes(&self) -> &[Opcode] {
         &self.opcode_aliases
     }
 
     /// 为一个具体编码指令位置选择 opcode alias。
-    pub fn opcode_for_site(&self, function_key: u64, pc: usize) -> u8 {
+    pub fn opcode_for_site(&self, function_key: u64, pc: usize) -> Opcode {
         let aliases = self.opcodes();
         let mixed = function_key ^ (pc as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         let folded = mixed ^ (mixed >> 33) ^ (mixed >> 17);
@@ -566,7 +588,7 @@ impl IsaProfile {
     }
 
     /// 查找 opcode 对应的指令描述。
-    pub fn by_opcode(&self, opcode: u8) -> Option<&InstructionDesc> {
+    pub fn by_opcode(&self, opcode: Opcode) -> Option<&InstructionDesc> {
         self.instructions.iter().find(|desc| desc.opcodes().contains(&opcode))
     }
 
@@ -594,6 +616,10 @@ impl Default for IsaProfile {
             InstructionDesc::new("iadd", vec![0x10], 4, Bin(Add)),
             InstructionDesc::new("isub", vec![0x11], 4, Bin(Sub)),
             InstructionDesc::new("imul", vec![0x12], 4, Bin(Mul)),
+            InstructionDesc::new("iudiv", vec![0x19], 4, Bin(UDiv)),
+            InstructionDesc::new("isdiv", vec![0x1a], 4, Bin(SDiv)),
+            InstructionDesc::new("iurem", vec![0x1b], 4, Bin(URem)),
+            InstructionDesc::new("isrem", vec![0x1c], 4, Bin(SRem)),
             InstructionDesc::new("ixor", vec![0x13], 4, Bin(Xor)),
             InstructionDesc::new("iand", vec![0x14], 4, Bin(And)),
             InstructionDesc::new("ior", vec![0x15], 4, Bin(Or)),

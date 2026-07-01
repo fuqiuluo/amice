@@ -697,6 +697,10 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 InstructionOpcode::Add
                 | InstructionOpcode::Sub
                 | InstructionOpcode::Mul
+                | InstructionOpcode::UDiv
+                | InstructionOpcode::SDiv
+                | InstructionOpcode::URem
+                | InstructionOpcode::SRem
                 | InstructionOpcode::Xor
                 | InstructionOpcode::And
                 | InstructionOpcode::Or
@@ -1108,6 +1112,10 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             InstructionOpcode::Add => ("llvm.add.integer", None),
             InstructionOpcode::Sub => ("llvm.sub.integer", None),
             InstructionOpcode::Mul => ("llvm.mul.integer", None),
+            InstructionOpcode::UDiv => ("llvm.udiv.integer", Some(HandlerSemantic::Bin(BinOp::UDiv))),
+            InstructionOpcode::SDiv => ("llvm.sdiv.integer", Some(HandlerSemantic::Bin(BinOp::SDiv))),
+            InstructionOpcode::URem => ("llvm.urem.integer", Some(HandlerSemantic::Bin(BinOp::URem))),
+            InstructionOpcode::SRem => ("llvm.srem.integer", Some(HandlerSemantic::Bin(BinOp::SRem))),
             InstructionOpcode::Xor => ("llvm.bitops.integer", Some(HandlerSemantic::Bin(BinOp::Xor))),
             InstructionOpcode::And => ("llvm.bitops.integer", Some(HandlerSemantic::Bin(BinOp::And))),
             InstructionOpcode::Or => ("llvm.bitops.integer", Some(HandlerSemantic::Bin(BinOp::Or))),

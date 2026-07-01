@@ -877,12 +877,16 @@ fn bin_tag(op: BinOp) -> u8 {
         BinOp::Add => 0,
         BinOp::Sub => 1,
         BinOp::Mul => 2,
-        BinOp::Xor => 3,
-        BinOp::And => 4,
-        BinOp::Or => 5,
-        BinOp::Shl => 6,
-        BinOp::LShr => 7,
-        BinOp::AShr => 8,
+        BinOp::UDiv => 3,
+        BinOp::SDiv => 4,
+        BinOp::URem => 5,
+        BinOp::SRem => 6,
+        BinOp::Xor => 7,
+        BinOp::And => 8,
+        BinOp::Or => 9,
+        BinOp::Shl => 10,
+        BinOp::LShr => 11,
+        BinOp::AShr => 12,
     }
 }
 
@@ -897,6 +901,8 @@ fn cast_tag(op: CastOp) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use crate::isa::Opcode;
+
     use super::*;
     use crate::isa::CmpPredicate;
     use crate::lowering::{NativeReturn, VmFunctionBuilder, VmInstruction};
@@ -971,7 +977,10 @@ mod tests {
         let decoded = decode_for_test(&profile, &image);
 
         assert_eq!(decrypted_const_pool_values_for_test(&image), vec![0x1234_5678]);
-        assert_eq!(profile.isa.by_opcode(decoded[0][0] as u8).unwrap().name, "const_load");
+        assert_eq!(
+            profile.isa.by_opcode(decoded[0][0] as Opcode).unwrap().name,
+            "const_load"
+        );
         assert_eq!(&decoded[0][1..], &[0, 0, 32]);
         assert_eq!(execute_for_test(&profile, &image, &[]), 0x1234_5678);
     }
@@ -996,6 +1005,82 @@ mod tests {
         assert_ne!(image_ror3.code_bytes(), image_ror5.code_bytes());
         assert_eq!(execute_for_test(&profile_ror3, &image_ror3, &[4, 9]), 13);
         assert_eq!(execute_for_test(&profile_ror5, &image_ror5, &[4, 9]), 13);
+    }
+
+    #[test]
+    fn integer_div_rem_handlers_round_trip() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("integer_div_rem", 8, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        for (op, dst, lhs, rhs) in [
+            (BinOp::UDiv, 8, 0, 1),
+            (BinOp::SDiv, 9, 2, 3),
+            (BinOp::URem, 10, 4, 5),
+            (BinOp::SRem, 11, 6, 7),
+        ] {
+            builder.push(VmInstruction::Bin {
+                op,
+                dst,
+                lhs,
+                rhs,
+                width: 32,
+            });
+        }
+        builder.push(VmInstruction::MovImm {
+            dst: 12,
+            imm: 10,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Add,
+            dst: 13,
+            lhs: 9,
+            rhs: 11,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Add,
+            dst: 14,
+            lhs: 13,
+            rhs: 12,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Add,
+            dst: 15,
+            lhs: 14,
+            rhs: 8,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Add,
+            dst: 16,
+            lhs: 15,
+            rhs: 10,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 16 });
+        let function = builder.finish().expect("vm function");
+
+        let image = BytecodeEncoder::new(&profile).encode(&function).expect("bytecode");
+        let decoded_names = decode_for_test(&profile, &image)
+            .into_iter()
+            .map(|record| profile.isa.by_opcode(record[0] as Opcode).unwrap().name.as_str())
+            .filter(|name| *name != "fake_nop")
+            .take(4)
+            .collect::<Vec<_>>();
+
+        assert_eq!(decoded_names, ["iudiv", "isdiv", "iurem", "isrem"]);
+        assert_eq!(
+            execute_for_test(
+                &profile,
+                &image,
+                &[100, 7, (-45_i32) as u32 as u64, 6, 100, 9, (-45_i32) as u32 as u64, 6]
+            ),
+            15
+        );
     }
 
     #[test]
@@ -1063,7 +1148,7 @@ mod tests {
     fn opcode_alias_selection_uses_function_key() {
         let profile = profile_with_isa(&include_str!("../profiles/amice-simple-vmp/isa.vm").replace(
             "opcode alias [0x10, 0x2c, 0x5a, 0x6d, 0x7a]",
-            "opcode alias [0x10, 0x90]",
+            "opcode alias [0x10, 0xa3]",
         ));
         verify_profile(&profile).expect("profile with add aliases should verify");
 
@@ -1076,13 +1161,13 @@ mod tests {
         }
 
         assert!(seen.contains(&0x10));
-        assert!(seen.contains(&0x90));
+        assert!(seen.contains(&0xa3));
     }
 
     #[test]
     fn bytecode_uses_vm_ir_profile_instruction_identity() {
         let alt_iadd = r#"instr iadd_alt(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 第二条同语义整数加法处理器
-opcode alias [0x92] # iadd_alt 使用独立操作码 0x92
+opcode alias [0xa4] # iadd_alt 使用独立操作码 0xa4
 semantic { # iadd_alt 保持与 iadd 相同的加法语义
 reg[dst] = trunc_width(reg[lhs] + reg[rhs], width) # 加法结果按目标宽度掩码
 pc = next # 执行继续到下一条字节码指令
@@ -1114,8 +1199,8 @@ pc = next # 执行继续到下一条字节码指令
         let image = BytecodeEncoder::new(&profile).encode(&function).expect("bytecode");
         let decoded = decode_for_test(&profile, &image);
 
-        assert_eq!(profile.isa.by_opcode(decoded[0][0] as u8).unwrap().name, "iadd_alt");
-        assert_ne!(profile.isa.by_opcode(decoded[0][0] as u8).unwrap().name, "iadd");
+        assert_eq!(profile.isa.by_opcode(decoded[0][0] as Opcode).unwrap().name, "iadd_alt");
+        assert_ne!(profile.isa.by_opcode(decoded[0][0] as Opcode).unwrap().name, "iadd");
         assert!(image.debug_dump.contains("iadd_alt"));
         assert_eq!(execute_for_test(&profile, &image, &[4, 9]), 13);
     }
@@ -1222,7 +1307,7 @@ pc = next # 执行继续到下一条字节码指令
         let decoded = decode_for_test(&profile, &image);
         let native = &decoded[0];
 
-        assert_eq!(profile.isa.by_opcode(native[0] as u8).unwrap().name, "call_native");
+        assert_eq!(profile.isa.by_opcode(native[0] as Opcode).unwrap().name, "call_native");
         assert_eq!(native[1], 7);
         assert_eq!(native[2], 2);
         assert_eq!(&native[3..11], &[0, 1, 0, 0, 0, 0, 0, 0]);
@@ -1402,7 +1487,11 @@ pc = next # 执行继续到下一条字节码指令
         let mut pc = 0_usize;
         loop {
             let operands = &instructions[pc];
-            let semantic = &profile.isa.by_opcode(operands[0] as u8).expect("known opcode").semantic;
+            let semantic = &profile
+                .isa
+                .by_opcode(operands[0] as Opcode)
+                .expect("known opcode")
+                .semantic;
 
             match semantic {
                 HandlerSemantic::MovImm => {
@@ -1423,6 +1512,10 @@ pc = next # 执行继续到下一条字节码指令
                         BinOp::Add => lhs.wrapping_add(rhs),
                         BinOp::Sub => lhs.wrapping_sub(rhs),
                         BinOp::Mul => lhs.wrapping_mul(rhs),
+                        BinOp::UDiv => mask_width(lhs, width) / mask_width(rhs, width),
+                        BinOp::SDiv => (sign_extend(lhs, width) / sign_extend(rhs, width)) as u64,
+                        BinOp::URem => mask_width(lhs, width) % mask_width(rhs, width),
+                        BinOp::SRem => (sign_extend(lhs, width) % sign_extend(rhs, width)) as u64,
                         BinOp::Xor => lhs ^ rhs,
                         BinOp::And => lhs & rhs,
                         BinOp::Or => lhs | rhs,
@@ -1489,7 +1582,7 @@ pc = next # 执行继续到下一条字节码指令
         let mut decoded = Vec::with_capacity(image.instruction_count as usize);
         while decoded.len() < image.instruction_count as usize {
             let opcode = decode_varint_for_test(&bytes, &mut offset);
-            let desc = profile.isa.by_opcode(opcode as u8).expect("known opcode");
+            let desc = profile.isa.by_opcode(opcode as Opcode).expect("known opcode");
             let mut operands = vec![opcode];
             for _ in 0..desc.operands {
                 operands.push(decode_bitpacked_operand_for_test(&bytes, &mut offset));

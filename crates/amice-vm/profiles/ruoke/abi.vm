@@ -1,0 +1,29 @@
+abi host_to_vm { # ruoke 宿主边界使用非线性槽位布置
+  arg0 -> x5 as i64 # 入口槽甲进入扰动槽
+  arg1 -> x2 as i64 # 入口槽乙进入折返槽
+  arg2 -> x9 as i64 # 入口槽丙进入中段槽
+  arg3 -> x1 as i64 # 入口槽丁进入低位槽
+  arg4 -> x12 as i64 # 入口槽戊进入侧向槽
+  arg5 -> x4 as i64 # 入口槽己进入短距槽
+  arg6 -> x10 as i64 # 入口槽庚进入混合槽
+  arg7 -> x7 as i64 # 入口槽辛进入回收槽
+  ret0 <- x11 as i64 # 主出口槽从 ruoke 出口甲回收
+  ret1 <- x3 as i64 # 辅助出口槽从 ruoke 出口乙回收
+  ret2 <- x6 as i64 # 辅助出口槽从 ruoke 出口丙回收
+  max_returns = 3 # ruoke 示例保留三个出口槽
+} # 结束 ruoke 宿主边界
+
+abi vm_call { # ruoke 内部跳转边界使用独立槽位集合
+  call_args = [x8, x0, x13, x14, x15, x5, x2, x9] # 内部调用读取打散后的入口槽
+  call_link = lr # VM 调用将下一条字节码 PC 写入 lr
+  ret_pc <- lr # VM 返回从 lr 恢复执行位置
+  ret_values = [x11, x3, x6] # 内部调用复用 ruoke 出口槽集合
+  max_returns = 3 # 内部调用约定保留三个出口槽
+} # 结束 ruoke 内部调用边界
+
+native_call default { # ruoke 原生桥接使用独立槽位集合
+  args = [x8, x13, x0, x14, x15, x1, x4, x7] # 原生桥读取桥接入口槽
+  returns = [x11, x3, x6] # 原生桥写回 ruoke 出口槽集合
+  clobbers = [x8, x13, x0, x14, x15, x1, x4, x7, x11, x3, x6, x5, x2, x9, x12, x10] # 原生桥声明会扰动的槽位集合
+  policy = direct # 原生调用重新生成为直接 LLVM 调用
+} # 结束 ruoke 原生桥接策略

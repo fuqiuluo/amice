@@ -15,8 +15,8 @@
 
 use crate::abi::{AbiProfile, NativeCallPolicy, VmRegister};
 use crate::isa::{
-    BinOp, CastOp, HandlerEffect, HandlerSemantic, InstructionDesc, IsaProfile, OperandDesc, OperandKind, PcEffect,
-    PcExpr, SemanticBinOp, SemanticExpr, SemanticProgram, SemanticStmt,
+    BinOp, CastOp, HandlerEffect, HandlerSemantic, InstructionDesc, IsaProfile, Opcode, OperandDesc, OperandKind,
+    PcEffect, PcExpr, SemanticBinOp, SemanticExpr, SemanticProgram, SemanticStmt,
 };
 use crate::runtime::{
     ControlStateSlot, DispatchStrategy, HandlerClonePolicy, RegisterBank, RuntimeProfile, WideRegisterPolicy,
@@ -316,6 +316,10 @@ pub const REQUIRED_LOWERING_MATCHES: &[(&str, &str)] = &[
     ("llvm.add.integer", "%r = llvm.add integer %a, %b"),
     ("llvm.sub.integer", "%r = llvm.sub integer %a, %b"),
     ("llvm.mul.integer", "%r = llvm.mul integer %a, %b"),
+    ("llvm.udiv.integer", "%r = llvm.udiv integer %a, %b"),
+    ("llvm.sdiv.integer", "%r = llvm.sdiv integer %a, %b"),
+    ("llvm.urem.integer", "%r = llvm.urem integer %a, %b"),
+    ("llvm.srem.integer", "%r = llvm.srem integer %a, %b"),
     ("llvm.bitops.integer", "%r = llvm.bitop integer %a, %b"),
     ("llvm.shift.integer", "%r = llvm.shift integer %a, %b"),
     ("llvm.icmp.integer", "%r = llvm.icmp integer %a, %b"),
@@ -1304,7 +1308,7 @@ fn is_runtime_block_line(line: &str) -> bool {
 struct ParsedInstruction {
     name: String,
     operand_descs: Vec<OperandDesc>,
-    opcodes: Vec<u8>,
+    opcodes: Vec<Opcode>,
     semantic: Vec<String>,
     depth: i32,
 }
@@ -1361,7 +1365,7 @@ fn parse_operand_type(ty: &str) -> Result<(OperandKind, String), ProfileError> {
     }
 }
 
-fn parse_opcode_aliases(line: &str) -> Result<Option<Vec<u8>>, ProfileError> {
+fn parse_opcode_aliases(line: &str) -> Result<Option<Vec<Opcode>>, ProfileError> {
     let Some(rest) = line.strip_prefix("opcode alias") else {
         return Ok(None);
     };
@@ -1375,8 +1379,8 @@ fn parse_opcode_aliases(line: &str) -> Result<Option<Vec<u8>>, ProfileError> {
     let mut parsed = Vec::new();
     for alias in aliases.split(',') {
         let alias = alias.trim();
-        let opcode =
-            parse_u8_literal(alias).ok_or_else(|| ProfileError::Invalid(format!("invalid opcode alias {alias}")))?;
+        let opcode = parse_opcode_literal(alias)
+            .ok_or_else(|| ProfileError::Invalid(format!("invalid opcode alias {alias}")))?;
         parsed.push(opcode);
     }
 
@@ -1387,13 +1391,13 @@ fn parse_opcode_aliases(line: &str) -> Result<Option<Vec<u8>>, ProfileError> {
     Ok(Some(parsed))
 }
 
-fn parse_u8_literal(value: &str) -> Option<u8> {
+fn parse_opcode_literal(value: &str) -> Option<Opcode> {
     let parsed = if let Some(hex) = value.strip_prefix("0x") {
-        u16::from_str_radix(hex, 16).ok()?
+        u32::from_str_radix(hex, 16).ok()?
     } else {
-        value.parse::<u16>().ok()?
+        value.parse::<u32>().ok()?
     };
-    u8::try_from(parsed).ok()
+    Opcode::try_from(parsed).ok()
 }
 
 fn brace_delta(line: &str) -> i32 {
@@ -1640,6 +1644,10 @@ fn parse_binary_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError> 
     for (token, op) in [
         (" >>u ", SemanticBinOp::LShr),
         (" >>s ", SemanticBinOp::AShr),
+        (" /u ", SemanticBinOp::UDiv),
+        (" /s ", SemanticBinOp::SDiv),
+        (" %u ", SemanticBinOp::URem),
+        (" %s ", SemanticBinOp::SRem),
         (" xor ", SemanticBinOp::Xor),
         (" and ", SemanticBinOp::And),
         (" or ", SemanticBinOp::Or),
@@ -1785,6 +1793,14 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         Some(Bin(Sub))
     } else if bin_template(statements, SemanticBinOp::Mul) {
         Some(Bin(Mul))
+    } else if bin_template(statements, SemanticBinOp::UDiv) {
+        Some(Bin(UDiv))
+    } else if bin_template(statements, SemanticBinOp::SDiv) {
+        Some(Bin(SDiv))
+    } else if bin_template(statements, SemanticBinOp::URem) {
+        Some(Bin(URem))
+    } else if bin_template(statements, SemanticBinOp::SRem) {
+        Some(Bin(SRem))
     } else if bin_template(statements, SemanticBinOp::Xor) {
         Some(Bin(Xor))
     } else if bin_template(statements, SemanticBinOp::And) {
@@ -2380,7 +2396,7 @@ mod tests {
                 .iter()
                 .map(|instruction| instruction.opcodes().len())
                 .sum::<usize>(),
-            127
+            147
         );
         assert_eq!(profile.isa.by_semantic(&HandlerSemantic::MovImm).unwrap().opcode, 0x01);
         let mov_imm = profile.isa.by_semantic(&HandlerSemantic::MovImm).unwrap();
@@ -2388,6 +2404,58 @@ mod tests {
         assert_eq!(mov_imm.effect.register_reads, Vec::<String>::new());
         assert_eq!(mov_imm.effect.register_writes, ["dst"]);
         verify_profile(&profile).expect("built-in profile should verify");
+    }
+
+    #[test]
+    fn ruoke_profile_loads() {
+        let profile_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("profiles").join("ruoke");
+        let profile = ProfilePackage::load_from_path(&profile_dir).expect("ruoke profile should parse");
+
+        assert_eq!(profile.manifest.name, "ruoke");
+        assert_eq!(profile.runtime.scope, RuntimeScope::Func);
+        assert_eq!(profile.runtime.polymorph_scope, RuntimeScope::Func);
+        assert_eq!(
+            profile.runtime.enhancements.handler_clone,
+            HandlerClonePolicy::PerFunction
+        );
+        assert_eq!(
+            profile.bytecode.fake_instruction,
+            FakeInstructionProfile {
+                enabled: true,
+                count: 2
+            }
+        );
+        assert_eq!(
+            profile.bytecode.dead_bytecode,
+            DeadBytecodeProfile {
+                enabled: true,
+                count: 4
+            }
+        );
+        assert_eq!(
+            profile.decoder.steps,
+            [
+                DecoderStep::AddStream,
+                DecoderStep::XorStream,
+                DecoderStep::Rol { amount: 2 },
+                DecoderStep::Ror { amount: 5 },
+                DecoderStep::VarintDecode,
+                DecoderStep::BitUnpack,
+            ]
+        );
+        assert!(profile.isa.has_unique_opcodes());
+        assert_eq!(
+            profile
+                .isa
+                .instructions
+                .iter()
+                .flat_map(|instruction| instruction.opcodes())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            1000
+        );
+        assert!(profile.isa.by_opcode(0x3e8).is_some());
+        verify_profile(&profile).expect("ruoke profile should verify");
     }
 
     #[test]
@@ -2553,18 +2621,43 @@ mod tests {
     }
 
     #[test]
-    fn builtin_profile_effective_lines_have_chinese_comments() {
+    fn example_profile_effective_lines_have_chinese_comments() {
         for (path, source) in [
             (
-                "manifest.toml",
+                "amice-simple-vmp/manifest.toml",
                 include_str!("../profiles/amice-simple-vmp/manifest.toml"),
             ),
-            ("abi.vm", include_str!("../profiles/amice-simple-vmp/abi.vm")),
-            ("isa.vm", include_str!("../profiles/amice-simple-vmp/isa.vm")),
-            ("lowering.vm", include_str!("../profiles/amice-simple-vmp/lowering.vm")),
-            ("bytecode.vm", include_str!("../profiles/amice-simple-vmp/bytecode.vm")),
-            ("decoder.vm", include_str!("../profiles/amice-simple-vmp/decoder.vm")),
-            ("runtime.vm", include_str!("../profiles/amice-simple-vmp/runtime.vm")),
+            (
+                "amice-simple-vmp/abi.vm",
+                include_str!("../profiles/amice-simple-vmp/abi.vm"),
+            ),
+            (
+                "amice-simple-vmp/isa.vm",
+                include_str!("../profiles/amice-simple-vmp/isa.vm"),
+            ),
+            (
+                "amice-simple-vmp/lowering.vm",
+                include_str!("../profiles/amice-simple-vmp/lowering.vm"),
+            ),
+            (
+                "amice-simple-vmp/bytecode.vm",
+                include_str!("../profiles/amice-simple-vmp/bytecode.vm"),
+            ),
+            (
+                "amice-simple-vmp/decoder.vm",
+                include_str!("../profiles/amice-simple-vmp/decoder.vm"),
+            ),
+            (
+                "amice-simple-vmp/runtime.vm",
+                include_str!("../profiles/amice-simple-vmp/runtime.vm"),
+            ),
+            ("ruoke/manifest.toml", include_str!("../profiles/ruoke/manifest.toml")),
+            ("ruoke/abi.vm", include_str!("../profiles/ruoke/abi.vm")),
+            ("ruoke/isa.vm", include_str!("../profiles/ruoke/isa.vm")),
+            ("ruoke/lowering.vm", include_str!("../profiles/ruoke/lowering.vm")),
+            ("ruoke/bytecode.vm", include_str!("../profiles/ruoke/bytecode.vm")),
+            ("ruoke/decoder.vm", include_str!("../profiles/ruoke/decoder.vm")),
+            ("ruoke/runtime.vm", include_str!("../profiles/ruoke/runtime.vm")),
         ] {
             for (line_index, line) in source.lines().enumerate() {
                 let trimmed = line.trim();
@@ -2590,7 +2683,7 @@ mod tests {
             toml::from_str(include_str!("../profiles/amice-simple-vmp/manifest.toml")).expect("manifest");
         let isa = include_str!("../profiles/amice-simple-vmp/isa.vm").replacen(
             "opcode alias [0x01, 0x0e, 0x4f, 0x60, 0x65]",
-            "opcode alias [0x85, 0x86]",
+            "opcode alias [0xa1, 0xa2]",
             1,
         );
         let profile = ProfilePackage::from_sources(
@@ -2606,8 +2699,8 @@ mod tests {
 
         let mov_imm = profile.isa.by_semantic(&HandlerSemantic::MovImm).unwrap();
 
-        assert_eq!(mov_imm.opcode, 0x85);
-        assert_eq!(mov_imm.opcodes(), &[0x85, 0x86]);
+        assert_eq!(mov_imm.opcode, 0xa1);
+        assert_eq!(mov_imm.opcodes(), &[0xa1, 0xa2]);
         verify_profile(&profile).expect("profile with opcode aliases should verify");
     }
 

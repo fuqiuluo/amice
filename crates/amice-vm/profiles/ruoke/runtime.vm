@@ -1,0 +1,24 @@
+registers { # 声明 ruoke 使用的固定 VM 寄存器模型
+  bank x range x0..x31 type u64 # x0 到 x31 保存整数和指针类 VM 值
+  bank q range q0..q64 type v128 # q0 到 q64 是固定宽寄存器组，当前配置通过策略禁止宽值降低
+  q.lowering = disabled # ruoke 示例明确禁用 q 寄存器降低
+  alias lr = x30 # lr 是 abi.vm 使用的 VM 链接寄存器别名
+  alias sp = x31 # sp 是 VM 栈或基址指针别名
+} # 结束 ruoke 寄存器模型声明
+
+control_state { # 声明 ruoke 独立于通用寄存器组的控制状态
+  pc: label # pc 保存当前解码后的字节码指令索引
+  flags: u64 # flags 保存配置可见的条件状态
+} # 结束 ruoke 控制状态声明
+
+runtime.scope = func # 每个被保护函数生成独立 ruoke 分派运行时
+polymorph.scope = func # 每个被保护函数独立派生 key、opcode 选择和 handler 克隆后缀
+
+dispatch = switch # 生成的运行时通过 LLVM switch 分派处理器
+
+enhance threaded_dispatch = disabled # ruoke 示例暂不启用 threaded dispatch
+enhance indirect_branch_dispatch = disabled # ruoke 示例暂不启用 indirect branch dispatch
+enhance handler_splitting = enabled # 运行时将每个处理器拆成入口块和执行块以增加控制流形态
+enhance handler_order_shuffle = enabled # 分派器中的处理器块按配置包和函数名派生顺序打散
+enhance opcode_alias = enabled # 编码器允许对同一语义的多个操作码别名按函数选择
+enhance handler_clone = func # ruoke 为每个函数保留独立 handler clone，便于观察函数级多态

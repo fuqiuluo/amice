@@ -219,7 +219,7 @@ rule llvm.add.integer {                      # 定义 LLVM 整数 add 的 loweri
 
 LLVM IR lowering 必须覆盖的基础子集：
 
-- 整数运算：`add`、`sub`、`mul`、`xor`、`and`、`or`、`shl`、`lshr`、`ashr`。
+- 整数运算：`add`、`sub`、`mul`、`udiv`、`sdiv`、`urem`、`srem`、`xor`、`and`、`or`、`shl`、`lshr`、`ashr`。
 - 比较：`icmp`。
 - 类型转换：`zext`、`sext`、`trunc`、`bitcast`、`ptrtoint`、`inttoptr`。
 - 内存：`alloca`、`load`、`store`、`getelementptr`。
@@ -462,6 +462,8 @@ Profile verifier 是这个设计能否长期维护的关键。
 
 AMICE 的职责是根据 profile 生成 VM runtime、翻译 LLVM IR、编码 bytecode。Profile 定义 VM 的 ISA 名称、opcode alias、operand、ABI、bytecode、decoder 和 runtime 形态；AMICE 内置一组可验证的 handler semantic 模板，profile 的 `semantic {}` 必须解析并匹配这些模板。AMICE 不接受不可验证的 profile 扩展，也不会把未知 semantic 当作可执行宿主代码。
 
-当前可虚拟化 LLVM IR 子集是 64 位小端目标上的整数/指针标量路径：整数参数、指针参数、void/scalar/小聚合/sret 返回，整数算术和位运算，`icmp`，`zext`/`sext`/`trunc`/`bitcast`/`ptrtoint`/`inttoptr`，固定 alloca，标量 load/store，常量和单动态下标 GEP，`br`、条件 `br`、`switch`、loop/phi edge move，direct native call。`q0..q64` 固定存在，但内置 profile 通过 `q.lowering = disabled` 禁用宽值 lowering；任何依赖 q 寄存器的 ABI、lowering 或 semantic 都必须被 verifier 拒绝。
+当前可虚拟化 LLVM IR 子集是 64 位小端目标上的整数/指针标量路径：整数参数、指针参数、void/scalar/小聚合/sret 返回，整数算术、整数除法/取余和位运算，`icmp`，`zext`/`sext`/`trunc`/`bitcast`/`ptrtoint`/`inttoptr`，固定 alloca，标量 load/store，常量和单动态下标 GEP，`br`、条件 `br`、`switch`、loop/phi edge move，direct native call。`udiv`、`sdiv`、`urem`、`srem` 对除零和有符号溢出输入沿用 LLVM 未定义行为，不在 VM runtime 中重新定义。`q0..q64` 固定存在，但内置 profile 通过 `q.lowering = disabled` 禁用宽值 lowering；任何依赖 q 寄存器的 ABI、lowering 或 semantic 都必须被 verifier 拒绝。
+
+`amice-simple-vmp` 是默认兼容性 profile；`ruoke` 是压力测试/示例 profile，声明 1000 个唯一 opcode alias，并要求 runtime emitter 为这些 alias 生成独立可分发 handler case。
 
 以下情况必须安全跳过目标函数并输出 debug 日志：浮点或向量值、不可解析的 indirect call、va_arg、invoke/landingpad/异常控制流、atomic/cmpxchg/非标量内存、动态 alloca、不可静态归一化的复杂 GEP、超过 ABI 或 VM 寄存器容量的参数/返回/活跃 SSA 值、profile 未覆盖的 lowering rule、profile verifier 拒绝的 ABI/ISA/bytecode/decoder/runtime 配置。

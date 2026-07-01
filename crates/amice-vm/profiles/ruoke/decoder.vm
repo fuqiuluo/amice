@@ -1,0 +1,9 @@
+decoder code { # 声明 ruoke 代码段对应的运行时解码器
+  input segment code # 解码器从受保护的代码字节流读取数据
+  step add_stream key=function_key # 第一步移除按函数派生的加法字节流扰动
+  step xor_stream key=function_key # 第二步移除按函数派生的异或字节流保护
+  step rol amount=2 # 第三步反转编译器侧右旋两位的编码
+  step ror amount=5 # 第四步反转编译器侧左旋五位的编码
+  step varint_decode # 第五步将受保护字节解码为整数令牌
+  step bit_unpack schema=instr # 最后一步按指令模式解释操作码和操作数
+} # 结束 ruoke 代码解码器声明

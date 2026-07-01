@@ -376,6 +376,28 @@ fn decoder_variant_profile_path() -> PathBuf {
     profile_dir
 }
 
+fn ruoke_profile_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../amice-vm/profiles/ruoke")
+        .canonicalize()
+        .expect("ruoke profile dir should exist")
+}
+
+fn handler_opcode_count(ir: &str) -> usize {
+    ir.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'))
+        .filter(|token| token.contains("handler."))
+        .filter_map(|token| token.rsplit_once(".op").map(|(_, suffix)| suffix))
+        .map(|suffix| {
+            suffix
+                .chars()
+                .take_while(|ch| ch.is_ascii_hexdigit())
+                .collect::<String>()
+        })
+        .filter(|suffix| !suffix.is_empty())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
 fn semantic_renamed_add_profile_path() -> PathBuf {
     let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../amice-vm/profiles/amice-simple-vmp")
@@ -391,7 +413,7 @@ fn semantic_renamed_add_profile_path() -> PathBuf {
     let isa = std::fs::read_to_string(source_dir.join("isa.vm"))
         .expect("built-in ISA profile should be readable")
         .replacen("instr iadd", "instr add_alias", 1)
-        .replacen("opcode alias [0x10, 0x2c, 0x5a, 0x6d, 0x7a]", "opcode alias [0x91]", 1);
+        .replacen("opcode alias [0x10, 0x2c, 0x5a, 0x6d, 0x7a]", "opcode alias [0xb1]", 1);
     std::fs::write(profile_dir.join("isa.vm"), isa).expect("renamed ISA profile should be writable");
 
     let lowering = std::fs::read_to_string(source_dir.join("lowering.vm"))
@@ -422,7 +444,7 @@ fn same_semantic_alt_add_profile_path() -> PathBuf {
     }
 
     let alt_iadd = r#"instr iadd_alt(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 第二条同语义整数加法处理器
-opcode alias [0x92] # iadd_alt 使用独立操作码 0x92
+opcode alias [0xb2] # iadd_alt 使用独立操作码 0xb2
 semantic { # iadd_alt 保持与 iadd 相同的加法语义
 reg[dst] = trunc_width(reg[lhs] + reg[rhs], width) # 加法结果按目标宽度掩码
 pc = next # 执行继续到下一条字节码指令
@@ -555,9 +577,9 @@ fn fixed_env_without_actions_profile_path() -> PathBuf {
     let lowering =
         std::fs::read_to_string(source_dir.join("lowering.vm")).expect("built-in lowering profile should be readable");
     let lowering = lowering.replace(
-        r#"%va = materialize %a as integer # 将左操作数物化为 VM 整数值
-%vb = materialize %b as integer # 将右操作数物化为 VM 整数值
-%vr = vreg integer # 为 add 结果分配一个 VM x 寄存器
+        r#"    %va = materialize %a as integer # 将左操作数物化为 VM 整数值
+    %vb = materialize %b as integer # 将右操作数物化为 VM 整数值
+    %vr = vreg integer # 为 add 结果分配一个 VM x 寄存器
 "#,
         "",
     );
@@ -618,24 +640,24 @@ fn sub_materialize_swapped_profile_path() -> PathBuf {
     let lowering =
         std::fs::read_to_string(source_dir.join("lowering.vm")).expect("built-in lowering profile should be readable");
     let sub_rule = r#"rule llvm.sub.integer { # 将 LLVM 整数 sub 降低为 isub VM 指令
-match %r = llvm.sub integer %a, %b # 匹配任意受支持整数宽度的 LLVM sub
-lower { # 开始声明 sub 的 lowering 动作
-%va = materialize %a as integer # 将左操作数物化为 VM 整数值
-%vb = materialize %b as integer # 将右操作数物化为 VM 整数值
-%vr = vreg integer # 为 sub 结果分配一个 VM x 寄存器
-emit isub dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 isub 指令
-bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
-} # 结束 sub lowering 动作
+  match %r = llvm.sub integer %a, %b # 匹配任意受支持整数宽度的 LLVM sub
+  lower { # 开始声明 sub 的 lowering 动作
+    %va = materialize %a as integer # 将左操作数物化为 VM 整数值
+    %vb = materialize %b as integer # 将右操作数物化为 VM 整数值
+    %vr = vreg integer # 为 sub 结果分配一个 VM x 寄存器
+    emit isub dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 isub 指令
+    bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
+  } # 结束 sub lowering 动作
 } # 结束 sub 规则"#;
     let swapped_sub_rule = r#"rule llvm.sub.integer { # 将 LLVM 整数 sub 降低为 isub VM 指令
-match %r = llvm.sub integer %a, %b # 匹配任意受支持整数宽度的 LLVM sub
-lower { # 开始声明 sub 的 lowering 动作
-%va = materialize %b as integer # 测试 materialize source 可将右操作数作为 lhs
-%vb = materialize %a as integer # 测试 materialize source 可将左操作数作为 rhs
-%vr = vreg integer # 为 sub 结果分配一个 VM x 寄存器
-emit isub dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 isub 指令
-bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
-} # 结束 sub lowering 动作
+  match %r = llvm.sub integer %a, %b # 匹配任意受支持整数宽度的 LLVM sub
+  lower { # 开始声明 sub 的 lowering 动作
+    %va = materialize %b as integer # 测试 materialize source 可将右操作数作为 lhs
+    %vb = materialize %a as integer # 测试 materialize source 可将左操作数作为 rhs
+    %vr = vreg integer # 为 sub 结果分配一个 VM x 寄存器
+    emit isub dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 isub 指令
+    bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
+  } # 结束 sub lowering 动作
 } # 结束 sub 规则"#;
     std::fs::write(
         profile_dir.join("lowering.vm"),
@@ -668,24 +690,24 @@ fn add_bind_to_lhs_profile_path() -> PathBuf {
     let lowering =
         std::fs::read_to_string(source_dir.join("lowering.vm")).expect("built-in lowering profile should be readable");
     let add_rule = r#"rule llvm.add.integer { # 将 LLVM 整数 add 降低为 iadd VM 指令
-match %r = llvm.add integer %a, %b # 匹配任意受支持整数宽度的 LLVM add
-lower { # 开始声明 add 的 lowering 动作
-%va = materialize %a as integer # 将左操作数物化为 VM 整数值
-%vb = materialize %b as integer # 将右操作数物化为 VM 整数值
-%vr = vreg integer # 为 add 结果分配一个 VM x 寄存器
-emit iadd dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 iadd 指令
-bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
-} # 结束 add lowering 动作
+  match %r = llvm.add integer %a, %b # 匹配任意受支持整数宽度的 LLVM add
+  lower { # 开始声明 add 的 lowering 动作
+    %va = materialize %a as integer # 将左操作数物化为 VM 整数值
+    %vb = materialize %b as integer # 将右操作数物化为 VM 整数值
+    %vr = vreg integer # 为 add 结果分配一个 VM x 寄存器
+    emit iadd dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 iadd 指令
+    bind %r = %vr # 记录 LLVM 结果到 VM 寄存器的绑定
+  } # 结束 add lowering 动作
 } # 结束 add 规则"#;
     let rebound_add_rule = r#"rule llvm.add.integer { # 将 LLVM 整数 add 降低为 iadd VM 指令
-match %r = llvm.add integer %a, %b # 匹配任意受支持整数宽度的 LLVM add
-lower { # 开始声明 add 的 lowering 动作
-%va = materialize %a as integer # 将左操作数物化为 VM 整数值
-%vb = materialize %b as integer # 将右操作数物化为 VM 整数值
-%vr = vreg integer # 为 add 结果分配一个 VM x 寄存器
-emit iadd dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 iadd 指令
-bind %r = %va # 测试 bind action 可将 LLVM add 结果重绑定到左操作数
-} # 结束 add lowering 动作
+  match %r = llvm.add integer %a, %b # 匹配任意受支持整数宽度的 LLVM add
+  lower { # 开始声明 add 的 lowering 动作
+    %va = materialize %a as integer # 将左操作数物化为 VM 整数值
+    %vb = materialize %b as integer # 将右操作数物化为 VM 整数值
+    %vr = vreg integer # 为 add 结果分配一个 VM x 寄存器
+    emit iadd dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 iadd 指令
+    bind %r = %va # 测试 bind action 可将 LLVM add 结果重绑定到左操作数
+  } # 结束 add lowering 动作
 } # 结束 add 规则"#;
     let lowering = lowering.replace(add_rule, rebound_add_rule);
     std::fs::write(profile_dir.join("lowering.vm"), lowering).expect("bind-to-lhs lowering profile should be writable");
@@ -841,6 +863,63 @@ fn test_vm_virtualize_basic_c_matches_baseline() {
 }
 
 #[test]
+fn test_vm_virtualize_integer_div_rem_matches_baseline() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_div_rem.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP int vm_divrem(int a, int b) {
+    unsigned ua = (unsigned)(a * 17 + 1234);
+    unsigned ub = (unsigned)(b | 1);
+    int sa = a - 200;
+    int sb = b | 1;
+    unsigned uq = ua / ub;
+    unsigned ur = ua % ub;
+    int sq = sa / sb;
+    int sr = sa % sb;
+    return (int)((uq ^ ur) + (unsigned)(sq * 3 + sr));
+}
+
+int main(void) {
+    int acc = 0;
+    acc += vm_divrem(45, 7);
+    acc += vm_divrem(123, 11);
+    acc += vm_divrem(255, 13);
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("div/rem fixture should be writable");
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_div_rem_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_div_rem");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_div_rem.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_divrem"));
+    assert!(ir.contains("handler.iudiv"));
+    assert!(ir.contains("handler.isdiv"));
+    assert!(ir.contains("handler.iurem"));
+    assert!(ir.contains("handler.isrem"));
+}
+
+#[test]
 fn test_vm_virtualize_function_annotation_enables_pass_without_env() {
     ensure_plugin_built();
 
@@ -938,6 +1017,58 @@ fn test_vm_virtualize_profile_path_drives_abi_mapping() {
     virtualized_output.assert_success();
 
     assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+}
+
+#[test]
+fn test_vm_virtualize_ruoke_profile_path_runs() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_ruoke.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP int vm_ruoke_tiny(int a, int b) {
+    int x = (a + b) * 3;
+    if (x > 20) {
+        x -= 7;
+    } else {
+        x += 5;
+    }
+    return x ^ (a & 7);
+}
+
+int main(void) {
+    printf("%d\n", vm_ruoke_tiny(5, 6) + vm_ruoke_tiny(2, 3));
+    return 0;
+}
+"#,
+    )
+    .expect("ruoke fixture should be writable");
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_ruoke_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_profile_path = Some(ruoke_profile_path().to_string_lossy().into_owned());
+    let virtualized = compile_virtualized_binary_with_config(&source, "vm_virtualize_ruoke", config.clone());
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir_with_config(&source, "vm_virtualize_ruoke.ll", config);
+    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
+    assert!(ir.contains(".amice.vm.dispatch.vm_ruoke_tiny"));
+    assert!(ir.contains(".amice.vm.read_varint.vm_ruoke_tiny"));
+    assert!(ir.contains("op3e8"));
+    assert_eq!(handler_opcode_count(&ir), 1000);
 }
 
 #[test]

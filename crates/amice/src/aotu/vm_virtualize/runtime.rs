@@ -18,7 +18,7 @@ use amice_plugin::inkwell::types::{ArrayType, FunctionType, IntType, PointerType
 use amice_plugin::inkwell::values::{BasicMetadataValueEnum, FunctionValue, IntValue, PointerValue, UnnamedAddress};
 use amice_plugin::inkwell::{AddressSpace, IntPredicate};
 use amice_vm::isa::{
-    BinOp, CastOp, InstructionDesc, PcExpr, SemanticBinOp, SemanticExpr, SemanticProgram, SemanticStmt,
+    BinOp, CastOp, InstructionDesc, Opcode, PcExpr, SemanticBinOp, SemanticExpr, SemanticProgram, SemanticStmt,
 };
 use amice_vm::profile::DecoderStep;
 use amice_vm::{NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, ProfilePackage, RuntimeScope};
@@ -949,6 +949,10 @@ fn bin_template(statements: &[SemanticStmt]) -> Option<BinOp> {
         (SemanticBinOp::Add, BinOp::Add),
         (SemanticBinOp::Sub, BinOp::Sub),
         (SemanticBinOp::Mul, BinOp::Mul),
+        (SemanticBinOp::UDiv, BinOp::UDiv),
+        (SemanticBinOp::SDiv, BinOp::SDiv),
+        (SemanticBinOp::URem, BinOp::URem),
+        (SemanticBinOp::SRem, BinOp::SRem),
         (SemanticBinOp::Xor, BinOp::Xor),
         (SemanticBinOp::And, BinOp::And),
         (SemanticBinOp::Or, BinOp::Or),
@@ -1141,7 +1145,7 @@ fn handler_order(profile: &ProfilePackage, salt: &str) -> Vec<usize> {
     order
 }
 
-fn handler_alias_order(profile: &ProfilePackage, salt: &str) -> Vec<(usize, u8)> {
+fn handler_alias_order(profile: &ProfilePackage, salt: &str) -> Vec<(usize, Opcode)> {
     let mut order = handler_order(profile, salt)
         .into_iter()
         .flat_map(|instruction_index| {
@@ -1458,6 +1462,26 @@ fn emit_bin_handler<'ctx>(
         BinOp::Add => builder.build_int_add(lhs_value, rhs_value, "bin.add")?,
         BinOp::Sub => builder.build_int_sub(lhs_value, rhs_value, "bin.sub")?,
         BinOp::Mul => builder.build_int_mul(lhs_value, rhs_value, "bin.mul")?,
+        BinOp::UDiv => {
+            let lhs = mask_to_width(builder, ctx.i64_type, lhs_value, width)?;
+            let rhs = mask_to_width(builder, ctx.i64_type, rhs_value, width)?;
+            builder.build_int_unsigned_div(lhs, rhs, "bin.udiv")?
+        },
+        BinOp::SDiv => {
+            let lhs = sign_extend_to_i64(builder, ctx.i64_type, lhs_value, width)?;
+            let rhs = sign_extend_to_i64(builder, ctx.i64_type, rhs_value, width)?;
+            builder.build_int_signed_div(lhs, rhs, "bin.sdiv")?
+        },
+        BinOp::URem => {
+            let lhs = mask_to_width(builder, ctx.i64_type, lhs_value, width)?;
+            let rhs = mask_to_width(builder, ctx.i64_type, rhs_value, width)?;
+            builder.build_int_unsigned_rem(lhs, rhs, "bin.urem")?
+        },
+        BinOp::SRem => {
+            let lhs = sign_extend_to_i64(builder, ctx.i64_type, lhs_value, width)?;
+            let rhs = sign_extend_to_i64(builder, ctx.i64_type, rhs_value, width)?;
+            builder.build_int_signed_rem(lhs, rhs, "bin.srem")?
+        },
         BinOp::Xor => builder.build_xor(lhs_value, rhs_value, "bin.xor")?,
         BinOp::And => builder.build_and(lhs_value, rhs_value, "bin.and")?,
         BinOp::Or => builder.build_or(lhs_value, rhs_value, "bin.or")?,
