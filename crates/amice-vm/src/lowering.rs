@@ -68,6 +68,23 @@ pub enum VmInstruction {
         /// 结果位宽，LLVM intrinsic 当前固定为 64。
         width: u8,
     },
+    /// 保存当前 LLVM 栈状态，返回值作为指针地址写入 `x` 寄存器。
+    StackSave {
+        /// 目标 `x` 寄存器。
+        dst: u8,
+    },
+    /// 恢复到此前保存的 LLVM 栈状态。
+    StackRestore {
+        /// 保存点指针所在的 `x` 寄存器。
+        ptr: u8,
+    },
+    /// 刷新一段 instruction cache 地址范围。
+    ClearCache {
+        /// 起始地址所在的 `x` 寄存器。
+        start: u8,
+        /// 结束地址所在的 `x` 寄存器。
+        end: u8,
+    },
     /// 超级指令：先执行整数加法，再与第三个操作数做 xor。
     SuperAddXor {
         /// 目标 `x` 寄存器。
@@ -581,6 +598,9 @@ impl VmInstruction {
                 kind: CounterKind::Steady,
                 ..
             } => "read_steady",
+            Self::StackSave { .. } => "stacksave",
+            Self::StackRestore { .. } => "stackrestore",
+            Self::ClearCache { .. } => "clear_cache",
             Self::SuperAddXor { .. } => "iadd_xor",
             Self::SuperIcmpBrIf { .. } => "icmp_br_if",
             Self::SuperGepLoad { .. } => "gep_load",
@@ -1174,6 +1194,8 @@ fn instruction_register_reads(instruction: &VmInstruction) -> Vec<u8> {
         | VmInstruction::FloatClass { src, .. } => vec![*src],
         VmInstruction::Cast { src, .. } => vec![*src],
         VmInstruction::DynamicAlloca { count, .. } => vec![*count],
+        VmInstruction::StackRestore { ptr } => vec![*ptr],
+        VmInstruction::ClearCache { start, end } => vec![*start, *end],
         VmInstruction::Load { ptr, .. } => vec![*ptr],
         VmInstruction::Store { src, ptr, .. } => vec![*src, *ptr],
         VmInstruction::VolatileLoad { ptr, .. } => vec![*ptr],
@@ -1202,6 +1224,7 @@ fn instruction_register_reads(instruction: &VmInstruction) -> Vec<u8> {
         VmInstruction::MovImm { .. }
         | VmInstruction::ConstLoad { .. }
         | VmInstruction::ReadCounter { .. }
+        | VmInstruction::StackSave { .. }
         | VmInstruction::Alloca { .. }
         | VmInstruction::Fence { .. }
         | VmInstruction::SideEffect
@@ -1355,6 +1378,9 @@ impl VmFunctionBuilder {
                 VmInstruction::MovImm { .. }
                 | VmInstruction::ConstLoad { .. }
                 | VmInstruction::ReadCounter { .. }
+                | VmInstruction::StackSave { .. }
+                | VmInstruction::StackRestore { .. }
+                | VmInstruction::ClearCache { .. }
                 | VmInstruction::SuperAddXor { .. }
                 | VmInstruction::SuperGepLoad { .. }
                 | VmInstruction::SuperLoadAdd { .. }

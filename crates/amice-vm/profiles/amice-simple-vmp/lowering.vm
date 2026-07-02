@@ -387,6 +387,32 @@ rule llvm.readsteadycounter.integer { # 将 LLVM readsteadycounter intrinsic 降
   } # 结束 readsteadycounter lowering 动作
 } # 结束 readsteadycounter 规则
 
+rule llvm.stacksave.pointer { # 将 LLVM stacksave intrinsic 降低为 stacksave VM 指令
+  match %r = llvm.stacksave pointer # 匹配无参数且返回 pointer 的栈保存 intrinsic
+  lower { # 开始声明 stacksave lowering 动作
+    %vr = vreg ptr # 为栈保存点指针分配一个 VM x 寄存器
+    emit stacksave dst=%vr # 发射 profile ISA 中的 stacksave 指令
+    bind %r = %vr # 记录 LLVM 栈保存点结果到 VM 寄存器的绑定
+  } # 结束 stacksave lowering 动作
+} # 结束 stacksave 规则
+
+rule llvm.stackrestore { # 将 LLVM stackrestore intrinsic 降低为 stackrestore VM 指令
+  match llvm.stackrestore %ptr # 匹配带一个 pointer 参数的栈恢复 intrinsic
+  lower { # 开始声明 stackrestore lowering 动作
+    %vp = materialize %ptr as ptr # 将栈保存点指针物化为 VM x 寄存器
+    emit stackrestore ptr=%vp # 发射 profile ISA 中的 stackrestore 指令
+  } # 结束 stackrestore lowering 动作
+} # 结束 stackrestore 规则
+
+rule llvm.clear_cache { # 将 LLVM clear_cache intrinsic 降低为 clear_cache VM 指令
+  match llvm.clear_cache %start, %end # 匹配两个 pointer 参数的指令缓存刷新 intrinsic
+  lower { # 开始声明 clear_cache lowering 动作
+    %vs = materialize %start as ptr # 将起始地址指针物化为 VM x 寄存器
+    %ve = materialize %end as ptr # 将结束地址指针物化为 VM x 寄存器
+    emit clear_cache start=%vs, end=%ve # 发射 profile ISA 中的 clear_cache 指令
+  } # 结束 clear_cache lowering 动作
+} # 结束 clear_cache 规则
+
 rule llvm.fadd.float { # 将 LLVM 标量浮点 fadd 降低为 fadd VM 指令
   match %r = llvm.fadd float %a, %b # 匹配 f32 或 f64 标量浮点加法
   lower { # 开始声明 fadd 的 lowering 动作

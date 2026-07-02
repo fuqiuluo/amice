@@ -4812,6 +4812,190 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_stack_save_restore_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_stack_save_restore.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_stack_save_restore'
+source_filename = "vm_virtualize_stack_save_restore.ll"
+
+declare ptr @llvm.stacksave.p0()
+declare void @llvm.stackrestore.p0(ptr)
+
+define i64 @vm_stack_save_restore(i64 %seed) {
+entry:
+  %n0 = and i64 %seed, 15
+  %n = add i64 %n0, 1
+  %sp = call ptr @llvm.stacksave.p0()
+  %buf = alloca i8, i64 %n, align 1
+  %p0 = getelementptr i8, ptr %buf, i64 0
+  %p1 = getelementptr i8, ptr %buf, i64 %n0
+  %lo = trunc i64 %seed to i8
+  store i8 %lo, ptr %p0, align 1
+  %hi = xor i8 %lo, 90
+  store i8 %hi, ptr %p1, align 1
+  %a = load i8, ptr %p0, align 1
+  %b = load i8, ptr %p1, align 1
+  call void @llvm.stackrestore.p0(ptr %sp)
+  %za = zext i8 %a to i64
+  %zb = zext i8 %b to i64
+  %mix = shl i64 %zb, 8
+  %r0 = or i64 %za, %mix
+  %r = xor i64 %r0, %seed
+  ret i64 %r
+}
+"#,
+    )
+    .expect("stack save/restore LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_stack_save_restore_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_stack_save_restore(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm_stack_save_restore(0x0102030405060708ULL);
+    uint64_t b = vm_stack_save_restore(0x99aabbccddeeff01ULL);
+    printf("%016" PRIx64 " %016" PRIx64 "\n", a, b);
+    return 0;
+}
+"#,
+    )
+    .expect("stack save/restore C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_stack_save_restore_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_stack_save_restore.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_stack_save_restore");
+    assert!(
+        dump.contains(": stacksave "),
+        "llvm.stacksave should lower through profile stacksave handler:\n{dump}"
+    );
+    assert!(
+        dump.contains(": stackrestore "),
+        "llvm.stackrestore should lower through profile stackrestore handler:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_stack_save_restore");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized stack save/restore LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_stack_save_restore"));
+    assert!(ir.contains("handler.stacksave"));
+    assert!(ir.contains("handler.stackrestore"));
+    assert!(ir.contains("@llvm.stacksave.p0"));
+    assert!(ir.contains("@llvm.stackrestore.p0"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_clear_cache_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_clear_cache_intrinsic.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_clear_cache_intrinsic'
+source_filename = "vm_virtualize_clear_cache_intrinsic.ll"
+
+declare void @llvm.clear_cache(ptr, ptr)
+
+define i64 @vm_clear_cache_intrinsic(ptr %base, i64 %seed) {
+entry:
+  %offset = and i64 %seed, 7
+  %start = getelementptr i8, ptr %base, i64 %offset
+  %end = getelementptr i8, ptr %start, i64 16
+  call void @llvm.clear_cache(ptr %start, ptr %end)
+  %lo = load i8, ptr %start, align 1
+  %z = zext i8 %lo to i64
+  %mix = shl i64 %z, 5
+  %r = xor i64 %mix, %seed
+  ret i64 %r
+}
+"#,
+    )
+    .expect("clear_cache LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_clear_cache_intrinsic_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_clear_cache_intrinsic(uint8_t *base, uint64_t seed);
+
+int main(void) {
+    uint8_t buffer[64];
+    for (uint32_t i = 0; i < 64; ++i) {
+        buffer[i] = (uint8_t)(i * 7u + 3u);
+    }
+    uint64_t a = vm_clear_cache_intrinsic(buffer, 0x0102030405060708ULL);
+    uint64_t b = vm_clear_cache_intrinsic(buffer, 0x99aabbccddeeff01ULL);
+    printf("%016" PRIx64 " %016" PRIx64 "\n", a, b);
+    return 0;
+}
+"#,
+    )
+    .expect("clear_cache C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_clear_cache_intrinsic_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_clear_cache_intrinsic.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_clear_cache_intrinsic");
+    assert!(
+        dump.contains(": clear_cache "),
+        "llvm.clear_cache should lower through profile clear_cache handler:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_clear_cache_intrinsic");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized clear_cache LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_clear_cache_intrinsic"));
+    assert!(ir.contains("handler.clear_cache"));
+    assert!(ir.contains("@llvm.clear_cache"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_lifetime_intrinsics_match_baseline() {
     ensure_plugin_built();
 

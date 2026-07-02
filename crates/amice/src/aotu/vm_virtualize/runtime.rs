@@ -212,6 +212,39 @@ fn llvm_sideeffect_intrinsic<'ctx>(module: &mut Module<'ctx>) -> FunctionValue<'
     module.add_function("llvm.sideeffect", fn_type, None)
 }
 
+fn llvm_stacksave_intrinsic<'ctx>(module: &mut Module<'ctx>) -> FunctionValue<'ctx> {
+    if let Some(function) = module.get_function("llvm.stacksave.p0") {
+        return function;
+    }
+
+    let ctx = module.get_context();
+    let ptr_type = ctx.ptr_type(AddressSpace::default());
+    let fn_type = ptr_type.fn_type(&[], false);
+    module.add_function("llvm.stacksave.p0", fn_type, None)
+}
+
+fn llvm_stackrestore_intrinsic<'ctx>(module: &mut Module<'ctx>) -> FunctionValue<'ctx> {
+    if let Some(function) = module.get_function("llvm.stackrestore.p0") {
+        return function;
+    }
+
+    let ctx = module.get_context();
+    let ptr_type = ctx.ptr_type(AddressSpace::default());
+    let fn_type = ctx.void_type().fn_type(&[ptr_type.into()], false);
+    module.add_function("llvm.stackrestore.p0", fn_type, None)
+}
+
+fn llvm_clear_cache_intrinsic<'ctx>(module: &mut Module<'ctx>) -> FunctionValue<'ctx> {
+    if let Some(function) = module.get_function("llvm.clear_cache") {
+        return function;
+    }
+
+    let ctx = module.get_context();
+    let ptr_type = ctx.ptr_type(AddressSpace::default());
+    let fn_type = ctx.void_type().fn_type(&[ptr_type.into(), ptr_type.into()], false);
+    module.add_function("llvm.clear_cache", fn_type, None)
+}
+
 fn llvm_counter_intrinsic<'ctx>(module: &mut Module<'ctx>, kind: CounterKind) -> FunctionValue<'ctx> {
     let name = match kind {
         CounterKind::Cycle => "llvm.readcyclecounter",
@@ -580,6 +613,9 @@ fn emit_dispatch<'ctx>(
     let maximum_f64 = llvm_float_binary_intrinsic(module, "llvm.maximum.f64", 64)?;
     let trap = llvm_trap_intrinsic(module);
     let sideeffect = llvm_sideeffect_intrinsic(module);
+    let stacksave = llvm_stacksave_intrinsic(module);
+    let stackrestore = llvm_stackrestore_intrinsic(module);
+    let clear_cache = llvm_clear_cache_intrinsic(module);
     let read_cycle_counter = llvm_counter_intrinsic(module, CounterKind::Cycle);
     let read_steady_counter = llvm_counter_intrinsic(module, CounterKind::Steady);
 
@@ -746,6 +782,9 @@ fn emit_dispatch<'ctx>(
                 maximum_f64,
                 trap,
                 sideeffect,
+                stacksave,
+                stackrestore,
+                clear_cache,
                 read_cycle_counter,
                 read_steady_counter,
                 const_pool,
@@ -816,6 +855,9 @@ fn emit_dispatch<'ctx>(
             maximum_f64,
             trap,
             sideeffect,
+            stacksave,
+            stackrestore,
+            clear_cache,
             read_cycle_counter,
             read_steady_counter,
             const_pool,
@@ -891,6 +933,9 @@ struct HandlerContext<'ctx, 'profile> {
     maximum_f64: FunctionValue<'ctx>,
     trap: FunctionValue<'ctx>,
     sideeffect: FunctionValue<'ctx>,
+    stacksave: FunctionValue<'ctx>,
+    stackrestore: FunctionValue<'ctx>,
+    clear_cache: FunctionValue<'ctx>,
     read_cycle_counter: FunctionValue<'ctx>,
     read_steady_counter: FunctionValue<'ctx>,
     const_pool: PointerValue<'ctx>,
@@ -942,6 +987,9 @@ enum RuntimeHandlerTemplate {
     MovImm,
     ConstLoad,
     ReadCounter(CounterKind),
+    StackSave,
+    StackRestore,
+    ClearCache,
     SuperAddXor,
     SuperIcmpBrIf,
     SuperGepLoad,
@@ -1020,6 +1068,10 @@ impl RuntimeHandlerTemplate {
         ) && pc_next(statements)
         {
             Self::ReadCounter(CounterKind::Steady)
+        } else if has_assign_reg(statements, "dst", &SemanticExpr::StackSave) && pc_next(statements) {
+            Self::StackSave
+        } else if clear_cache_template(statements) {
+            Self::ClearCache
         } else if has_assign_reg(statements, "dst", &trunc_width(reg("src"), operand("width"))) {
             Self::Mov
         } else if add_xor_template(statements) {
@@ -1114,6 +1166,8 @@ impl RuntimeHandlerTemplate {
             Self::Trap
         } else if side_effect_template(statements) {
             Self::SideEffect
+        } else if stack_restore_template(statements) {
+            Self::StackRestore
         } else if statements
             .iter()
             .any(|stmt| matches!(stmt, SemanticStmt::StateUnchanged))
@@ -1168,6 +1222,15 @@ fn emit_handler<'ctx, 'profile>(
         },
         RuntimeHandlerTemplate::ReadCounter(kind) => {
             emit_read_counter_handler(builder, operands, ctx, kind)?;
+        },
+        RuntimeHandlerTemplate::StackSave => {
+            emit_stack_save_handler(builder, operands, ctx)?;
+        },
+        RuntimeHandlerTemplate::StackRestore => {
+            emit_stack_restore_handler(builder, operands, ctx)?;
+        },
+        RuntimeHandlerTemplate::ClearCache => {
+            emit_clear_cache_handler(builder, operands, ctx)?;
         },
         RuntimeHandlerTemplate::SuperAddXor => {
             emit_super_add_xor_handler(builder, operands, ctx)?;
@@ -1956,6 +2019,22 @@ fn side_effect_template(statements: &[SemanticStmt]) -> bool {
     statements.iter().any(|stmt| matches!(stmt, SemanticStmt::SideEffect)) && pc_next(statements)
 }
 
+fn stack_restore_template(statements: &[SemanticStmt]) -> bool {
+    statements
+        .iter()
+        .any(|stmt| matches!(stmt, SemanticStmt::StackRestore { ptr } if ptr == &reg("ptr")))
+        && pc_next(statements)
+}
+
+fn clear_cache_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::ClearCache { start, end } if start == &reg("start") && end == &reg("end")
+        )
+    }) && pc_next(statements)
+}
+
 fn pc_select_template(statements: &[SemanticStmt]) -> bool {
     statements.iter().any(|stmt| {
         matches!(
@@ -2247,6 +2326,80 @@ fn emit_read_counter_handler<'ctx>(
         .into_int_value();
     let value = mask_to_width(builder, ctx.i64_type, value, width)?;
     store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_stack_save_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let dst = operands.get("dst")?;
+    let args: [BasicMetadataValueEnum<'ctx>; 0] = [];
+    let call = builder.build_call(ctx.stacksave, &args, "vm.stacksave")?;
+    let ptr = call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| anyhow::anyhow!("llvm.stacksave should return a pointer"))?
+        .into_pointer_value();
+    let value = builder.build_ptr_to_int(ptr, ctx.i64_type, "vm.stacksave.int")?;
+    store_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, dst, value)?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_stack_restore_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let ptr_reg = operands.get("ptr")?;
+    let ptr_bits = load_reg(
+        builder,
+        ctx.i64_type,
+        ctx.x_type,
+        ctx.regs,
+        ptr_reg,
+        "stackrestore.ptr.bits",
+    )?;
+    let ptr = builder.build_int_to_ptr(ptr_bits, ctx.ptr_type, "vm.stackrestore.ptr")?;
+    let args = [ptr.into()];
+    builder.build_call(ctx.stackrestore, &args, "vm.stackrestore")?;
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_clear_cache_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let start_reg = operands.get("start")?;
+    let end_reg = operands.get("end")?;
+    let start_bits = load_reg(
+        builder,
+        ctx.i64_type,
+        ctx.x_type,
+        ctx.regs,
+        start_reg,
+        "clear.cache.start.bits",
+    )?;
+    let end_bits = load_reg(
+        builder,
+        ctx.i64_type,
+        ctx.x_type,
+        ctx.regs,
+        end_reg,
+        "clear.cache.end.bits",
+    )?;
+    let start = builder.build_int_to_ptr(start_bits, ctx.ptr_type, "vm.clear.cache.start")?;
+    let end = builder.build_int_to_ptr(end_bits, ctx.ptr_type, "vm.clear.cache.end")?;
+    let args = [start.into(), end.into()];
+    builder.build_call(ctx.clear_cache, &args, "vm.clear.cache")?;
     increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
     builder.build_unconditional_branch(ctx.loop_check)?;
     Ok(())

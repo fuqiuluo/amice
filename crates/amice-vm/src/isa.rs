@@ -398,6 +398,12 @@ pub enum HandlerSemantic {
     Super(SuperOp),
     /// 读取 LLVM 计数器 intrinsic，结果写入 x 寄存器。
     ReadCounter(CounterKind),
+    /// 保存当前 LLVM 栈状态，结果以指针地址形式写入 x 寄存器。
+    StackSave,
+    /// 恢复到此前保存的 LLVM 栈状态。
+    StackRestore,
+    /// 刷新一段地址范围内的 instruction cache。
+    ClearCache,
     /// 复制一个 VM 寄存器。
     Mov,
     /// 整数二元运算。
@@ -667,6 +673,18 @@ pub enum SemanticStmt {
         /// fence ordering 表达式。
         ordering: SemanticExpr,
     },
+    /// 执行 LLVM `stackrestore` intrinsic，恢复此前保存的栈状态。
+    StackRestore {
+        /// 保存点指针表达式。
+        ptr: SemanticExpr,
+    },
+    /// 执行 LLVM `clear_cache` intrinsic，刷新一段代码地址范围。
+    ClearCache {
+        /// 要刷新的起始地址表达式。
+        start: SemanticExpr,
+        /// 要刷新的结束地址表达式。
+        end: SemanticExpr,
+    },
     /// 直接终止当前 LLVM 控制流路径，对应 LLVM `unreachable`。
     Unreachable,
     /// 触发 LLVM `trap` intrinsic 并终止当前控制流路径。
@@ -853,6 +871,8 @@ pub enum SemanticExpr {
         /// 计数器类别。
         kind: CounterKind,
     },
+    /// 执行 LLVM `stacksave` intrinsic 并返回栈状态指针。
+    StackSave,
     /// 分配 VM stack slot。
     StackAlloc {
         /// 分配大小，单位为字节。
@@ -1252,6 +1272,11 @@ impl HandlerSemantic {
                 .writes(["dst"])
                 .with_memory_read(),
             Self::ReadCounter(_) => HandlerEffect::new(PcEffect::Next).writes(["dst"]).with_native_call(),
+            Self::StackSave => HandlerEffect::new(PcEffect::Next).writes(["dst"]).with_native_call(),
+            Self::StackRestore => HandlerEffect::new(PcEffect::Next).reads(["ptr"]).with_native_call(),
+            Self::ClearCache => HandlerEffect::new(PcEffect::Next)
+                .reads(["start", "end"])
+                .with_native_call(),
             Self::Mov => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
             Self::Bin(_) => HandlerEffect::new(PcEffect::Next).reads(["lhs", "rhs"]).writes(["dst"]),
             Self::IntUnary(_) => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
@@ -1546,6 +1571,9 @@ impl Default for IsaProfile {
             InstructionDesc::new("const_load", vec![0x03], 3, ConstLoad),
             InstructionDesc::new("read_cycle", vec![0x12e], 2, ReadCounter(CounterKind::Cycle)),
             InstructionDesc::new("read_steady", vec![0x12f], 2, ReadCounter(CounterKind::Steady)),
+            InstructionDesc::new("stacksave", vec![0x1b0], 1, StackSave),
+            InstructionDesc::new("stackrestore", vec![0x1b1], 1, StackRestore),
+            InstructionDesc::new("clear_cache", vec![0x1b4], 2, ClearCache),
             InstructionDesc::new("mov", vec![0x02], 3, Mov),
             InstructionDesc::new("iadd", vec![0x10], 4, Bin(Add)),
             InstructionDesc::new("isub", vec![0x11], 4, Bin(Sub)),

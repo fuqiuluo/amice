@@ -374,6 +374,9 @@ pub const REQUIRED_LOWERING_MATCHES: &[(&str, &str)] = &[
     ("llvm.objectsize.integer", "%r = llvm.objectsize pointer %ptr"),
     ("llvm.readcyclecounter.integer", "%r = llvm.readcyclecounter"),
     ("llvm.readsteadycounter.integer", "%r = llvm.readsteadycounter"),
+    ("llvm.stacksave.pointer", "%r = llvm.stacksave pointer"),
+    ("llvm.stackrestore", "llvm.stackrestore %ptr"),
+    ("llvm.clear_cache", "llvm.clear_cache %start, %end"),
     ("llvm.fadd.float", "%r = llvm.fadd float %a, %b"),
     ("llvm.fsub.float", "%r = llvm.fsub float %a, %b"),
     ("llvm.fmul.float", "%r = llvm.fmul float %a, %b"),
@@ -1960,6 +1963,37 @@ fn parse_semantic_statement(line: &str) -> Result<SemanticStmt, ProfileError> {
     if line == "side_effect()" {
         return Ok(SemanticStmt::SideEffect);
     }
+    if let Some(args) = line
+        .strip_prefix("clear_cache(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 2 {
+            return Err(ProfileError::Invalid(format!(
+                "clear_cache expects 2 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::ClearCache {
+            start: parse_semantic_expr(&args[0])?,
+            end: parse_semantic_expr(&args[1])?,
+        });
+    }
+    if let Some(args) = line
+        .strip_prefix("stack_restore(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 1 {
+            return Err(ProfileError::Invalid(format!(
+                "stack_restore expects 1 argument, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::StackRestore {
+            ptr: parse_semantic_expr(&args[0])?,
+        });
+    }
     if let Some(value) = line.strip_prefix("pc =") {
         return Ok(SemanticStmt::AssignPc {
             value: parse_pc_expr(value.trim())?,
@@ -2292,6 +2326,7 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
         "atomic_rmw",
         "volatile_atomic_rmw",
         "read_counter",
+        "stack_save",
     ] {
         let Some(args) = parse_named_call(value, name)? else {
             continue;
@@ -2303,6 +2338,7 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
             "atomic_load_width" | "volatile_atomic_load_width" => args.len() == 3,
             "atomic_rmw" | "volatile_atomic_rmw" => args.len() == 5,
             "read_counter" => args.len() == 1,
+            "stack_save" => args.is_empty(),
             "zero_extend" | "bitcast_width" => args.len() == 3,
             "int_bin" => args.len() == 3,
             "int_unary" => args.len() == 3,
@@ -2454,6 +2490,7 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
             "read_counter" => SemanticExpr::ReadCounter {
                 kind: parse_counter_kind(&args[0])?,
             },
+            "stack_save" => SemanticExpr::StackSave,
             _ => unreachable!("function name is selected from fixed table"),
         }));
     }
@@ -2787,6 +2824,8 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
     ) && pc_next(statements)
     {
         Some(ReadCounter(CounterKind::Steady))
+    } else if matches_assign_reg_expr(statements, "dst", &SemanticExpr::StackSave) && pc_next(statements) {
+        Some(StackSave)
     } else if int_overflow_template(statements, SemanticIntOverflowOp::UAdd) {
         Some(IntOverflow(UAdd))
     } else if int_overflow_template(statements, SemanticIntOverflowOp::SAdd) {
@@ -3067,6 +3106,10 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         Some(Trap)
     } else if side_effect_template(statements) {
         Some(SideEffect)
+    } else if stack_restore_template(statements) {
+        Some(StackRestore)
+    } else if clear_cache_template(statements) {
+        Some(ClearCache)
     } else if statements
         .iter()
         .any(|stmt| matches!(stmt, SemanticStmt::StateUnchanged))
@@ -3306,6 +3349,15 @@ fn analyze_semantic_effect(statements: &[SemanticStmt]) -> Result<HandlerEffect,
             SemanticStmt::SideEffect => {
                 native_call = true;
             },
+            SemanticStmt::StackRestore { ptr } => {
+                collect_expr_effects(ptr, &mut reads, &mut memory_read, &mut native_call);
+                native_call = true;
+            },
+            SemanticStmt::ClearCache { start, end } => {
+                collect_expr_effects(start, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(end, &mut reads, &mut memory_read, &mut native_call);
+                native_call = true;
+            },
             SemanticStmt::StateUnchanged => {},
         }
     }
@@ -3414,6 +3466,22 @@ fn trap_template(statements: &[SemanticStmt]) -> bool {
 
 fn side_effect_template(statements: &[SemanticStmt]) -> bool {
     statements.iter().any(|stmt| matches!(stmt, SemanticStmt::SideEffect)) && pc_next(statements)
+}
+
+fn stack_restore_template(statements: &[SemanticStmt]) -> bool {
+    statements
+        .iter()
+        .any(|stmt| matches!(stmt, SemanticStmt::StackRestore { ptr } if ptr == &reg("ptr")))
+        && pc_next(statements)
+}
+
+fn clear_cache_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::ClearCache { start, end } if start == &reg("start") && end == &reg("end")
+        )
+    }) && pc_next(statements)
 }
 
 fn bin_template(statements: &[SemanticStmt], op: SemanticBinOp) -> bool {
@@ -3929,6 +3997,9 @@ fn collect_expr_effects(expr: &SemanticExpr, reads: &mut Vec<String>, memory_rea
         SemanticExpr::ReadCounter { .. } => {
             *native_call = true;
         },
+        SemanticExpr::StackSave => {
+            *native_call = true;
+        },
         SemanticExpr::StackAlloc { bytes, align } => {
             collect_expr_effects(bytes, reads, memory_read, native_call);
             collect_expr_effects(align, reads, memory_read, native_call);
@@ -4239,7 +4310,7 @@ mod tests {
                 .iter()
                 .map(|instruction| instruction.opcodes().len())
                 .sum::<usize>(),
-            439
+            445
         );
         let read_cycle = profile
             .isa
@@ -4254,6 +4325,18 @@ mod tests {
         let sideeffect = profile.isa.by_semantic(&HandlerSemantic::SideEffect).unwrap();
         assert_eq!(sideeffect.name, "sideeffect");
         assert!(sideeffect.effect.native_call);
+        let stacksave = profile.isa.by_semantic(&HandlerSemantic::StackSave).unwrap();
+        assert_eq!(stacksave.name, "stacksave");
+        assert!(stacksave.effect.native_call);
+        assert_eq!(stacksave.effect.register_writes, ["dst"]);
+        let stackrestore = profile.isa.by_semantic(&HandlerSemantic::StackRestore).unwrap();
+        assert_eq!(stackrestore.name, "stackrestore");
+        assert!(stackrestore.effect.native_call);
+        assert_eq!(stackrestore.effect.register_reads, ["ptr"]);
+        let clear_cache = profile.isa.by_semantic(&HandlerSemantic::ClearCache).unwrap();
+        assert_eq!(clear_cache.name, "clear_cache");
+        assert!(clear_cache.effect.native_call);
+        assert_eq!(clear_cache.effect.register_reads, ["start", "end"]);
         let ctpop = profile
             .isa
             .by_semantic(&HandlerSemantic::IntUnary(IntUnaryOp::CtPop))

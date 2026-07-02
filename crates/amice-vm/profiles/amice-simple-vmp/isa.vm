@@ -711,6 +711,33 @@ instr alloca_dyn(dst: vreg<ptr>, count: vreg<i64>, elem_size: imm<u64>, align: i
   } # 结束语义块
 } # 结束 alloca_dyn 指令
 
+instr stacksave(dst: vreg<ptr>) { # LLVM stacksave 处理器，用于保存当前栈恢复点
+  opcode alias [0x1b0, 0x1b1] # stacksave 使用独立多字节 opcode，避免和普通栈分配混用
+  decoded_width = 8 # stacksave 只有目标寄存器 operand，8 字节 record 足够覆盖编码后布局
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = stack_save() # runtime 调用 llvm.stacksave 并把返回指针写入 VM x 寄存器
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 stacksave 指令
+
+instr stackrestore(ptr: vreg<ptr>) { # LLVM stackrestore 处理器，用于恢复到此前保存的栈状态
+  opcode alias [0x1b2, 0x1b3] # stackrestore 使用独立多字节 opcode，便于在字节码中区分恢复动作
+  decoded_width = 8 # stackrestore 只有一个指针寄存器 operand，8 字节 record 足够覆盖编码后布局
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    stack_restore(reg[ptr]) # runtime 调用 llvm.stackrestore，恢复 stacksave 返回的栈状态
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 stackrestore 指令
+
+instr clear_cache(start: vreg<ptr>, end: vreg<ptr>) { # LLVM clear_cache 处理器，用于刷新一段代码地址区间的指令缓存
+  opcode alias [0x1b4, 0x1b5] # clear_cache 使用独立多字节 opcode，避免和栈 intrinsic 混用
+  decoded_width = 8 # clear_cache 包含两个指针寄存器 operand，8 字节 record 足够覆盖编码后布局
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    clear_cache(reg[start], reg[end]) # runtime 调用 llvm.clear_cache，刷新 start 到 end 的地址区间
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 clear_cache 指令
+
 instr load(dst: vreg<i64>, ptr: vreg<ptr>, width: imm<u8>) { # 标量 load 处理器
   opcode alias [0x35, 0x0f, 0x51, 0x7c] # load 使用主操作码 0x35，其余为等价混淆别名
   semantic { # 处理语义由 AMICE 校验器静态识别

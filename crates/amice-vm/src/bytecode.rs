@@ -229,6 +229,30 @@ impl<'a> BytecodeEncoder<'a> {
                 pc,
                 operands([("dst", *dst as u64), ("width", *width as u64)]),
             ),
+            VmInstruction::StackSave { dst } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::StackSave,
+                key,
+                pc,
+                operands([("dst", *dst as u64)]),
+            ),
+            VmInstruction::StackRestore { ptr } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::StackRestore,
+                key,
+                pc,
+                operands([("ptr", *ptr as u64)]),
+            ),
+            VmInstruction::ClearCache { start, end } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::ClearCache,
+                key,
+                pc,
+                operands([("start", *start as u64), ("end", *end as u64)]),
+            ),
             VmInstruction::SuperAddXor {
                 dst,
                 lhs,
@@ -1212,6 +1236,9 @@ fn collect_const_pool_values(function: &VmFunction) -> Vec<u64> {
             VmInstruction::MovImm { .. }
             | VmInstruction::Mov { .. }
             | VmInstruction::ReadCounter { .. }
+            | VmInstruction::StackSave { .. }
+            | VmInstruction::StackRestore { .. }
+            | VmInstruction::ClearCache { .. }
             | VmInstruction::SuperAddXor { .. }
             | VmInstruction::SuperIcmpBrIf { .. }
             | VmInstruction::SuperGepLoad { .. }
@@ -1852,6 +1879,19 @@ impl Hash for VmInstruction {
                     ret.dst.hash(state);
                     ret.width.hash(state);
                 });
+            },
+            VmInstruction::StackSave { dst } => {
+                6_u8.hash(state);
+                dst.hash(state);
+            },
+            VmInstruction::StackRestore { ptr } => {
+                7_u8.hash(state);
+                ptr.hash(state);
+            },
+            VmInstruction::ClearCache { start, end } => {
+                8_u8.hash(state);
+                start.hash(state);
+                end.hash(state);
             },
             VmInstruction::SideEffect => 5_u8.hash(state),
             VmInstruction::Nop => 2_u8.hash(state),
@@ -3005,6 +3045,9 @@ pc = next # 执行继续到下一条字节码指令
                 | HandlerSemantic::Gep
                 | HandlerSemantic::CallNative
                 | HandlerSemantic::ReadCounter(_)
+                | HandlerSemantic::StackSave
+                | HandlerSemantic::StackRestore
+                | HandlerSemantic::ClearCache
                 | HandlerSemantic::IntUnary(_)
                 | HandlerSemantic::IntTernary(_)
                 | HandlerSemantic::IntOverflow(_)

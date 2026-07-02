@@ -86,6 +86,12 @@ enum MemoryIntrinsicKind {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum StackIntrinsicKind {
+    Save,
+    Restore,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum TrapIntrinsicKind {
     Trap,
     DebugTrap,
@@ -1773,6 +1779,22 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     desc.name.clone(),
                 );
             },
+            HandlerSemantic::StackSave => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                self.builder
+                    .push_profile(VmInstruction::StackSave { dst }, desc.name.clone());
+            },
+            HandlerSemantic::StackRestore => {
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                self.builder
+                    .push_profile(VmInstruction::StackRestore { ptr }, desc.name.clone());
+            },
+            HandlerSemantic::ClearCache => {
+                let start = self.profile_reg(desc, &args, "start")?;
+                let end = self.profile_reg(desc, &args, "end")?;
+                self.builder
+                    .push_profile(VmInstruction::ClearCache { start, end }, desc.name.clone());
+            },
             HandlerSemantic::Super(amice_vm::isa::SuperOp::AddXor) => {
                 let dst = self.profile_reg(desc, &args, "dst")?;
                 let lhs = self.profile_reg(desc, &args, "lhs")?;
@@ -3095,6 +3117,12 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         if sideeffect_intrinsic(callee) {
             return self.lower_sideeffect_intrinsic(instruction);
         }
+        if let Some(kind) = stack_intrinsic_kind(callee) {
+            return self.lower_stack_intrinsic(instruction, kind);
+        }
+        if clear_cache_intrinsic(callee) {
+            return self.lower_clear_cache_intrinsic(instruction);
+        }
         if let Some(kind) = nop_intrinsic_kind(callee) {
             return self.lower_nop_intrinsic(instruction, kind);
         }
@@ -3664,6 +3692,83 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             bail!("llvm.sideeffect expects exactly 0 arguments, got {actual_args}");
         }
         self.execute_lowering_rule("llvm.sideeffect", LoweringEnv::new(), Some(HandlerSemantic::SideEffect))?;
+        Ok(())
+    }
+
+    fn lower_stack_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: StackIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        match kind {
+            StackIntrinsicKind::Save => self.lower_stacksave_intrinsic(instruction),
+            StackIntrinsicKind::Restore => self.lower_stackrestore_intrinsic(instruction),
+        }
+    }
+
+    fn lower_stacksave_intrinsic(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 0 {
+            bail!("llvm.stacksave expects exactly 0 arguments, got {actual_args}");
+        }
+        if !matches!(instruction.get_type(), AnyTypeEnum::PointerType(_)) {
+            bail!("llvm.stacksave must return a pointer");
+        }
+
+        let env = LoweringEnv::new()
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", 64)
+            .imm("width", 64);
+        self.execute_lowering_rule("llvm.stacksave.pointer", env, Some(HandlerSemantic::StackSave))?;
+        Ok(())
+    }
+
+    fn lower_stackrestore_intrinsic(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 1 {
+            bail!("llvm.stackrestore expects exactly 1 argument, got {actual_args}");
+        }
+        let ptr_operand = instruction_operand_value(instruction, 0)?;
+        if !ptr_operand.is_pointer_value() {
+            bail!("llvm.stackrestore operand must be a pointer");
+        }
+        if !matches!(instruction.get_type(), AnyTypeEnum::VoidType(_)) {
+            bail!("llvm.stackrestore must return void");
+        }
+
+        let ptr = self.materialize_operand(instruction, 0)?;
+        if ptr.width != 64 {
+            bail!("llvm.stackrestore pointer operand must materialize as i64");
+        }
+        let env = LoweringEnv::new().binding("%ptr", ptr);
+        self.execute_lowering_rule("llvm.stackrestore", env, Some(HandlerSemantic::StackRestore))?;
+        Ok(())
+    }
+
+    fn lower_clear_cache_intrinsic(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 2 {
+            bail!("llvm.clear_cache expects exactly 2 arguments, got {actual_args}");
+        }
+        if !matches!(instruction.get_type(), AnyTypeEnum::VoidType(_)) {
+            bail!("llvm.clear_cache must return void");
+        }
+        for index in 0..2 {
+            let operand = instruction_operand_value(instruction, index)?;
+            if !operand.is_pointer_value() {
+                bail!("llvm.clear_cache operand {index} must be a pointer");
+            }
+        }
+
+        let start = self.materialize_operand(instruction, 0)?;
+        let end = self.materialize_operand(instruction, 1)?;
+        for (name, value) in [("start", start), ("end", end)] {
+            if value.width != 64 {
+                bail!("llvm.clear_cache {name} pointer operand must materialize as i64");
+            }
+        }
+        let env = LoweringEnv::new().binding("%start", start).binding("%end", end);
+        self.execute_lowering_rule("llvm.clear_cache", env, Some(HandlerSemantic::ClearCache))?;
         Ok(())
     }
 
@@ -7009,6 +7114,21 @@ fn counter_intrinsic_kind(function: FunctionValue<'_>) -> Option<CounterKind> {
 
 fn sideeffect_intrinsic(function: FunctionValue<'_>) -> bool {
     function.get_name().to_string_lossy().as_ref() == "llvm.sideeffect"
+}
+
+fn clear_cache_intrinsic(function: FunctionValue<'_>) -> bool {
+    function.get_name().to_string_lossy().as_ref() == "llvm.clear_cache"
+}
+
+fn stack_intrinsic_kind(function: FunctionValue<'_>) -> Option<StackIntrinsicKind> {
+    let name = function.get_name().to_string_lossy();
+    if name.starts_with("llvm.stacksave") {
+        Some(StackIntrinsicKind::Save)
+    } else if name.starts_with("llvm.stackrestore") {
+        Some(StackIntrinsicKind::Restore)
+    } else {
+        None
+    }
 }
 
 fn counter_intrinsic_lowering_rule(kind: CounterKind) -> &'static str {
