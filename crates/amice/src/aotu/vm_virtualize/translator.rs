@@ -14,27 +14,36 @@
 //! 此文件中遇到暂不支持的 LLVM IR 会返回 `Err`。上层 pass 捕获错误并保留原函数，
 //! 因而这里宁可保守跳过，也不能生成不完整 VM IR。
 
-use amice_llvm::inkwell2::{CallInst, FunctionExt, GepInst, InstructionExt, PhiInst, SwitchInst};
+use amice_llvm::inkwell2::{CallInst, FunctionExt, GepInst, InstructionExt, ModuleExt, PhiInst, SwitchInst};
 use amice_plugin::inkwell::basic_block::BasicBlock;
-use amice_plugin::inkwell::llvm_sys::LLVMTypeKind;
 use amice_plugin::inkwell::llvm_sys::core::{
-    LLVMCountStructElementTypes, LLVMGetAlignment, LLVMGetAtomicSyncScopeID, LLVMGetCmpXchgFailureOrdering,
-    LLVMGetCmpXchgSuccessOrdering, LLVMGetElementType, LLVMGetGEPSourceElementType, LLVMGetTypeKind, LLVMGetWeak,
-    LLVMStructGetTypeAtIndex,
+    LLVMConstIntGetSExtValue, LLVMCountStructElementTypes, LLVMGetAlignment, LLVMGetAllocatedType,
+    LLVMGetAtomicSyncScopeID, LLVMGetCalledFunctionType, LLVMGetCalledValue, LLVMGetCmpXchgFailureOrdering,
+    LLVMGetCmpXchgSuccessOrdering, LLVMGetConstOpcode, LLVMGetElementType, LLVMGetGEPSourceElementType,
+    LLVMGetNumOperands, LLVMGetOperand, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsAAllocaInst, LLVMIsAConstant,
+    LLVMIsAConstantExpr, LLVMIsAConstantInt, LLVMIsAGetElementPtrInst, LLVMIsAGlobalValue, LLVMIsAGlobalVariable,
+    LLVMStructGetTypeAtIndex, LLVMTypeOf,
 };
-use amice_plugin::inkwell::llvm_sys::prelude::LLVMTypeRef;
+use amice_plugin::inkwell::llvm_sys::prelude::{LLVMTypeRef, LLVMValueRef};
 use amice_plugin::inkwell::llvm_sys::target::{LLVMOffsetOfElement, LLVMStoreSizeOfType};
-use amice_plugin::inkwell::module::Module;
+use amice_plugin::inkwell::llvm_sys::{LLVMOpcode, LLVMTypeKind};
+use amice_plugin::inkwell::module::{Linkage, Module};
 use amice_plugin::inkwell::targets::TargetData;
-use amice_plugin::inkwell::types::{AnyTypeEnum, AsTypeRef, BasicMetadataTypeEnum, BasicTypeEnum};
-use amice_plugin::inkwell::values::{
-    AnyValue, AsValueRef, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
+use amice_plugin::inkwell::types::{
+    AnyTypeEnum, AsTypeRef, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType,
 };
-use amice_plugin::inkwell::{AtomicOrdering, AtomicRMWBinOp, FloatPredicate as LlvmFloatPredicate, IntPredicate};
+use amice_plugin::inkwell::values::{
+    AnyValue, AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
+    PointerValue, UnnamedAddress,
+};
+use amice_plugin::inkwell::{
+    AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate as LlvmFloatPredicate, IntPredicate,
+};
 use amice_vm::abi::{AbiProfile, VmRegister};
 use amice_vm::isa::{
-    AtomicRmwOp, BinOp, CastOp, CmpPredicate, FloatBinOp, FloatCastOp, FloatPredicate as VmFloatPredicate,
-    FloatUnaryOp, HandlerSemantic, InstructionDesc, IntTernaryOp, IntUnaryOp, IsaProfile, MemoryOrdering, OperandKind,
+    AtomicRmwOp, BinOp, CastOp, CmpPredicate, CounterKind, FloatBinOp, FloatCastOp, FloatPredicate as VmFloatPredicate,
+    FloatTernaryOp, FloatUnaryOp, HandlerSemantic, InstructionDesc, IntOverflowOp, IntTernaryOp, IntUnaryOp,
+    IsaProfile, MemoryOrdering, OperandKind,
 };
 use amice_vm::profile::{LoweringAction, LoweringProfile, LoweringRule, lowering_match_pattern};
 use amice_vm::{
@@ -49,6 +58,7 @@ type BlockKey = usize;
 
 const MAX_MEMORY_INTRINSIC_INLINE_BYTES: u64 = 64;
 const LLVM_SYSTEM_SYNC_SCOPE_ID: u32 = 1;
+const FPCLASS_ALL_FLAGS: u64 = 0x03ff;
 
 #[derive(Debug, Clone, Copy)]
 struct ValueBinding {
@@ -76,8 +86,331 @@ enum MemoryIntrinsicKind {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum TrapIntrinsicKind {
+    Trap,
+    DebugTrap,
+    UbsanTrap,
+}
+
+impl TrapIntrinsicKind {
+    fn validate(self, instruction: InstructionValue<'_>) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        match self {
+            Self::Trap | Self::DebugTrap => {
+                if actual_args != 0 {
+                    bail!("{self:?} expects exactly 0 arguments, got {actual_args}");
+                }
+            },
+            Self::UbsanTrap => {
+                if actual_args != 1 {
+                    bail!("llvm.ubsantrap expects exactly 1 argument, got {actual_args}");
+                }
+                let _ = constant_int_operand(instruction, 0, "llvm.ubsantrap trap kind")?;
+            },
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NopIntrinsicKind {
+    LifetimeStart,
+    LifetimeEnd,
+    InvariantEnd,
+    Prefetch,
+    NoAliasScopeDecl,
+    DoNothing,
+    Assume,
+    Debug,
+    VarAnnotation,
+    CodeViewAnnotation,
+}
+
+impl NopIntrinsicKind {
+    fn lowering_rule(self) -> &'static str {
+        match self {
+            Self::LifetimeStart => "llvm.lifetime.start",
+            Self::LifetimeEnd => "llvm.lifetime.end",
+            Self::InvariantEnd => "llvm.invariant.end",
+            Self::Prefetch => "llvm.prefetch",
+            Self::NoAliasScopeDecl => "llvm.experimental.noalias.scope.decl",
+            Self::DoNothing => "llvm.donothing",
+            Self::Assume => "llvm.assume",
+            Self::Debug => "llvm.dbg.nop",
+            Self::VarAnnotation => "llvm.var.annotation",
+            Self::CodeViewAnnotation => "llvm.codeview.annotation",
+        }
+    }
+
+    fn checked_arg_count(self) -> Option<u32> {
+        match self {
+            Self::LifetimeStart | Self::LifetimeEnd => Some(2),
+            Self::InvariantEnd => Some(3),
+            Self::Prefetch => Some(4),
+            Self::DoNothing => Some(0),
+            Self::Assume => Some(1),
+            Self::Debug | Self::NoAliasScopeDecl | Self::CodeViewAnnotation => None,
+            Self::VarAnnotation => Some(5),
+        }
+    }
+
+    fn constant_operand_indices(self) -> &'static [u32] {
+        match self {
+            Self::LifetimeStart | Self::LifetimeEnd => &[0],
+            Self::InvariantEnd => &[1],
+            Self::Prefetch => &[1, 2, 3],
+            Self::Assume
+            | Self::Debug
+            | Self::NoAliasScopeDecl
+            | Self::DoNothing
+            | Self::VarAnnotation
+            | Self::CodeViewAnnotation => &[],
+        }
+    }
+
+    fn pointer_operand_indices(self) -> &'static [u32] {
+        match self {
+            Self::Prefetch => &[0],
+            Self::LifetimeStart
+            | Self::LifetimeEnd
+            | Self::InvariantEnd
+            | Self::NoAliasScopeDecl
+            | Self::DoNothing
+            | Self::Assume
+            | Self::Debug
+            | Self::VarAnnotation
+            | Self::CodeViewAnnotation => &[],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentityIntrinsicKind {
+    Expect,
+    ExpectWithProbability,
+    SsaCopyScalar,
+    LaunderInvariantGroup,
+    StripInvariantGroup,
+    InvariantStart,
+    AnnotationInteger,
+    PtrAnnotationPointer,
+    ThreadLocalAddress,
+}
+
+impl IdentityIntrinsicKind {
+    fn lowering_rule(self) -> &'static str {
+        match self {
+            Self::Expect => "llvm.expect.integer",
+            Self::ExpectWithProbability => "llvm.expect.with_probability.integer",
+            Self::SsaCopyScalar => "llvm.ssa.copy.scalar",
+            Self::LaunderInvariantGroup => "llvm.launder.invariant.group.pointer",
+            Self::StripInvariantGroup => "llvm.strip.invariant.group.pointer",
+            Self::InvariantStart => "llvm.invariant.start.pointer",
+            Self::AnnotationInteger => "llvm.annotation.integer",
+            Self::PtrAnnotationPointer => "llvm.ptr.annotation.pointer",
+            Self::ThreadLocalAddress => "llvm.threadlocal.address.pointer",
+        }
+    }
+
+    fn arg_count(self) -> u32 {
+        match self {
+            Self::SsaCopyScalar => 1,
+            Self::Expect => 2,
+            Self::ExpectWithProbability => 3,
+            Self::LaunderInvariantGroup | Self::StripInvariantGroup => 1,
+            Self::InvariantStart => 2,
+            Self::AnnotationInteger => 4,
+            Self::PtrAnnotationPointer => 5,
+            Self::ThreadLocalAddress => 1,
+        }
+    }
+
+    fn value_operand_index(self) -> u32 {
+        match self {
+            Self::SsaCopyScalar => 0,
+            Self::InvariantStart => 1,
+            Self::Expect
+            | Self::ExpectWithProbability
+            | Self::LaunderInvariantGroup
+            | Self::StripInvariantGroup
+            | Self::AnnotationInteger
+            | Self::PtrAnnotationPointer
+            | Self::ThreadLocalAddress => 0,
+        }
+    }
+
+    fn constant_length_operand_index(self) -> Option<u32> {
+        match self {
+            Self::InvariantStart => Some(0),
+            Self::Expect
+            | Self::ExpectWithProbability
+            | Self::SsaCopyScalar
+            | Self::LaunderInvariantGroup
+            | Self::StripInvariantGroup
+            | Self::AnnotationInteger
+            | Self::PtrAnnotationPointer
+            | Self::ThreadLocalAddress => None,
+        }
+    }
+
+    fn is_expect_hint(self) -> bool {
+        matches!(self, Self::Expect | Self::ExpectWithProbability)
+    }
+
+    fn is_pointer_identity(self) -> bool {
+        matches!(
+            self,
+            Self::LaunderInvariantGroup
+                | Self::StripInvariantGroup
+                | Self::InvariantStart
+                | Self::PtrAnnotationPointer
+                | Self::ThreadLocalAddress
+        )
+    }
+
+    fn is_integer_identity(self) -> bool {
+        matches!(self, Self::AnnotationInteger)
+    }
+
+    fn is_scalar_copy(self) -> bool {
+        matches!(self, Self::SsaCopyScalar)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PointerIntrinsicKind {
+    PtrMask,
+}
+
+impl PointerIntrinsicKind {
+    fn lowering_rule(self) -> &'static str {
+        match self {
+            Self::PtrMask => "llvm.ptrmask.pointer",
+        }
+    }
+
+    fn arg_count(self) -> u32 {
+        match self {
+            Self::PtrMask => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CompileTimeIntrinsicKind {
+    IsConstant,
+    ObjectSize,
+}
+
+impl CompileTimeIntrinsicKind {
+    fn result(self, value: BasicValueEnum<'_>) -> anyhow::Result<u64> {
+        match self {
+            Self::IsConstant => {
+                if is_undef_or_poison_value(value) {
+                    bail!("llvm.is.constant operand cannot be undef or poison");
+                }
+                let _ = value_width(value).context("llvm.is.constant only supports scalar operands")?;
+                // SAFETY: `value` 属于当前 live LLVM module。这里仅查询 Value 的常量分类，
+                // 不读取用户内存，也不会把运行时值当作编译期常量折叠。
+                Ok(u64::from(!unsafe { LLVMIsAConstant(value.as_value_ref()) }.is_null()))
+            },
+            Self::ObjectSize => bail!("llvm.objectsize needs target data and is handled by lower_objectsize_intrinsic"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FloatIntrinsicKind {
+    FAbs,
+    Sqrt,
+    Canonicalize,
+    Floor,
+    Ceil,
+    Trunc,
+    Rint,
+    NearbyInt,
+    Round,
+    RoundEven,
+    Fma,
+    FmulAdd,
+    MinNum,
+    MaxNum,
+    Minimum,
+    Maximum,
+    CopySign,
+    IsFpClass,
+}
+
+impl FloatIntrinsicKind {
+    fn lowering_rule(self) -> &'static str {
+        match self {
+            Self::FAbs => "llvm.fabs.float",
+            Self::Sqrt => "llvm.sqrt.float",
+            Self::Canonicalize => "llvm.canonicalize.float",
+            Self::Floor => "llvm.floor.float",
+            Self::Ceil => "llvm.ceil.float",
+            Self::Trunc => "llvm.trunc.float",
+            Self::Rint => "llvm.rint.float",
+            Self::NearbyInt => "llvm.nearbyint.float",
+            Self::Round => "llvm.round.float",
+            Self::RoundEven => "llvm.roundeven.float",
+            Self::Fma => "llvm.fma.float",
+            Self::FmulAdd => "llvm.fmuladd.float",
+            Self::MinNum => "llvm.minnum.float",
+            Self::MaxNum => "llvm.maxnum.float",
+            Self::Minimum => "llvm.minimum.float",
+            Self::Maximum => "llvm.maximum.float",
+            Self::CopySign => "llvm.copysign.float",
+            Self::IsFpClass => "llvm.is.fpclass.float",
+        }
+    }
+
+    fn semantic(self) -> HandlerSemantic {
+        match self {
+            Self::FAbs => HandlerSemantic::FloatUnary(FloatUnaryOp::Abs),
+            Self::Sqrt => HandlerSemantic::FloatUnary(FloatUnaryOp::Sqrt),
+            Self::Canonicalize => HandlerSemantic::FloatUnary(FloatUnaryOp::Canonicalize),
+            Self::Floor => HandlerSemantic::FloatUnary(FloatUnaryOp::Floor),
+            Self::Ceil => HandlerSemantic::FloatUnary(FloatUnaryOp::Ceil),
+            Self::Trunc => HandlerSemantic::FloatUnary(FloatUnaryOp::Trunc),
+            Self::Rint => HandlerSemantic::FloatUnary(FloatUnaryOp::Rint),
+            Self::NearbyInt => HandlerSemantic::FloatUnary(FloatUnaryOp::NearbyInt),
+            Self::Round => HandlerSemantic::FloatUnary(FloatUnaryOp::Round),
+            Self::RoundEven => HandlerSemantic::FloatUnary(FloatUnaryOp::RoundEven),
+            Self::Fma => HandlerSemantic::FloatTernary(FloatTernaryOp::Fma),
+            Self::FmulAdd => HandlerSemantic::FloatTernary(FloatTernaryOp::MulAdd),
+            Self::MinNum => HandlerSemantic::FloatBin(FloatBinOp::MinNum),
+            Self::MaxNum => HandlerSemantic::FloatBin(FloatBinOp::MaxNum),
+            Self::Minimum => HandlerSemantic::FloatBin(FloatBinOp::Minimum),
+            Self::Maximum => HandlerSemantic::FloatBin(FloatBinOp::Maximum),
+            Self::CopySign => HandlerSemantic::FloatBin(FloatBinOp::CopySign),
+            Self::IsFpClass => HandlerSemantic::FloatClass,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 enum IntegerIntrinsicKind {
     CtPop,
+    CtLz,
+    CtTz,
+    Abs,
+    SMax,
+    SMin,
+    UMax,
+    UMin,
+    UAddSat,
+    USubSat,
+    SAddSat,
+    SSubSat,
+    UShlSat,
+    SShlSat,
+    UAddOverflow,
+    SAddOverflow,
+    USubOverflow,
+    SSubOverflow,
+    UMulOverflow,
+    SMulOverflow,
     BSwap,
     BitReverse,
     FShl,
@@ -88,6 +421,25 @@ impl IntegerIntrinsicKind {
     fn lowering_rule(self) -> &'static str {
         match self {
             Self::CtPop => "llvm.ctpop.integer",
+            Self::CtLz => "llvm.ctlz.integer",
+            Self::CtTz => "llvm.cttz.integer",
+            Self::Abs => "llvm.abs.integer",
+            Self::SMax => "llvm.smax.integer",
+            Self::SMin => "llvm.smin.integer",
+            Self::UMax => "llvm.umax.integer",
+            Self::UMin => "llvm.umin.integer",
+            Self::UAddSat => "llvm.uadd.sat.integer",
+            Self::USubSat => "llvm.usub.sat.integer",
+            Self::SAddSat => "llvm.sadd.sat.integer",
+            Self::SSubSat => "llvm.ssub.sat.integer",
+            Self::UShlSat => "llvm.ushl.sat.integer",
+            Self::SShlSat => "llvm.sshl.sat.integer",
+            Self::UAddOverflow => "llvm.uadd.with.overflow.integer",
+            Self::SAddOverflow => "llvm.sadd.with.overflow.integer",
+            Self::USubOverflow => "llvm.usub.with.overflow.integer",
+            Self::SSubOverflow => "llvm.ssub.with.overflow.integer",
+            Self::UMulOverflow => "llvm.umul.with.overflow.integer",
+            Self::SMulOverflow => "llvm.smul.with.overflow.integer",
             Self::BSwap => "llvm.bswap.integer",
             Self::BitReverse => "llvm.bitreverse.integer",
             Self::FShl => "llvm.fshl.integer",
@@ -98,6 +450,25 @@ impl IntegerIntrinsicKind {
     fn semantic(self) -> HandlerSemantic {
         match self {
             Self::CtPop => HandlerSemantic::IntUnary(IntUnaryOp::CtPop),
+            Self::CtLz => HandlerSemantic::IntUnary(IntUnaryOp::CtLz),
+            Self::CtTz => HandlerSemantic::IntUnary(IntUnaryOp::CtTz),
+            Self::Abs => HandlerSemantic::IntUnary(IntUnaryOp::Abs),
+            Self::SMax => HandlerSemantic::Bin(BinOp::SMax),
+            Self::SMin => HandlerSemantic::Bin(BinOp::SMin),
+            Self::UMax => HandlerSemantic::Bin(BinOp::UMax),
+            Self::UMin => HandlerSemantic::Bin(BinOp::UMin),
+            Self::UAddSat => HandlerSemantic::Bin(BinOp::UAddSat),
+            Self::USubSat => HandlerSemantic::Bin(BinOp::USubSat),
+            Self::SAddSat => HandlerSemantic::Bin(BinOp::SAddSat),
+            Self::SSubSat => HandlerSemantic::Bin(BinOp::SSubSat),
+            Self::UShlSat => HandlerSemantic::Bin(BinOp::UShlSat),
+            Self::SShlSat => HandlerSemantic::Bin(BinOp::SShlSat),
+            Self::UAddOverflow => HandlerSemantic::IntOverflow(IntOverflowOp::UAdd),
+            Self::SAddOverflow => HandlerSemantic::IntOverflow(IntOverflowOp::SAdd),
+            Self::USubOverflow => HandlerSemantic::IntOverflow(IntOverflowOp::USub),
+            Self::SSubOverflow => HandlerSemantic::IntOverflow(IntOverflowOp::SSub),
+            Self::UMulOverflow => HandlerSemantic::IntOverflow(IntOverflowOp::UMul),
+            Self::SMulOverflow => HandlerSemantic::IntOverflow(IntOverflowOp::SMul),
             Self::BSwap => HandlerSemantic::IntUnary(IntUnaryOp::BSwap),
             Self::BitReverse => HandlerSemantic::IntUnary(IntUnaryOp::BitReverse),
             Self::FShl => HandlerSemantic::IntTernary(IntTernaryOp::FShl),
@@ -108,8 +479,55 @@ impl IntegerIntrinsicKind {
     fn arity(self) -> u32 {
         match self {
             Self::CtPop | Self::BSwap | Self::BitReverse => 1,
+            Self::CtLz
+            | Self::CtTz
+            | Self::Abs
+            | Self::SMax
+            | Self::SMin
+            | Self::UMax
+            | Self::UMin
+            | Self::UAddSat
+            | Self::USubSat
+            | Self::SAddSat
+            | Self::SSubSat
+            | Self::UShlSat
+            | Self::SShlSat
+            | Self::UAddOverflow
+            | Self::SAddOverflow
+            | Self::USubOverflow
+            | Self::SSubOverflow
+            | Self::UMulOverflow
+            | Self::SMulOverflow => 2,
             Self::FShl | Self::FShr => 3,
         }
+    }
+
+    fn is_binary_intrinsic(self) -> bool {
+        matches!(
+            self,
+            Self::SMax
+                | Self::SMin
+                | Self::UMax
+                | Self::UMin
+                | Self::UAddSat
+                | Self::USubSat
+                | Self::SAddSat
+                | Self::SSubSat
+                | Self::UShlSat
+                | Self::SShlSat
+        )
+    }
+
+    fn is_overflow_intrinsic(self) -> bool {
+        matches!(
+            self,
+            Self::UAddOverflow
+                | Self::SAddOverflow
+                | Self::USubOverflow
+                | Self::SSubOverflow
+                | Self::UMulOverflow
+                | Self::SMulOverflow
+        )
     }
 }
 
@@ -119,6 +537,28 @@ impl MemoryIntrinsicKind {
             Self::Memcpy => "llvm.memcpy.fixed",
             Self::Memmove => "llvm.memmove.fixed",
             Self::Memset => "llvm.memset.fixed",
+        }
+    }
+
+    fn dynamic_lowering_rule(self, volatile: bool) -> &'static str {
+        match (self, volatile) {
+            (Self::Memcpy, false) => "llvm.memcpy.dynamic",
+            (Self::Memmove, false) => "llvm.memmove.dynamic",
+            (Self::Memset, false) => "llvm.memset.dynamic",
+            (Self::Memcpy, true) => "llvm.volatile.memcpy.dynamic",
+            (Self::Memmove, true) => "llvm.volatile.memmove.dynamic",
+            (Self::Memset, true) => "llvm.volatile.memset.dynamic",
+        }
+    }
+
+    fn dynamic_semantic(self, volatile: bool) -> HandlerSemantic {
+        match (self, volatile) {
+            (Self::Memcpy, false) => HandlerSemantic::MemcpyDynamic,
+            (Self::Memmove, false) => HandlerSemantic::MemmoveDynamic,
+            (Self::Memset, false) => HandlerSemantic::MemsetDynamic,
+            (Self::Memcpy, true) => HandlerSemantic::VolatileMemcpyDynamic,
+            (Self::Memmove, true) => HandlerSemantic::VolatileMemmoveDynamic,
+            (Self::Memset, true) => HandlerSemantic::VolatileMemsetDynamic,
         }
     }
 }
@@ -135,6 +575,12 @@ struct LoadedMemoryChunk {
     value: ValueBinding,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AggregateMemoryField {
+    offset: u64,
+    info: ReturnField,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReturnField {
     // aggregate/native return 字段的标量位宽。
@@ -147,14 +593,14 @@ pub struct ReturnField {
 pub struct FunctionSignature {
     // 标量返回快捷路径使用的位宽；void 时保留为 64，实际不读取。
     pub return_width: u8,
-    // 每个宿主参数映射到 VM ABI 时使用的位宽。
+    // 宿主参数按 leaf scalar 展平后映射到 VM ABI 时使用的位宽。
     pub param_widths: Vec<u8>,
     pub returns_void: bool,
     pub return_is_pointer: bool,
     pub return_is_float: bool,
-    pub param_is_pointer: Vec<bool>,
-    pub param_is_float: Vec<bool>,
-    // 非空表示直接 struct aggregate return；字段会通过 wrapper ret_slots 重建。
+    // 每个原始宿主参数在扁平 VM 参数槽中的位置；direct aggregate 参数会占用多个槽。
+    pub params: Vec<FunctionParamSlots>,
+    // 非空表示直接 struct/array aggregate return；字段会通过 wrapper ret_slots 重建。
     pub aggregate_return_fields: Vec<ReturnField>,
 }
 
@@ -173,16 +619,24 @@ impl FunctionSignature {
 }
 
 #[derive(Debug, Clone)]
+pub struct FunctionParamSlots {
+    pub start: usize,
+    pub fields: Vec<ReturnField>,
+}
+
+#[derive(Debug, Clone)]
 pub struct NativeCallTarget<'ctx> {
     // VM 内部 call_native 最终要调用的真实 LLVM 函数。
     pub function: FunctionValue<'ctx>,
-    // thunk 用它把固定 i64 参数截断/转换回 callee 的真实参数类型。
+    // thunk 重建真实 LLVM call 参数时使用的 call-site 参数类型；varargs callee 需要包含实际变参。
+    pub arg_types: Vec<BasicMetadataTypeEnum<'ctx>>,
+    // native call 参数按 leaf scalar 展平后映射到 VM ABI 时使用的位宽。
     pub param_widths: Vec<u8>,
+    // 每个原始 native 参数在扁平 VM 参数槽中的位置；aggregate 参数会占用多个槽。
+    pub params: Vec<FunctionParamSlots>,
     pub returns_void: bool,
     // thunk 统一返回固定 i64 tuple；这里描述哪些 tuple slot 有效以及如何截断。
     pub return_fields: Vec<ReturnField>,
-    pub param_is_pointer: Vec<bool>,
-    pub param_is_float: Vec<bool>,
 }
 
 #[derive(Debug)]
@@ -214,39 +668,76 @@ pub fn supported_signature(function: FunctionValue<'_>) -> anyhow::Result<Functi
             (false, float_type_width(return_type.as_type_ref())?, ScalarKind::Float)
         },
         Some(BasicTypeEnum::StructType(return_type)) => {
-            aggregate_return_fields = return_type
-                .get_field_types()
-                .into_iter()
-                .enumerate()
-                .map(|(index, ty)| return_field_from_type(ty).with_context(|| format!("return field {index}")))
-                .collect::<anyhow::Result<Vec<_>>>()?;
+            aggregate_return_fields =
+                return_fields_from_aggregate_type(BasicTypeEnum::StructType(return_type)).context("return fields")?;
+            if aggregate_return_fields.is_empty() {
+                bail!("empty aggregate returns are not supported");
+            }
+            (false, aggregate_return_fields[0].width, ScalarKind::Integer)
+        },
+        Some(BasicTypeEnum::ArrayType(return_type)) => {
+            aggregate_return_fields =
+                return_fields_from_aggregate_type(BasicTypeEnum::ArrayType(return_type)).context("return fields")?;
             if aggregate_return_fields.is_empty() {
                 bail!("empty aggregate returns are not supported");
             }
             (false, aggregate_return_fields[0].width, ScalarKind::Integer)
         },
         Some(_) => {
-            bail!("only void, scalar integer, pointer, float, and direct struct aggregate returns are supported")
+            bail!("only void, scalar integer, pointer, float, and direct struct/array aggregate returns are supported")
         },
     };
 
     let param_types = fn_type.get_param_types();
-    if param_types.len() > 8 {
-        bail!("only up to 8 scalar integer/pointer/float parameters are supported");
+    let mut param_widths = Vec::new();
+    let mut params = Vec::with_capacity(param_types.len());
+    for (index, ty) in param_types.iter().enumerate() {
+        let start = param_widths.len();
+        let fields = match ty {
+            BasicMetadataTypeEnum::IntType(int_ty) => vec![ReturnField {
+                width: checked_width(int_ty.get_bit_width())?,
+                kind: ScalarKind::Integer,
+            }],
+            BasicMetadataTypeEnum::PointerType(_) => vec![ReturnField {
+                width: 64,
+                kind: ScalarKind::Pointer,
+            }],
+            BasicMetadataTypeEnum::FloatType(float_ty) => vec![ReturnField {
+                width: float_type_width(float_ty.as_type_ref())?,
+                kind: ScalarKind::Float,
+            }],
+            BasicMetadataTypeEnum::StructType(struct_ty) => {
+                let fields = return_fields_from_aggregate_type(BasicTypeEnum::StructType(*struct_ty))
+                    .with_context(|| format!("aggregate parameter {index} fields"))?;
+                if fields.is_empty() {
+                    bail!("empty aggregate parameter {index} is not supported");
+                }
+                fields
+            },
+            BasicMetadataTypeEnum::ArrayType(array_ty) => {
+                let fields = return_fields_from_aggregate_type(BasicTypeEnum::ArrayType(*array_ty))
+                    .with_context(|| format!("aggregate parameter {index} fields"))?;
+                if fields.is_empty() {
+                    bail!("empty aggregate parameter {index} is not supported");
+                }
+                fields
+            },
+            _ => {
+                bail!("only scalar integer, pointer, float, and direct struct/array aggregate parameters are supported")
+            },
+        };
+        for field in &fields {
+            param_widths.push(field.width);
+        }
+        params.push(FunctionParamSlots { start, fields });
     }
 
-    let params = param_types
-        .iter()
-        .map(|ty| match ty {
-            BasicMetadataTypeEnum::IntType(int_ty) => Ok((checked_width(int_ty.get_bit_width())?, ScalarKind::Integer)),
-            BasicMetadataTypeEnum::PointerType(_) => Ok((64, ScalarKind::Pointer)),
-            BasicMetadataTypeEnum::FloatType(float_ty) => {
-                Ok((float_type_width(float_ty.as_type_ref())?, ScalarKind::Float))
-            },
-            _ => bail!("only scalar integer, pointer, and float parameters are supported"),
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let (param_widths, param_kinds): (Vec<_>, Vec<_>) = params.into_iter().unzip();
+    if param_widths.len() > 8 {
+        bail!(
+            "only up to 8 flattened scalar integer/pointer/float parameter slots are supported, got {}",
+            param_widths.len()
+        );
+    }
 
     Ok(FunctionSignature {
         return_width,
@@ -254,8 +745,7 @@ pub fn supported_signature(function: FunctionValue<'_>) -> anyhow::Result<Functi
         returns_void,
         return_is_pointer: return_kind == ScalarKind::Pointer,
         return_is_float: return_kind == ScalarKind::Float,
-        param_is_pointer: param_kinds.iter().map(|kind| *kind == ScalarKind::Pointer).collect(),
-        param_is_float: param_kinds.iter().map(|kind| *kind == ScalarKind::Float).collect(),
+        params,
         aggregate_return_fields,
     })
 }
@@ -292,6 +782,8 @@ struct FunctionLowerer<'m, 'ctx, 'profile> {
     values: HashMap<ValueKey, ValueBinding>,
     // insertvalue/extractvalue 和多返回 native call 使用的临时 aggregate 绑定。
     aggregates: HashMap<ValueKey, AggregateBinding>,
+    // aggregate binding 可能在 insertvalue 链中共享字段寄存器；引用计数归零后才能释放。
+    aggregate_reg_refs: HashMap<u8, usize>,
     // LLVM basic block 到 VM bytecode label 的映射。
     labels: HashMap<BlockKey, LabelId>,
     native_calls: Vec<NativeCallTarget<'ctx>>,
@@ -311,7 +803,30 @@ struct FunctionLowerer<'m, 'ctx, 'profile> {
 
 #[derive(Debug, Clone)]
 struct AggregateBinding {
-    fields: Vec<Option<ValueBinding>>,
+    fields: Vec<Option<AggregateField>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AggregateField {
+    binding: ValueBinding,
+    owned: bool,
+}
+
+impl AggregateField {
+    fn owned(binding: ValueBinding) -> Self {
+        Self { binding, owned: true }
+    }
+
+    fn borrowed(binding: ValueBinding) -> Self {
+        Self { binding, owned: false }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AggregateSelection {
+    start: usize,
+    fields: Vec<ReturnField>,
+    is_aggregate: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -320,10 +835,20 @@ struct RegisterMove {
     src: ValueBinding,
 }
 
+#[derive(Debug, Clone)]
+struct SelectLoweringActions {
+    br_if: LoweringAction,
+    then_mov: LoweringAction,
+    br: LoweringAction,
+    else_mov: LoweringAction,
+}
+
 #[derive(Debug)]
 struct ReusePlan {
     pinned_values: HashSet<ValueKey>,
+    pinned_aggregate_values: HashSet<ValueKey>,
     block_last_uses: HashMap<BlockKey, HashMap<ValueKey, usize>>,
+    block_last_aggregate_uses: HashMap<BlockKey, HashMap<ValueKey, usize>>,
     current_block: Option<BlockKey>,
     instruction_index: usize,
 }
@@ -519,20 +1044,61 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         drop(data_layout);
         let target_data = TargetData::create(&layout);
 
-        let values: HashMap<_, _> = function
-            .get_params()
-            .into_iter()
-            .enumerate()
-            .map(|(index, value)| {
-                (
-                    value_key(value),
-                    ValueBinding {
-                        reg: param_regs[index],
-                        width: signature.param_widths[index],
-                    },
-                )
-            })
-            .collect();
+        let mut values = HashMap::new();
+        let mut aggregates = HashMap::new();
+        let function_params = function.get_params();
+        if function_params.len() != signature.params.len() {
+            bail!(
+                "function parameter count mismatch: LLVM has {}, signature has {}",
+                function_params.len(),
+                signature.params.len()
+            );
+        }
+        for (index, (value, slots)) in function_params.into_iter().zip(signature.params.iter()).enumerate() {
+            match value.get_type() {
+                BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
+                    let fields = slots
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .map(|(relative, field)| {
+                            let slot = slots.start + relative;
+                            let reg = *param_regs
+                                .get(slot)
+                                .with_context(|| format!("aggregate parameter {index} field {relative} slot {slot}"))?;
+                            Ok(Some(AggregateField::borrowed(ValueBinding {
+                                reg,
+                                width: field.width,
+                            })))
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    aggregates.insert(value_key(value), AggregateBinding { fields });
+                },
+                _ => {
+                    let field = slots
+                        .fields
+                        .first()
+                        .copied()
+                        .with_context(|| format!("scalar parameter {index} has no field mapping"))?;
+                    if slots.fields.len() != 1 {
+                        bail!(
+                            "scalar parameter {index} unexpectedly maps to {} fields",
+                            slots.fields.len()
+                        );
+                    }
+                    let reg = *param_regs
+                        .get(slots.start)
+                        .with_context(|| format!("scalar parameter {index} slot {}", slots.start))?;
+                    values.insert(
+                        value_key(value),
+                        ValueBinding {
+                            reg,
+                            width: field.width,
+                        },
+                    );
+                },
+            }
+        }
         let defined_values = values.keys().copied().collect();
         let native_touched_registers = native_arg_registers
             .iter()
@@ -549,7 +1115,8 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             target_data,
             builder,
             values,
-            aggregates: HashMap::new(),
+            aggregates,
+            aggregate_reg_refs: HashMap::new(),
             labels: HashMap::new(),
             native_calls: Vec::new(),
             return_registers,
@@ -612,6 +1179,12 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     let reg = self.builder.alloc_vreg()?;
                     self.values.insert(key, ValueBinding { reg, width });
                 }
+                if instruction.get_opcode() == InstructionOpcode::Phi
+                    && plan.pinned_aggregate_values.contains(&key)
+                    && !self.aggregates.contains_key(&key)
+                {
+                    self.ensure_aggregate_result_binding(instruction)?;
+                }
             }
         }
         self.reuse_plan = Some(plan);
@@ -620,8 +1193,11 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
 
     fn build_reuse_plan(&self, basic_blocks: &[BasicBlock<'ctx>]) -> anyhow::Result<ReusePlan> {
         let mut value_blocks = HashMap::new();
+        let mut aggregate_value_blocks = HashMap::new();
         let mut result_values = HashSet::new();
+        let mut aggregate_result_values = HashSet::new();
         let mut pinned_values = self.values.keys().copied().collect::<HashSet<_>>();
+        let mut pinned_aggregate_values = HashSet::new();
 
         for block in basic_blocks {
             let block_key = block_key(*block);
@@ -632,6 +1208,14 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     result_values.insert(key);
                     if instruction.get_opcode() == InstructionOpcode::Phi {
                         pinned_values.insert(key);
+                    }
+                }
+                if instruction_has_aggregate_result(instruction) {
+                    let key = instruction_key(instruction);
+                    aggregate_value_blocks.insert(key, block_key);
+                    aggregate_result_values.insert(key);
+                    if instruction.get_opcode() == InstructionOpcode::Phi {
+                        pinned_aggregate_values.insert(key);
                     }
                 }
             }
@@ -651,13 +1235,24 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                         pinned_values.insert(key);
                     }
                 }
+                for operand in instruction_value_operands(instruction) {
+                    let key = value_key(operand);
+                    let Some(def_block) = aggregate_value_blocks.get(&key).copied() else {
+                        continue;
+                    };
+                    if instruction.get_opcode() == InstructionOpcode::Phi || def_block != user_block {
+                        pinned_aggregate_values.insert(key);
+                    }
+                }
             }
         }
 
         let mut block_last_uses = HashMap::new();
+        let mut block_last_aggregate_uses = HashMap::new();
         for block in basic_blocks {
             let user_block = block_key(*block);
             let mut last_uses = HashMap::new();
+            let mut last_aggregate_uses = HashMap::new();
             for (index, instruction) in block.get_instructions().enumerate() {
                 if instruction.get_opcode() == InstructionOpcode::Phi {
                     continue;
@@ -670,14 +1265,23 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     if result_values.contains(&key) && value_blocks.get(&key).copied() == Some(user_block) {
                         last_uses.insert(key, index);
                     }
+                    if !pinned_aggregate_values.contains(&key)
+                        && aggregate_result_values.contains(&key)
+                        && aggregate_value_blocks.get(&key).copied() == Some(user_block)
+                    {
+                        last_aggregate_uses.insert(key, index);
+                    }
                 }
             }
             block_last_uses.insert(user_block, last_uses);
+            block_last_aggregate_uses.insert(user_block, last_aggregate_uses);
         }
 
         Ok(ReusePlan {
             pinned_values,
+            pinned_aggregate_values,
             block_last_uses,
+            block_last_aggregate_uses,
             current_block: None,
             instruction_index: 0,
         })
@@ -701,6 +1305,35 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         Ok(binding)
     }
 
+    fn ensure_aggregate_result_binding(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+    ) -> anyhow::Result<AggregateBinding> {
+        let key = instruction_key(instruction);
+        if let Some(binding) = self.aggregates.get(&key).cloned() {
+            return Ok(binding);
+        }
+
+        let field_infos = return_fields_from_aggregate_type(instruction_aggregate_type(instruction)?)
+            .context("aggregate result fields")?;
+        if field_infos.is_empty() {
+            bail!("aggregate result has no scalar leaf fields");
+        }
+
+        let fields = field_infos
+            .into_iter()
+            .map(|info| {
+                Ok(Some(AggregateField::owned(ValueBinding {
+                    reg: self.builder.alloc_vreg()?,
+                    width: info.width,
+                })))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let binding = AggregateBinding { fields };
+        self.insert_aggregate_value(key, binding.clone());
+        Ok(binding)
+    }
+
     fn finish_instruction(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
         let result_key = instruction_key(instruction);
         if instruction_result_width(instruction)?.is_some() {
@@ -721,7 +1354,13 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .and_then(|block| plan.block_last_uses.get(&block))
             .cloned()
             .unwrap_or_default();
+        let last_aggregate_uses = plan
+            .current_block
+            .and_then(|block| plan.block_last_aggregate_uses.get(&block))
+            .cloned()
+            .unwrap_or_default();
         let pinned_values = plan.pinned_values.clone();
+        let pinned_aggregate_values = plan.pinned_aggregate_values.clone();
 
         let mut released = if instruction.get_opcode() == InstructionOpcode::Phi {
             Vec::new()
@@ -742,6 +1381,24 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             released.push(result_key);
         }
 
+        let mut released_aggregates = if instruction.get_opcode() == InstructionOpcode::Phi {
+            Vec::new()
+        } else {
+            instruction_value_operands(instruction)
+                .into_iter()
+                .map(value_key)
+                .filter(|key| !pinned_aggregate_values.contains(key))
+                .filter(|key| last_aggregate_uses.get(key).copied() == Some(instruction_index))
+                .collect::<Vec<_>>()
+        };
+
+        if instruction_has_aggregate_result(instruction)
+            && !pinned_aggregate_values.contains(&result_key)
+            && !last_aggregate_uses.contains_key(&result_key)
+        {
+            released_aggregates.push(result_key);
+        }
+
         self.release_instruction_temporaries();
         for key in released {
             if let Some(binding) = self.values.get(&key).copied() {
@@ -749,6 +1406,9 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             }
             self.defined_values.remove(&key);
             self.values.remove(&key);
+        }
+        for key in released_aggregates {
+            self.release_aggregate_value(key);
         }
 
         Ok(())
@@ -779,6 +1439,39 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     fn release_instruction_temporaries(&mut self) {
         for reg in self.temporary_regs.drain(..) {
             self.builder.release_vreg(reg);
+        }
+    }
+
+    fn insert_aggregate_value(&mut self, key: ValueKey, binding: AggregateBinding) {
+        if let Some(previous) = self.aggregates.remove(&key) {
+            self.release_aggregate_binding(previous);
+        }
+        self.retain_aggregate_binding(&binding);
+        self.aggregates.insert(key, binding);
+    }
+
+    fn release_aggregate_value(&mut self, key: ValueKey) {
+        if let Some(binding) = self.aggregates.remove(&key) {
+            self.release_aggregate_binding(binding);
+        }
+    }
+
+    fn retain_aggregate_binding(&mut self, binding: &AggregateBinding) {
+        for field in binding.fields.iter().flatten().filter(|field| field.owned) {
+            *self.aggregate_reg_refs.entry(field.binding.reg).or_insert(0) += 1;
+        }
+    }
+
+    fn release_aggregate_binding(&mut self, binding: AggregateBinding) {
+        for field in binding.fields.into_iter().flatten().filter(|field| field.owned) {
+            let Some(count) = self.aggregate_reg_refs.get_mut(&field.binding.reg) else {
+                continue;
+            };
+            *count -= 1;
+            if *count == 0 {
+                self.aggregate_reg_refs.remove(&field.binding.reg);
+                self.builder.release_vreg(field.binding.reg);
+            }
         }
     }
 
@@ -854,6 +1547,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 InstructionOpcode::ExtractValue => self.lower_extract_value(instruction)?,
                 InstructionOpcode::Br => self.lower_branch(block, instruction)?,
                 InstructionOpcode::Switch => self.lower_switch(block, instruction)?,
+                InstructionOpcode::Unreachable => self.lower_unreachable()?,
                 InstructionOpcode::Return => self.lower_return(instruction)?,
                 opcode => bail!("unsupported instruction opcode: {opcode:?}"),
             }
@@ -925,6 +1619,27 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             0 => bail!("profile lowering rule {rule} does not emit {semantic:?} with required operand shape"),
             count => bail!("profile lowering rule {rule} has {count} emits matching {semantic:?} and operand shape"),
         }
+    }
+
+    fn select_lowering_actions(&self, rule: &str, width_expr: &str) -> anyhow::Result<SelectLoweringActions> {
+        Ok(SelectLoweringActions {
+            br_if: self.emit_action_for_shape(
+                rule,
+                &HandlerSemantic::BrCond,
+                &[("cond", "%vc"), ("then_pc", "then_label"), ("else_pc", "else_label")],
+            )?,
+            then_mov: self.emit_action_for_shape(
+                rule,
+                &HandlerSemantic::Mov,
+                &[("dst", "%vr"), ("src", "%vt"), ("width", width_expr)],
+            )?,
+            br: self.emit_action_for_shape(rule, &HandlerSemantic::Br, &[("target", "join_label")])?,
+            else_mov: self.emit_action_for_shape(
+                rule,
+                &HandlerSemantic::Mov,
+                &[("dst", "%vr"), ("src", "%ve"), ("width", width_expr)],
+            )?,
+        })
     }
 
     fn emit_profile_action(&mut self, action: &LoweringAction, env: &LoweringEnv<'ctx>) -> anyhow::Result<()> {
@@ -1045,6 +1760,18 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 let width = checked_width_u64(args.imm("width")?)?;
                 self.builder
                     .push_profile(VmInstruction::ConstLoad { dst, value, width }, desc.name.clone());
+            },
+            HandlerSemantic::ReadCounter(kind) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let width = checked_width_u64(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::ReadCounter {
+                        kind: *kind,
+                        dst,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
             },
             HandlerSemantic::Super(amice_vm::isa::SuperOp::AddXor) => {
                 let dst = self.profile_reg(desc, &args, "dst")?;
@@ -1167,6 +1894,24 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     desc.name.clone(),
                 );
             },
+            HandlerSemantic::IntOverflow(op) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let overflow = self.profile_reg(desc, &args, "overflow")?;
+                let lhs = self.profile_reg(desc, &args, "lhs")?;
+                let rhs = self.profile_reg(desc, &args, "rhs")?;
+                let width = checked_intrinsic_integer_width(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::IntOverflow {
+                        op: *op,
+                        dst,
+                        overflow,
+                        lhs,
+                        rhs,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
+            },
             HandlerSemantic::FloatBin(op) => {
                 let dst = self.profile_reg(desc, &args, "dst")?;
                 let lhs = self.profile_reg(desc, &args, "lhs")?;
@@ -1197,6 +1942,24 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     desc.name.clone(),
                 );
             },
+            HandlerSemantic::FloatTernary(op) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let lhs = self.profile_reg(desc, &args, "lhs")?;
+                let rhs = self.profile_reg(desc, &args, "rhs")?;
+                let third = self.profile_reg(desc, &args, "third")?;
+                let width = checked_float_width(args.imm("width")?)?;
+                self.builder.push_profile(
+                    VmInstruction::FloatTernary {
+                        op: *op,
+                        dst,
+                        lhs,
+                        rhs,
+                        third,
+                        width,
+                    },
+                    desc.name.clone(),
+                );
+            },
             HandlerSemantic::FloatCast(op) => {
                 let dst = self.profile_reg(desc, &args, "dst")?;
                 let src = self.profile_reg(desc, &args, "src")?;
@@ -1213,6 +1976,14 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     },
                     desc.name.clone(),
                 );
+            },
+            HandlerSemantic::FloatClass => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let src = self.profile_reg(desc, &args, "src")?;
+                let mask = checked_fpclass_mask(args.imm("mask")?)?;
+                let width = checked_float_width(args.imm("width")?)?;
+                self.builder
+                    .push_profile(VmInstruction::FloatClass { dst, src, mask, width }, desc.name.clone());
             },
             HandlerSemantic::Icmp => {
                 let pred = predicate_from_u64(args.imm("pred")?)?;
@@ -1271,6 +2042,21 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 self.builder
                     .push_profile(VmInstruction::Alloca { dst, bytes, align }, desc.name.clone());
             },
+            HandlerSemantic::DynamicAlloca => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let count = self.profile_reg(desc, &args, "count")?;
+                let elem_size = args.imm("elem_size")?;
+                let align = u8::try_from(args.imm("align")?).context("dynamic alloca align does not fit in u8")?;
+                self.builder.push_profile(
+                    VmInstruction::DynamicAlloca {
+                        dst,
+                        count,
+                        elem_size,
+                        align,
+                    },
+                    desc.name.clone(),
+                );
+            },
             HandlerSemantic::Load => {
                 let dst = self.profile_reg(desc, &args, "dst")?;
                 let ptr = self.profile_reg(desc, &args, "ptr")?;
@@ -1278,12 +2064,74 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 self.builder
                     .push_profile(VmInstruction::Load { dst, ptr, width }, desc.name.clone());
             },
+            HandlerSemantic::VolatileLoad => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let width = checked_width_u64(args.imm("width")?)?;
+                self.builder
+                    .push_profile(VmInstruction::VolatileLoad { dst, ptr, width }, desc.name.clone());
+            },
             HandlerSemantic::Store => {
                 let src = self.profile_reg(desc, &args, "src")?;
                 let ptr = self.profile_reg(desc, &args, "ptr")?;
                 let width = checked_width_u64(args.imm("width")?)?;
                 self.builder
                     .push_profile(VmInstruction::Store { src, ptr, width }, desc.name.clone());
+            },
+            HandlerSemantic::VolatileStore => {
+                let src = self.profile_reg(desc, &args, "src")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let width = checked_width_u64(args.imm("width")?)?;
+                self.builder
+                    .push_profile(VmInstruction::VolatileStore { src, ptr, width }, desc.name.clone());
+            },
+            HandlerSemantic::MemcpyDynamic => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let src = self.profile_reg(desc, &args, "src")?;
+                let len = self.profile_reg(desc, &args, "len")?;
+                self.builder
+                    .push_profile(VmInstruction::MemcpyDynamic { dst, src, len }, desc.name.clone());
+            },
+            HandlerSemantic::MemmoveDynamic => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let src = self.profile_reg(desc, &args, "src")?;
+                let len = self.profile_reg(desc, &args, "len")?;
+                self.builder
+                    .push_profile(VmInstruction::MemmoveDynamic { dst, src, len }, desc.name.clone());
+            },
+            HandlerSemantic::MemsetDynamic => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let value = self.profile_reg(desc, &args, "value")?;
+                let len = self.profile_reg(desc, &args, "len")?;
+                self.builder
+                    .push_profile(VmInstruction::MemsetDynamic { dst, value, len }, desc.name.clone());
+            },
+            HandlerSemantic::VolatileMemcpyDynamic => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let src = self.profile_reg(desc, &args, "src")?;
+                let len = self.profile_reg(desc, &args, "len")?;
+                self.builder.push_profile(
+                    VmInstruction::VolatileMemcpyDynamic { dst, src, len },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::VolatileMemmoveDynamic => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let src = self.profile_reg(desc, &args, "src")?;
+                let len = self.profile_reg(desc, &args, "len")?;
+                self.builder.push_profile(
+                    VmInstruction::VolatileMemmoveDynamic { dst, src, len },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::VolatileMemsetDynamic => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let value = self.profile_reg(desc, &args, "value")?;
+                let len = self.profile_reg(desc, &args, "len")?;
+                self.builder.push_profile(
+                    VmInstruction::VolatileMemsetDynamic { dst, value, len },
+                    desc.name.clone(),
+                );
             },
             HandlerSemantic::AtomicLoad => {
                 let dst = self.profile_reg(desc, &args, "dst")?;
@@ -1315,6 +2163,36 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     desc.name.clone(),
                 );
             },
+            HandlerSemantic::VolatileAtomicLoad => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let width = checked_atomic_memory_width(args.imm("width")?)?;
+                let ordering = memory_ordering_from_u64(args.imm("ordering")?)?;
+                self.builder.push_profile(
+                    VmInstruction::VolatileAtomicLoad {
+                        dst,
+                        ptr,
+                        width,
+                        ordering,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::VolatileAtomicStore => {
+                let src = self.profile_reg(desc, &args, "src")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let width = checked_atomic_memory_width(args.imm("width")?)?;
+                let ordering = memory_ordering_from_u64(args.imm("ordering")?)?;
+                self.builder.push_profile(
+                    VmInstruction::VolatileAtomicStore {
+                        src,
+                        ptr,
+                        width,
+                        ordering,
+                    },
+                    desc.name.clone(),
+                );
+            },
             HandlerSemantic::AtomicRmw(op) => {
                 let dst = self.profile_reg(desc, &args, "dst")?;
                 let ptr = self.profile_reg(desc, &args, "ptr")?;
@@ -1323,6 +2201,24 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 let ordering = memory_ordering_from_u64(args.imm("ordering")?)?;
                 self.builder.push_profile(
                     VmInstruction::AtomicRmw {
+                        op: *op,
+                        dst,
+                        ptr,
+                        src,
+                        width,
+                        ordering,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::VolatileAtomicRmw(op) => {
+                let dst = self.profile_reg(desc, &args, "dst")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let src = self.profile_reg(desc, &args, "src")?;
+                let width = checked_atomic_memory_width(args.imm("width")?)?;
+                let ordering = memory_ordering_from_u64(args.imm("ordering")?)?;
+                self.builder.push_profile(
+                    VmInstruction::VolatileAtomicRmw {
                         op: *op,
                         dst,
                         ptr,
@@ -1344,6 +2240,29 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 let failure_ordering = memory_ordering_from_u64(args.imm("failure_ordering")?)?;
                 self.builder.push_profile(
                     VmInstruction::CmpXchg {
+                        old,
+                        success,
+                        ptr,
+                        cmp,
+                        new,
+                        width,
+                        success_ordering,
+                        failure_ordering,
+                    },
+                    desc.name.clone(),
+                );
+            },
+            HandlerSemantic::VolatileCmpXchg => {
+                let old = self.profile_reg(desc, &args, "old")?;
+                let success = self.profile_reg(desc, &args, "success")?;
+                let ptr = self.profile_reg(desc, &args, "ptr")?;
+                let cmp = self.profile_reg(desc, &args, "cmp")?;
+                let new = self.profile_reg(desc, &args, "new")?;
+                let width = checked_atomic_memory_width(args.imm("width")?)?;
+                let success_ordering = memory_ordering_from_u64(args.imm("success_ordering")?)?;
+                let failure_ordering = memory_ordering_from_u64(args.imm("failure_ordering")?)?;
+                self.builder.push_profile(
+                    VmInstruction::VolatileCmpXchg {
                         old,
                         success,
                         ptr,
@@ -1390,7 +2309,17 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 let src = self.profile_reg(desc, &args, "src")?;
                 self.builder.push_profile(VmInstruction::Ret { src }, desc.name.clone());
             },
+            HandlerSemantic::Unreachable => {
+                self.builder.push_profile(VmInstruction::Unreachable, desc.name.clone());
+            },
+            HandlerSemantic::Trap => {
+                self.builder.push_profile(VmInstruction::Trap, desc.name.clone());
+            },
             HandlerSemantic::CallNative | HandlerSemantic::Nop | HandlerSemantic::VmCall | HandlerSemantic::VmRet => {
+                if desc.semantic == HandlerSemantic::Nop {
+                    self.builder.push_profile(VmInstruction::Nop, desc.name.clone());
+                    return Ok(());
+                }
                 if desc.semantic != HandlerSemantic::CallNative {
                     bail!(
                         "profile instruction {} is not supported by the LLVM translator emitter",
@@ -1447,7 +2376,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 
     fn emit_profile_mov_direct(&mut self, dst: u8, src: u8, width: u8) -> anyhow::Result<()> {
-        let desc = self.instruction_desc_for_semantic(&HandlerSemantic::Mov)?;
+        let desc = self.instruction_desc("mov")?.clone();
         let args = ProfileInstructionArgs::from_values([
             ("dst".to_owned(), LoweringValue::Reg(ValueBinding { reg: dst, width })),
             ("src".to_owned(), LoweringValue::Reg(ValueBinding { reg: src, width })),
@@ -1610,14 +2539,39 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         if element_size == 0 {
             bail!("zero-sized alloca is not supported");
         }
-        let count = self.static_alloca_count(instruction)?;
-        let bytes = element_size.checked_mul(count).context("alloca byte size overflow")?;
         let align = instruction
             .get_alignment()
             .ok()
             .and_then(|align| u8::try_from(align).ok())
             .unwrap_or(1);
 
+        if let Some(count_value) = instruction_basic_operand(instruction, 0) {
+            if !count_value.is_int_value() {
+                bail!("dynamic alloca count must be an integer");
+            }
+            if let Some(count) = count_value.into_int_value().get_zero_extended_constant() {
+                if count == 0 {
+                    bail!("zero-count alloca is not supported");
+                }
+                let bytes = element_size.checked_mul(count).context("alloca byte size overflow")?;
+                let env = LoweringEnv::new()
+                    .llvm_value("%r", instruction_key(instruction))
+                    .imm("alloc_size(%ty)", bytes)
+                    .imm("alloc_align(%r)", align as u64);
+                self.execute_lowering_rule("llvm.alloca.stack", env, Some(HandlerSemantic::Alloca))?;
+                return Ok(());
+            }
+
+            let env = LoweringEnv::new()
+                .llvm_source("%count", count_value)
+                .llvm_value("%r", instruction_key(instruction))
+                .imm("alloc_elem_size(%ty)", element_size)
+                .imm("alloc_align(%r)", align as u64);
+            self.execute_lowering_rule("llvm.alloca.dynamic", env, Some(HandlerSemantic::DynamicAlloca))?;
+            return Ok(());
+        }
+
+        let bytes = element_size;
         let env = LoweringEnv::new()
             .llvm_value("%r", instruction_key(instruction))
             .imm("alloc_size(%ty)", bytes)
@@ -1627,10 +2581,16 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 
     fn lower_load(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
-        ensure_non_volatile_memory(instruction, "load")?;
+        let is_volatile = memory_is_volatile(instruction, "load")?;
         let ordering = memory_ordering(instruction, "load")?;
         if ordering != AtomicOrdering::NotAtomic {
-            return self.lower_atomic_load(instruction, ordering);
+            return self.lower_atomic_load(instruction, ordering, is_volatile);
+        }
+        if matches!(
+            instruction.get_type(),
+            AnyTypeEnum::StructType(_) | AnyTypeEnum::ArrayType(_)
+        ) {
+            return self.lower_aggregate_load(instruction, is_volatile);
         }
         let ptr = instruction_operand_value(instruction, 0)?;
         let width = instruction_result_width(instruction)?.context("load result has no scalar width")?;
@@ -1638,15 +2598,27 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .llvm_source("%ptr", ptr)
             .llvm_value("%r", instruction_key(instruction))
             .imm("memory_width(%ptr)", width as u64);
-        self.execute_lowering_rule("llvm.memory.scalar", env, Some(HandlerSemantic::Load))?;
+        let (contract, semantic) = if is_volatile {
+            ("llvm.memory.volatile.scalar", HandlerSemantic::VolatileLoad)
+        } else {
+            ("llvm.memory.scalar", HandlerSemantic::Load)
+        };
+        self.execute_lowering_rule(contract, env, Some(semantic))?;
         Ok(())
     }
 
     fn lower_store(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
-        ensure_non_volatile_memory(instruction, "store")?;
+        let is_volatile = memory_is_volatile(instruction, "store")?;
         let ordering = memory_ordering(instruction, "store")?;
         if ordering != AtomicOrdering::NotAtomic {
-            return self.lower_atomic_store(instruction, ordering);
+            return self.lower_atomic_store(instruction, ordering, is_volatile);
+        }
+        let src_value = instruction_operand_value(instruction, 0)?;
+        if matches!(
+            src_value.get_type(),
+            BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_)
+        ) {
+            return self.lower_aggregate_store(instruction, src_value, is_volatile);
         }
         let src = self.materialize_operand(instruction, 0)?;
         let ptr = instruction_operand_value(instruction, 1)?;
@@ -1655,7 +2627,170 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .binding("%value", src)
             .binding("%vv", src)
             .imm("memory_width(%ptr)", src.width as u64);
-        self.execute_lowering_rule("llvm.memory.scalar", env, Some(HandlerSemantic::Store))?;
+        let (contract, semantic) = if is_volatile {
+            ("llvm.memory.volatile.scalar", HandlerSemantic::VolatileStore)
+        } else {
+            ("llvm.memory.scalar", HandlerSemantic::Store)
+        };
+        self.execute_lowering_rule(contract, env, Some(semantic))?;
+        Ok(())
+    }
+
+    fn lower_aggregate_load(&mut self, instruction: InstructionValue<'ctx>, is_volatile: bool) -> anyhow::Result<()> {
+        let aggregate_type = instruction_aggregate_type(instruction).context("aggregate load result type")?;
+        let fields = aggregate_memory_fields(&self.target_data, aggregate_type).context("aggregate load fields")?;
+        if fields.is_empty() {
+            bail!("empty aggregate load is not supported by vm_virtualize");
+        }
+
+        let ptr_value = instruction_operand_value(instruction, 0)?;
+        let ptr = self.materialize_value(ptr_value)?;
+        let (contract, load_semantic) = if is_volatile {
+            ("llvm.memory.volatile.aggregate.load", HandlerSemantic::VolatileLoad)
+        } else {
+            ("llvm.memory.aggregate.load", HandlerSemantic::Load)
+        };
+        let direct_load = self.emit_action_for_shape(
+            contract,
+            &load_semantic,
+            &[("dst", "%vf"), ("ptr", "%vp"), ("width", "field_width(%field)")],
+        )?;
+        let offset_load = self.emit_action_for_shape(
+            contract,
+            &load_semantic,
+            &[("dst", "%vf"), ("ptr", "%addr"), ("width", "field_width(%field)")],
+        )?;
+        let gep = self.emit_action_for_shape(
+            contract,
+            &HandlerSemantic::Gep,
+            &[("dst", "%addr"), ("base", "%vp"), ("offset", "field_offset(%field)")],
+        )?;
+        let mov = self.emit_action_for_shape(
+            contract,
+            &HandlerSemantic::Mov,
+            &[("dst", "%vr"), ("src", "%vf"), ("width", "field_width(%field)")],
+        )?;
+
+        let mut loaded = Vec::with_capacity(fields.len());
+        for field in fields {
+            let tmp = ValueBinding {
+                reg: self.alloc_temporary_vreg()?,
+                width: field.info.width,
+            };
+            let (field_ptr, load_action) = if field.offset == 0 {
+                (ptr, &direct_load)
+            } else {
+                (
+                    self.emit_memory_intrinsic_gep(contract, &gep, "%vp", ptr, "field_offset(%field)", field.offset)?,
+                    &offset_load,
+                )
+            };
+            let load_env = LoweringEnv::new()
+                .binding("%vp", ptr)
+                .binding("%addr", field_ptr)
+                .binding("%vf", tmp)
+                .imm("field_width(%field)", field.info.width as u64)
+                .imm("field_offset(%field)", field.offset);
+            self.emit_profile_action(load_action, &load_env)?;
+
+            let stable = ValueBinding {
+                reg: self.builder.alloc_vreg()?,
+                width: field.info.width,
+            };
+            let mov_env = LoweringEnv::new()
+                .binding("%vf", tmp)
+                .binding("%vr", stable)
+                .imm("field_width(%field)", field.info.width as u64);
+            self.emit_profile_action(&mov, &mov_env)?;
+            loaded.push(Some(AggregateField::owned(stable)));
+        }
+
+        self.insert_aggregate_value(instruction_key(instruction), AggregateBinding { fields: loaded });
+        Ok(())
+    }
+
+    fn lower_aggregate_store(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        src_value: BasicValueEnum<'ctx>,
+        is_volatile: bool,
+    ) -> anyhow::Result<()> {
+        if is_undef_or_poison_value(src_value) {
+            bail!("aggregate store source must be frozen before VM materialization");
+        }
+        let fields =
+            aggregate_memory_fields(&self.target_data, src_value.get_type()).context("aggregate store fields")?;
+        if fields.is_empty() {
+            bail!("empty aggregate store is not supported by vm_virtualize");
+        }
+        let aggregate = self
+            .aggregates
+            .get(&value_key(src_value))
+            .cloned()
+            .context("aggregate store source was not built by supported aggregate lowering")?;
+        if aggregate.fields.len() != fields.len() {
+            bail!(
+                "aggregate store field count mismatch: value has {}, memory layout has {}",
+                aggregate.fields.len(),
+                fields.len()
+            );
+        }
+
+        let ptr_value = instruction_operand_value(instruction, 1)?;
+        let ptr = self.materialize_value(ptr_value)?;
+        let (contract, store_semantic) = if is_volatile {
+            ("llvm.memory.volatile.aggregate.store", HandlerSemantic::VolatileStore)
+        } else {
+            ("llvm.memory.aggregate.store", HandlerSemantic::Store)
+        };
+        let direct_store = self.emit_action_for_shape(
+            contract,
+            &store_semantic,
+            &[("src", "%vf"), ("ptr", "%vp"), ("width", "field_width(%field)")],
+        )?;
+        let offset_store = self.emit_action_for_shape(
+            contract,
+            &store_semantic,
+            &[("src", "%vf"), ("ptr", "%addr"), ("width", "field_width(%field)")],
+        )?;
+        let gep = self.emit_action_for_shape(
+            contract,
+            &HandlerSemantic::Gep,
+            &[("dst", "%addr"), ("base", "%vp"), ("offset", "field_offset(%field)")],
+        )?;
+
+        for (index, field) in fields.into_iter().enumerate() {
+            let source = aggregate
+                .fields
+                .get(index)
+                .copied()
+                .flatten()
+                .with_context(|| format!("aggregate store field {index} is undef or unavailable"))?
+                .binding;
+            if source.width != field.info.width {
+                bail!(
+                    "aggregate store field {index} width mismatch: value is {}, memory field is {}",
+                    source.width,
+                    field.info.width
+                );
+            }
+            let (field_ptr, store_action) = if field.offset == 0 {
+                (ptr, &direct_store)
+            } else {
+                (
+                    self.emit_memory_intrinsic_gep(contract, &gep, "%vp", ptr, "field_offset(%field)", field.offset)?,
+                    &offset_store,
+                )
+            };
+            let env = LoweringEnv::new()
+                .binding("%vp", ptr)
+                .binding("%addr", field_ptr)
+                .binding("%vf", source)
+                .imm("field_width(%field)", field.info.width as u64)
+                .imm("field_offset(%field)", field.offset);
+            self.emit_profile_action(store_action, &env)?;
+        }
+
         Ok(())
     }
 
@@ -1663,11 +2798,12 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         &mut self,
         instruction: InstructionValue<'ctx>,
         ordering: AtomicOrdering,
+        is_volatile: bool,
     ) -> anyhow::Result<()> {
         ensure_default_atomic_syncscope(instruction, "load")?;
         let ptr = instruction_operand_value(instruction, 0)?;
         let width = instruction_result_width(instruction)?.context("atomic load result has no scalar width")?;
-        ensure_atomic_value_type(instruction.get_type(), "load")?;
+        ensure_atomic_load_store_value_type(instruction.get_type(), "load")?;
         ensure_naturally_aligned_atomic(instruction, "load", width)?;
         let ordering = atomic_ordering_for_load(ordering)?;
         let env = LoweringEnv::new()
@@ -1675,7 +2811,12 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .llvm_value("%r", instruction_key(instruction))
             .imm("memory_width(%ptr)", width as u64)
             .imm("memory_ordering(%ptr)", ordering as u64);
-        self.execute_lowering_rule("llvm.atomic.load.scalar", env, Some(HandlerSemantic::AtomicLoad))?;
+        let (rule, semantic) = if is_volatile {
+            ("llvm.atomic.volatile.load.scalar", HandlerSemantic::VolatileAtomicLoad)
+        } else {
+            ("llvm.atomic.load.scalar", HandlerSemantic::AtomicLoad)
+        };
+        self.execute_lowering_rule(rule, env, Some(semantic))?;
         Ok(())
     }
 
@@ -1683,10 +2824,11 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         &mut self,
         instruction: InstructionValue<'ctx>,
         ordering: AtomicOrdering,
+        is_volatile: bool,
     ) -> anyhow::Result<()> {
         ensure_default_atomic_syncscope(instruction, "store")?;
         let src_value = instruction_operand_value(instruction, 0)?;
-        ensure_atomic_basic_value_type(src_value.get_type(), "store")?;
+        ensure_atomic_load_store_basic_value_type(src_value.get_type(), "store")?;
         let src = self.materialize_operand(instruction, 0)?;
         ensure_naturally_aligned_atomic(instruction, "store", src.width)?;
         let ordering = atomic_ordering_for_store(ordering)?;
@@ -1697,12 +2839,20 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .binding("%vv", src)
             .imm("memory_width(%ptr)", src.width as u64)
             .imm("memory_ordering(%ptr)", ordering as u64);
-        self.execute_lowering_rule("llvm.atomic.store.scalar", env, Some(HandlerSemantic::AtomicStore))?;
+        let (rule, semantic) = if is_volatile {
+            (
+                "llvm.atomic.volatile.store.scalar",
+                HandlerSemantic::VolatileAtomicStore,
+            )
+        } else {
+            ("llvm.atomic.store.scalar", HandlerSemantic::AtomicStore)
+        };
+        self.execute_lowering_rule(rule, env, Some(semantic))?;
         Ok(())
     }
 
     fn lower_atomic_rmw(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
-        ensure_non_volatile_memory(instruction, "atomicrmw")?;
+        let is_volatile = memory_is_volatile(instruction, "atomicrmw")?;
         ensure_default_atomic_syncscope(instruction, "atomicrmw")?;
         let ordering = memory_ordering(instruction, "atomicrmw")?;
         let op = instruction
@@ -1711,7 +2861,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         let op = map_atomic_rmw_op(op)?;
         let ptr = instruction_operand_value(instruction, 0)?;
         let src_value = instruction_operand_value(instruction, 1)?;
-        ensure_atomic_basic_value_type(src_value.get_type(), "atomicrmw")?;
+        ensure_atomic_rmw_value_type(src_value.get_type(), op)?;
         let src = self.materialize_operand(instruction, 1)?;
         ensure_naturally_aligned_atomic(instruction, "atomicrmw", src.width)?;
         let ordering = atomic_ordering_for_rmw(ordering)?;
@@ -1731,18 +2881,23 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .llvm_value("%r", instruction_key(instruction))
             .imm("memory_width(%ptr)", width as u64)
             .imm("memory_ordering(%ptr)", ordering as u64);
-        self.execute_lowering_rule("llvm.atomic.rmw.scalar", env, Some(HandlerSemantic::AtomicRmw(op)))?;
+        let (rule, semantic) = if is_volatile {
+            (
+                "llvm.atomic.volatile.rmw.scalar",
+                HandlerSemantic::VolatileAtomicRmw(op),
+            )
+        } else {
+            ("llvm.atomic.rmw.scalar", HandlerSemantic::AtomicRmw(op))
+        };
+        self.execute_lowering_rule(rule, env, Some(semantic))?;
         Ok(())
     }
 
     fn lower_cmpxchg(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
-        ensure_non_volatile_memory(instruction, "cmpxchg")?;
+        let is_volatile = memory_is_volatile(instruction, "cmpxchg")?;
         ensure_default_atomic_syncscope(instruction, "cmpxchg")?;
-        // SAFETY: `instruction` 是当前 module 中的 live `cmpxchg` instruction；
-        // LLVMGetWeak 只读取该 instruction 的 weak bit，不访问用户内存。
-        if unsafe { LLVMGetWeak(instruction.as_value_ref()) } != 0 {
-            bail!("weak cmpxchg is not supported by vm_virtualize");
-        }
+        // LLVM weak cmpxchg 允许但不要求伪失败；runtime 发射 strong cmpxchg 是合法实现选择，
+        // 同时避免为 weak bit 引入额外 profile ABI 和字节码 operand。
 
         let ptr = instruction_operand_value(instruction, 0)?;
         let cmp_value = instruction_operand_value(instruction, 1)?;
@@ -1777,7 +2932,12 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .imm("memory_width(%ptr)", cmp.width as u64)
             .imm("success_ordering(%ptr)", success_ordering as u64)
             .imm("failure_ordering(%ptr)", failure_ordering as u64);
-        let env = self.execute_lowering_rule("llvm.cmpxchg.scalar", env, Some(HandlerSemantic::CmpXchg))?;
+        let (rule, semantic) = if is_volatile {
+            ("llvm.volatile.cmpxchg.scalar", HandlerSemantic::VolatileCmpXchg)
+        } else {
+            ("llvm.cmpxchg.scalar", HandlerSemantic::CmpXchg)
+        };
+        let env = self.execute_lowering_rule(rule, env, Some(semantic))?;
         let old = match env.get("%old")? {
             LoweringValue::Reg(binding) => binding,
             LoweringValue::Imm(_) | LoweringValue::Label(_) => bail!("cmpxchg old result must be a register"),
@@ -1796,10 +2956,10 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         if success.width != 1 {
             bail!("cmpxchg success result must be i1, got i{}", success.width);
         }
-        self.aggregates.insert(
+        self.insert_aggregate_value(
             instruction_key(instruction),
             AggregateBinding {
-                fields: vec![Some(old), Some(success)],
+                fields: vec![Some(AggregateField::owned(old)), Some(AggregateField::owned(success))],
             },
         );
         Ok(())
@@ -1923,23 +3083,52 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
 
     fn lower_call(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
         let call = CallInst::new(instruction);
-        let callee = call
-            .get_call_function()
-            .context("indirect calls are not supported by vm_virtualize")?;
+        let Some(callee) = call.get_call_function() else {
+            return self.lower_indirect_call(instruction);
+        };
         if let Some(kind) = memory_intrinsic_kind(callee) {
             return self.lower_memory_intrinsic(instruction, kind);
+        }
+        if let Some(kind) = nop_intrinsic_kind(callee) {
+            return self.lower_nop_intrinsic(instruction, kind);
+        }
+        if let Some(kind) = identity_intrinsic_kind(callee) {
+            if kind == IdentityIntrinsicKind::ThreadLocalAddress {
+                return self.lower_threadlocal_address_intrinsic(instruction, callee);
+            }
+            return self.lower_identity_intrinsic(instruction, kind);
+        }
+        if let Some(kind) = pointer_intrinsic_kind(callee) {
+            return self.lower_pointer_intrinsic(instruction, kind);
+        }
+        if let Some(kind) = compile_time_intrinsic_kind(callee) {
+            return self.lower_compile_time_intrinsic(instruction, kind);
+        }
+        if let Some(kind) = float_intrinsic_kind(callee) {
+            return self.lower_float_intrinsic(instruction, kind);
         }
         if let Some(kind) = integer_intrinsic_kind(callee) {
             return match kind.arity() {
                 1 => self.lower_integer_intrinsic(instruction, kind),
+                2 if kind.is_overflow_intrinsic() => self.lower_integer_overflow_intrinsic(instruction, kind),
+                2 if kind.is_binary_intrinsic() => self.lower_integer_binary_intrinsic(instruction, kind),
+                2 => self.lower_integer_flagged_unary_intrinsic(instruction, kind),
                 3 => self.lower_integer_ternary_intrinsic(instruction, kind),
                 _ => bail!("unsupported integer intrinsic arity {}", kind.arity()),
             };
+        }
+        if let Some(kind) = counter_intrinsic_kind(callee) {
+            return self.lower_counter_intrinsic(instruction, kind);
+        }
+        if let Some(kind) = trap_intrinsic_kind(callee) {
+            return self.lower_trap_intrinsic(instruction, kind);
         }
         if callee.get_intrinsic_id() != 0 || callee.is_llvm_function() {
             bail!("LLVM intrinsic calls are not supported by vm_virtualize");
         }
 
+        let target = native_call_target_for_direct_call(callee, instruction)?;
+        let args = self.materialize_native_call_args(instruction, &target.params, 0)?;
         let call_action = self.emit_action_for_shape(
             "llvm.call.direct",
             &HandlerSemantic::CallNative,
@@ -1949,7 +3138,170 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 ("ret_count", "return_count(%callee)"),
             ],
         )?;
-        let target = native_call_target(callee)?;
+        self.emit_native_bridge_call(instruction, target, args, &call_action)
+    }
+
+    fn lower_indirect_call(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let call_type_ref = unsafe { LLVMGetCalledFunctionType(instruction.as_value_ref()) };
+        if call_type_ref.is_null() {
+            bail!("indirect call function type is unavailable");
+        }
+        let call_type = unsafe { FunctionType::new(call_type_ref) };
+        if call_type.is_var_arg() {
+            bail!("varargs indirect calls are not supported by vm_virtualize");
+        }
+        ensure_supported_indirect_call_type(call_type)?;
+
+        let callee_ref = unsafe { LLVMGetCalledValue(instruction.as_value_ref()) };
+        if callee_ref.is_null() {
+            bail!("indirect call callee operand is unavailable");
+        }
+        let callee = unsafe { BasicValueEnum::new(callee_ref) };
+        let callee = self.materialize_value(callee)?;
+        if callee.width != 64 {
+            bail!("indirect call callee pointer must materialize as i64");
+        }
+
+        let adapter = self.emit_indirect_call_adapter(call_type)?;
+        let target = native_call_target(adapter)?;
+        let mut args = Vec::with_capacity(target.param_widths.len());
+        args.push(callee);
+        args.extend(self.materialize_native_call_args(instruction, &target.params[1..], 0)?);
+
+        let call_action = self.emit_action_for_shape(
+            "llvm.call.indirect",
+            &HandlerSemantic::CallNative,
+            &[
+                ("argc", "arg_count(%callee)"),
+                ("arg0", "arg0"),
+                ("ret_count", "return_count(%callee)"),
+            ],
+        )?;
+        self.emit_native_bridge_call(instruction, target, args, &call_action)
+    }
+
+    fn materialize_native_call_args(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        params: &[FunctionParamSlots],
+        operand_offset: u32,
+    ) -> anyhow::Result<Vec<ValueBinding>> {
+        let mut args = Vec::new();
+        for (index, slots) in params.iter().enumerate() {
+            let operand_index = operand_offset + index as u32;
+            let value = instruction_basic_operand(instruction, operand_index)
+                .with_context(|| format!("missing native call argument {index}"))?;
+            if !matches!(
+                value.get_type(),
+                BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_)
+            ) {
+                if slots.fields.len() != 1 {
+                    bail!(
+                        "native scalar argument {index} unexpectedly maps to {} fields",
+                        slots.fields.len()
+                    );
+                }
+                args.push(self.materialize_value(value)?);
+                continue;
+            }
+
+            let binding = self
+                .aggregate_operand(instruction, operand_index)
+                .with_context(|| format!("native aggregate argument {index}"))?;
+            if binding.fields.len() != slots.fields.len() {
+                bail!(
+                    "native aggregate argument {index} field count mismatch: signature has {}, operand has {}",
+                    slots.fields.len(),
+                    binding.fields.len()
+                );
+            }
+            for (field_index, (field, expected)) in binding.fields.iter().zip(slots.fields.iter()).enumerate() {
+                let field = field
+                    .as_ref()
+                    .with_context(|| format!("native aggregate argument {index} field {field_index} is undef"))?;
+                if field.binding.width != expected.width {
+                    bail!(
+                        "native aggregate argument {index} field {field_index} width mismatch: value is {}, callee expects {}",
+                        field.binding.width,
+                        expected.width
+                    );
+                }
+                args.push(field.binding);
+            }
+        }
+        Ok(args)
+    }
+
+    fn emit_indirect_call_adapter(&mut self, call_type: FunctionType<'ctx>) -> anyhow::Result<FunctionValue<'ctx>> {
+        let ctx = self.module.get_context();
+        let direct_param_types = call_type.get_param_types();
+        let mut adapter_param_types = Vec::with_capacity(direct_param_types.len() + 1);
+        adapter_param_types.push(ctx.ptr_type(AddressSpace::default()).into());
+        adapter_param_types.extend(direct_param_types.iter().copied());
+        let adapter_type = match call_type.get_return_type() {
+            Some(return_type) => return_type.fn_type(&adapter_param_types, false),
+            None => ctx.void_type().fn_type(&adapter_param_types, false),
+        };
+        let function_name = self.function.get_name().to_str().unwrap_or("anon");
+        let adapter = self.module.add_function(
+            &format!(
+                ".amice.vm.indirect_adapter.{}.{}",
+                translator_symbol_suffix(function_name),
+                self.native_calls.len()
+            ),
+            adapter_type,
+            Some(Linkage::Private),
+        );
+        adapter.as_global_value().set_unnamed_address(UnnamedAddress::Global);
+
+        let entry = ctx.append_basic_block(adapter, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        let callee = adapter
+            .get_nth_param(0)
+            .ok_or_else(|| anyhow::anyhow!("missing indirect adapter callee parameter"))?
+            .into_pointer_value();
+        let args = direct_param_types
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                adapter
+                    .get_nth_param((index + 1) as u32)
+                    .ok_or_else(|| anyhow::anyhow!("missing indirect adapter argument {index}"))
+                    .map(Into::into)
+            })
+            .collect::<anyhow::Result<Vec<BasicMetadataValueEnum<'ctx>>>>()?;
+        let call = builder.build_indirect_call(call_type, callee, &args, "amice.vm.indirect.target")?;
+        match call_type.get_return_type() {
+            Some(_) => {
+                let ret = call
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| anyhow::anyhow!("indirect adapter call should return a value"))?;
+                builder.build_return(Some(&ret))?;
+            },
+            None => {
+                builder.build_return(None)?;
+            },
+        }
+        self.module.append_to_compiler_used(adapter.as_global_value());
+        Ok(adapter)
+    }
+
+    fn emit_native_bridge_call(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        target: NativeCallTarget<'ctx>,
+        args: Vec<ValueBinding>,
+        call_action: &LoweringAction,
+    ) -> anyhow::Result<()> {
+        if args.len() != target.param_widths.len() {
+            bail!(
+                "native call argument count mismatch: materialized {}, callee expects {}",
+                args.len(),
+                target.param_widths.len()
+            );
+        }
         if target.param_widths.len() > self.native_arg_registers.len() {
             bail!(
                 "profile native_call ABI maps {} argument registers but callee needs {}",
@@ -1968,21 +3320,15 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         let final_returns = self.native_call_final_returns(instruction, &target)?;
         let result_regs = final_returns.iter().map(|binding| binding.reg).collect::<HashSet<_>>();
 
-        // call_native 的 VM ABI 是 profile 固定的 x 寄存器列表；真实 LLVM callee 类型由 thunk 恢复。
-        // 因此这里先把每个 operand materialize，再并行移动到 profile 指定的 call argument 寄存器。
-        let args = (0..target.param_widths.len())
-            .map(|index| {
-                let value = self.materialize_operand(instruction, index as u32)?;
-                if value.width != target.param_widths[index] {
-                    bail!(
-                        "native call argument {index} width mismatch: value is {}, callee expects {}",
-                        value.width,
-                        target.param_widths[index]
-                    );
-                }
-                Ok(value)
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        for (index, value) in args.iter().enumerate() {
+            if value.width != target.param_widths[index] {
+                bail!(
+                    "native call argument {index} width mismatch: value is {}, callee expects {}",
+                    value.width,
+                    target.param_widths[index]
+                );
+            }
+        }
         // `native_call` 是 profile 声明的 ABI 边界。把参数移动到 call register 可能覆盖无关的
         // VM SSA 值，因此 translator 会保存 profile 声明 native bridge 可能触碰的所有已定义 x
         // 寄存器，但排除此调用结果值拥有的寄存器。
@@ -2030,13 +3376,13 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 .reg(format!("ret{index}"), ret.dst, ret.width)
                 .imm(format!("ret{index}_width"), ret.width as u64);
         }
-        self.emit_profile_action(&call_action, &env)?;
+        self.emit_profile_action(call_action, &env)?;
 
         if final_returns.len() > 1 {
-            self.aggregates.insert(
+            self.insert_aggregate_value(
                 instruction_key(instruction),
                 AggregateBinding {
-                    fields: final_returns.into_iter().map(Some).collect(),
+                    fields: final_returns.into_iter().map(AggregateField::owned).map(Some).collect(),
                 },
             );
         }
@@ -2069,6 +3415,178 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .llvm_value("%r", instruction_key(instruction))
             .imm("type_width(%r)", width as u64);
         self.execute_lowering_rule(kind.lowering_rule(), env, Some(kind.semantic()))?;
+        Ok(())
+    }
+
+    fn lower_integer_flagged_unary_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: IntegerIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        if instruction.get_num_operands().saturating_sub(1) != 2 {
+            bail!("integer intrinsic {:?} expects exactly two arguments", kind);
+        }
+        let flag_name = match kind {
+            IntegerIntrinsicKind::CtLz | IntegerIntrinsicKind::CtTz => "is_zero_undef",
+            IntegerIntrinsicKind::Abs => "is_int_min_poison",
+            IntegerIntrinsicKind::CtPop
+            | IntegerIntrinsicKind::SMax
+            | IntegerIntrinsicKind::SMin
+            | IntegerIntrinsicKind::UMax
+            | IntegerIntrinsicKind::UMin
+            | IntegerIntrinsicKind::UAddSat
+            | IntegerIntrinsicKind::USubSat
+            | IntegerIntrinsicKind::SAddSat
+            | IntegerIntrinsicKind::SSubSat
+            | IntegerIntrinsicKind::UShlSat
+            | IntegerIntrinsicKind::SShlSat
+            | IntegerIntrinsicKind::UAddOverflow
+            | IntegerIntrinsicKind::SAddOverflow
+            | IntegerIntrinsicKind::USubOverflow
+            | IntegerIntrinsicKind::SSubOverflow
+            | IntegerIntrinsicKind::UMulOverflow
+            | IntegerIntrinsicKind::SMulOverflow
+            | IntegerIntrinsicKind::BSwap
+            | IntegerIntrinsicKind::BitReverse
+            | IntegerIntrinsicKind::FShl
+            | IntegerIntrinsicKind::FShr => bail!("integer intrinsic {:?} does not use a poison flag", kind),
+        };
+        let poison_flag = constant_int_operand(instruction, 1, &format!("integer intrinsic {flag_name} flag"))?;
+        if poison_flag > 1 {
+            bail!("integer intrinsic {flag_name} flag must be an i1 constant");
+        }
+        // `true` 只收窄 LLVM 定义域；被排除输入仍沿用 poison/UB 边界，handler 复用同一套计算。
+
+        let src = self.materialize_operand(instruction, 0)?;
+        let width = instruction_result_width(instruction)?.context("integer intrinsic result has no scalar width")?;
+        if src.width != width {
+            bail!(
+                "integer intrinsic result width {} differs from operand width {}",
+                width,
+                src.width
+            );
+        }
+        checked_intrinsic_integer_width(u64::from(width))?;
+
+        let env = LoweringEnv::new()
+            .binding("%value", src)
+            .binding("%src", src)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64);
+        self.execute_lowering_rule(kind.lowering_rule(), env, Some(kind.semantic()))?;
+        Ok(())
+    }
+
+    fn lower_integer_binary_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: IntegerIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        if instruction.get_num_operands().saturating_sub(1) != 2 {
+            bail!("integer intrinsic {:?} expects exactly two arguments", kind);
+        }
+        let lhs = self.materialize_operand(instruction, 0)?;
+        let rhs = self.materialize_operand(instruction, 1)?;
+        let width = instruction_result_width(instruction)?.context("integer intrinsic result has no scalar width")?;
+        for (name, value) in [("lhs", lhs), ("rhs", rhs)] {
+            if value.width != width {
+                bail!(
+                    "integer intrinsic result width {} differs from {name} operand width {}",
+                    width,
+                    value.width
+                );
+            }
+        }
+        checked_intrinsic_integer_width(u64::from(width))?;
+
+        let env = LoweringEnv::new()
+            .binding("%a", lhs)
+            .binding("%b", rhs)
+            .binding("%lhs", lhs)
+            .binding("%rhs", rhs)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64);
+        self.execute_lowering_rule(kind.lowering_rule(), env, Some(kind.semantic()))?;
+        Ok(())
+    }
+
+    fn lower_integer_overflow_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: IntegerIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        if instruction.get_num_operands().saturating_sub(1) != 2 {
+            bail!("integer overflow intrinsic {:?} expects exactly two arguments", kind);
+        }
+        let AnyTypeEnum::StructType(return_type) = instruction.get_type() else {
+            bail!("integer overflow intrinsic must return a two-field struct");
+        };
+        let fields = return_type
+            .get_field_types()
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| return_field_from_type(ty).with_context(|| format!("overflow return field {index}")))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        if fields.len() != 2 {
+            bail!("integer overflow intrinsic must return exactly two fields");
+        }
+        if fields[0].kind != ScalarKind::Integer || fields[1].kind != ScalarKind::Integer {
+            bail!("integer overflow intrinsic fields must be integer scalars");
+        }
+        if fields[1].width != 1 {
+            bail!("integer overflow intrinsic flag field must be i1");
+        }
+
+        let lhs = self.materialize_operand(instruction, 0)?;
+        let rhs = self.materialize_operand(instruction, 1)?;
+        let width = fields[0].width;
+        for (name, value) in [("lhs", lhs), ("rhs", rhs)] {
+            if value.width != width {
+                bail!(
+                    "integer overflow intrinsic value width {} differs from {name} operand width {}",
+                    width,
+                    value.width
+                );
+            }
+        }
+        checked_intrinsic_integer_width(u64::from(width))?;
+
+        let env = LoweringEnv::new()
+            .binding("%a", lhs)
+            .binding("%b", rhs)
+            .binding("%lhs", lhs)
+            .binding("%rhs", rhs)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64);
+        let env = self.execute_lowering_rule(kind.lowering_rule(), env, Some(kind.semantic()))?;
+        let LoweringValue::Reg(value) = env.get("%vr")? else {
+            bail!("integer overflow lowering must define %vr as the value result register");
+        };
+        let LoweringValue::Reg(overflow) = env.get("%vo")? else {
+            bail!("integer overflow lowering must define %vo as the overflow flag register");
+        };
+        if value.width != width {
+            bail!(
+                "integer overflow lowering value register width {} differs from result width {}",
+                value.width,
+                width
+            );
+        }
+        if overflow.width != 1 {
+            bail!(
+                "integer overflow lowering flag register width {} differs from i1",
+                overflow.width
+            );
+        }
+        self.insert_aggregate_value(
+            instruction_key(instruction),
+            AggregateBinding {
+                fields: vec![
+                    Some(AggregateField::owned(value)),
+                    Some(AggregateField::owned(overflow)),
+                ],
+            },
+        );
         Ok(())
     }
 
@@ -2108,6 +3626,32 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         Ok(())
     }
 
+    fn lower_counter_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: CounterKind,
+    ) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 0 {
+            bail!("counter intrinsic {kind:?} expects exactly 0 arguments, got {actual_args}");
+        }
+        let width = instruction_result_width(instruction)?.context("counter intrinsic result has no scalar width")?;
+        if width != 64 {
+            bail!("counter intrinsic {kind:?} must return i64, got i{width}");
+        }
+
+        let env = LoweringEnv::new()
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64)
+            .imm("width", width as u64);
+        self.execute_lowering_rule(
+            counter_intrinsic_lowering_rule(kind),
+            env,
+            Some(HandlerSemantic::ReadCounter(kind)),
+        )?;
+        Ok(())
+    }
+
     fn lower_memory_intrinsic(
         &mut self,
         instruction: InstructionValue<'ctx>,
@@ -2121,18 +3665,636 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         }
     }
 
+    fn lower_nop_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: NopIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        if let Some(expected) = kind.checked_arg_count() {
+            let actual = instruction.get_num_operands().saturating_sub(1);
+            if actual != expected {
+                bail!(
+                    "nop intrinsic {:?} expects exactly {expected} arguments, got {actual}",
+                    kind
+                );
+            }
+        }
+        for &index in kind.constant_operand_indices() {
+            let _ = constant_int_operand(instruction, index, &format!("nop intrinsic {:?} operand {index}", kind))?;
+        }
+        for &index in kind.pointer_operand_indices() {
+            let value = instruction_operand_value(instruction, index)?;
+            if !value.is_pointer_value() {
+                bail!("nop intrinsic {:?} operand {index} must be a pointer", kind);
+            }
+        }
+        let env = LoweringEnv::new();
+        self.execute_lowering_rule(kind.lowering_rule(), env, Some(HandlerSemantic::Nop))?;
+        Ok(())
+    }
+
+    fn lower_identity_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: IdentityIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        let expected_args = kind.arg_count();
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != expected_args {
+            bail!(
+                "identity intrinsic {:?} expects exactly {expected_args} arguments, got {actual_args}",
+                kind
+            );
+        }
+
+        if let Some(index) = kind.constant_length_operand_index() {
+            let _ = constant_int_operand(instruction, index, &format!("identity intrinsic {:?} length", kind))?;
+        }
+
+        let value_operand_index = kind.value_operand_index();
+        let src = self.materialize_operand(instruction, value_operand_index)?;
+        let width = instruction_result_width(instruction)?.context("identity intrinsic result has no scalar width")?;
+        if kind.is_scalar_copy() {
+            let source = instruction_operand_value(instruction, value_operand_index)?;
+            ensure_scalar_copy_shape(source, instruction.get_type(), kind)?;
+            if src.width != width {
+                bail!(
+                    "identity intrinsic {:?} scalar copy width mismatch: result i{}, value i{}",
+                    kind,
+                    width,
+                    src.width
+                );
+            }
+        } else if kind.is_expect_hint() {
+            let expected = instruction_operand_value(instruction, 1)?;
+            let expected_width = value_width(expected)?;
+            if src.width != width || expected_width != width {
+                bail!(
+                    "identity intrinsic {:?} width mismatch: result i{}, value i{}, expected i{}",
+                    kind,
+                    width,
+                    src.width,
+                    expected_width
+                );
+            }
+        } else if kind.is_pointer_identity() {
+            let source = instruction_operand_value(instruction, value_operand_index)?;
+            if !source.is_pointer_value() || !matches!(instruction.get_type(), AnyTypeEnum::PointerType(_)) {
+                bail!(
+                    "identity intrinsic {:?} expects a pointer argument and pointer result",
+                    kind
+                );
+            }
+            if src.width != 64 || width != 64 {
+                bail!(
+                    "identity intrinsic {:?} pointer width mismatch: result i{}, value i{}",
+                    kind,
+                    width,
+                    src.width
+                );
+            }
+        } else if kind.is_integer_identity() {
+            let source = instruction_operand_value(instruction, value_operand_index)?;
+            if !source.is_int_value() || !matches!(instruction.get_type(), AnyTypeEnum::IntType(_)) {
+                bail!(
+                    "identity intrinsic {:?} expects an integer argument and integer result",
+                    kind
+                );
+            }
+            if src.width != width {
+                bail!(
+                    "identity intrinsic {:?} integer width mismatch: result i{}, value i{}",
+                    kind,
+                    width,
+                    src.width
+                );
+            }
+        }
+
+        let env = LoweringEnv::new()
+            .binding("%value", src)
+            .binding("%src", src)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64);
+        self.execute_lowering_rule(kind.lowering_rule(), env, Some(HandlerSemantic::Mov))?;
+        Ok(())
+    }
+
+    fn lower_threadlocal_address_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        callee: FunctionValue<'ctx>,
+    ) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 1 {
+            bail!("threadlocal.address intrinsic expects exactly 1 argument, got {actual_args}");
+        }
+
+        let source = instruction_operand_value(instruction, 0)?;
+        let BasicValueEnum::PointerValue(global_ptr) = source else {
+            bail!("threadlocal.address intrinsic expects a pointer global argument");
+        };
+        if !matches!(instruction.get_type(), AnyTypeEnum::PointerType(_)) {
+            bail!("threadlocal.address intrinsic must return a pointer");
+        }
+        // LLVM 要求 operand 0 是 GlobalValue。把这个 operand 留在原生 thunk 里，
+        // 避免把 TLS 模型下的符号地址错误固化进 VM const_pool。
+        if unsafe { LLVMIsAGlobalValue(global_ptr.as_value_ref()) }.is_null() {
+            bail!("threadlocal.address intrinsic operand must be a GlobalValue");
+        }
+
+        let thunk = self.emit_threadlocal_address_thunk(callee, global_ptr)?;
+        let target = native_call_target(thunk)?;
+        let call_result = ValueBinding {
+            reg: self.alloc_temporary_vreg()?,
+            width: 64,
+        };
+        self.emit_no_arg_native_call_result(target, call_result)?;
+
+        let width = instruction_result_width(instruction)?
+            .context("threadlocal.address intrinsic result has no pointer width")?;
+        if width != 64 {
+            bail!("threadlocal.address intrinsic pointer width i{width} is not supported by vm_virtualize");
+        }
+
+        let env = LoweringEnv::new()
+            .binding("%value", call_result)
+            .binding("%src", call_result)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%r)", width as u64);
+        self.execute_lowering_rule(
+            IdentityIntrinsicKind::ThreadLocalAddress.lowering_rule(),
+            env,
+            Some(HandlerSemantic::Mov),
+        )?;
+        Ok(())
+    }
+
+    fn emit_threadlocal_address_thunk(
+        &mut self,
+        callee: FunctionValue<'ctx>,
+        global_ptr: PointerValue<'ctx>,
+    ) -> anyhow::Result<FunctionValue<'ctx>> {
+        let ctx = self.module.get_context();
+        let return_type = match callee.get_type().get_return_type() {
+            Some(BasicTypeEnum::PointerType(return_type)) => return_type,
+            _ => bail!("threadlocal.address thunk target must return a pointer"),
+        };
+        let thunk_type = return_type.fn_type(&[], false);
+        let function_name = self.function.get_name().to_str().unwrap_or("anon");
+        let thunk = self.module.add_function(
+            &format!(
+                ".amice.vm.tls_addr.{}.{}",
+                translator_symbol_suffix(function_name),
+                self.native_calls.len()
+            ),
+            thunk_type,
+            Some(Linkage::Private),
+        );
+        thunk.as_global_value().set_unnamed_address(UnnamedAddress::Global);
+
+        let entry = ctx.append_basic_block(thunk, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        let args: [BasicMetadataValueEnum<'ctx>; 1] = [global_ptr.into()];
+        let call = builder.build_call(callee, &args, "amice.vm.tls.addr")?;
+        let ret = call
+            .try_as_basic_value()
+            .basic()
+            .context("threadlocal.address thunk call should return a pointer")?;
+        builder.build_return(Some(&ret))?;
+        Ok(thunk)
+    }
+
+    fn emit_no_arg_native_call_result(
+        &mut self,
+        target: NativeCallTarget<'ctx>,
+        result: ValueBinding,
+    ) -> anyhow::Result<()> {
+        if !target.param_widths.is_empty() {
+            bail!("no-arg native bridge target unexpectedly has parameters");
+        }
+        if target.returns_void || target.return_fields.len() != 1 {
+            bail!("no-arg native bridge target must return exactly one scalar value");
+        }
+        let field = target.return_fields[0];
+        if field.width != result.width {
+            bail!(
+                "no-arg native bridge return width mismatch: destination is {}, callee returns {}",
+                result.width,
+                field.width
+            );
+        }
+        if target.return_fields.len() > self.native_return_registers.len() {
+            bail!(
+                "profile native_call ABI maps {} return registers but callee needs {}",
+                self.native_return_registers.len(),
+                target.return_fields.len()
+            );
+        }
+
+        let call_action = self.emit_action_for_shape(
+            "llvm.call.direct",
+            &HandlerSemantic::CallNative,
+            &[
+                ("argc", "arg_count(%callee)"),
+                ("arg0", "arg0"),
+                ("ret_count", "return_count(%callee)"),
+            ],
+        )?;
+        let result_regs = HashSet::from([result.reg]);
+        let saved = self.save_native_touched_registers(&result_regs)?;
+        let call_id = u16::try_from(self.native_calls.len()).context("native call table has too many entries")?;
+        self.native_calls.push(target);
+
+        let mut env = LoweringEnv::new()
+            .imm("native_id(%callee)", call_id as u64)
+            .imm("callee", call_id as u64)
+            .imm("arg_count(%callee)", 0)
+            .imm("argc", 0)
+            .imm("return_count(%callee)", 1)
+            .imm("ret_count", 1);
+        for index in 0..NATIVE_CALL_MAX_ARGS {
+            let reg = self.native_arg_registers.get(index).copied().unwrap_or(0);
+            env = env.reg(format!("arg{index}"), reg, 64);
+        }
+        for index in 0..NATIVE_CALL_MAX_RETURNS {
+            let ret = if index == 0 {
+                NativeReturn {
+                    dst: result.reg,
+                    width: result.width,
+                }
+            } else {
+                NativeReturn { dst: 0, width: 64 }
+            };
+            env = env
+                .reg(format!("ret{index}"), ret.dst, ret.width)
+                .imm(format!("ret{index}_width"), ret.width as u64);
+        }
+        self.emit_profile_action(&call_action, &env)?;
+        self.restore_native_touched_registers(saved, &result_regs)?;
+        Ok(())
+    }
+
+    fn lower_pointer_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: PointerIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        let expected_args = kind.arg_count();
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != expected_args {
+            bail!(
+                "pointer intrinsic {:?} expects exactly {expected_args} arguments, got {actual_args}",
+                kind
+            );
+        }
+
+        match kind {
+            PointerIntrinsicKind::PtrMask => {
+                let ptr_value = instruction_operand_value(instruction, 0)?;
+                let mask_value = instruction_operand_value(instruction, 1)?;
+                if !ptr_value.is_pointer_value() || !matches!(instruction.get_type(), AnyTypeEnum::PointerType(_)) {
+                    bail!("ptrmask intrinsic expects a pointer argument and pointer result");
+                }
+                if !mask_value.is_int_value() {
+                    bail!("ptrmask intrinsic mask must be an integer");
+                }
+                let mask_width = value_width(mask_value)?;
+                if mask_width != 64 {
+                    bail!("ptrmask intrinsic mask width i{mask_width} is not supported by vm_virtualize");
+                }
+
+                let ptr = self.materialize_operand(instruction, 0)?;
+                let mask = self.materialize_operand(instruction, 1)?;
+                let width =
+                    instruction_result_width(instruction)?.context("ptrmask intrinsic result has no scalar width")?;
+                if ptr.width != 64 || mask.width != 64 || width != 64 {
+                    bail!(
+                        "ptrmask intrinsic width mismatch: result i{}, pointer i{}, mask i{}",
+                        width,
+                        ptr.width,
+                        mask.width
+                    );
+                }
+
+                let env = LoweringEnv::new()
+                    .binding("%ptr", ptr)
+                    .binding("%mask", mask)
+                    .binding("%value", ptr)
+                    .binding("%src", ptr)
+                    .llvm_value("%r", instruction_key(instruction))
+                    .imm("type_width(%r)", width as u64);
+                self.execute_lowering_rule(kind.lowering_rule(), env, Some(HandlerSemantic::Bin(BinOp::And)))?;
+            },
+        }
+        Ok(())
+    }
+
+    fn lower_compile_time_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: CompileTimeIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        if matches!(kind, CompileTimeIntrinsicKind::ObjectSize) {
+            return self.lower_objectsize_intrinsic(instruction);
+        }
+
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 1 {
+            bail!(
+                "compile-time intrinsic {:?} expects exactly 1 argument, got {actual_args}",
+                kind
+            );
+        }
+
+        let width =
+            instruction_result_width(instruction)?.context("compile-time intrinsic result has no scalar width")?;
+        if width != 1 {
+            bail!("compile-time intrinsic {:?} must return i1, got i{width}", kind);
+        }
+
+        let operand =
+            instruction_basic_operand(instruction, 0).context("compile-time intrinsic missing value operand 0")?;
+        let value = kind.result(operand)?;
+        let dst = self.ensure_result_binding(instruction)?;
+        self.push_constant(dst.reg, value, width)?;
+        Ok(())
+    }
+
+    fn lower_objectsize_intrinsic(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 4 {
+            bail!("llvm.objectsize expects exactly 4 arguments, got {actual_args}");
+        }
+        for index in 1..=3 {
+            let flag = constant_int_operand(instruction, index, &format!("llvm.objectsize immarg {index}"))?;
+            if flag > 1 {
+                bail!("llvm.objectsize immarg {index} must be i1");
+            }
+        }
+
+        let width = instruction_result_width(instruction)?.context("llvm.objectsize result has no scalar width")?;
+        let ptr = instruction_basic_operand(instruction, 0).context("llvm.objectsize missing pointer operand")?;
+        let size = self.static_object_size(ptr)?;
+        if width < 64 && u128::from(size) >= (1_u128 << width) {
+            bail!("llvm.objectsize result {size} does not fit in i{width}");
+        }
+
+        let dst = self.ensure_result_binding(instruction)?;
+        let env = LoweringEnv::new()
+            .reg("%vr", dst.reg, width)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("object_size(%ptr)", size)
+            .imm("type_width(%r)", width as u64);
+        self.execute_lowering_rule("llvm.objectsize.integer", env, Some(HandlerSemantic::MovImm))?;
+        Ok(())
+    }
+
+    fn lower_float_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: FloatIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        match kind {
+            FloatIntrinsicKind::FAbs
+            | FloatIntrinsicKind::Sqrt
+            | FloatIntrinsicKind::Canonicalize
+            | FloatIntrinsicKind::Floor
+            | FloatIntrinsicKind::Ceil
+            | FloatIntrinsicKind::Trunc
+            | FloatIntrinsicKind::Rint
+            | FloatIntrinsicKind::NearbyInt
+            | FloatIntrinsicKind::Round
+            | FloatIntrinsicKind::RoundEven => self.lower_float_unary_intrinsic(instruction, kind),
+            FloatIntrinsicKind::MinNum
+            | FloatIntrinsicKind::MaxNum
+            | FloatIntrinsicKind::Minimum
+            | FloatIntrinsicKind::Maximum
+            | FloatIntrinsicKind::CopySign => self.lower_float_binary_intrinsic(instruction, kind),
+            FloatIntrinsicKind::Fma | FloatIntrinsicKind::FmulAdd => {
+                self.lower_float_ternary_intrinsic(instruction, kind)
+            },
+            FloatIntrinsicKind::IsFpClass => self.lower_is_fpclass_intrinsic(instruction, kind),
+        }
+    }
+
+    fn lower_float_unary_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: FloatIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 1 {
+            bail!(
+                "floating intrinsic {:?} expects exactly 1 argument, got {actual_args}",
+                kind
+            );
+        }
+
+        let source = instruction_operand_value(instruction, 0).context("floating intrinsic missing operand 0")?;
+        if !matches!(source.get_type(), BasicTypeEnum::FloatType(_)) {
+            bail!(
+                "floating intrinsic {:?} only supports scalar float/double operands",
+                kind
+            );
+        }
+        let source_width = value_width(source).context("floating intrinsic source has unsupported float width")?;
+        let result_width =
+            instruction_result_width(instruction)?.context("floating intrinsic result has no scalar width")?;
+        checked_float_width(source_width as u64)?;
+        checked_float_width(result_width as u64)?;
+        if source_width != result_width {
+            bail!(
+                "floating intrinsic {:?} width mismatch: source i{}, result i{}",
+                kind,
+                source_width,
+                result_width
+            );
+        }
+
+        let env = LoweringEnv::new()
+            .llvm_source("%a", source)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%a)", source_width as u64)
+            .imm("type_width(%r)", result_width as u64);
+        self.execute_lowering_rule(kind.lowering_rule(), env, Some(kind.semantic()))?;
+        Ok(())
+    }
+
+    fn lower_float_binary_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: FloatIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 2 {
+            bail!(
+                "floating intrinsic {:?} expects exactly 2 arguments, got {actual_args}",
+                kind
+            );
+        }
+
+        let lhs = instruction_operand_value(instruction, 0).context("floating intrinsic missing operand 0")?;
+        let rhs = instruction_operand_value(instruction, 1).context("floating intrinsic missing operand 1")?;
+        if !matches!(lhs.get_type(), BasicTypeEnum::FloatType(_))
+            || !matches!(rhs.get_type(), BasicTypeEnum::FloatType(_))
+        {
+            bail!(
+                "floating intrinsic {:?} only supports scalar float/double operands",
+                kind
+            );
+        }
+        let lhs_width = value_width(lhs).context("floating intrinsic lhs has unsupported float width")?;
+        let rhs_width = value_width(rhs).context("floating intrinsic rhs has unsupported float width")?;
+        let result_width =
+            instruction_result_width(instruction)?.context("floating intrinsic result has no scalar width")?;
+        checked_float_width(lhs_width as u64)?;
+        checked_float_width(rhs_width as u64)?;
+        checked_float_width(result_width as u64)?;
+        if lhs_width != rhs_width || lhs_width != result_width {
+            bail!(
+                "floating intrinsic {:?} width mismatch: lhs i{}, rhs i{}, result i{}",
+                kind,
+                lhs_width,
+                rhs_width,
+                result_width
+            );
+        }
+
+        let env = LoweringEnv::new()
+            .llvm_source("%a", lhs)
+            .llvm_source("%b", rhs)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%a)", lhs_width as u64)
+            .imm("type_width(%b)", rhs_width as u64)
+            .imm("type_width(%r)", result_width as u64);
+        self.execute_lowering_rule(kind.lowering_rule(), env, Some(kind.semantic()))?;
+        Ok(())
+    }
+
+    fn lower_float_ternary_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: FloatIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 3 {
+            bail!(
+                "floating intrinsic {:?} expects exactly 3 arguments, got {actual_args}",
+                kind
+            );
+        }
+
+        let lhs = instruction_operand_value(instruction, 0).context("floating intrinsic missing operand 0")?;
+        let rhs = instruction_operand_value(instruction, 1).context("floating intrinsic missing operand 1")?;
+        let third = instruction_operand_value(instruction, 2).context("floating intrinsic missing operand 2")?;
+        if !matches!(lhs.get_type(), BasicTypeEnum::FloatType(_))
+            || !matches!(rhs.get_type(), BasicTypeEnum::FloatType(_))
+            || !matches!(third.get_type(), BasicTypeEnum::FloatType(_))
+        {
+            bail!(
+                "floating intrinsic {:?} only supports scalar float/double operands",
+                kind
+            );
+        }
+        let lhs_width = value_width(lhs).context("floating intrinsic lhs has unsupported float width")?;
+        let rhs_width = value_width(rhs).context("floating intrinsic rhs has unsupported float width")?;
+        let third_width = value_width(third).context("floating intrinsic third has unsupported float width")?;
+        let result_width =
+            instruction_result_width(instruction)?.context("floating intrinsic result has no scalar width")?;
+        checked_float_width(lhs_width as u64)?;
+        checked_float_width(rhs_width as u64)?;
+        checked_float_width(third_width as u64)?;
+        checked_float_width(result_width as u64)?;
+        if lhs_width != rhs_width || lhs_width != third_width || lhs_width != result_width {
+            bail!(
+                "floating intrinsic {:?} width mismatch: lhs i{}, rhs i{}, third i{}, result i{}",
+                kind,
+                lhs_width,
+                rhs_width,
+                third_width,
+                result_width
+            );
+        }
+
+        let env = LoweringEnv::new()
+            .llvm_source("%a", lhs)
+            .llvm_source("%b", rhs)
+            .llvm_source("%c", third)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%a)", lhs_width as u64)
+            .imm("type_width(%b)", rhs_width as u64)
+            .imm("type_width(%c)", third_width as u64)
+            .imm("type_width(%r)", result_width as u64);
+        self.execute_lowering_rule(kind.lowering_rule(), env, Some(kind.semantic()))?;
+        Ok(())
+    }
+
+    fn lower_is_fpclass_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: FloatIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 2 {
+            bail!("llvm.is.fpclass expects exactly 2 arguments, got {actual_args}");
+        }
+
+        let result_width =
+            instruction_result_width(instruction)?.context("llvm.is.fpclass result has no scalar width")?;
+        if result_width != 1 {
+            bail!("llvm.is.fpclass must return i1, got i{result_width}");
+        }
+
+        let source = instruction_operand_value(instruction, 0).context("llvm.is.fpclass missing float operand 0")?;
+        if !matches!(source.get_type(), BasicTypeEnum::FloatType(_)) {
+            bail!("llvm.is.fpclass only supports scalar float/double operands");
+        }
+        let source_width = value_width(source).context("llvm.is.fpclass source has unsupported float width")?;
+        checked_float_width(source_width as u64)?;
+        let mask = checked_fpclass_mask(constant_int_operand(instruction, 1, "llvm.is.fpclass mask")?)?;
+
+        let env = LoweringEnv::new()
+            .llvm_source("%a", source)
+            .llvm_value("%r", instruction_key(instruction))
+            .imm("type_width(%a)", source_width as u64)
+            .imm("type_width(%r)", result_width as u64)
+            .imm("fpclass_mask(%r)", mask as u64);
+        self.execute_lowering_rule(kind.lowering_rule(), env, Some(HandlerSemantic::FloatClass))?;
+        Ok(())
+    }
+
     fn lower_memory_copy_intrinsic(
         &mut self,
         instruction: InstructionValue<'ctx>,
         kind: MemoryIntrinsicKind,
     ) -> anyhow::Result<()> {
         let rule = kind.lowering_rule();
-        let dst = self.materialize_operand(instruction, 0)?;
-        let src = self.materialize_operand(instruction, 1)?;
-        let len = constant_int_operand(instruction, 2, "memory intrinsic length")?;
-        ensure_supported_memory_intrinsic_len(len)?;
-        ensure_intrinsic_not_volatile(instruction, 3)?;
+        let dst_value = instruction_operand_value(instruction, 0)?;
+        let src_value = instruction_operand_value(instruction, 1)?;
+        let is_volatile = memory_intrinsic_is_volatile(instruction, 3)?;
 
+        let Some(len_value) = instruction_basic_operand(instruction, 2) else {
+            bail!("missing memory intrinsic length operand");
+        };
+        if is_volatile {
+            return self.lower_dynamic_memory_copy_intrinsic(kind, dst_value, src_value, len_value, true);
+        }
+        let len = if len_value.is_int_value() {
+            len_value.into_int_value().get_zero_extended_constant()
+        } else {
+            None
+        };
+        let Some(len) = len else {
+            return self.lower_dynamic_memory_copy_intrinsic(kind, dst_value, src_value, len_value, false);
+        };
+
+        if len > MAX_MEMORY_INTRINSIC_INLINE_BYTES {
+            return self.lower_dynamic_memory_copy_intrinsic(kind, dst_value, src_value, len_value, false);
+        }
+        let dst = self.materialize_value(dst_value)?;
+        let src = self.materialize_value(src_value)?;
         let direct_load = self.emit_action_for_shape(
             rule,
             &HandlerSemantic::Load,
@@ -2207,16 +4369,54 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         Ok(())
     }
 
+    fn lower_dynamic_memory_copy_intrinsic(
+        &mut self,
+        kind: MemoryIntrinsicKind,
+        dst_value: BasicValueEnum<'ctx>,
+        src_value: BasicValueEnum<'ctx>,
+        len_value: BasicValueEnum<'ctx>,
+        volatile: bool,
+    ) -> anyhow::Result<()> {
+        let env = LoweringEnv::new()
+            .llvm_source("%dst", dst_value)
+            .llvm_source("%src", src_value)
+            .llvm_source("%len", len_value);
+        let rule = kind.dynamic_lowering_rule(volatile);
+        let semantic = kind.dynamic_semantic(volatile);
+        self.execute_lowering_rule(rule, env, Some(semantic))?;
+        Ok(())
+    }
+
     fn lower_memset_intrinsic(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
         let rule = MemoryIntrinsicKind::Memset.lowering_rule();
-        let dst = self.materialize_operand(instruction, 0)?;
-        let value = self.materialize_operand(instruction, 1)?;
-        if value.width != 8 {
-            bail!("llvm.memset value must be i8, got i{}", value.width);
+        let dst_value = instruction_operand_value(instruction, 0)?;
+        let fill_value = instruction_operand_value(instruction, 1)?;
+        let fill_width = value_width(fill_value)?;
+        if fill_width != 8 {
+            bail!("llvm.memset value must be i8, got i{fill_width}");
         }
-        let len = constant_int_operand(instruction, 2, "memory intrinsic length")?;
-        ensure_supported_memory_intrinsic_len(len)?;
-        ensure_intrinsic_not_volatile(instruction, 3)?;
+        let is_volatile = memory_intrinsic_is_volatile(instruction, 3)?;
+
+        let Some(len_value) = instruction_basic_operand(instruction, 2) else {
+            bail!("missing memory intrinsic length operand");
+        };
+        if is_volatile {
+            return self.lower_dynamic_memset_intrinsic(dst_value, fill_value, len_value, true);
+        }
+        let len = if len_value.is_int_value() {
+            len_value.into_int_value().get_zero_extended_constant()
+        } else {
+            None
+        };
+        let Some(len) = len else {
+            return self.lower_dynamic_memset_intrinsic(dst_value, fill_value, len_value, false);
+        };
+
+        if len > MAX_MEMORY_INTRINSIC_INLINE_BYTES {
+            return self.lower_dynamic_memset_intrinsic(dst_value, fill_value, len_value, false);
+        }
+        let dst = self.materialize_value(dst_value)?;
+        let value = self.materialize_value(fill_value)?;
 
         let direct_store = self.emit_action_for_shape(
             rule,
@@ -2251,6 +4451,23 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             self.emit_profile_action(action, &env)?;
         }
 
+        Ok(())
+    }
+
+    fn lower_dynamic_memset_intrinsic(
+        &mut self,
+        dst_value: BasicValueEnum<'ctx>,
+        fill_value: BasicValueEnum<'ctx>,
+        len_value: BasicValueEnum<'ctx>,
+        volatile: bool,
+    ) -> anyhow::Result<()> {
+        let env = LoweringEnv::new()
+            .llvm_source("%dst", dst_value)
+            .llvm_source("%value", fill_value)
+            .llvm_source("%len", len_value);
+        let rule = MemoryIntrinsicKind::Memset.dynamic_lowering_rule(volatile);
+        let semantic = MemoryIntrinsicKind::Memset.dynamic_semantic(volatile);
+        self.execute_lowering_rule(rule, env, Some(semantic))?;
         Ok(())
     }
 
@@ -2319,17 +4536,24 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         let touched = self.native_touched_registers.clone();
         let mut seen = HashSet::new();
         let mut saves = Vec::new();
-        let candidates = self
-            .values
-            .iter()
-            .filter_map(|(key, binding)| {
-                (self.defined_values.contains(key)
-                    && !result_regs.contains(&binding.reg)
-                    && touched.contains(&binding.reg)
-                    && seen.insert(binding.reg))
-                .then_some(binding.reg)
-            })
-            .collect::<Vec<_>>();
+        let mut candidates = Vec::new();
+        for (key, binding) in &self.values {
+            if self.defined_values.contains(key)
+                && !result_regs.contains(&binding.reg)
+                && touched.contains(&binding.reg)
+                && seen.insert(binding.reg)
+            {
+                candidates.push(binding.reg);
+            }
+        }
+        for binding in self.aggregates.values() {
+            for field in binding.fields.iter().flatten() {
+                let reg = field.binding.reg;
+                if !result_regs.contains(&reg) && touched.contains(&reg) && seen.insert(reg) {
+                    candidates.push(reg);
+                }
+            }
+        }
 
         for reg in candidates {
             let scratch = self.alloc_temporary_vreg_excluding(&touched)?;
@@ -2393,14 +4617,17 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .context("icmp instruction has no predicate")?;
         let lhs_width = value_width(lhs)?;
         let rhs_width = value_width(rhs)?;
+        if lhs_width != rhs_width {
+            bail!("icmp operands have mismatched widths: {lhs_width} and {rhs_width}");
+        }
 
         let env = LoweringEnv::new()
             .llvm_source("%a", lhs)
             .llvm_source("%b", rhs)
             .llvm_value("%r", instruction_key(instruction))
             .imm("predicate(%r)", map_predicate(pred) as u64)
-            .imm("operand_width(%a,%b)", lhs_width.max(rhs_width) as u64);
-        self.execute_lowering_rule("llvm.icmp.integer", env, Some(HandlerSemantic::Icmp))?;
+            .imm("operand_width(%a,%b)", lhs_width as u64);
+        self.execute_lowering_rule("llvm.icmp.scalar", env, Some(HandlerSemantic::Icmp))?;
         Ok(())
     }
 
@@ -2434,7 +4661,12 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             InstructionOpcode::ZExt => ("llvm.cast.integer", HandlerSemantic::Cast(CastOp::ZExt)),
             InstructionOpcode::SExt => ("llvm.cast.integer", HandlerSemantic::Cast(CastOp::SExt)),
             InstructionOpcode::Trunc => ("llvm.cast.integer", HandlerSemantic::Cast(CastOp::Trunc)),
-            InstructionOpcode::BitCast => ("llvm.cast.integer", HandlerSemantic::Cast(CastOp::Bitcast)),
+            InstructionOpcode::BitCast => {
+                if src_width != dst_width {
+                    bail!("scalar bitcast requires equal widths: source i{src_width}, result i{dst_width}");
+                }
+                ("llvm.cast.bitcast.scalar", HandlerSemantic::Cast(CastOp::Bitcast))
+            },
             InstructionOpcode::PtrToInt => {
                 if dst_width < src_width {
                     ("llvm.cast.pointer", HandlerSemantic::Cast(CastOp::Trunc))
@@ -2463,6 +4695,13 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
 
     fn lower_freeze(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
         let value = instruction_operand_value(instruction, 0)?;
+        if matches!(
+            value.get_type(),
+            BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_)
+        ) {
+            return self.lower_aggregate_freeze(instruction, value);
+        }
+
         let width = instruction_result_width(instruction)?.context("freeze result has no scalar width")?;
         let frozen = self.materialize_freeze_value(value, width)?;
         let env = LoweringEnv::new()
@@ -2473,7 +4712,82 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         Ok(())
     }
 
+    fn lower_aggregate_freeze(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        value: BasicValueEnum<'ctx>,
+    ) -> anyhow::Result<()> {
+        let field_infos = return_fields_from_aggregate_type(value.get_type()).context("freeze aggregate fields")?;
+        if field_infos.is_empty() {
+            bail!("empty aggregate freeze is not supported");
+        }
+
+        let source = if is_undef_or_poison_value(value) {
+            AggregateBinding {
+                fields: vec![None; field_infos.len()],
+            }
+        } else {
+            self.aggregates
+                .get(&value_key(value))
+                .cloned()
+                .context("aggregate freeze operand was not built by supported aggregate lowering")?
+        };
+        if source.fields.len() != field_infos.len() {
+            bail!(
+                "aggregate freeze field count mismatch: value has {}, type has {}",
+                source.fields.len(),
+                field_infos.len()
+            );
+        }
+
+        let mut frozen_fields = Vec::with_capacity(field_infos.len());
+        for (index, info) in field_infos.into_iter().enumerate() {
+            let src = match source.fields.get(index).copied().flatten() {
+                Some(field) => field.binding,
+                None => self.zero_aggregate_freeze_field(info)?,
+            };
+            if src.width != info.width {
+                bail!(
+                    "aggregate freeze field {index} width mismatch: value is {}, type expects {}",
+                    src.width,
+                    info.width
+                );
+            }
+            let env = LoweringEnv::new()
+                .binding("%value", src)
+                .imm("type_width(%field)", info.width as u64);
+            let env = self.execute_lowering_rule("llvm.aggregate.freeze", env, Some(HandlerSemantic::Mov))?;
+            let stable = match env.get("%vr")? {
+                LoweringValue::Reg(binding) => binding,
+                LoweringValue::Imm(_) | LoweringValue::Label(_) => {
+                    bail!("aggregate freeze lowering must produce a field register")
+                },
+            };
+            frozen_fields.push(Some(AggregateField::owned(stable)));
+        }
+
+        self.insert_aggregate_value(instruction_key(instruction), AggregateBinding { fields: frozen_fields });
+        Ok(())
+    }
+
+    fn zero_aggregate_freeze_field(&mut self, info: ReturnField) -> anyhow::Result<ValueBinding> {
+        let reg = self.alloc_temporary_vreg()?;
+        self.push_constant(reg, 0, info.width)?;
+        Ok(ValueBinding { reg, width: info.width })
+    }
+
     fn lower_select(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        if matches!(
+            instruction.get_type(),
+            AnyTypeEnum::StructType(_) | AnyTypeEnum::ArrayType(_)
+        ) {
+            return self.lower_aggregate_select(instruction);
+        }
+
+        self.lower_scalar_select(instruction)
+    }
+
+    fn lower_scalar_select(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
         let dst = self.ensure_result_binding(instruction)?;
         let cond = self.materialize_operand(instruction, 0)?;
         let then_value = self.materialize_operand(instruction, 1)?;
@@ -2481,29 +4795,13 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         let then_label = self.builder.new_label();
         let else_label = self.builder.new_label();
         let join_label = self.builder.new_label();
-        let br_if = self.emit_action_for_shape(
-            "llvm.select.scalar",
-            &HandlerSemantic::BrCond,
-            &[("cond", "%vc"), ("then_pc", "then_label"), ("else_pc", "else_label")],
-        )?;
-        let then_mov = self.emit_action_for_shape(
-            "llvm.select.scalar",
-            &HandlerSemantic::Mov,
-            &[("dst", "%vr"), ("src", "%vt"), ("width", "type_width(%r)")],
-        )?;
-        let then_br =
-            self.emit_action_for_shape("llvm.select.scalar", &HandlerSemantic::Br, &[("target", "join_label")])?;
-        let else_mov = self.emit_action_for_shape(
-            "llvm.select.scalar",
-            &HandlerSemantic::Mov,
-            &[("dst", "%vr"), ("src", "%ve"), ("width", "type_width(%r)")],
-        )?;
+        let actions = self.select_lowering_actions("llvm.select.scalar", "type_width(%r)")?;
 
         let branch_env = LoweringEnv::new()
             .binding("%vc", cond)
             .label("then_label", then_label)
             .label("else_label", else_label);
-        self.emit_profile_action(&br_if, &branch_env)?;
+        self.emit_profile_action(&actions.br_if, &branch_env)?;
 
         self.builder.bind_label(then_label);
         let then_env = LoweringEnv::new()
@@ -2511,29 +4809,142 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .binding("%vt", then_value)
             .imm("type_width(%r)", dst.width as u64)
             .label("join_label", join_label);
-        self.emit_profile_action(&then_mov, &then_env)?;
-        self.emit_profile_action(&then_br, &then_env)?;
+        self.emit_profile_action(&actions.then_mov, &then_env)?;
+        self.emit_profile_action(&actions.br, &then_env)?;
 
         self.builder.bind_label(else_label);
         let else_env = LoweringEnv::new()
             .binding("%vr", dst)
             .binding("%ve", else_value)
-            .imm("type_width(%r)", dst.width as u64);
-        self.emit_profile_action(&else_mov, &else_env)?;
-        self.emit_profile_action(&then_br, &then_env)?;
+            .imm("type_width(%r)", dst.width as u64)
+            .label("join_label", join_label);
+        self.emit_profile_action(&actions.else_mov, &else_env)?;
+        self.emit_profile_action(&actions.br, &else_env)?;
 
         self.builder.bind_label(join_label);
         Ok(())
     }
 
+    fn lower_aggregate_select(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let field_infos = return_fields_from_aggregate_type(instruction_aggregate_type(instruction)?)
+            .context("select result fields")?;
+        if field_infos.is_empty() {
+            bail!("aggregate select has no scalar leaf fields");
+        }
+
+        let cond = self.materialize_operand(instruction, 0)?;
+        let then_aggregate = self
+            .aggregate_operand(instruction, 1)
+            .context("select then aggregate operand")?;
+        let else_aggregate = self
+            .aggregate_operand(instruction, 2)
+            .context("select else aggregate operand")?;
+        if then_aggregate.fields.len() != field_infos.len() || else_aggregate.fields.len() != field_infos.len() {
+            bail!(
+                "aggregate select field count mismatch: type has {}, then has {}, else has {}",
+                field_infos.len(),
+                then_aggregate.fields.len(),
+                else_aggregate.fields.len()
+            );
+        }
+
+        let actions = self.select_lowering_actions("llvm.select.aggregate", "type_width(%field)")?;
+        let mut field_moves = Vec::with_capacity(field_infos.len());
+        let mut result_fields = Vec::with_capacity(field_infos.len());
+        for (index, info) in field_infos.iter().copied().enumerate() {
+            let then_field = then_aggregate
+                .fields
+                .get(index)
+                .copied()
+                .flatten()
+                .with_context(|| format!("aggregate select then field {index} is undefined or unsupported"))?;
+            let else_field = else_aggregate
+                .fields
+                .get(index)
+                .copied()
+                .flatten()
+                .with_context(|| format!("aggregate select else field {index} is undefined or unsupported"))?;
+            if then_field.binding.width != info.width || else_field.binding.width != info.width {
+                bail!(
+                    "aggregate select field {index} width mismatch: type i{}, then i{}, else i{}",
+                    info.width,
+                    then_field.binding.width,
+                    else_field.binding.width
+                );
+            }
+
+            let dst = ValueBinding {
+                reg: self.builder.alloc_vreg()?,
+                width: info.width,
+            };
+            field_moves.push((info, dst, then_field.binding, else_field.binding));
+            result_fields.push(Some(AggregateField::owned(dst)));
+        }
+
+        let then_label = self.builder.new_label();
+        let else_label = self.builder.new_label();
+        let join_label = self.builder.new_label();
+        let branch_env = LoweringEnv::new()
+            .binding("%vc", cond)
+            .label("then_label", then_label)
+            .label("else_label", else_label);
+        self.emit_profile_action(&actions.br_if, &branch_env)?;
+
+        self.builder.bind_label(then_label);
+        for (info, dst, then_value, _) in &field_moves {
+            let then_env = LoweringEnv::new()
+                .binding("%vr", *dst)
+                .binding("%vt", *then_value)
+                .imm("type_width(%field)", info.width as u64)
+                .label("join_label", join_label);
+            self.emit_profile_action(&actions.then_mov, &then_env)?;
+        }
+        let then_br_env = LoweringEnv::new().label("join_label", join_label);
+        self.emit_profile_action(&actions.br, &then_br_env)?;
+
+        self.builder.bind_label(else_label);
+        for (info, dst, _, else_value) in &field_moves {
+            let else_env = LoweringEnv::new()
+                .binding("%vr", *dst)
+                .binding("%ve", *else_value)
+                .imm("type_width(%field)", info.width as u64)
+                .label("join_label", join_label);
+            self.emit_profile_action(&actions.else_mov, &else_env)?;
+        }
+        let else_br_env = LoweringEnv::new().label("join_label", join_label);
+        self.emit_profile_action(&actions.br, &else_br_env)?;
+
+        self.builder.bind_label(join_label);
+        self.insert_aggregate_value(instruction_key(instruction), AggregateBinding { fields: result_fields });
+        Ok(())
+    }
+
     fn lower_insert_value(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
-        let field_index = aggregate_single_index(instruction)?;
+        let selection = aggregate_selection_from_instruction(instruction)?;
         let mut aggregate = self.aggregate_seed_from_operand(instruction, 0)?;
         let inserted = instruction_operand_value(instruction, 1)?;
-        let inserted_width = value_width(inserted)?;
+        if selection.is_aggregate {
+            return self.lower_insert_subaggregate(instruction, aggregate, selection, inserted);
+        }
+
+        let field = selection
+            .fields
+            .first()
+            .copied()
+            .context("insertvalue scalar selection has no field")?;
+        let inserted_field = return_field_from_type(inserted.get_type()).context("insertvalue scalar field")?;
+        if inserted_field != field {
+            bail!(
+                "insertvalue field type mismatch: inserted {:?} width {}, aggregate field {:?} width {}",
+                inserted_field.kind,
+                inserted_field.width,
+                field.kind,
+                field.width
+            );
+        }
         let env = LoweringEnv::new()
             .llvm_source("%field", inserted)
-            .imm("type_width(%field)", inserted_width as u64);
+            .imm("type_width(%field)", inserted_field.width as u64);
         let env = self.execute_lowering_rule("llvm.aggregate.insert", env, Some(HandlerSemantic::Mov))?;
         let stable = match env.get("%r")? {
             LoweringValue::Reg(binding) => binding,
@@ -2541,24 +4952,100 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         };
         let slot = aggregate
             .fields
-            .get_mut(field_index)
-            .with_context(|| format!("insertvalue field {field_index} is out of range"))?;
-        *slot = Some(stable);
-        self.aggregates.insert(instruction_key(instruction), aggregate);
+            .get_mut(selection.start)
+            .with_context(|| format!("insertvalue field {} is out of range", selection.start))?;
+        *slot = Some(AggregateField::owned(stable));
+        self.insert_aggregate_value(instruction_key(instruction), aggregate);
+        Ok(())
+    }
+
+    fn lower_insert_subaggregate(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        mut aggregate: AggregateBinding,
+        selection: AggregateSelection,
+        inserted: BasicValueEnum<'ctx>,
+    ) -> anyhow::Result<()> {
+        if is_undef_or_poison_value(inserted) {
+            bail!("insertvalue subaggregate operand must be frozen before VM materialization");
+        }
+        let inserted_fields =
+            return_fields_from_aggregate_type(inserted.get_type()).context("insertvalue subaggregate fields")?;
+        if inserted_fields != selection.fields {
+            bail!("insertvalue subaggregate field layout does not match selected aggregate field");
+        }
+        let inserted_aggregate = self
+            .aggregates
+            .get(&value_key(inserted))
+            .cloned()
+            .context("insertvalue subaggregate operand was not built by supported aggregate lowering")?;
+        if inserted_aggregate.fields.len() != selection.fields.len() {
+            bail!(
+                "insertvalue subaggregate field count mismatch: value has {}, selection has {}",
+                inserted_aggregate.fields.len(),
+                selection.fields.len()
+            );
+        }
+
+        for (relative, info) in selection.fields.iter().copied().enumerate() {
+            let target_index = selection.start + relative;
+            let replacement = match inserted_aggregate.fields.get(relative).copied().flatten() {
+                Some(field) => {
+                    if field.binding.width != info.width {
+                        bail!(
+                            "insertvalue subaggregate field {relative} width mismatch: value is {}, selected field is {}",
+                            field.binding.width,
+                            info.width
+                        );
+                    }
+                    Some(AggregateField::owned(self.emit_aggregate_field_mov(
+                        "llvm.aggregate.insert.subaggregate",
+                        field.binding,
+                        info.width,
+                    )?))
+                },
+                None => None,
+            };
+            let slot = aggregate
+                .fields
+                .get_mut(target_index)
+                .with_context(|| format!("insertvalue subaggregate field {target_index} is out of range"))?;
+            *slot = replacement;
+        }
+
+        self.insert_aggregate_value(instruction_key(instruction), aggregate);
         Ok(())
     }
 
     fn lower_extract_value(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
-        let field_index = aggregate_single_index(instruction)?;
+        let selection = aggregate_selection_from_instruction(instruction)?;
         let aggregate = self.aggregate_operand(instruction, 0)?;
+        if selection.is_aggregate {
+            return self.lower_extract_subaggregate(instruction, aggregate, selection);
+        }
+
+        let field = selection
+            .fields
+            .first()
+            .copied()
+            .context("extractvalue scalar selection has no field")?;
         let src = aggregate
             .fields
-            .get(field_index)
+            .get(selection.start)
             .copied()
             .flatten()
-            .with_context(|| format!("extractvalue field {field_index} is out of range"))?;
+            .map(|field| field.binding)
+            .with_context(|| format!("extractvalue field {} is out of range", selection.start))?;
 
         let result_width = instruction_result_width(instruction)?.context("extractvalue result has no scalar width")?;
+        if result_width != field.width || src.width != field.width {
+            bail!(
+                "extractvalue field width mismatch: result i{}, value i{}, aggregate field i{}",
+                result_width,
+                src.width,
+                field.width
+            );
+        }
         let env = LoweringEnv::new()
             .binding("%agg", src)
             .llvm_value("%r", instruction_key(instruction))
@@ -2566,6 +5053,57 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .imm("type_width(%r)", result_width as u64);
         self.execute_lowering_rule("llvm.aggregate.extract", env, Some(HandlerSemantic::Mov))?;
         Ok(())
+    }
+
+    fn lower_extract_subaggregate(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        aggregate: AggregateBinding,
+        selection: AggregateSelection,
+    ) -> anyhow::Result<()> {
+        let mut fields = Vec::with_capacity(selection.fields.len());
+        for (relative, info) in selection.fields.iter().copied().enumerate() {
+            let source_index = selection.start + relative;
+            let field = match aggregate.fields.get(source_index).copied().flatten() {
+                Some(field) => {
+                    if field.binding.width != info.width {
+                        bail!(
+                            "extractvalue subaggregate field {relative} width mismatch: value is {}, selected field is {}",
+                            field.binding.width,
+                            info.width
+                        );
+                    }
+                    Some(AggregateField::owned(self.emit_aggregate_field_mov(
+                        "llvm.aggregate.extract.subaggregate",
+                        field.binding,
+                        info.width,
+                    )?))
+                },
+                None => None,
+            };
+            fields.push(field);
+        }
+
+        self.insert_aggregate_value(instruction_key(instruction), AggregateBinding { fields });
+        Ok(())
+    }
+
+    fn emit_aggregate_field_mov(
+        &mut self,
+        rule: &str,
+        source: ValueBinding,
+        width: u8,
+    ) -> anyhow::Result<ValueBinding> {
+        let env = LoweringEnv::new()
+            .binding("%field", source)
+            .imm("type_width(%field)", width as u64);
+        let env = self.execute_lowering_rule(rule, env, Some(HandlerSemantic::Mov))?;
+        match env.get("%r")? {
+            LoweringValue::Reg(binding) => Ok(binding),
+            LoweringValue::Imm(_) | LoweringValue::Label(_) => {
+                bail!("aggregate field lowering rule {rule} must bind %r to a register")
+            },
+        }
     }
 
     fn lower_branch(&mut self, block: BasicBlock<'ctx>, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
@@ -2698,6 +5236,25 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         Ok(())
     }
 
+    fn lower_unreachable(&mut self) -> anyhow::Result<()> {
+        self.execute_lowering_rule(
+            "llvm.unreachable",
+            LoweringEnv::new(),
+            Some(HandlerSemantic::Unreachable),
+        )?;
+        Ok(())
+    }
+
+    fn lower_trap_intrinsic(
+        &mut self,
+        instruction: InstructionValue<'ctx>,
+        kind: TrapIntrinsicKind,
+    ) -> anyhow::Result<()> {
+        kind.validate(instruction)?;
+        self.execute_lowering_rule("llvm.trap", LoweringEnv::new(), Some(HandlerSemantic::Trap))?;
+        Ok(())
+    }
+
     fn lower_return(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
         if instruction.get_num_operands() == 0 {
             let env = LoweringEnv::new().reg("x0", 0, 64);
@@ -2726,6 +5283,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     .get(index)
                     .copied()
                     .flatten()
+                    .map(|field| field.binding)
                     .with_context(|| format!("aggregate return field {index} is out of range"))?;
                 if src.width != field.width {
                     bail!(
@@ -2760,6 +5318,11 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
 
     fn lower_phi_moves(&mut self, from: BasicBlock<'ctx>, to: BasicBlock<'ctx>) -> anyhow::Result<()> {
         for phi in leading_phi_nodes(to) {
+            if matches!(phi.get_type(), AnyTypeEnum::StructType(_) | AnyTypeEnum::ArrayType(_)) {
+                self.lower_aggregate_phi_move(phi, from)?;
+                continue;
+            }
+
             let dst = self
                 .values
                 .get(&instruction_key(phi))
@@ -2780,11 +5343,64 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         Ok(())
     }
 
+    fn lower_aggregate_phi_move(&mut self, phi: InstructionValue<'ctx>, from: BasicBlock<'ctx>) -> anyhow::Result<()> {
+        let field_infos = return_fields_from_aggregate_type(instruction_aggregate_type(phi)?)
+            .context("aggregate phi result fields")?;
+        let dst = self
+            .aggregates
+            .get(&instruction_key(phi))
+            .cloned()
+            .context("missing destination aggregate binding for phi")?;
+        let incoming = phi_incoming_value(phi, from)?;
+        let src = self
+            .aggregates
+            .get(&value_key(incoming))
+            .cloned()
+            .context("aggregate phi incoming value was not built by supported aggregate lowering")?;
+        if dst.fields.len() != field_infos.len() || src.fields.len() != field_infos.len() {
+            bail!(
+                "aggregate phi field count mismatch: type has {}, dst has {}, incoming has {}",
+                field_infos.len(),
+                dst.fields.len(),
+                src.fields.len()
+            );
+        }
+
+        for (index, info) in field_infos.into_iter().enumerate() {
+            let dst_field = dst
+                .fields
+                .get(index)
+                .copied()
+                .flatten()
+                .with_context(|| format!("aggregate phi destination field {index} is unavailable"))?;
+            let src_field = src
+                .fields
+                .get(index)
+                .copied()
+                .flatten()
+                .with_context(|| format!("aggregate phi incoming field {index} is undefined or unsupported"))?;
+            if dst_field.binding.width != info.width || src_field.binding.width != info.width {
+                bail!(
+                    "aggregate phi field {index} width mismatch: type i{}, dst i{}, incoming i{}",
+                    info.width,
+                    dst_field.binding.width,
+                    src_field.binding.width
+                );
+            }
+
+            let env = LoweringEnv::new()
+                .binding("%incoming_field", src_field.binding)
+                .binding("%vr", dst_field.binding)
+                .imm("type_width(%field)", info.width as u64);
+            self.execute_lowering_rule("llvm.aggregate.phi.edge_move", env, Some(HandlerSemantic::Mov))?;
+        }
+
+        Ok(())
+    }
+
     fn materialize_operand(&mut self, instruction: InstructionValue<'ctx>, index: u32) -> anyhow::Result<ValueBinding> {
-        let value = instruction
-            .get_operand(index)
-            .and_then(|operand| operand.value())
-            .with_context(|| format!("missing value operand {index}"))?;
+        let value =
+            instruction_basic_operand(instruction, index).with_context(|| format!("missing value operand {index}"))?;
         self.materialize_value(value)
     }
 
@@ -2793,23 +5409,19 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         instruction: InstructionValue<'ctx>,
         index: u32,
     ) -> anyhow::Result<AggregateBinding> {
-        let value = instruction
-            .get_operand(index)
-            .and_then(|operand| operand.value())
+        let value = instruction_basic_operand(instruction, index)
             .with_context(|| format!("missing aggregate operand {index}"))?;
         if let Some(binding) = self.aggregates.get(&value_key(value)) {
             return Ok(binding.clone());
         }
 
         Ok(AggregateBinding {
-            fields: vec![None; aggregate_field_count(value.get_type())?],
+            fields: vec![None; aggregate_leaf_count(value.get_type())?],
         })
     }
 
     fn aggregate_operand(&self, instruction: InstructionValue<'ctx>, index: u32) -> anyhow::Result<AggregateBinding> {
-        let value = instruction
-            .get_operand(index)
-            .and_then(|operand| operand.value())
+        let value = instruction_basic_operand(instruction, index)
             .with_context(|| format!("missing aggregate operand {index}"))?;
         self.aggregates
             .get(&value_key(value))
@@ -2833,6 +5445,10 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 let reg = self.alloc_temporary_vreg()?;
                 self.push_constant(reg, imm, width)?;
                 return Ok(ValueBinding { reg, width });
+            }
+            let value_ref = int_value.as_value_ref();
+            if !unsafe { LLVMIsAConstantExpr(value_ref) }.is_null() {
+                return self.materialize_constant_expr_integer(value_ref);
             }
         }
 
@@ -2858,9 +5474,448 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 self.push_constant(reg, 0, 64)?;
                 return Ok(ValueBinding { reg, width: 64 });
             }
+            let pointer_ref = pointer_value.as_value_ref();
+            if !unsafe { LLVMIsAGlobalValue(pointer_ref) }.is_null() {
+                return self.materialize_global_pointer(pointer_value);
+            }
+            if !unsafe { LLVMIsAConstantExpr(pointer_ref) }.is_null() {
+                return self.materialize_constant_expr_pointer(pointer_ref);
+            }
+            bail!(
+                "non-null pointer constants other than GlobalValue or supported pointer cast/getelementptr constant expressions cannot be materialized"
+            );
         }
 
-        bail!("only integer/float constants and previously lowered SSA values can be materialized")
+        bail!(
+            "only integer/float constants, global/null pointers, supported pointer cast/getelementptr constants, and previously lowered SSA values can be materialized"
+        )
+    }
+
+    fn static_object_size(&self, value: BasicValueEnum<'ctx>) -> anyhow::Result<u64> {
+        if !value.is_pointer_value() {
+            bail!("llvm.objectsize operand must be a pointer");
+        }
+        let (total_size, offset) = self.static_object_base_and_offset(value.as_value_ref())?;
+        if offset < 0 {
+            bail!("llvm.objectsize negative object offset is not supported");
+        }
+        let offset = u64::try_from(offset).context("llvm.objectsize offset does not fit in u64")?;
+        if offset > total_size {
+            bail!("llvm.objectsize offset {offset} exceeds object size {total_size}");
+        }
+        Ok(total_size - offset)
+    }
+
+    fn static_object_base_and_offset(&self, value_ref: LLVMValueRef) -> anyhow::Result<(u64, i64)> {
+        if value_ref.is_null() {
+            bail!("llvm.objectsize pointer is null");
+        }
+        if unsafe { LLVMGetTypeKind(LLVMTypeOf(value_ref)) } != LLVMTypeKind::LLVMPointerTypeKind {
+            bail!("llvm.objectsize base value must be a pointer");
+        }
+
+        if !unsafe { LLVMIsAAllocaInst(value_ref) }.is_null() {
+            return self.static_alloca_object_size(value_ref).map(|size| (size, 0));
+        }
+        if !unsafe { LLVMIsAGlobalVariable(value_ref) }.is_null() {
+            let value_type = unsafe { LLVMGlobalGetValueType(value_ref) };
+            if value_type.is_null() {
+                bail!("llvm.objectsize global value type is unavailable");
+            }
+            return store_size(&self.target_data, value_type).map(|size| (size, 0));
+        }
+        if !unsafe { LLVMIsAGetElementPtrInst(value_ref) }.is_null()
+            || (!unsafe { LLVMIsAConstantExpr(value_ref) }.is_null()
+                && unsafe { LLVMGetConstOpcode(value_ref) } == LLVMOpcode::LLVMGetElementPtr)
+        {
+            let (base_ref, offset) = self.static_gep_pointer_parts(value_ref)?;
+            let (total_size, base_offset) = self.static_object_base_and_offset(base_ref)?;
+            let offset = base_offset
+                .checked_add(offset)
+                .context("llvm.objectsize GEP offset overflow")?;
+            return Ok((total_size, offset));
+        }
+        if !unsafe { LLVMIsAConstantExpr(value_ref) }.is_null() {
+            match unsafe { LLVMGetConstOpcode(value_ref) } {
+                LLVMOpcode::LLVMBitCast | LLVMOpcode::LLVMAddrSpaceCast => {
+                    let operand = single_constant_expr_operand(value_ref, "llvm.objectsize pointer cast")?;
+                    return self.static_object_base_and_offset(operand);
+                },
+                opcode => bail!("unsupported llvm.objectsize pointer constant expression opcode: {opcode:?}"),
+            }
+        }
+
+        bail!("llvm.objectsize only supports static alloca, global, and constant-offset GEP operands")
+    }
+
+    fn static_alloca_object_size(&self, alloca_ref: LLVMValueRef) -> anyhow::Result<u64> {
+        let allocated_type = unsafe { LLVMGetAllocatedType(alloca_ref) };
+        if allocated_type.is_null() {
+            bail!("llvm.objectsize alloca allocated type is unavailable");
+        }
+        let element_size = store_size(&self.target_data, allocated_type)?;
+        let operand_count =
+            usize::try_from(unsafe { LLVMGetNumOperands(alloca_ref) }).context("alloca operand count is negative")?;
+        if operand_count == 0 {
+            return Ok(element_size);
+        }
+
+        let count_ref = unsafe { LLVMGetOperand(alloca_ref, 0) };
+        if count_ref.is_null() {
+            return Ok(element_size);
+        }
+        if unsafe { LLVMGetTypeKind(LLVMTypeOf(count_ref)) } != LLVMTypeKind::LLVMIntegerTypeKind {
+            bail!("llvm.objectsize alloca element count must be an integer");
+        }
+        let count = unsafe { BasicValueEnum::new(count_ref) }
+            .into_int_value()
+            .get_zero_extended_constant()
+            .context("llvm.objectsize dynamic alloca count is not statically known")?;
+        element_size
+            .checked_mul(count)
+            .context("llvm.objectsize alloca byte size overflow")
+    }
+
+    fn static_gep_pointer_parts(&self, gep_ref: LLVMValueRef) -> anyhow::Result<(LLVMValueRef, i64)> {
+        let source_type = unsafe { LLVMGetGEPSourceElementType(gep_ref) };
+        if source_type.is_null() {
+            bail!("llvm.objectsize getelementptr source element type is unavailable");
+        }
+
+        let operand_count = usize::try_from(unsafe { LLVMGetNumOperands(gep_ref) })
+            .context("getelementptr operand count is negative")?;
+        if operand_count < 2 {
+            bail!("llvm.objectsize getelementptr needs a base pointer and at least one index");
+        }
+
+        let base_ref = unsafe { LLVMGetOperand(gep_ref, 0) };
+        if base_ref.is_null() || unsafe { LLVMGetTypeKind(LLVMTypeOf(base_ref)) } != LLVMTypeKind::LLVMPointerTypeKind {
+            bail!("llvm.objectsize getelementptr base must be a pointer");
+        }
+
+        let mut current_type = source_type;
+        let mut offset = 0_i64;
+        for index_position in 0..(operand_count - 1) {
+            let operand_index = u32::try_from(index_position + 1).context("getelementptr index position overflow")?;
+            let index_ref = unsafe { LLVMGetOperand(gep_ref, operand_index) };
+            let index_value = constant_int_ref(index_ref, "llvm.objectsize getelementptr index")?;
+            let index = unsafe { BasicValueEnum::new(index_ref) };
+            let step = gep_index_step(&self.target_data, current_type, index_position, index)?;
+            let step_offset = match step.constant_offset {
+                Some(offset) => offset,
+                None => scaled_gep_offset(index_value, step.scale)?,
+            };
+            offset = offset
+                .checked_add(step_offset)
+                .context("llvm.objectsize getelementptr offset overflow")?;
+            current_type = step.next_type;
+        }
+
+        Ok((base_ref, offset))
+    }
+
+    fn materialize_global_pointer(&mut self, pointer_value: PointerValue<'ctx>) -> anyhow::Result<ValueBinding> {
+        let thunk = self.emit_global_address_thunk(pointer_value)?;
+        let target = native_call_target(thunk)?;
+        let call_result = ValueBinding {
+            reg: self.alloc_temporary_vreg()?,
+            width: 64,
+        };
+        self.emit_no_arg_native_call_result(target, call_result)?;
+
+        let result = ValueBinding {
+            reg: self.alloc_temporary_vreg()?,
+            width: 64,
+        };
+        let env = LoweringEnv::new()
+            .binding("%value", call_result)
+            .binding("%src", call_result)
+            .binding("%vr", result)
+            .imm("type_width(%r)", 64);
+        self.execute_lowering_rule("llvm.global.address.pointer", env, Some(HandlerSemantic::Mov))?;
+        Ok(result)
+    }
+
+    fn materialize_constant_expr_pointer(&mut self, pointer_ref: LLVMValueRef) -> anyhow::Result<ValueBinding> {
+        match unsafe { LLVMGetConstOpcode(pointer_ref) } {
+            LLVMOpcode::LLVMIntToPtr => self.materialize_constexpr_inttoptr(pointer_ref),
+            LLVMOpcode::LLVMGetElementPtr => self.materialize_constant_gep_pointer(pointer_ref),
+            LLVMOpcode::LLVMBitCast | LLVMOpcode::LLVMAddrSpaceCast => {
+                self.materialize_pointer_constant_expr_operand(pointer_ref)
+            },
+            opcode => bail!("unsupported pointer constant expression opcode: {opcode:?}"),
+        }
+    }
+
+    fn materialize_constant_expr_integer(&mut self, value_ref: LLVMValueRef) -> anyhow::Result<ValueBinding> {
+        match unsafe { LLVMGetConstOpcode(value_ref) } {
+            LLVMOpcode::LLVMPtrToInt => self.materialize_constexpr_ptrtoint(value_ref),
+            LLVMOpcode::LLVMAdd => self.materialize_constexpr_integer_binop(value_ref, BinOp::Add),
+            LLVMOpcode::LLVMSub => self.materialize_constexpr_integer_binop(value_ref, BinOp::Sub),
+            LLVMOpcode::LLVMMul => self.materialize_constexpr_integer_binop(value_ref, BinOp::Mul),
+            LLVMOpcode::LLVMUDiv => self.materialize_constexpr_integer_binop(value_ref, BinOp::UDiv),
+            LLVMOpcode::LLVMSDiv => self.materialize_constexpr_integer_binop(value_ref, BinOp::SDiv),
+            LLVMOpcode::LLVMURem => self.materialize_constexpr_integer_binop(value_ref, BinOp::URem),
+            LLVMOpcode::LLVMSRem => self.materialize_constexpr_integer_binop(value_ref, BinOp::SRem),
+            LLVMOpcode::LLVMXor => self.materialize_constexpr_integer_binop(value_ref, BinOp::Xor),
+            LLVMOpcode::LLVMAnd => self.materialize_constexpr_integer_binop(value_ref, BinOp::And),
+            LLVMOpcode::LLVMOr => self.materialize_constexpr_integer_binop(value_ref, BinOp::Or),
+            LLVMOpcode::LLVMShl => self.materialize_constexpr_integer_binop(value_ref, BinOp::Shl),
+            LLVMOpcode::LLVMLShr => self.materialize_constexpr_integer_binop(value_ref, BinOp::LShr),
+            LLVMOpcode::LLVMAShr => self.materialize_constexpr_integer_binop(value_ref, BinOp::AShr),
+            LLVMOpcode::LLVMZExt => self.materialize_constexpr_integer_cast(value_ref, CastOp::ZExt),
+            LLVMOpcode::LLVMSExt => self.materialize_constexpr_integer_cast(value_ref, CastOp::SExt),
+            LLVMOpcode::LLVMTrunc => self.materialize_constexpr_integer_cast(value_ref, CastOp::Trunc),
+            LLVMOpcode::LLVMBitCast => self.materialize_constexpr_integer_cast(value_ref, CastOp::Bitcast),
+            opcode => bail!("unsupported integer constant expression opcode: {opcode:?}"),
+        }
+    }
+
+    fn materialize_constexpr_integer_binop(
+        &mut self,
+        expr_ref: LLVMValueRef,
+        op: BinOp,
+    ) -> anyhow::Result<ValueBinding> {
+        let (lhs_ref, rhs_ref) = binary_constant_expr_operands(expr_ref, "integer binop constant expression")?;
+        for (name, operand_ref) in [("lhs", lhs_ref), ("rhs", rhs_ref)] {
+            if unsafe { LLVMGetTypeKind(LLVMTypeOf(operand_ref)) } != LLVMTypeKind::LLVMIntegerTypeKind {
+                bail!("integer binop constant expression {name} operand must be an integer");
+            }
+        }
+
+        let lhs_value = unsafe { BasicValueEnum::new(lhs_ref) };
+        let rhs_value = unsafe { BasicValueEnum::new(rhs_ref) };
+        let result_value = unsafe { BasicValueEnum::new(expr_ref) };
+        let lhs_width = value_width(lhs_value)?;
+        let rhs_width = value_width(rhs_value)?;
+        let dst_width = value_width(result_value)?;
+        if lhs_width != dst_width || rhs_width != dst_width {
+            bail!(
+                "integer binop constant expression width mismatch: lhs i{}, rhs i{}, result i{}",
+                lhs_width,
+                rhs_width,
+                dst_width
+            );
+        }
+
+        let lhs = self.materialize_value(lhs_value)?;
+        let rhs = self.materialize_value(rhs_value)?;
+        let result = ValueBinding {
+            reg: self.alloc_temporary_vreg()?,
+            width: dst_width,
+        };
+        let env = LoweringEnv::new()
+            .binding("%a", lhs)
+            .binding("%b", rhs)
+            .binding("%va", lhs)
+            .binding("%vb", rhs)
+            .binding("%vr", result)
+            .imm("type_width(%r)", dst_width as u64);
+        self.execute_lowering_rule("llvm.constexpr.integer.binop", env, Some(HandlerSemantic::Bin(op)))?;
+        Ok(result)
+    }
+
+    fn materialize_constexpr_integer_cast(
+        &mut self,
+        expr_ref: LLVMValueRef,
+        op: CastOp,
+    ) -> anyhow::Result<ValueBinding> {
+        let operand_ref = single_constant_expr_operand(expr_ref, "integer cast constant expression")?;
+        if unsafe { LLVMGetTypeKind(LLVMTypeOf(operand_ref)) } != LLVMTypeKind::LLVMIntegerTypeKind {
+            bail!("integer cast constant expression operand must be an integer");
+        }
+
+        let operand = unsafe { BasicValueEnum::new(operand_ref) };
+        let src_width = value_width(operand)?;
+        let dst_width = value_width(unsafe { BasicValueEnum::new(expr_ref) })?;
+        match op {
+            CastOp::ZExt | CastOp::SExt if src_width >= dst_width => {
+                bail!("integer cast constant expression extension requires a wider result")
+            },
+            CastOp::Trunc if src_width <= dst_width => {
+                bail!("integer cast constant expression trunc requires a narrower result")
+            },
+            CastOp::Bitcast if src_width != dst_width => {
+                bail!("integer cast constant expression bitcast requires equal widths")
+            },
+            CastOp::ZExt | CastOp::SExt | CastOp::Trunc | CastOp::Bitcast => {},
+        }
+
+        let src = self.materialize_value(operand)?;
+        let result = ValueBinding {
+            reg: self.alloc_temporary_vreg()?,
+            width: dst_width,
+        };
+        let env = LoweringEnv::new()
+            .binding("%value", src)
+            .binding("%a", src)
+            .binding("%va", src)
+            .binding("%vr", result)
+            .imm("type_width(%value)", src_width as u64)
+            .imm("type_width(%a)", src_width as u64)
+            .imm("type_width(%r)", dst_width as u64);
+        self.execute_lowering_rule("llvm.constexpr.integer.cast", env, Some(HandlerSemantic::Cast(op)))?;
+        Ok(result)
+    }
+
+    fn materialize_constexpr_ptrtoint(&mut self, expr_ref: LLVMValueRef) -> anyhow::Result<ValueBinding> {
+        let operand_ref = single_constant_expr_operand(expr_ref, "ptrtoint constant expression")?;
+        if unsafe { LLVMGetTypeKind(LLVMTypeOf(operand_ref)) } != LLVMTypeKind::LLVMPointerTypeKind {
+            bail!("ptrtoint constant expression operand must be a pointer");
+        }
+
+        let operand = unsafe { BasicValueEnum::new(operand_ref) };
+        let src_width = value_width(operand)?;
+        let src = self.materialize_value(operand)?;
+        let dst_width = value_width(unsafe { BasicValueEnum::new(expr_ref) })?;
+        let result = ValueBinding {
+            reg: self.alloc_temporary_vreg()?,
+            width: dst_width,
+        };
+        let semantic = if dst_width < src_width {
+            HandlerSemantic::Cast(CastOp::Trunc)
+        } else {
+            HandlerSemantic::Cast(CastOp::Bitcast)
+        };
+        let env = LoweringEnv::new()
+            .binding("%value", src)
+            .binding("%a", src)
+            .binding("%va", src)
+            .binding("%vr", result)
+            .imm("type_width(%value)", src_width as u64)
+            .imm("type_width(%a)", src_width as u64)
+            .imm("type_width(%r)", dst_width as u64);
+        self.execute_lowering_rule("llvm.constexpr.ptrtoint", env, Some(semantic))?;
+        Ok(result)
+    }
+
+    fn materialize_constexpr_inttoptr(&mut self, expr_ref: LLVMValueRef) -> anyhow::Result<ValueBinding> {
+        let operand_ref = single_constant_expr_operand(expr_ref, "inttoptr constant expression")?;
+        if unsafe { LLVMGetTypeKind(LLVMTypeOf(operand_ref)) } != LLVMTypeKind::LLVMIntegerTypeKind {
+            bail!("inttoptr constant expression operand must be an integer");
+        }
+
+        let operand = unsafe { BasicValueEnum::new(operand_ref) };
+        let src_width = value_width(operand)?;
+        let src = self.materialize_value(operand)?;
+        let dst_width = value_width(unsafe { BasicValueEnum::new(expr_ref) })?;
+        let result = ValueBinding {
+            reg: self.alloc_temporary_vreg()?,
+            width: dst_width,
+        };
+        let semantic = if src_width < dst_width {
+            HandlerSemantic::Cast(CastOp::ZExt)
+        } else {
+            HandlerSemantic::Cast(CastOp::Bitcast)
+        };
+        let env = LoweringEnv::new()
+            .binding("%value", src)
+            .binding("%a", src)
+            .binding("%va", src)
+            .binding("%vr", result)
+            .imm("type_width(%value)", src_width as u64)
+            .imm("type_width(%a)", src_width as u64)
+            .imm("type_width(%r)", dst_width as u64);
+        self.execute_lowering_rule("llvm.constexpr.inttoptr", env, Some(semantic))?;
+        Ok(result)
+    }
+
+    fn materialize_pointer_constant_expr_operand(&mut self, expr_ref: LLVMValueRef) -> anyhow::Result<ValueBinding> {
+        let operand_ref = single_constant_expr_operand(expr_ref, "pointer cast constant expression")?;
+        if operand_ref.is_null()
+            || unsafe { LLVMGetTypeKind(LLVMTypeOf(operand_ref)) } != LLVMTypeKind::LLVMPointerTypeKind
+        {
+            bail!("pointer cast constant expression operand must be a pointer");
+        }
+        let operand = unsafe { BasicValueEnum::new(operand_ref) };
+        self.materialize_value(operand)
+    }
+
+    fn materialize_constant_gep_pointer(&mut self, gep_ref: LLVMValueRef) -> anyhow::Result<ValueBinding> {
+        let (base_ref, offset) = self.constant_gep_pointer_parts(gep_ref)?;
+        let base = self.materialize_value(unsafe { BasicValueEnum::new(base_ref) })?;
+        if offset == 0 {
+            return Ok(base);
+        }
+
+        let result = ValueBinding {
+            reg: self.alloc_temporary_vreg()?,
+            width: 64,
+        };
+        let gep_action = self.emit_action_for_shape(
+            "llvm.gep.constant",
+            &HandlerSemantic::Gep,
+            &[("dst", "%vr"), ("base", "%vb"), ("offset", "constant_gep_offset(%r)")],
+        )?;
+        let env = LoweringEnv::new()
+            .binding("%vb", base)
+            .binding("%vr", result)
+            .imm("constant_gep_offset(%r)", offset as u64);
+        self.emit_profile_action(&gep_action, &env)?;
+        Ok(result)
+    }
+
+    fn constant_gep_pointer_parts(&self, gep_ref: LLVMValueRef) -> anyhow::Result<(LLVMValueRef, i64)> {
+        let source_type = unsafe { LLVMGetGEPSourceElementType(gep_ref) };
+        if source_type.is_null() {
+            bail!("constant getelementptr source element type is unavailable");
+        }
+
+        let operand_count = usize::try_from(unsafe { LLVMGetNumOperands(gep_ref) })
+            .context("constant getelementptr operand count is negative")?;
+        if operand_count < 2 {
+            bail!("constant getelementptr needs a base pointer and at least one index");
+        }
+
+        let base_ref = unsafe { LLVMGetOperand(gep_ref, 0) };
+        if base_ref.is_null() || unsafe { LLVMGetTypeKind(LLVMTypeOf(base_ref)) } != LLVMTypeKind::LLVMPointerTypeKind {
+            bail!("constant getelementptr base must be a pointer");
+        }
+
+        let mut current_type = source_type;
+        let mut offset = 0_i64;
+        for index_position in 0..(operand_count - 1) {
+            let operand_index =
+                u32::try_from(index_position + 1).context("constant getelementptr index position overflow")?;
+            let index_ref = unsafe { LLVMGetOperand(gep_ref, operand_index) };
+            let index_value = constant_int_ref(index_ref, "constant getelementptr index")?;
+            let index = unsafe { BasicValueEnum::new(index_ref) };
+            let step = gep_index_step(&self.target_data, current_type, index_position, index)?;
+            let step_offset = match step.constant_offset {
+                Some(offset) => offset,
+                None => scaled_gep_offset(index_value, step.scale)?,
+            };
+            offset = offset
+                .checked_add(step_offset)
+                .context("constant getelementptr offset overflow")?;
+            current_type = step.next_type;
+        }
+
+        Ok((base_ref, offset))
+    }
+
+    fn emit_global_address_thunk(&mut self, pointer_value: PointerValue<'ctx>) -> anyhow::Result<FunctionValue<'ctx>> {
+        let ctx = self.module.get_context();
+        let thunk_type = ctx
+            .ptr_type(pointer_value.get_type().get_address_space())
+            .fn_type(&[], false);
+        let function_name = self.function.get_name().to_str().unwrap_or("anon");
+        let thunk = self.module.add_function(
+            &format!(
+                ".amice.vm.global_addr.{}.{}",
+                translator_symbol_suffix(function_name),
+                self.native_calls.len()
+            ),
+            thunk_type,
+            Some(Linkage::Private),
+        );
+        thunk.as_global_value().set_unnamed_address(UnnamedAddress::Global);
+
+        let entry = ctx.append_basic_block(thunk, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        builder.build_return(Some(&pointer_value))?;
+        Ok(thunk)
     }
 
     fn materialize_freeze_value(&mut self, value: BasicValueEnum<'ctx>, width: u8) -> anyhow::Result<ValueBinding> {
@@ -2892,20 +5947,6 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .get(&block_key(block))
             .copied()
             .context("missing label for successor")
-    }
-
-    fn static_alloca_count(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<u64> {
-        let Some(operand) = instruction.get_operand(0).and_then(|operand| operand.value()) else {
-            return Ok(1);
-        };
-        let count = operand
-            .into_int_value()
-            .get_zero_extended_constant()
-            .context("dynamic alloca count is not supported")?;
-        if count == 0 {
-            bail!("zero-count alloca is not supported");
-        }
-        Ok(count)
     }
 
     fn gep_dynamic_terms(
@@ -2948,12 +5989,42 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 }
 
-fn native_call_target<'ctx>(function: FunctionValue<'ctx>) -> anyhow::Result<NativeCallTarget<'ctx>> {
+fn native_call_target_for_direct_call<'ctx>(
+    function: FunctionValue<'ctx>,
+    instruction: InstructionValue<'ctx>,
+) -> anyhow::Result<NativeCallTarget<'ctx>> {
     let fn_type = function.get_type();
-    if fn_type.is_var_arg() {
-        bail!("varargs native calls are not supported");
+    if !fn_type.is_var_arg() {
+        return native_call_target(function);
     }
 
+    let arg_count = instruction.get_num_operands().saturating_sub(1) as usize;
+    let fixed_param_count = fn_type.get_param_types().len();
+    if arg_count < fixed_param_count {
+        bail!(
+            "varargs native call passes {arg_count} arguments but callee declares {fixed_param_count} fixed parameters"
+        );
+    }
+
+    let mut arg_types = Vec::with_capacity(arg_count);
+    for index in 0..arg_count {
+        let value = instruction_basic_operand(instruction, index as u32)
+            .with_context(|| format!("missing varargs native call argument {index}"))?;
+        arg_types.push(metadata_type_from_basic_type(value.get_type())?);
+    }
+    native_call_target_with_arg_types(function, arg_types)
+}
+
+fn native_call_target<'ctx>(function: FunctionValue<'ctx>) -> anyhow::Result<NativeCallTarget<'ctx>> {
+    let fn_type = function.get_type();
+    native_call_target_with_arg_types(function, fn_type.get_param_types())
+}
+
+fn native_call_target_with_arg_types<'ctx>(
+    function: FunctionValue<'ctx>,
+    arg_types: Vec<BasicMetadataTypeEnum<'ctx>>,
+) -> anyhow::Result<NativeCallTarget<'ctx>> {
+    let fn_type = function.get_type();
     let (returns_void, return_fields) = match fn_type.get_return_type() {
         None => (true, Vec::new()),
         Some(BasicTypeEnum::IntType(return_type)) => (
@@ -2978,52 +6049,196 @@ fn native_call_target<'ctx>(function: FunctionValue<'ctx>) -> anyhow::Result<Nat
             }],
         ),
         Some(BasicTypeEnum::StructType(return_type)) => {
-            let fields = return_type
-                .get_field_types()
-                .into_iter()
-                .enumerate()
-                .map(|(index, ty)| return_field_from_type(ty).with_context(|| format!("native return field {index}")))
-                .collect::<anyhow::Result<Vec<_>>>()?;
+            let fields = return_fields_from_aggregate_type(BasicTypeEnum::StructType(return_type))
+                .context("native return fields")?;
+            if fields.is_empty() {
+                bail!("empty aggregate native call returns are not supported");
+            }
+            (false, fields)
+        },
+        Some(BasicTypeEnum::ArrayType(return_type)) => {
+            let fields = return_fields_from_aggregate_type(BasicTypeEnum::ArrayType(return_type))
+                .context("native return fields")?;
             if fields.is_empty() {
                 bail!("empty aggregate native call returns are not supported");
             }
             (false, fields)
         },
         Some(_) => {
-            bail!("only void, scalar integer, pointer, float, and direct struct native call returns are supported")
+            bail!(
+                "only void, scalar integer, pointer, float, and direct struct/array native call returns are supported"
+            )
         },
     };
 
-    let param_types = fn_type.get_param_types();
-    if param_types.len() > 8 {
-        bail!("only up to 8 scalar integer/pointer/float native call arguments are supported");
+    let mut param_widths = Vec::new();
+    let mut params = Vec::with_capacity(arg_types.len());
+    for (index, ty) in arg_types.iter().enumerate() {
+        let start = param_widths.len();
+        let fields = match ty {
+            BasicMetadataTypeEnum::IntType(int_ty) => vec![ReturnField {
+                width: checked_width(int_ty.get_bit_width())?,
+                kind: ScalarKind::Integer,
+            }],
+            BasicMetadataTypeEnum::PointerType(_) => vec![ReturnField {
+                width: 64,
+                kind: ScalarKind::Pointer,
+            }],
+            BasicMetadataTypeEnum::FloatType(float_ty) => vec![ReturnField {
+                width: float_type_width(float_ty.as_type_ref())?,
+                kind: ScalarKind::Float,
+            }],
+            BasicMetadataTypeEnum::StructType(struct_ty) => {
+                let fields = return_fields_from_aggregate_type(BasicTypeEnum::StructType(*struct_ty))
+                    .with_context(|| format!("native aggregate parameter {index} fields"))?;
+                if fields.is_empty() {
+                    bail!("empty aggregate native call parameter {index} is not supported");
+                }
+                fields
+            },
+            BasicMetadataTypeEnum::ArrayType(array_ty) => {
+                let fields = return_fields_from_aggregate_type(BasicTypeEnum::ArrayType(*array_ty))
+                    .with_context(|| format!("native aggregate parameter {index} fields"))?;
+                if fields.is_empty() {
+                    bail!("empty aggregate native call parameter {index} is not supported");
+                }
+                fields
+            },
+            _ => {
+                bail!(
+                    "only scalar integer, pointer, float, and direct struct/array native call parameters are supported"
+                )
+            },
+        };
+        for field in &fields {
+            param_widths.push(field.width);
+        }
+        params.push(FunctionParamSlots { start, fields });
     }
-    let params = param_types
-        .iter()
-        .map(|ty| match ty {
-            BasicMetadataTypeEnum::IntType(int_ty) => Ok((checked_width(int_ty.get_bit_width())?, false, false)),
-            BasicMetadataTypeEnum::PointerType(_) => Ok((64, true, false)),
-            BasicMetadataTypeEnum::FloatType(float_ty) => Ok((float_type_width(float_ty.as_type_ref())?, false, true)),
-            _ => bail!("only scalar integer, pointer, and float native call arguments are supported"),
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let mut param_widths = Vec::with_capacity(params.len());
-    let mut param_is_pointer = Vec::with_capacity(params.len());
-    let mut param_is_float = Vec::with_capacity(params.len());
-    for (width, is_pointer, is_float) in params {
-        param_widths.push(width);
-        param_is_pointer.push(is_pointer);
-        param_is_float.push(is_float);
+
+    if param_widths.len() > NATIVE_CALL_MAX_ARGS {
+        bail!(
+            "only up to {NATIVE_CALL_MAX_ARGS} flattened scalar integer/pointer/float native call argument slots are supported, got {}",
+            param_widths.len()
+        );
     }
 
     Ok(NativeCallTarget {
         function,
+        arg_types,
         param_widths,
+        params,
         returns_void,
         return_fields,
-        param_is_pointer,
-        param_is_float,
     })
+}
+
+fn metadata_type_from_basic_type<'ctx>(ty: BasicTypeEnum<'ctx>) -> anyhow::Result<BasicMetadataTypeEnum<'ctx>> {
+    match ty {
+        BasicTypeEnum::IntType(ty) => Ok(ty.into()),
+        BasicTypeEnum::PointerType(ty) => Ok(ty.into()),
+        BasicTypeEnum::FloatType(ty) => Ok(ty.into()),
+        BasicTypeEnum::StructType(ty) => Ok(ty.into()),
+        BasicTypeEnum::ArrayType(ty) => Ok(ty.into()),
+        BasicTypeEnum::VectorType(_) | BasicTypeEnum::ScalableVectorType(_) => {
+            bail!("vector varargs native call arguments are not supported by vm_virtualize")
+        },
+    }
+}
+
+fn ensure_supported_indirect_call_type(call_type: FunctionType<'_>) -> anyhow::Result<()> {
+    let param_types = call_type.get_param_types();
+    let mut flattened_param_count = 1usize;
+    for (index, ty) in param_types.iter().enumerate() {
+        let leaf_count = match ty {
+            BasicMetadataTypeEnum::IntType(int_ty) => {
+                checked_width(int_ty.get_bit_width())
+                    .with_context(|| format!("indirect call argument {index} integer width"))?;
+                1
+            },
+            BasicMetadataTypeEnum::PointerType(_) => 1,
+            BasicMetadataTypeEnum::FloatType(float_ty) => {
+                float_type_width(float_ty.as_type_ref())
+                    .with_context(|| format!("indirect call argument {index} float width"))?;
+                1
+            },
+            BasicMetadataTypeEnum::StructType(struct_ty) => {
+                let fields = return_fields_from_aggregate_type(BasicTypeEnum::StructType(*struct_ty))
+                    .with_context(|| format!("indirect call aggregate argument {index} fields"))?;
+                if fields.is_empty() {
+                    bail!("empty aggregate indirect call argument {index} is not supported");
+                }
+                fields.len()
+            },
+            BasicMetadataTypeEnum::ArrayType(array_ty) => {
+                let fields = return_fields_from_aggregate_type(BasicTypeEnum::ArrayType(*array_ty))
+                    .with_context(|| format!("indirect call aggregate argument {index} fields"))?;
+                if fields.is_empty() {
+                    bail!("empty aggregate indirect call argument {index} is not supported");
+                }
+                fields.len()
+            },
+            _ => bail!(
+                "only scalar integer, pointer, float, and direct struct/array indirect call arguments are supported"
+            ),
+        };
+        flattened_param_count += leaf_count;
+    }
+    if flattened_param_count > NATIVE_CALL_MAX_ARGS {
+        bail!(
+            "only up to {NATIVE_CALL_MAX_ARGS} flattened scalar integer/pointer/float indirect call argument slots are supported, got {flattened_param_count}"
+        );
+    }
+
+    let return_count = match call_type.get_return_type() {
+        None => 0,
+        Some(BasicTypeEnum::IntType(return_type)) => {
+            checked_width(return_type.get_bit_width()).context("indirect call integer return width")?;
+            1
+        },
+        Some(BasicTypeEnum::PointerType(_)) => 1,
+        Some(BasicTypeEnum::FloatType(return_type)) => {
+            float_type_width(return_type.as_type_ref()).context("indirect call float return width")?;
+            1
+        },
+        Some(BasicTypeEnum::StructType(return_type)) => {
+            let fields = return_fields_from_aggregate_type(BasicTypeEnum::StructType(return_type))
+                .context("indirect call return fields")?;
+            if fields.is_empty() {
+                bail!("empty aggregate indirect call returns are not supported");
+            }
+            fields.len()
+        },
+        Some(BasicTypeEnum::ArrayType(return_type)) => {
+            let fields = return_fields_from_aggregate_type(BasicTypeEnum::ArrayType(return_type))
+                .context("indirect call return fields")?;
+            if fields.is_empty() {
+                bail!("empty aggregate indirect call returns are not supported");
+            }
+            fields.len()
+        },
+        Some(_) => {
+            bail!(
+                "only void, scalar integer, pointer, float, and direct struct/array indirect call returns are supported"
+            )
+        },
+    };
+    if return_count > NATIVE_CALL_MAX_RETURNS {
+        bail!("indirect call returns {return_count} fields but call_native supports at most {NATIVE_CALL_MAX_RETURNS}");
+    }
+    Ok(())
+}
+
+fn translator_symbol_suffix(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn should_use_const_pool(imm: u64, width: u8) -> bool {
@@ -3129,6 +6344,47 @@ fn gep_struct_field_index(index: BasicValueEnum<'_>) -> anyhow::Result<u32> {
     u32::try_from(field).context("getelementptr struct field index is too large")
 }
 
+fn constant_int_ref(value: LLVMValueRef, context: &str) -> anyhow::Result<i64> {
+    if value.is_null() {
+        bail!("{context} is null");
+    }
+    if unsafe { LLVMIsAConstantInt(value) }.is_null() {
+        bail!("{context} must be an integer constant");
+    }
+    Ok(unsafe { LLVMConstIntGetSExtValue(value) })
+}
+
+fn single_constant_expr_operand(value: LLVMValueRef, context: &str) -> anyhow::Result<LLVMValueRef> {
+    if value.is_null() {
+        bail!("{context} is null");
+    }
+    let operand_count = unsafe { LLVMGetNumOperands(value) };
+    if operand_count != 1 {
+        bail!("{context} expects exactly one operand");
+    }
+    let operand = unsafe { LLVMGetOperand(value, 0) };
+    if operand.is_null() {
+        bail!("{context} operand is null");
+    }
+    Ok(operand)
+}
+
+fn binary_constant_expr_operands(value: LLVMValueRef, context: &str) -> anyhow::Result<(LLVMValueRef, LLVMValueRef)> {
+    if value.is_null() {
+        bail!("{context} is null");
+    }
+    let operand_count = unsafe { LLVMGetNumOperands(value) };
+    if operand_count != 2 {
+        bail!("{context} expects exactly two operands");
+    }
+    let lhs = unsafe { LLVMGetOperand(value, 0) };
+    let rhs = unsafe { LLVMGetOperand(value, 1) };
+    if lhs.is_null() || rhs.is_null() {
+        bail!("{context} operand is null");
+    }
+    Ok((lhs, rhs))
+}
+
 fn scaled_gep_offset(index: i64, scale: u64) -> anyhow::Result<i64> {
     let scale = i64::try_from(scale).context("getelementptr element size is too large")?;
     index
@@ -3188,7 +6444,26 @@ fn instruction_result_width(instruction: InstructionValue<'_>) -> anyhow::Result
         AnyTypeEnum::StructType(_)
             if matches!(
                 instruction.get_opcode(),
-                InstructionOpcode::Call | InstructionOpcode::AtomicCmpXchg
+                InstructionOpcode::Call
+                    | InstructionOpcode::AtomicCmpXchg
+                    | InstructionOpcode::Freeze
+                    | InstructionOpcode::ExtractValue
+                    | InstructionOpcode::Load
+                    | InstructionOpcode::Select
+                    | InstructionOpcode::Phi
+            ) =>
+        {
+            Ok(None)
+        },
+        AnyTypeEnum::ArrayType(_)
+            if matches!(
+                instruction.get_opcode(),
+                InstructionOpcode::Call
+                    | InstructionOpcode::Freeze
+                    | InstructionOpcode::ExtractValue
+                    | InstructionOpcode::Load
+                    | InstructionOpcode::Select
+                    | InstructionOpcode::Phi
             ) =>
         {
             Ok(None)
@@ -3197,15 +6472,37 @@ fn instruction_result_width(instruction: InstructionValue<'_>) -> anyhow::Result
     }
 }
 
-fn ensure_non_volatile_memory(instruction: InstructionValue<'_>, kind: &str) -> anyhow::Result<()> {
-    if instruction
-        .get_volatile()
-        .with_context(|| format!("{kind} volatile flag cannot be read"))?
-    {
-        bail!("{kind} volatile memory access is not supported by vm_virtualize");
+fn instruction_has_aggregate_result(instruction: InstructionValue<'_>) -> bool {
+    match instruction.get_opcode() {
+        InstructionOpcode::InsertValue | InstructionOpcode::AtomicCmpXchg => true,
+        InstructionOpcode::Freeze | InstructionOpcode::ExtractValue => matches!(
+            instruction.get_type(),
+            AnyTypeEnum::StructType(_) | AnyTypeEnum::ArrayType(_)
+        ),
+        InstructionOpcode::Load => matches!(
+            instruction.get_type(),
+            AnyTypeEnum::StructType(_) | AnyTypeEnum::ArrayType(_)
+        ),
+        InstructionOpcode::Call => matches!(
+            instruction.get_type(),
+            AnyTypeEnum::StructType(_) | AnyTypeEnum::ArrayType(_)
+        ),
+        InstructionOpcode::Select => matches!(
+            instruction.get_type(),
+            AnyTypeEnum::StructType(_) | AnyTypeEnum::ArrayType(_)
+        ),
+        InstructionOpcode::Phi => matches!(
+            instruction.get_type(),
+            AnyTypeEnum::StructType(_) | AnyTypeEnum::ArrayType(_)
+        ),
+        _ => false,
     }
+}
 
-    Ok(())
+fn memory_is_volatile(instruction: InstructionValue<'_>, kind: &str) -> anyhow::Result<bool> {
+    instruction
+        .get_volatile()
+        .with_context(|| format!("{kind} volatile flag cannot be read"))
 }
 
 fn ensure_default_atomic_syncscope(instruction: InstructionValue<'_>, kind: &str) -> anyhow::Result<()> {
@@ -3225,12 +6522,9 @@ fn memory_ordering(instruction: InstructionValue<'_>, kind: &str) -> anyhow::Res
         .with_context(|| format!("{kind} atomic ordering cannot be read"))
 }
 
-fn ensure_atomic_value_type(ty: AnyTypeEnum<'_>, kind: &str) -> anyhow::Result<()> {
+fn ensure_atomic_load_store_value_type(ty: AnyTypeEnum<'_>, kind: &str) -> anyhow::Result<()> {
     match ty {
-        AnyTypeEnum::IntType(_) | AnyTypeEnum::PointerType(_) => Ok(()),
-        AnyTypeEnum::FloatType(_) => {
-            bail!("{kind} atomic floating-point memory access is not supported by vm_virtualize")
-        },
+        AnyTypeEnum::IntType(_) | AnyTypeEnum::PointerType(_) | AnyTypeEnum::FloatType(_) => Ok(()),
         other => bail!("{kind} atomic memory type is not supported by vm_virtualize: {other:?}"),
     }
 }
@@ -3241,6 +6535,28 @@ fn ensure_atomic_basic_value_type(ty: BasicTypeEnum<'_>, kind: &str) -> anyhow::
         BasicTypeEnum::FloatType(_) => {
             bail!("{kind} atomic floating-point memory access is not supported by vm_virtualize")
         },
+        other => bail!("{kind} atomic memory type is not supported by vm_virtualize: {other:?}"),
+    }
+}
+
+fn ensure_atomic_rmw_value_type(ty: BasicTypeEnum<'_>, op: AtomicRmwOp) -> anyhow::Result<()> {
+    match (op.is_floating_point(), ty) {
+        (true, BasicTypeEnum::FloatType(float_ty)) => {
+            checked_float_width(float_type_width(float_ty.as_type_ref())? as u64)?;
+            Ok(())
+        },
+        (true, other) => bail!("floating atomicrmw operation {op:?} requires float/double operand, got {other:?}"),
+        (false, BasicTypeEnum::IntType(_) | BasicTypeEnum::PointerType(_)) => Ok(()),
+        (false, BasicTypeEnum::FloatType(_)) => {
+            bail!("integer atomicrmw operation {op:?} cannot be applied to floating-point memory")
+        },
+        (false, other) => bail!("atomicrmw memory type is not supported by vm_virtualize: {other:?}"),
+    }
+}
+
+fn ensure_atomic_load_store_basic_value_type(ty: BasicTypeEnum<'_>, kind: &str) -> anyhow::Result<()> {
+    match ty {
+        BasicTypeEnum::IntType(_) | BasicTypeEnum::PointerType(_) | BasicTypeEnum::FloatType(_) => Ok(()),
         other => bail!("{kind} atomic memory type is not supported by vm_virtualize: {other:?}"),
     }
 }
@@ -3385,16 +6701,16 @@ fn map_atomic_rmw_op(op: AtomicRMWBinOp) -> anyhow::Result<AtomicRmwOp> {
         AtomicRMWBinOp::Min => Ok(AtomicRmwOp::Min),
         AtomicRMWBinOp::UMax => Ok(AtomicRmwOp::UMax),
         AtomicRMWBinOp::UMin => Ok(AtomicRmwOp::UMin),
-        AtomicRMWBinOp::FAdd
-        | AtomicRMWBinOp::FSub
-        | AtomicRMWBinOp::FMax
-        | AtomicRMWBinOp::FMin
-        | AtomicRMWBinOp::UIncWrap
-        | AtomicRMWBinOp::UDecWrap
-        | AtomicRMWBinOp::USubCond
-        | AtomicRMWBinOp::USubSat
-        | AtomicRMWBinOp::FMaximum
-        | AtomicRMWBinOp::FMinimum => bail!("atomicrmw operation {op:?} is not supported by vm_virtualize"),
+        AtomicRMWBinOp::FAdd => Ok(AtomicRmwOp::FAdd),
+        AtomicRMWBinOp::FSub => Ok(AtomicRmwOp::FSub),
+        AtomicRMWBinOp::FMax => Ok(AtomicRmwOp::FMax),
+        AtomicRMWBinOp::FMin => Ok(AtomicRmwOp::FMin),
+        AtomicRMWBinOp::FMaximum => Ok(AtomicRmwOp::FMaximum),
+        AtomicRMWBinOp::FMinimum => Ok(AtomicRmwOp::FMinimum),
+        AtomicRMWBinOp::UIncWrap => Ok(AtomicRmwOp::UIncWrap),
+        AtomicRMWBinOp::UDecWrap => Ok(AtomicRmwOp::UDecWrap),
+        AtomicRMWBinOp::USubCond => Ok(AtomicRmwOp::USubCond),
+        AtomicRMWBinOp::USubSat => Ok(AtomicRmwOp::USubSat),
     }
 }
 
@@ -3411,7 +6727,6 @@ fn unsupported_control_flow_reason(opcode: InstructionOpcode) -> Option<&'static
         InstructionOpcode::CatchPad => Some("catchpad is not supported by vm_virtualize"),
         InstructionOpcode::CleanupPad => Some("cleanuppad is not supported by vm_virtualize"),
         InstructionOpcode::VAArg => Some("va_arg is not supported by vm_virtualize"),
-        InstructionOpcode::Unreachable => Some("unreachable terminator is not supported by vm_virtualize"),
         _ => None,
     }
 }
@@ -3430,24 +6745,168 @@ fn return_field_from_type(ty: BasicTypeEnum<'_>) -> anyhow::Result<ReturnField> 
             width: float_type_width(float_ty.as_type_ref())?,
             kind: ScalarKind::Float,
         }),
-        other => bail!("unsupported aggregate return field type: {other:?}"),
+        other => bail!("unsupported aggregate scalar leaf type: {other:?}"),
     }
 }
 
-fn aggregate_field_count(ty: BasicTypeEnum<'_>) -> anyhow::Result<usize> {
+fn return_fields_from_aggregate_type(ty: BasicTypeEnum<'_>) -> anyhow::Result<Vec<ReturnField>> {
     match ty {
-        BasicTypeEnum::StructType(ty) => Ok(ty.count_fields() as usize),
-        BasicTypeEnum::ArrayType(ty) => Ok(ty.len() as usize),
+        BasicTypeEnum::StructType(ty) => {
+            let mut fields = Vec::new();
+            for index in 0..ty.count_fields() {
+                let field_ty = ty
+                    .get_field_type_at_index(index)
+                    .with_context(|| format!("aggregate struct field {index} is unavailable"))?;
+                fields.extend(
+                    return_fields_from_aggregate_type(field_ty)
+                        .with_context(|| format!("aggregate struct field {index}"))?,
+                );
+            }
+            Ok(fields)
+        },
+        BasicTypeEnum::ArrayType(ty) => {
+            let element_ty = ty.get_element_type();
+            let element_fields = return_fields_from_aggregate_type(element_ty).context("aggregate array element")?;
+            let mut fields = Vec::new();
+            for _ in 0..ty.len() {
+                fields.extend(element_fields.iter().copied());
+            }
+            Ok(fields)
+        },
+        other => Ok(vec![return_field_from_type(other)?]),
+    }
+}
+
+fn aggregate_leaf_count(ty: BasicTypeEnum<'_>) -> anyhow::Result<usize> {
+    match ty {
+        BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => Ok(return_fields_from_aggregate_type(ty)?.len()),
         other => bail!("unsupported aggregate value type: {other:?}"),
     }
 }
 
-fn aggregate_single_index(instruction: InstructionValue<'_>) -> anyhow::Result<usize> {
-    let indices = instruction.get_indices();
-    if indices.len() != 1 {
-        bail!("only single-level aggregate indices are supported");
+fn instruction_aggregate_type(instruction: InstructionValue<'_>) -> anyhow::Result<BasicTypeEnum<'_>> {
+    match instruction.get_type() {
+        AnyTypeEnum::StructType(ty) => Ok(BasicTypeEnum::StructType(ty)),
+        AnyTypeEnum::ArrayType(ty) => Ok(BasicTypeEnum::ArrayType(ty)),
+        other => bail!("instruction result is not an aggregate: {other:?}"),
     }
-    Ok(indices[0] as usize)
+}
+
+fn aggregate_memory_fields<'ctx>(
+    target_data: &TargetData,
+    ty: BasicTypeEnum<'ctx>,
+) -> anyhow::Result<Vec<AggregateMemoryField>> {
+    let mut fields = Vec::new();
+    collect_aggregate_memory_fields(target_data, ty, 0, &mut fields)?;
+    Ok(fields)
+}
+
+fn collect_aggregate_memory_fields<'ctx>(
+    target_data: &TargetData,
+    ty: BasicTypeEnum<'ctx>,
+    base_offset: u64,
+    fields: &mut Vec<AggregateMemoryField>,
+) -> anyhow::Result<()> {
+    match ty {
+        BasicTypeEnum::StructType(ty) => {
+            for index in 0..ty.count_fields() {
+                let field_ty = ty
+                    .get_field_type_at_index(index)
+                    .with_context(|| format!("aggregate memory struct field {index} is unavailable"))?;
+                // LLVM data layout owns padding and packed-struct rules. The VM only sees byte offsets.
+                let field_offset = unsafe { LLVMOffsetOfElement(target_data.as_mut_ptr(), ty.as_type_ref(), index) };
+                let offset = base_offset
+                    .checked_add(field_offset)
+                    .context("aggregate memory struct field offset overflow")?;
+                collect_aggregate_memory_fields(target_data, field_ty, offset, fields)
+                    .with_context(|| format!("aggregate memory struct field {index}"))?;
+            }
+            Ok(())
+        },
+        BasicTypeEnum::ArrayType(ty) => {
+            let element_ty = ty.get_element_type();
+            let stride = store_size(target_data, element_ty.as_type_ref()).context("aggregate memory array stride")?;
+            for index in 0..ty.len() {
+                let element_offset = u64::from(index)
+                    .checked_mul(stride)
+                    .and_then(|offset| base_offset.checked_add(offset))
+                    .context("aggregate memory array element offset overflow")?;
+                collect_aggregate_memory_fields(target_data, element_ty, element_offset, fields)
+                    .with_context(|| format!("aggregate memory array element {index}"))?;
+            }
+            Ok(())
+        },
+        other => {
+            fields.push(AggregateMemoryField {
+                offset: base_offset,
+                info: return_field_from_type(other)?,
+            });
+            Ok(())
+        },
+    }
+}
+
+fn aggregate_selection_from_instruction(instruction: InstructionValue<'_>) -> anyhow::Result<AggregateSelection> {
+    let value = instruction_operand_value(instruction, 0)?;
+    let indices = aggregate_indices(instruction)?;
+    aggregate_selection_at_indices(value.get_type(), &indices)
+}
+
+fn aggregate_indices(instruction: InstructionValue<'_>) -> anyhow::Result<Vec<u32>> {
+    let indices = instruction.get_indices();
+    if indices.is_empty() {
+        bail!("aggregate instruction does not select a field");
+    }
+    Ok(indices)
+}
+
+fn aggregate_selection_at_indices(ty: BasicTypeEnum<'_>, indices: &[u32]) -> anyhow::Result<AggregateSelection> {
+    let Some((index, rest)) = indices.split_first() else {
+        return Ok(AggregateSelection {
+            start: 0,
+            fields: return_fields_from_aggregate_type(ty)?,
+            is_aggregate: matches!(ty, BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_)),
+        });
+    };
+
+    match ty {
+        BasicTypeEnum::StructType(ty) => {
+            if *index >= ty.count_fields() {
+                bail!("aggregate struct index {index} is out of range");
+            }
+
+            let mut flattened_index = 0;
+            for field_index in 0..*index {
+                let field_ty = ty
+                    .get_field_type_at_index(field_index)
+                    .with_context(|| format!("aggregate struct field {field_index} is unavailable"))?;
+                flattened_index += return_fields_from_aggregate_type(field_ty)
+                    .with_context(|| format!("aggregate struct field {field_index}"))?
+                    .len();
+            }
+
+            let field_ty = ty
+                .get_field_type_at_index(*index)
+                .with_context(|| format!("aggregate struct field {index} is unavailable"))?;
+            let mut selection = aggregate_selection_at_indices(field_ty, rest)
+                .with_context(|| format!("aggregate struct field {index}"))?;
+            selection.start += flattened_index;
+            Ok(selection)
+        },
+        BasicTypeEnum::ArrayType(ty) => {
+            if *index >= ty.len() {
+                bail!("aggregate array index {index} is out of range");
+            }
+            let element_ty = ty.get_element_type();
+            let element_leaf_count = return_fields_from_aggregate_type(element_ty)
+                .context("aggregate array element")?
+                .len();
+            let mut selection = aggregate_selection_at_indices(element_ty, rest).context("aggregate array element")?;
+            selection.start += (*index as usize) * element_leaf_count;
+            Ok(selection)
+        },
+        other => bail!("aggregate index descends into scalar field type: {other:?}"),
+    }
 }
 
 fn instruction_value_operands(instruction: InstructionValue<'_>) -> Vec<BasicValueEnum<'_>> {
@@ -3457,15 +6916,50 @@ fn instruction_value_operands(instruction: InstructionValue<'_>) -> Vec<BasicVal
     };
 
     (0..operand_count)
-        .filter_map(|index| instruction.get_operand(index).and_then(|operand| operand.value()))
+        .filter_map(|index| instruction_basic_operand(instruction, index))
         .collect()
 }
 
 fn instruction_operand_value(instruction: InstructionValue<'_>, index: u32) -> anyhow::Result<BasicValueEnum<'_>> {
-    instruction
-        .get_operand(index)
-        .and_then(|operand| operand.value())
-        .with_context(|| format!("missing value operand {index}"))
+    instruction_basic_operand(instruction, index).with_context(|| format!("missing value operand {index}"))
+}
+
+fn instruction_basic_operand(instruction: InstructionValue<'_>, index: u32) -> Option<BasicValueEnum<'_>> {
+    // SAFETY: `instruction` is a live LLVM instruction from the current module. This helper only
+    // inspects operand/type tags and skips non-BasicValue operands before constructing
+    // `BasicValueEnum`; inkwell panics if metadata is converted as a basic value.
+    unsafe {
+        let value = LLVMGetOperand(instruction.as_value_ref(), index);
+        if value.is_null() {
+            return None;
+        }
+        let ty = LLVMTypeOf(value);
+        if ty.is_null() {
+            return None;
+        }
+        match LLVMGetTypeKind(ty) {
+            LLVMTypeKind::LLVMVoidTypeKind
+            | LLVMTypeKind::LLVMLabelTypeKind
+            | LLVMTypeKind::LLVMMetadataTypeKind
+            | LLVMTypeKind::LLVMTokenTypeKind
+            | LLVMTypeKind::LLVMFunctionTypeKind => None,
+            LLVMTypeKind::LLVMHalfTypeKind
+            | LLVMTypeKind::LLVMBFloatTypeKind
+            | LLVMTypeKind::LLVMFloatTypeKind
+            | LLVMTypeKind::LLVMDoubleTypeKind
+            | LLVMTypeKind::LLVMX86_FP80TypeKind
+            | LLVMTypeKind::LLVMFP128TypeKind
+            | LLVMTypeKind::LLVMPPC_FP128TypeKind
+            | LLVMTypeKind::LLVMIntegerTypeKind
+            | LLVMTypeKind::LLVMStructTypeKind
+            | LLVMTypeKind::LLVMArrayTypeKind
+            | LLVMTypeKind::LLVMPointerTypeKind
+            | LLVMTypeKind::LLVMVectorTypeKind
+            | LLVMTypeKind::LLVMScalableVectorTypeKind
+            | LLVMTypeKind::LLVMX86_AMXTypeKind
+            | LLVMTypeKind::LLVMTargetExtTypeKind => Some(BasicValueEnum::new(value)),
+        }
+    }
 }
 
 fn memory_intrinsic_kind(function: FunctionValue<'_>) -> Option<MemoryIntrinsicKind> {
@@ -3481,10 +6975,187 @@ fn memory_intrinsic_kind(function: FunctionValue<'_>) -> Option<MemoryIntrinsicK
     }
 }
 
+fn trap_intrinsic_kind(function: FunctionValue<'_>) -> Option<TrapIntrinsicKind> {
+    match function.get_name().to_string_lossy().as_ref() {
+        "llvm.trap" => Some(TrapIntrinsicKind::Trap),
+        "llvm.debugtrap" => Some(TrapIntrinsicKind::DebugTrap),
+        "llvm.ubsantrap" => Some(TrapIntrinsicKind::UbsanTrap),
+        _ => None,
+    }
+}
+
+fn counter_intrinsic_kind(function: FunctionValue<'_>) -> Option<CounterKind> {
+    match function.get_name().to_string_lossy().as_ref() {
+        "llvm.readcyclecounter" => Some(CounterKind::Cycle),
+        "llvm.readsteadycounter" => Some(CounterKind::Steady),
+        _ => None,
+    }
+}
+
+fn counter_intrinsic_lowering_rule(kind: CounterKind) -> &'static str {
+    match kind {
+        CounterKind::Cycle => "llvm.readcyclecounter.integer",
+        CounterKind::Steady => "llvm.readsteadycounter.integer",
+    }
+}
+
+fn nop_intrinsic_kind(function: FunctionValue<'_>) -> Option<NopIntrinsicKind> {
+    let name = function.get_name().to_string_lossy();
+    if name.starts_with("llvm.lifetime.start.") {
+        Some(NopIntrinsicKind::LifetimeStart)
+    } else if name.starts_with("llvm.lifetime.end.") {
+        Some(NopIntrinsicKind::LifetimeEnd)
+    } else if name.starts_with("llvm.invariant.end.") {
+        Some(NopIntrinsicKind::InvariantEnd)
+    } else if name.starts_with("llvm.prefetch.") {
+        Some(NopIntrinsicKind::Prefetch)
+    } else if name == "llvm.experimental.noalias.scope.decl" {
+        Some(NopIntrinsicKind::NoAliasScopeDecl)
+    } else if name == "llvm.donothing" {
+        Some(NopIntrinsicKind::DoNothing)
+    } else if name == "llvm.assume" {
+        Some(NopIntrinsicKind::Assume)
+    } else if name.starts_with("llvm.dbg.") {
+        Some(NopIntrinsicKind::Debug)
+    } else if name.starts_with("llvm.var.annotation.") {
+        Some(NopIntrinsicKind::VarAnnotation)
+    } else if name == "llvm.codeview.annotation" {
+        Some(NopIntrinsicKind::CodeViewAnnotation)
+    } else {
+        None
+    }
+}
+
+fn identity_intrinsic_kind(function: FunctionValue<'_>) -> Option<IdentityIntrinsicKind> {
+    let name = function.get_name().to_string_lossy();
+    if name.starts_with("llvm.expect.with.probability.") {
+        Some(IdentityIntrinsicKind::ExpectWithProbability)
+    } else if name.starts_with("llvm.expect.") {
+        Some(IdentityIntrinsicKind::Expect)
+    } else if name.starts_with("llvm.ssa.copy.") {
+        Some(IdentityIntrinsicKind::SsaCopyScalar)
+    } else if name.starts_with("llvm.launder.invariant.group.") {
+        Some(IdentityIntrinsicKind::LaunderInvariantGroup)
+    } else if name.starts_with("llvm.strip.invariant.group.") {
+        Some(IdentityIntrinsicKind::StripInvariantGroup)
+    } else if name.starts_with("llvm.invariant.start.") {
+        Some(IdentityIntrinsicKind::InvariantStart)
+    } else if name.starts_with("llvm.annotation.") {
+        Some(IdentityIntrinsicKind::AnnotationInteger)
+    } else if name.starts_with("llvm.ptr.annotation.") {
+        Some(IdentityIntrinsicKind::PtrAnnotationPointer)
+    } else if name.starts_with("llvm.threadlocal.address.") {
+        Some(IdentityIntrinsicKind::ThreadLocalAddress)
+    } else {
+        None
+    }
+}
+
+fn pointer_intrinsic_kind(function: FunctionValue<'_>) -> Option<PointerIntrinsicKind> {
+    let name = function.get_name().to_string_lossy();
+    if name.starts_with("llvm.ptrmask.") {
+        Some(PointerIntrinsicKind::PtrMask)
+    } else {
+        None
+    }
+}
+
+fn compile_time_intrinsic_kind(function: FunctionValue<'_>) -> Option<CompileTimeIntrinsicKind> {
+    let name = function.get_name().to_string_lossy();
+    if name.starts_with("llvm.is.constant.") {
+        Some(CompileTimeIntrinsicKind::IsConstant)
+    } else if name.starts_with("llvm.objectsize.") {
+        Some(CompileTimeIntrinsicKind::ObjectSize)
+    } else {
+        None
+    }
+}
+
+fn float_intrinsic_kind(function: FunctionValue<'_>) -> Option<FloatIntrinsicKind> {
+    let name = function.get_name().to_string_lossy();
+    if name.starts_with("llvm.fabs.") {
+        Some(FloatIntrinsicKind::FAbs)
+    } else if name.starts_with("llvm.sqrt.") {
+        Some(FloatIntrinsicKind::Sqrt)
+    } else if name.starts_with("llvm.canonicalize.") {
+        Some(FloatIntrinsicKind::Canonicalize)
+    } else if name.starts_with("llvm.floor.") {
+        Some(FloatIntrinsicKind::Floor)
+    } else if name.starts_with("llvm.ceil.") {
+        Some(FloatIntrinsicKind::Ceil)
+    } else if name.starts_with("llvm.trunc.") {
+        Some(FloatIntrinsicKind::Trunc)
+    } else if name.starts_with("llvm.rint.") {
+        Some(FloatIntrinsicKind::Rint)
+    } else if name.starts_with("llvm.nearbyint.") {
+        Some(FloatIntrinsicKind::NearbyInt)
+    } else if name.starts_with("llvm.roundeven.") {
+        Some(FloatIntrinsicKind::RoundEven)
+    } else if name.starts_with("llvm.round.") {
+        Some(FloatIntrinsicKind::Round)
+    } else if name.starts_with("llvm.fma.") {
+        Some(FloatIntrinsicKind::Fma)
+    } else if name.starts_with("llvm.fmuladd.") {
+        Some(FloatIntrinsicKind::FmulAdd)
+    } else if name.starts_with("llvm.minnum.") {
+        Some(FloatIntrinsicKind::MinNum)
+    } else if name.starts_with("llvm.maxnum.") {
+        Some(FloatIntrinsicKind::MaxNum)
+    } else if name.starts_with("llvm.minimum.") {
+        Some(FloatIntrinsicKind::Minimum)
+    } else if name.starts_with("llvm.maximum.") {
+        Some(FloatIntrinsicKind::Maximum)
+    } else if name.starts_with("llvm.copysign.") {
+        Some(FloatIntrinsicKind::CopySign)
+    } else if name.starts_with("llvm.is.fpclass.") {
+        Some(FloatIntrinsicKind::IsFpClass)
+    } else {
+        None
+    }
+}
+
 fn integer_intrinsic_kind(function: FunctionValue<'_>) -> Option<IntegerIntrinsicKind> {
     let name = function.get_name().to_string_lossy();
     if name.starts_with("llvm.ctpop.") {
         Some(IntegerIntrinsicKind::CtPop)
+    } else if name.starts_with("llvm.ctlz.") {
+        Some(IntegerIntrinsicKind::CtLz)
+    } else if name.starts_with("llvm.cttz.") {
+        Some(IntegerIntrinsicKind::CtTz)
+    } else if name.starts_with("llvm.abs.") {
+        Some(IntegerIntrinsicKind::Abs)
+    } else if name.starts_with("llvm.smax.") {
+        Some(IntegerIntrinsicKind::SMax)
+    } else if name.starts_with("llvm.smin.") {
+        Some(IntegerIntrinsicKind::SMin)
+    } else if name.starts_with("llvm.umax.") {
+        Some(IntegerIntrinsicKind::UMax)
+    } else if name.starts_with("llvm.umin.") {
+        Some(IntegerIntrinsicKind::UMin)
+    } else if name.starts_with("llvm.uadd.sat.") {
+        Some(IntegerIntrinsicKind::UAddSat)
+    } else if name.starts_with("llvm.usub.sat.") {
+        Some(IntegerIntrinsicKind::USubSat)
+    } else if name.starts_with("llvm.sadd.sat.") {
+        Some(IntegerIntrinsicKind::SAddSat)
+    } else if name.starts_with("llvm.ssub.sat.") {
+        Some(IntegerIntrinsicKind::SSubSat)
+    } else if name.starts_with("llvm.ushl.sat.") {
+        Some(IntegerIntrinsicKind::UShlSat)
+    } else if name.starts_with("llvm.sshl.sat.") {
+        Some(IntegerIntrinsicKind::SShlSat)
+    } else if name.starts_with("llvm.uadd.with.overflow.") {
+        Some(IntegerIntrinsicKind::UAddOverflow)
+    } else if name.starts_with("llvm.sadd.with.overflow.") {
+        Some(IntegerIntrinsicKind::SAddOverflow)
+    } else if name.starts_with("llvm.usub.with.overflow.") {
+        Some(IntegerIntrinsicKind::USubOverflow)
+    } else if name.starts_with("llvm.ssub.with.overflow.") {
+        Some(IntegerIntrinsicKind::SSubOverflow)
+    } else if name.starts_with("llvm.umul.with.overflow.") {
+        Some(IntegerIntrinsicKind::UMulOverflow)
+    } else if name.starts_with("llvm.smul.with.overflow.") {
+        Some(IntegerIntrinsicKind::SMulOverflow)
     } else if name.starts_with("llvm.bswap.") {
         Some(IntegerIntrinsicKind::BSwap)
     } else if name.starts_with("llvm.bitreverse.") {
@@ -3512,24 +7183,17 @@ fn constant_int_operand(instruction: InstructionValue<'_>, index: u32, name: &st
         .with_context(|| format!("{name} must be a compile-time constant"))
 }
 
-fn ensure_supported_memory_intrinsic_len(len: u64) -> anyhow::Result<()> {
-    if len > MAX_MEMORY_INTRINSIC_INLINE_BYTES {
-        bail!("memory intrinsic length {len} exceeds inline limit {MAX_MEMORY_INTRINSIC_INLINE_BYTES}");
-    }
-    Ok(())
-}
-
-fn ensure_intrinsic_not_volatile(instruction: InstructionValue<'_>, volatile_index: u32) -> anyhow::Result<()> {
-    let Some(value) = instruction
-        .get_operand(volatile_index)
-        .and_then(|operand| operand.value())
-    else {
-        return Ok(());
+fn memory_intrinsic_is_volatile(instruction: InstructionValue<'_>, volatile_index: u32) -> anyhow::Result<bool> {
+    let Some(value) = instruction_basic_operand(instruction, volatile_index) else {
+        return Ok(false);
     };
-    if value.is_int_value() && value.into_int_value().get_zero_extended_constant() == Some(0) {
-        return Ok(());
+    if !value.is_int_value() {
+        bail!("memory intrinsic volatile flag must be an integer constant");
     }
-    bail!("volatile memory intrinsics are not supported by vm_virtualize")
+    let Some(flag) = value.into_int_value().get_zero_extended_constant() else {
+        bail!("memory intrinsic volatile flag must be a compile-time constant");
+    };
+    Ok(flag != 0)
 }
 
 fn memory_copy_chunks(len: u64) -> Vec<MemoryChunk> {
@@ -3559,6 +7223,49 @@ fn value_width(value: BasicValueEnum<'_>) -> anyhow::Result<u8> {
         BasicTypeEnum::PointerType(_) => Ok(64),
         other => bail!("unsupported scalar value type: {other:?}"),
     }
+}
+
+fn ensure_scalar_copy_shape(
+    source: BasicValueEnum<'_>,
+    result_type: AnyTypeEnum<'_>,
+    kind: IdentityIntrinsicKind,
+) -> anyhow::Result<()> {
+    match (source.get_type(), result_type) {
+        (BasicTypeEnum::IntType(source_type), AnyTypeEnum::IntType(result_type)) => {
+            let source_width = checked_width(source_type.get_bit_width())?;
+            let result_width = checked_width(result_type.get_bit_width())?;
+            if source_width != result_width {
+                bail!(
+                    "identity intrinsic {:?} integer scalar copy width mismatch: result i{}, value i{}",
+                    kind,
+                    result_width,
+                    source_width
+                );
+            }
+        },
+        (BasicTypeEnum::PointerType(_), AnyTypeEnum::PointerType(_)) => {},
+        (BasicTypeEnum::FloatType(source_type), AnyTypeEnum::FloatType(result_type)) => {
+            let source_width = float_type_width(source_type.as_type_ref())?;
+            let result_width = float_type_width(result_type.as_type_ref())?;
+            if source_width != result_width {
+                bail!(
+                    "identity intrinsic {:?} float scalar copy width mismatch: result i{}, value i{}",
+                    kind,
+                    result_width,
+                    source_width
+                );
+            }
+        },
+        (source_type, result_type) => {
+            bail!(
+                "identity intrinsic {:?} only supports integer, pointer, float, and double scalar copies; got source {:?}, result {:?}",
+                kind,
+                source_type,
+                result_type
+            );
+        },
+    }
+    Ok(())
 }
 
 /// 返回当前 VMP 标量浮点路径支持的 LLVM float value 位宽。
@@ -3634,6 +7341,14 @@ fn checked_float_width(width: u64) -> anyhow::Result<u8> {
         Ok(width as u8)
     } else {
         bail!("unsupported floating point width: {width}")
+    }
+}
+
+fn checked_fpclass_mask(mask: u64) -> anyhow::Result<u16> {
+    if mask <= FPCLASS_ALL_FLAGS {
+        Ok(mask as u16)
+    } else {
+        bail!("llvm.is.fpclass mask 0x{mask:x} exceeds supported FPClassTest bits 0x{FPCLASS_ALL_FLAGS:x}")
     }
 }
 
@@ -3797,12 +7512,9 @@ mod tests {
                 InstructionOpcode::CleanupRet,
                 "cleanupret is not supported by vm_virtualize",
             ),
-            (
-                InstructionOpcode::Unreachable,
-                "unreachable terminator is not supported by vm_virtualize",
-            ),
         ] {
             assert_eq!(unsupported_control_flow_reason(opcode), Some(expected));
         }
+        assert_eq!(unsupported_control_flow_reason(InstructionOpcode::Unreachable), None);
     }
 }

@@ -13,8 +13,9 @@
 
 use crate::abi::{NativeCallPolicy, VmRegister};
 use crate::isa::{
-    AtomicRmwOp, BinOp, CastOp, FloatBinOp, FloatCastOp, FloatUnaryOp, HandlerSemantic, InstructionDesc, IntTernaryOp,
-    IntUnaryOp, OperandDesc, OperandKind, SUPPORTED_DECODED_WIDTHS, SuperOp,
+    AtomicRmwOp, BinOp, CastOp, CounterKind, FloatBinOp, FloatCastOp, FloatTernaryOp, FloatUnaryOp, HandlerSemantic,
+    InstructionDesc, IntOverflowOp, IntTernaryOp, IntUnaryOp, OperandDesc, OperandKind, SUPPORTED_DECODED_WIDTHS,
+    SuperOp,
 };
 use crate::lowering::{NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS};
 use crate::profile::{
@@ -273,6 +274,7 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
         Super(crate::isa::SuperOp::LoadAdd) => {
             operands([("dst", VReg), ("ptr", VReg), ("addend", VReg), ("width", Imm)])
         },
+        ReadCounter(_) => operands([("dst", VReg), ("width", Imm)]),
         Mov => operands([("dst", VReg), ("src", VReg), ("width", Imm)]),
         Bin(_) => operands([("dst", VReg), ("lhs", VReg), ("rhs", VReg), ("width", Imm)]),
         IntUnary(_) => operands([("dst", VReg), ("src", VReg), ("width", Imm)]),
@@ -283,9 +285,24 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
             ("third", VReg),
             ("width", Imm),
         ]),
+        IntOverflow(_) => operands([
+            ("dst", VReg),
+            ("overflow", VReg),
+            ("lhs", VReg),
+            ("rhs", VReg),
+            ("width", Imm),
+        ]),
         FloatBin(_) => operands([("dst", VReg), ("lhs", VReg), ("rhs", VReg), ("width", Imm)]),
         FloatUnary(_) => operands([("dst", VReg), ("src", VReg), ("width", Imm)]),
+        FloatTernary(_) => operands([
+            ("dst", VReg),
+            ("lhs", VReg),
+            ("rhs", VReg),
+            ("third", VReg),
+            ("width", Imm),
+        ]),
         FloatCast(_) => operands([("dst", VReg), ("src", VReg), ("from_width", Imm), ("to_width", Imm)]),
+        FloatClass => operands([("dst", VReg), ("src", VReg), ("mask", Imm), ("width", Imm)]),
         Icmp => operands([
             ("pred", Imm),
             ("dst", VReg),
@@ -302,11 +319,22 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
         ]),
         Cast(_) => operands([("dst", VReg), ("src", VReg), ("from_width", Imm), ("to_width", Imm)]),
         Alloca => operands([("dst", VReg), ("bytes", Imm), ("align", Imm)]),
+        DynamicAlloca => operands([("dst", VReg), ("count", VReg), ("elem_size", Imm), ("align", Imm)]),
         Load => operands([("dst", VReg), ("ptr", VReg), ("width", Imm)]),
         Store => operands([("src", VReg), ("ptr", VReg), ("width", Imm)]),
+        VolatileLoad => operands([("dst", VReg), ("ptr", VReg), ("width", Imm)]),
+        VolatileStore => operands([("src", VReg), ("ptr", VReg), ("width", Imm)]),
+        MemcpyDynamic => operands([("dst", VReg), ("src", VReg), ("len", VReg)]),
+        MemmoveDynamic => operands([("dst", VReg), ("src", VReg), ("len", VReg)]),
+        MemsetDynamic => operands([("dst", VReg), ("value", VReg), ("len", VReg)]),
+        VolatileMemcpyDynamic => operands([("dst", VReg), ("src", VReg), ("len", VReg)]),
+        VolatileMemmoveDynamic => operands([("dst", VReg), ("src", VReg), ("len", VReg)]),
+        VolatileMemsetDynamic => operands([("dst", VReg), ("value", VReg), ("len", VReg)]),
         AtomicLoad => operands([("dst", VReg), ("ptr", VReg), ("width", Imm), ("ordering", Imm)]),
         AtomicStore => operands([("src", VReg), ("ptr", VReg), ("width", Imm), ("ordering", Imm)]),
-        AtomicRmw(_) => operands([
+        VolatileAtomicLoad => operands([("dst", VReg), ("ptr", VReg), ("width", Imm), ("ordering", Imm)]),
+        VolatileAtomicStore => operands([("src", VReg), ("ptr", VReg), ("width", Imm), ("ordering", Imm)]),
+        AtomicRmw(_) | VolatileAtomicRmw(_) => operands([
             ("dst", VReg),
             ("ptr", VReg),
             ("src", VReg),
@@ -314,6 +342,16 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
             ("ordering", Imm),
         ]),
         CmpXchg => operands([
+            ("old", VReg),
+            ("success", VReg),
+            ("ptr", VReg),
+            ("cmp", VReg),
+            ("new", VReg),
+            ("width", Imm),
+            ("success_ordering", Imm),
+            ("failure_ordering", Imm),
+        ]),
+        VolatileCmpXchg => operands([
             ("old", VReg),
             ("success", VReg),
             ("ptr", VReg),
@@ -331,6 +369,8 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
         BrCond => operands([("cond", VReg), ("then_pc", Label), ("else_pc", Label)]),
         VmCall => operands([("target", Label)]),
         VmRet => Vec::new(),
+        Unreachable => Vec::new(),
+        Trap => Vec::new(),
         Ret => operands([("src", VReg)]),
     }
 }
@@ -731,19 +771,31 @@ fn reject_q_indices(name: &str, registers: &[u8]) -> Result<(), ProfileError> {
 fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
     use BinOp::*;
     use CastOp::*;
-    use FloatBinOp::{Add as FAdd, Div as FDiv, Mul as FMul, Rem as FRem, Sub as FSub};
+    use FloatBinOp::{
+        Add as FAdd, CopySign as FCopySign, Div as FDiv, MaxNum as FMaxNum, Maximum as FMaximum, MinNum as FMinNum,
+        Minimum as FMinimum, Mul as FMul, Rem as FRem, Sub as FSub,
+    };
     use FloatCastOp::{
         FloatExt as FFPExt, FloatToSignedInt as FFPToSI, FloatToUnsignedInt as FFPToUI, FloatTrunc as FFPTrunc,
         SignedIntToFloat as FSIToFP, UnsignedIntToFloat as FUIToFP,
     };
-    use FloatUnaryOp::Neg as FNeg;
+    use FloatTernaryOp::{Fma as FFma, MulAdd as FFMulAdd};
+    use FloatUnaryOp::{
+        Canonicalize as FCanonicalize, Ceil as FCeil, Floor as FFloor, NearbyInt as FNearbyInt, Neg as FNeg,
+        Rint as FRint, Round as FRound, RoundEven as FRoundEven, Sqrt as FSqrt, Trunc as FTrunc,
+    };
     use HandlerSemantic::*;
+    use IntOverflowOp::{
+        SAdd as IOSAdd, SMul as IOSMul, SSub as IOSSub, UAdd as IOUAdd, UMul as IOUMul, USub as IOUSub,
+    };
     use IntTernaryOp::{FShl, FShr};
-    use IntUnaryOp::{BSwap, BitReverse, CtPop};
+    use IntUnaryOp::{Abs, BSwap, BitReverse, CtLz, CtPop, CtTz};
 
     let required = [
         (MovImm, 3, "mov_imm"),
         (ConstLoad, 3, "const_load"),
+        (ReadCounter(CounterKind::Cycle), 2, "read_cycle"),
+        (ReadCounter(CounterKind::Steady), 2, "read_steady"),
         (Mov, 3, "mov"),
         (Bin(Add), 4, "iadd"),
         (Bin(Sub), 4, "isub"),
@@ -758,9 +810,28 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (Bin(Shl), 4, "ishl"),
         (Bin(LShr), 4, "ilshr"),
         (Bin(AShr), 4, "iashr"),
+        (Bin(SMax), 4, "ismax"),
+        (Bin(SMin), 4, "ismin"),
+        (Bin(UMax), 4, "iumax"),
+        (Bin(UMin), 4, "iumin"),
+        (Bin(UAddSat), 4, "iuadd_sat"),
+        (Bin(USubSat), 4, "iusub_sat"),
+        (Bin(SAddSat), 4, "isadd_sat"),
+        (Bin(SSubSat), 4, "issub_sat"),
+        (Bin(UShlSat), 4, "iushl_sat"),
+        (Bin(SShlSat), 4, "isshl_sat"),
+        (IntOverflow(IOUAdd), 5, "iuadd_overflow"),
+        (IntOverflow(IOSAdd), 5, "isadd_overflow"),
+        (IntOverflow(IOUSub), 5, "iusub_overflow"),
+        (IntOverflow(IOSSub), 5, "issub_overflow"),
+        (IntOverflow(IOUMul), 5, "iumul_overflow"),
+        (IntOverflow(IOSMul), 5, "ismul_overflow"),
         (IntUnary(CtPop), 3, "ctpop"),
         (IntUnary(BSwap), 3, "bswap"),
         (IntUnary(BitReverse), 3, "bitreverse"),
+        (IntUnary(CtLz), 3, "ctlz"),
+        (IntUnary(CtTz), 3, "cttz"),
+        (IntUnary(Abs), 3, "iabs"),
         (IntTernary(FShl), 5, "fshl"),
         (IntTernary(FShr), 5, "fshr"),
         (FloatBin(FAdd), 4, "fadd"),
@@ -768,13 +839,31 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (FloatBin(FMul), 4, "fmul"),
         (FloatBin(FDiv), 4, "fdiv"),
         (FloatBin(FRem), 4, "frem"),
+        (FloatBin(FMinNum), 4, "fminnum"),
+        (FloatBin(FMaxNum), 4, "fmaxnum"),
+        (FloatBin(FMinimum), 4, "fminimum"),
+        (FloatBin(FMaximum), 4, "fmaximum"),
+        (FloatBin(FCopySign), 4, "fcopysign"),
         (FloatUnary(FNeg), 3, "fneg"),
+        (FloatUnary(FloatUnaryOp::Abs), 3, "fabs"),
+        (FloatUnary(FSqrt), 3, "fsqrt"),
+        (FloatUnary(FCanonicalize), 3, "fcanonicalize"),
+        (FloatUnary(FFloor), 3, "ffloor"),
+        (FloatUnary(FCeil), 3, "fceil"),
+        (FloatUnary(FTrunc), 3, "ftrunc"),
+        (FloatUnary(FRint), 3, "frint"),
+        (FloatUnary(FNearbyInt), 3, "fnearbyint"),
+        (FloatUnary(FRound), 3, "fround"),
+        (FloatUnary(FRoundEven), 3, "froundeven"),
+        (FloatTernary(FFma), 5, "ffma"),
+        (FloatTernary(FFMulAdd), 5, "ffmuladd"),
         (FloatCast(FSIToFP), 4, "sitofp"),
         (FloatCast(FUIToFP), 4, "uitofp"),
         (FloatCast(FFPToSI), 4, "fptosi"),
         (FloatCast(FFPToUI), 4, "fptoui"),
         (FloatCast(FFPTrunc), 4, "fptrunc"),
         (FloatCast(FFPExt), 4, "fpext"),
+        (FloatClass, 4, "fpclass"),
         (Icmp, 5, "icmp"),
         (Fcmp, 5, "fcmp"),
         (Cast(ZExt), 4, "zext"),
@@ -782,10 +871,21 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (Cast(Trunc), 4, "trunc"),
         (Cast(Bitcast), 4, "bitcast"),
         (Alloca, 3, "alloca"),
+        (DynamicAlloca, 4, "alloca_dyn"),
         (Load, 3, "load"),
         (Store, 3, "store"),
+        (VolatileLoad, 3, "volatile_load"),
+        (VolatileStore, 3, "volatile_store"),
+        (MemcpyDynamic, 3, "memcpy_dyn"),
+        (MemmoveDynamic, 3, "memmove_dyn"),
+        (MemsetDynamic, 3, "memset_dyn"),
+        (VolatileMemcpyDynamic, 3, "volatile_memcpy_dyn"),
+        (VolatileMemmoveDynamic, 3, "volatile_memmove_dyn"),
+        (VolatileMemsetDynamic, 3, "volatile_memset_dyn"),
         (AtomicLoad, 4, "atomic_load"),
         (AtomicStore, 4, "atomic_store"),
+        (VolatileAtomicLoad, 4, "volatile_atomic_load"),
+        (VolatileAtomicStore, 4, "volatile_atomic_store"),
         (AtomicRmw(AtomicRmwOp::Xchg), 5, "atomic_rmw_xchg"),
         (AtomicRmw(AtomicRmwOp::Add), 5, "atomic_rmw_add"),
         (AtomicRmw(AtomicRmwOp::Sub), 5, "atomic_rmw_sub"),
@@ -797,7 +897,63 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (AtomicRmw(AtomicRmwOp::Min), 5, "atomic_rmw_min"),
         (AtomicRmw(AtomicRmwOp::UMax), 5, "atomic_rmw_umax"),
         (AtomicRmw(AtomicRmwOp::UMin), 5, "atomic_rmw_umin"),
+        (AtomicRmw(AtomicRmwOp::UIncWrap), 5, "atomic_rmw_uinc_wrap"),
+        (AtomicRmw(AtomicRmwOp::UDecWrap), 5, "atomic_rmw_udec_wrap"),
+        (AtomicRmw(AtomicRmwOp::USubCond), 5, "atomic_rmw_usub_cond"),
+        (AtomicRmw(AtomicRmwOp::USubSat), 5, "atomic_rmw_usub_sat"),
+        (AtomicRmw(AtomicRmwOp::FAdd), 5, "atomic_rmw_fadd"),
+        (AtomicRmw(AtomicRmwOp::FSub), 5, "atomic_rmw_fsub"),
+        (AtomicRmw(AtomicRmwOp::FMax), 5, "atomic_rmw_fmax"),
+        (AtomicRmw(AtomicRmwOp::FMin), 5, "atomic_rmw_fmin"),
+        (AtomicRmw(AtomicRmwOp::FMaximum), 5, "atomic_rmw_fmaximum"),
+        (AtomicRmw(AtomicRmwOp::FMinimum), 5, "atomic_rmw_fminimum"),
+        (VolatileAtomicRmw(AtomicRmwOp::Xchg), 5, "volatile_atomic_rmw_xchg"),
+        (VolatileAtomicRmw(AtomicRmwOp::Add), 5, "volatile_atomic_rmw_add"),
+        (VolatileAtomicRmw(AtomicRmwOp::Sub), 5, "volatile_atomic_rmw_sub"),
+        (VolatileAtomicRmw(AtomicRmwOp::And), 5, "volatile_atomic_rmw_and"),
+        (VolatileAtomicRmw(AtomicRmwOp::Or), 5, "volatile_atomic_rmw_or"),
+        (VolatileAtomicRmw(AtomicRmwOp::Xor), 5, "volatile_atomic_rmw_xor"),
+        (VolatileAtomicRmw(AtomicRmwOp::Nand), 5, "volatile_atomic_rmw_nand"),
+        (VolatileAtomicRmw(AtomicRmwOp::Max), 5, "volatile_atomic_rmw_max"),
+        (VolatileAtomicRmw(AtomicRmwOp::Min), 5, "volatile_atomic_rmw_min"),
+        (VolatileAtomicRmw(AtomicRmwOp::UMax), 5, "volatile_atomic_rmw_umax"),
+        (VolatileAtomicRmw(AtomicRmwOp::UMin), 5, "volatile_atomic_rmw_umin"),
+        (
+            VolatileAtomicRmw(AtomicRmwOp::UIncWrap),
+            5,
+            "volatile_atomic_rmw_uinc_wrap",
+        ),
+        (
+            VolatileAtomicRmw(AtomicRmwOp::UDecWrap),
+            5,
+            "volatile_atomic_rmw_udec_wrap",
+        ),
+        (
+            VolatileAtomicRmw(AtomicRmwOp::USubCond),
+            5,
+            "volatile_atomic_rmw_usub_cond",
+        ),
+        (
+            VolatileAtomicRmw(AtomicRmwOp::USubSat),
+            5,
+            "volatile_atomic_rmw_usub_sat",
+        ),
+        (VolatileAtomicRmw(AtomicRmwOp::FAdd), 5, "volatile_atomic_rmw_fadd"),
+        (VolatileAtomicRmw(AtomicRmwOp::FSub), 5, "volatile_atomic_rmw_fsub"),
+        (VolatileAtomicRmw(AtomicRmwOp::FMax), 5, "volatile_atomic_rmw_fmax"),
+        (VolatileAtomicRmw(AtomicRmwOp::FMin), 5, "volatile_atomic_rmw_fmin"),
+        (
+            VolatileAtomicRmw(AtomicRmwOp::FMaximum),
+            5,
+            "volatile_atomic_rmw_fmaximum",
+        ),
+        (
+            VolatileAtomicRmw(AtomicRmwOp::FMinimum),
+            5,
+            "volatile_atomic_rmw_fminimum",
+        ),
         (CmpXchg, 8, "cmpxchg"),
+        (VolatileCmpXchg, 8, "volatile_cmpxchg"),
         (Fence, 1, "fence"),
         (Gep, 3, "gep"),
         (CallNative, call_native_operand_contract().len() as u8, "call_native"),
@@ -805,6 +961,8 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (BrCond, 3, "br_if"),
         (VmCall, 1, "vm_call"),
         (VmRet, 0, "vm_ret"),
+        (Unreachable, 0, "unreachable"),
+        (Trap, 0, "trap"),
         (Ret, 1, "ret"),
     ];
 
@@ -1081,6 +1239,9 @@ fn verify_lowering_action_flow(
 
 fn required_lowering_bind(rule: &crate::profile::LoweringRule) -> Option<&str> {
     let matcher = rule.matcher.as_ref()?;
+    if matcher.pattern.contains("with.overflow") {
+        return None;
+    }
     if matcher.pattern == "llvm.memory scalar %ptr" {
         return Some("%r");
     }

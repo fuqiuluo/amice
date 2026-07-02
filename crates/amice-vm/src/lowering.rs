@@ -10,8 +10,8 @@
 //! 这样同语义的两条指令仍能编码成不同 opcode 和 layout。
 
 use crate::isa::{
-    AtomicRmwOp, BinOp, CastOp, CmpPredicate, FloatBinOp, FloatCastOp, FloatPredicate, FloatUnaryOp, HandlerSemantic,
-    IntTernaryOp, IntUnaryOp, IsaProfile, MemoryOrdering, SuperOp,
+    AtomicRmwOp, BinOp, CastOp, CmpPredicate, CounterKind, FloatBinOp, FloatCastOp, FloatPredicate, FloatTernaryOp,
+    FloatUnaryOp, HandlerSemantic, IntOverflowOp, IntTernaryOp, IntUnaryOp, IsaProfile, MemoryOrdering, SuperOp,
 };
 use crate::profile::LoweringProfile;
 use std::collections::HashMap;
@@ -57,6 +57,15 @@ pub enum VmInstruction {
         /// 逻辑常量值；encoder 会分配 const-pool index。
         value: u64,
         /// 结果位宽。
+        width: u8,
+    },
+    /// 读取 LLVM 计数器 intrinsic 并写入 `x` 寄存器。
+    ReadCounter {
+        /// 计数器类别。
+        kind: CounterKind,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 结果位宽，LLVM intrinsic 当前固定为 64。
         width: u8,
     },
     /// 超级指令：先执行整数加法，再与第三个操作数做 xor。
@@ -157,6 +166,21 @@ pub enum VmInstruction {
         /// 操作数位宽。
         width: u8,
     },
+    /// 整数 with.overflow intrinsic：同时产生 wrapping 结果和 `i1` 溢出标志。
+    IntOverflow {
+        /// lowering 选中的溢出检测类别。
+        op: IntOverflowOp,
+        /// wrapping 结果目标 `x` 寄存器。
+        dst: u8,
+        /// 溢出标志目标 `x` 寄存器。
+        overflow: u8,
+        /// 左操作数 `x` 寄存器。
+        lhs: u8,
+        /// 右操作数 `x` 寄存器。
+        rhs: u8,
+        /// 操作数位宽。
+        width: u8,
+    },
     /// 整数比较，在 `x` 寄存器中生成 `i1` 值。
     Icmp {
         /// 归一化为 VM 形式的 LLVM 比较谓词。
@@ -194,6 +218,21 @@ pub enum VmInstruction {
         /// 浮点位宽，仅支持 32 或 64。
         width: u8,
     },
+    /// 标量浮点三元运算，输入和输出都以原始 bit 存在 `x` 寄存器中。
+    FloatTernary {
+        /// lowering 选中的后端浮点三元运算。
+        op: FloatTernaryOp,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 左操作数 `x` 寄存器。
+        lhs: u8,
+        /// 右操作数 `x` 寄存器。
+        rhs: u8,
+        /// 第三个操作数 `x` 寄存器。
+        third: u8,
+        /// 浮点位宽，仅支持 32 或 64。
+        width: u8,
+    },
     /// 标量整数/浮点转换，整数值和浮点 bit 都存放在 `x` 寄存器中。
     FloatCast {
         /// lowering 选中的后端转换操作。
@@ -220,6 +259,17 @@ pub enum VmInstruction {
         /// 操作数位宽，仅支持 32 或 64。
         width: u8,
     },
+    /// 标量浮点分类，在 `x` 寄存器中生成 `i1` 值。
+    FloatClass {
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 源浮点 bit 所在 `x` 寄存器。
+        src: u8,
+        /// LLVM `FPClassTest` mask。
+        mask: u16,
+        /// 操作数位宽，仅支持 32 或 64。
+        width: u8,
+    },
     /// 整数或指针位宽转换。
     Cast {
         /// lowering 选中的 cast 操作。
@@ -242,6 +292,17 @@ pub enum VmInstruction {
         /// 所需对齐，单位为字节。
         align: u8,
     },
+    /// 在 VM runtime frame 内按运行时元素个数进行栈分配。
+    DynamicAlloca {
+        /// 目标指针寄存器。
+        dst: u8,
+        /// 保存元素个数的 `x` 寄存器。
+        count: u8,
+        /// 单元素大小，单位为字节。
+        elem_size: u64,
+        /// 所需对齐，单位为字节。
+        align: u8,
+    },
     /// 从 `x` 寄存器保存的地址加载标量。
     Load {
         /// 目标 `x` 寄存器。
@@ -260,6 +321,78 @@ pub enum VmInstruction {
         /// 存储位宽。
         width: u8,
     },
+    /// 从 `x` 寄存器保存的地址执行 volatile 标量加载。
+    VolatileLoad {
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 指针寄存器。
+        ptr: u8,
+        /// 加载位宽。
+        width: u8,
+    },
+    /// 向 `x` 寄存器保存的地址执行 volatile 标量存储。
+    VolatileStore {
+        /// 源值寄存器。
+        src: u8,
+        /// 指针寄存器。
+        ptr: u8,
+        /// 存储位宽。
+        width: u8,
+    },
+    /// 按运行时长度从源地址向目标地址复制连续内存，语义等同 LLVM memcpy。
+    MemcpyDynamic {
+        /// 目标指针寄存器。
+        dst: u8,
+        /// 源指针寄存器。
+        src: u8,
+        /// 保存复制字节数的 `x` 寄存器。
+        len: u8,
+    },
+    /// 按运行时长度复制可重叠内存，语义等同 LLVM memmove。
+    MemmoveDynamic {
+        /// 目标指针寄存器。
+        dst: u8,
+        /// 源指针寄存器。
+        src: u8,
+        /// 保存复制字节数的 `x` 寄存器。
+        len: u8,
+    },
+    /// 按运行时长度把同一个 i8 值写入连续内存。
+    MemsetDynamic {
+        /// 目标指针寄存器。
+        dst: u8,
+        /// 保存 i8 写入值的 `x` 寄存器。
+        value: u8,
+        /// 保存写入字节数的 `x` 寄存器。
+        len: u8,
+    },
+    /// 按运行时长度执行 volatile memcpy。
+    VolatileMemcpyDynamic {
+        /// 目标指针寄存器。
+        dst: u8,
+        /// 源指针寄存器。
+        src: u8,
+        /// 保存复制字节数的 `x` 寄存器。
+        len: u8,
+    },
+    /// 按运行时长度执行 volatile memmove。
+    VolatileMemmoveDynamic {
+        /// 目标指针寄存器。
+        dst: u8,
+        /// 源指针寄存器。
+        src: u8,
+        /// 保存复制字节数的 `x` 寄存器。
+        len: u8,
+    },
+    /// 按运行时长度执行 volatile memset。
+    VolatileMemsetDynamic {
+        /// 目标指针寄存器。
+        dst: u8,
+        /// 保存 i8 写入值的 `x` 寄存器。
+        value: u8,
+        /// 保存写入字节数的 `x` 寄存器。
+        len: u8,
+    },
     /// 从 `x` 寄存器保存的地址执行标量 atomic load。
     AtomicLoad {
         /// 目标 `x` 寄存器。
@@ -273,6 +406,28 @@ pub enum VmInstruction {
     },
     /// 向 `x` 寄存器保存的地址执行标量 atomic store。
     AtomicStore {
+        /// 源值寄存器。
+        src: u8,
+        /// 指针寄存器。
+        ptr: u8,
+        /// 存储位宽。
+        width: u8,
+        /// LLVM atomic ordering 的 VM 编码。
+        ordering: MemoryOrdering,
+    },
+    /// 从 `x` 寄存器保存的地址执行标量 volatile atomic load。
+    VolatileAtomicLoad {
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 指针寄存器。
+        ptr: u8,
+        /// 加载位宽。
+        width: u8,
+        /// LLVM atomic ordering 的 VM 编码。
+        ordering: MemoryOrdering,
+    },
+    /// 向 `x` 寄存器保存的地址执行标量 volatile atomic store。
+    VolatileAtomicStore {
         /// 源值寄存器。
         src: u8,
         /// 指针寄存器。
@@ -297,8 +452,42 @@ pub enum VmInstruction {
         /// LLVM atomic ordering 的 VM 编码。
         ordering: MemoryOrdering,
     },
+    /// 对 `x` 寄存器保存的地址执行标量 volatile atomic read-modify-write，结果是旧值。
+    VolatileAtomicRmw {
+        /// lowering 选中的 RMW 操作。
+        op: AtomicRmwOp,
+        /// 目标 `x` 寄存器，保存内存旧值。
+        dst: u8,
+        /// 指针寄存器。
+        ptr: u8,
+        /// 源值寄存器。
+        src: u8,
+        /// 操作位宽。
+        width: u8,
+        /// LLVM atomic ordering 的 VM 编码。
+        ordering: MemoryOrdering,
+    },
     /// 对 `x` 寄存器保存的地址执行 scalar compare-exchange。
     CmpXchg {
+        /// 保存内存旧值的目标 `x` 寄存器。
+        old: u8,
+        /// 保存成功标志的目标 `x` 寄存器。
+        success: u8,
+        /// 指针寄存器。
+        ptr: u8,
+        /// 期望旧值寄存器。
+        cmp: u8,
+        /// 成功时写入的新值寄存器。
+        new: u8,
+        /// 操作位宽。
+        width: u8,
+        /// LLVM cmpxchg success ordering 的 VM 编码。
+        success_ordering: MemoryOrdering,
+        /// LLVM cmpxchg failure ordering 的 VM 编码。
+        failure_ordering: MemoryOrdering,
+    },
+    /// 对 `x` 寄存器保存的地址执行 volatile scalar compare-exchange。
+    VolatileCmpXchg {
         /// 保存内存旧值的目标 `x` 寄存器。
         old: u8,
         /// 保存成功标志的目标 `x` 寄存器。
@@ -339,6 +528,8 @@ pub enum VmInstruction {
         /// wrapper 使用的返回寄存器与位宽。
         returns: Vec<NativeReturn>,
     },
+    /// 不改变 VM 状态的显式 no-op。用于承载 LLVM metadata intrinsic 等无运行时语义的 IR。
+    Nop,
     /// 无条件 bytecode 分支。
     Br {
         /// 目标 bytecode label。
@@ -360,6 +551,10 @@ pub enum VmInstruction {
     },
     /// 使用 profile `lr` 别名的 VM 内部返回。
     VmRet,
+    /// LLVM `unreachable` 终结路径；runtime 执行到这里会直接发出 LLVM `unreachable`。
+    Unreachable,
+    /// LLVM `trap` intrinsic；runtime 执行到这里会调用 LLVM trap intrinsic 并终止。
+    Trap,
     /// 从受保护函数返回一个标量返回槽。
     Ret {
         /// 复制到 ABI 返回槽的源寄存器。
@@ -376,6 +571,14 @@ impl VmInstruction {
         match self {
             Self::MovImm { .. } => "mov_imm",
             Self::ConstLoad { .. } => "const_load",
+            Self::ReadCounter {
+                kind: CounterKind::Cycle,
+                ..
+            } => "read_cycle",
+            Self::ReadCounter {
+                kind: CounterKind::Steady,
+                ..
+            } => "read_steady",
             Self::SuperAddXor { .. } => "iadd_xor",
             Self::SuperIcmpBrIf { .. } => "icmp_br_if",
             Self::SuperGepLoad { .. } => "gep_load",
@@ -395,15 +598,36 @@ impl VmInstruction {
                 BinOp::Shl => "ishl",
                 BinOp::LShr => "ilshr",
                 BinOp::AShr => "iashr",
+                BinOp::SMax => "ismax",
+                BinOp::SMin => "ismin",
+                BinOp::UMax => "iumax",
+                BinOp::UMin => "iumin",
+                BinOp::UAddSat => "iuadd_sat",
+                BinOp::USubSat => "iusub_sat",
+                BinOp::SAddSat => "isadd_sat",
+                BinOp::SSubSat => "issub_sat",
+                BinOp::UShlSat => "iushl_sat",
+                BinOp::SShlSat => "isshl_sat",
             },
             Self::IntUnary { op, .. } => match op {
                 IntUnaryOp::CtPop => "ctpop",
+                IntUnaryOp::CtLz => "ctlz",
+                IntUnaryOp::CtTz => "cttz",
+                IntUnaryOp::Abs => "iabs",
                 IntUnaryOp::BSwap => "bswap",
                 IntUnaryOp::BitReverse => "bitreverse",
             },
             Self::IntTernary { op, .. } => match op {
                 IntTernaryOp::FShl => "fshl",
                 IntTernaryOp::FShr => "fshr",
+            },
+            Self::IntOverflow { op, .. } => match op {
+                IntOverflowOp::UAdd => "iuadd_overflow",
+                IntOverflowOp::SAdd => "isadd_overflow",
+                IntOverflowOp::USub => "iusub_overflow",
+                IntOverflowOp::SSub => "issub_overflow",
+                IntOverflowOp::UMul => "iumul_overflow",
+                IntOverflowOp::SMul => "ismul_overflow",
             },
             Self::Icmp { .. } => "icmp",
             Self::FloatBin { op, .. } => match op {
@@ -412,9 +636,28 @@ impl VmInstruction {
                 FloatBinOp::Mul => "fmul",
                 FloatBinOp::Div => "fdiv",
                 FloatBinOp::Rem => "frem",
+                FloatBinOp::MinNum => "fminnum",
+                FloatBinOp::MaxNum => "fmaxnum",
+                FloatBinOp::Minimum => "fminimum",
+                FloatBinOp::Maximum => "fmaximum",
+                FloatBinOp::CopySign => "fcopysign",
             },
             Self::FloatUnary { op, .. } => match op {
                 FloatUnaryOp::Neg => "fneg",
+                FloatUnaryOp::Abs => "fabs",
+                FloatUnaryOp::Sqrt => "fsqrt",
+                FloatUnaryOp::Canonicalize => "fcanonicalize",
+                FloatUnaryOp::Floor => "ffloor",
+                FloatUnaryOp::Ceil => "fceil",
+                FloatUnaryOp::Trunc => "ftrunc",
+                FloatUnaryOp::Rint => "frint",
+                FloatUnaryOp::NearbyInt => "fnearbyint",
+                FloatUnaryOp::Round => "fround",
+                FloatUnaryOp::RoundEven => "froundeven",
+            },
+            Self::FloatTernary { op, .. } => match op {
+                FloatTernaryOp::Fma => "ffma",
+                FloatTernaryOp::MulAdd => "ffmuladd",
             },
             Self::FloatCast { op, .. } => match op {
                 FloatCastOp::SignedIntToFloat => "sitofp",
@@ -425,6 +668,7 @@ impl VmInstruction {
                 FloatCastOp::FloatExt => "fpext",
             },
             Self::Fcmp { .. } => "fcmp",
+            Self::FloatClass { .. } => "fpclass",
             Self::Cast { op, .. } => match op {
                 CastOp::ZExt => "zext",
                 CastOp::SExt => "sext",
@@ -432,10 +676,21 @@ impl VmInstruction {
                 CastOp::Bitcast => "bitcast",
             },
             Self::Alloca { .. } => "alloca",
+            Self::DynamicAlloca { .. } => "alloca_dyn",
             Self::Load { .. } => "load",
             Self::Store { .. } => "store",
+            Self::VolatileLoad { .. } => "volatile_load",
+            Self::VolatileStore { .. } => "volatile_store",
+            Self::MemcpyDynamic { .. } => "memcpy_dyn",
+            Self::MemmoveDynamic { .. } => "memmove_dyn",
+            Self::MemsetDynamic { .. } => "memset_dyn",
+            Self::VolatileMemcpyDynamic { .. } => "volatile_memcpy_dyn",
+            Self::VolatileMemmoveDynamic { .. } => "volatile_memmove_dyn",
+            Self::VolatileMemsetDynamic { .. } => "volatile_memset_dyn",
             Self::AtomicLoad { .. } => "atomic_load",
             Self::AtomicStore { .. } => "atomic_store",
+            Self::VolatileAtomicLoad { .. } => "volatile_atomic_load",
+            Self::VolatileAtomicStore { .. } => "volatile_atomic_store",
             Self::AtomicRmw { op, .. } => match op {
                 AtomicRmwOp::Xchg => "atomic_rmw_xchg",
                 AtomicRmwOp::Add => "atomic_rmw_add",
@@ -448,15 +703,52 @@ impl VmInstruction {
                 AtomicRmwOp::Min => "atomic_rmw_min",
                 AtomicRmwOp::UMax => "atomic_rmw_umax",
                 AtomicRmwOp::UMin => "atomic_rmw_umin",
+                AtomicRmwOp::UIncWrap => "atomic_rmw_uinc_wrap",
+                AtomicRmwOp::UDecWrap => "atomic_rmw_udec_wrap",
+                AtomicRmwOp::USubCond => "atomic_rmw_usub_cond",
+                AtomicRmwOp::USubSat => "atomic_rmw_usub_sat",
+                AtomicRmwOp::FAdd => "atomic_rmw_fadd",
+                AtomicRmwOp::FSub => "atomic_rmw_fsub",
+                AtomicRmwOp::FMax => "atomic_rmw_fmax",
+                AtomicRmwOp::FMin => "atomic_rmw_fmin",
+                AtomicRmwOp::FMaximum => "atomic_rmw_fmaximum",
+                AtomicRmwOp::FMinimum => "atomic_rmw_fminimum",
+            },
+            Self::VolatileAtomicRmw { op, .. } => match op {
+                AtomicRmwOp::Xchg => "volatile_atomic_rmw_xchg",
+                AtomicRmwOp::Add => "volatile_atomic_rmw_add",
+                AtomicRmwOp::Sub => "volatile_atomic_rmw_sub",
+                AtomicRmwOp::And => "volatile_atomic_rmw_and",
+                AtomicRmwOp::Or => "volatile_atomic_rmw_or",
+                AtomicRmwOp::Xor => "volatile_atomic_rmw_xor",
+                AtomicRmwOp::Nand => "volatile_atomic_rmw_nand",
+                AtomicRmwOp::Max => "volatile_atomic_rmw_max",
+                AtomicRmwOp::Min => "volatile_atomic_rmw_min",
+                AtomicRmwOp::UMax => "volatile_atomic_rmw_umax",
+                AtomicRmwOp::UMin => "volatile_atomic_rmw_umin",
+                AtomicRmwOp::UIncWrap => "volatile_atomic_rmw_uinc_wrap",
+                AtomicRmwOp::UDecWrap => "volatile_atomic_rmw_udec_wrap",
+                AtomicRmwOp::USubCond => "volatile_atomic_rmw_usub_cond",
+                AtomicRmwOp::USubSat => "volatile_atomic_rmw_usub_sat",
+                AtomicRmwOp::FAdd => "volatile_atomic_rmw_fadd",
+                AtomicRmwOp::FSub => "volatile_atomic_rmw_fsub",
+                AtomicRmwOp::FMax => "volatile_atomic_rmw_fmax",
+                AtomicRmwOp::FMin => "volatile_atomic_rmw_fmin",
+                AtomicRmwOp::FMaximum => "volatile_atomic_rmw_fmaximum",
+                AtomicRmwOp::FMinimum => "volatile_atomic_rmw_fminimum",
             },
             Self::CmpXchg { .. } => "cmpxchg",
+            Self::VolatileCmpXchg { .. } => "volatile_cmpxchg",
             Self::Fence { .. } => "fence",
             Self::Gep { .. } => "gep",
             Self::CallNative { .. } => "call_native",
+            Self::Nop => "fake_nop",
             Self::Br { .. } => "br",
             Self::BrCond { .. } => "br_if",
             Self::VmCall { .. } => "vm_call",
             Self::VmRet => "vm_ret",
+            Self::Unreachable => "unreachable",
+            Self::Trap => "trap",
             Self::Ret { .. } | Self::RetVoid => "ret",
         }
     }
@@ -870,27 +1162,51 @@ fn instruction_register_reads(instruction: &VmInstruction) -> Vec<u8> {
         VmInstruction::SuperLoadAdd { ptr, addend, .. } => vec![*ptr, *addend],
         VmInstruction::IntUnary { src, .. } => vec![*src],
         VmInstruction::IntTernary { lhs, rhs, third, .. } => vec![*lhs, *rhs, *third],
+        VmInstruction::IntOverflow { lhs, rhs, .. } => vec![*lhs, *rhs],
         VmInstruction::Icmp { lhs, rhs, .. } | VmInstruction::Fcmp { lhs, rhs, .. } => vec![*lhs, *rhs],
         VmInstruction::FloatBin { lhs, rhs, .. } => vec![*lhs, *rhs],
-        VmInstruction::FloatUnary { src, .. } | VmInstruction::FloatCast { src, .. } => vec![*src],
+        VmInstruction::FloatTernary { lhs, rhs, third, .. } => vec![*lhs, *rhs, *third],
+        VmInstruction::FloatUnary { src, .. }
+        | VmInstruction::FloatCast { src, .. }
+        | VmInstruction::FloatClass { src, .. } => vec![*src],
         VmInstruction::Cast { src, .. } => vec![*src],
+        VmInstruction::DynamicAlloca { count, .. } => vec![*count],
         VmInstruction::Load { ptr, .. } => vec![*ptr],
         VmInstruction::Store { src, ptr, .. } => vec![*src, *ptr],
+        VmInstruction::VolatileLoad { ptr, .. } => vec![*ptr],
+        VmInstruction::VolatileStore { src, ptr, .. } => vec![*src, *ptr],
+        VmInstruction::MemcpyDynamic { dst, src, len } | VmInstruction::MemmoveDynamic { dst, src, len } => {
+            vec![*dst, *src, *len]
+        },
+        VmInstruction::MemsetDynamic { dst, value, len } => vec![*dst, *value, *len],
+        VmInstruction::VolatileMemcpyDynamic { dst, src, len }
+        | VmInstruction::VolatileMemmoveDynamic { dst, src, len } => vec![*dst, *src, *len],
+        VmInstruction::VolatileMemsetDynamic { dst, value, len } => vec![*dst, *value, *len],
         VmInstruction::AtomicLoad { ptr, .. } => vec![*ptr],
         VmInstruction::AtomicStore { src, ptr, .. } => vec![*src, *ptr],
-        VmInstruction::AtomicRmw { ptr, src, .. } => vec![*ptr, *src],
-        VmInstruction::CmpXchg { ptr, cmp, new, .. } => vec![*ptr, *cmp, *new],
+        VmInstruction::VolatileAtomicLoad { ptr, .. } => vec![*ptr],
+        VmInstruction::VolatileAtomicStore { src, ptr, .. } => vec![*src, *ptr],
+        VmInstruction::AtomicRmw { ptr, src, .. } | VmInstruction::VolatileAtomicRmw { ptr, src, .. } => {
+            vec![*ptr, *src]
+        },
+        VmInstruction::CmpXchg { ptr, cmp, new, .. } | VmInstruction::VolatileCmpXchg { ptr, cmp, new, .. } => {
+            vec![*ptr, *cmp, *new]
+        },
         VmInstruction::Gep { base, .. } => vec![*base],
         VmInstruction::CallNative { args, .. } => args.clone(),
         VmInstruction::BrCond { cond, .. } => vec![*cond],
         VmInstruction::Ret { src } => vec![*src],
         VmInstruction::MovImm { .. }
         | VmInstruction::ConstLoad { .. }
+        | VmInstruction::ReadCounter { .. }
         | VmInstruction::Alloca { .. }
         | VmInstruction::Fence { .. }
         | VmInstruction::Br { .. }
+        | VmInstruction::Nop
         | VmInstruction::VmCall { .. }
         | VmInstruction::VmRet
+        | VmInstruction::Unreachable
+        | VmInstruction::Trap
         | VmInstruction::RetVoid => Vec::new(),
     }
 }
@@ -1034,6 +1350,7 @@ impl VmFunctionBuilder {
                 } => vec![*then_label, *else_label],
                 VmInstruction::MovImm { .. }
                 | VmInstruction::ConstLoad { .. }
+                | VmInstruction::ReadCounter { .. }
                 | VmInstruction::SuperAddXor { .. }
                 | VmInstruction::SuperGepLoad { .. }
                 | VmInstruction::SuperLoadAdd { .. }
@@ -1041,23 +1358,42 @@ impl VmFunctionBuilder {
                 | VmInstruction::Bin { .. }
                 | VmInstruction::IntUnary { .. }
                 | VmInstruction::IntTernary { .. }
+                | VmInstruction::IntOverflow { .. }
                 | VmInstruction::Icmp { .. }
                 | VmInstruction::FloatBin { .. }
                 | VmInstruction::FloatUnary { .. }
+                | VmInstruction::FloatTernary { .. }
                 | VmInstruction::FloatCast { .. }
                 | VmInstruction::Fcmp { .. }
+                | VmInstruction::FloatClass { .. }
                 | VmInstruction::Cast { .. }
                 | VmInstruction::Alloca { .. }
+                | VmInstruction::DynamicAlloca { .. }
                 | VmInstruction::Load { .. }
                 | VmInstruction::Store { .. }
+                | VmInstruction::VolatileLoad { .. }
+                | VmInstruction::VolatileStore { .. }
+                | VmInstruction::MemcpyDynamic { .. }
+                | VmInstruction::MemmoveDynamic { .. }
+                | VmInstruction::MemsetDynamic { .. }
+                | VmInstruction::VolatileMemcpyDynamic { .. }
+                | VmInstruction::VolatileMemmoveDynamic { .. }
+                | VmInstruction::VolatileMemsetDynamic { .. }
                 | VmInstruction::AtomicLoad { .. }
                 | VmInstruction::AtomicStore { .. }
+                | VmInstruction::VolatileAtomicLoad { .. }
+                | VmInstruction::VolatileAtomicStore { .. }
                 | VmInstruction::AtomicRmw { .. }
+                | VmInstruction::VolatileAtomicRmw { .. }
                 | VmInstruction::CmpXchg { .. }
+                | VmInstruction::VolatileCmpXchg { .. }
                 | VmInstruction::Fence { .. }
                 | VmInstruction::Gep { .. }
                 | VmInstruction::CallNative { .. }
+                | VmInstruction::Nop
                 | VmInstruction::VmRet
+                | VmInstruction::Unreachable
+                | VmInstruction::Trap
                 | VmInstruction::Ret { .. }
                 | VmInstruction::RetVoid => Vec::new(),
             })

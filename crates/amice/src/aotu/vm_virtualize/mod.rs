@@ -33,6 +33,8 @@ use amice_plugin::inkwell::values::{
 use amice_vm::bytecode::BytecodeEncoder;
 use amice_vm::verify::verify_profile;
 use amice_vm::{BytecodeImage, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, ProfilePackage, RuntimeScope};
+use anyhow::Context;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 #[amice(
@@ -58,6 +60,7 @@ impl AmicePass for VmVirtualize {
             .filter(|function| !function.is_undef_function() && !function.is_llvm_function())
             .collect::<Vec<_>>();
         let mut changed = false;
+        let mut function_bytecode_prepared = Vec::new();
         let mut module_bytecode_prepared = Vec::new();
 
         for function in functions {
@@ -75,7 +78,7 @@ impl AmicePass for VmVirtualize {
             match prepare_virtualization(module, function, &cfg) {
                 Ok(prepared) => match prepared.profile.bytecode.scope {
                     RuntimeScope::Func => {
-                        apply_function_bytecode_virtualization(module, prepared)?;
+                        function_bytecode_prepared.push(prepared);
                         changed = true;
                     },
                     RuntimeScope::Module => {
@@ -87,6 +90,12 @@ impl AmicePass for VmVirtualize {
                     debug!("skip function {:?}: {err:#}", function.get_name());
                 },
             }
+        }
+
+        if !function_bytecode_prepared.is_empty() {
+            // bytecode 是 per-function 时，runtime 仍可能是 module scope；这类共享 dispatcher
+            // 必须用同一批函数的 opcode 并集生成，否则后面的函数会跳到被裁剪成 stub 的 handler。
+            apply_function_bytecode_virtualizations(module, function_bytecode_prepared)?;
         }
 
         if !module_bytecode_prepared.is_empty() {
@@ -168,36 +177,65 @@ fn prepare_virtualization<'ctx>(
     })
 }
 
-fn apply_function_bytecode_virtualization<'ctx>(
+fn apply_function_bytecode_virtualizations<'ctx>(
     module: &mut Module<'ctx>,
-    prepared: PreparedVirtualization<'ctx>,
+    prepared: Vec<PreparedVirtualization<'ctx>>,
 ) -> anyhow::Result<()> {
-    // func scope 下每个函数携带自己的 bytecode global 和 runtime 符号，适合最大化 per-function
-    // 多态；代价是模块内会生成更多内部函数。
-    let bytecode_global = emit_bytecode_global(module, &prepared.safe_name, &prepared.bytecode)?;
-    let native_table_global = emit_native_call_table(module, &prepared.safe_name, &prepared.native_calls)?;
-    let _meta_global = emit_marker_global(module, &prepared.safe_name)?;
-    let runtime = runtime::emit_runtime(
-        module,
-        &prepared.profile,
-        prepared.profile.runtime.scope,
-        &prepared.safe_name,
-    )?;
+    if prepared.is_empty() {
+        return Ok(());
+    }
 
-    rewrite_as_wrapper(
-        module,
-        prepared.original,
-        runtime.dispatch,
-        bytecode_global,
-        native_table_global,
-        prepared.native_calls.len(),
-        &prepared.bytecode,
-        0,
-        &prepared.signature,
-        prepared.profile.abi.integer_returns.len(),
-    )?;
+    let shared_runtime_opcodes = prepared
+        .iter()
+        .filter(|item| uses_shared_module_runtime(&item.profile))
+        .flat_map(|item| item.bytecode.used_opcodes.iter().copied())
+        .collect::<BTreeSet<_>>();
+
+    let mut emitted = Vec::with_capacity(prepared.len());
+    for prepared in prepared {
+        // func bytecode 下每个函数仍携带自己的 bytecode global；runtime 是否共享由
+        // `runtime.scope` 和 handler clone 策略决定。
+        let bytecode_global = emit_bytecode_global(module, &prepared.safe_name, &prepared.bytecode)?;
+        let native_table_global = emit_native_call_table(module, &prepared.safe_name, &prepared.native_calls)?;
+        let _meta_global = emit_marker_global(module, &prepared.safe_name)?;
+        let used_opcodes = if uses_shared_module_runtime(&prepared.profile) {
+            &shared_runtime_opcodes
+        } else {
+            &prepared.bytecode.used_opcodes
+        };
+        let dispatch = runtime::emit_runtime(
+            module,
+            &prepared.profile,
+            prepared.profile.runtime.scope,
+            &prepared.safe_name,
+            used_opcodes,
+        )?
+        .dispatch;
+
+        emitted.push((prepared, bytecode_global, native_table_global, dispatch));
+    }
+
+    for (prepared, bytecode_global, native_table_global, dispatch) in emitted {
+        rewrite_as_wrapper(
+            module,
+            prepared.original,
+            dispatch,
+            bytecode_global,
+            native_table_global,
+            prepared.native_calls.len(),
+            &prepared.bytecode,
+            0,
+            &prepared.signature,
+            prepared.profile.abi.integer_returns.len(),
+        )?;
+    }
 
     Ok(())
+}
+
+fn uses_shared_module_runtime(profile: &ProfilePackage) -> bool {
+    profile.runtime.scope == RuntimeScope::Module
+        && profile.runtime.enhancements.handler_clone == amice_vm::runtime::HandlerClonePolicy::Disabled
 }
 
 fn apply_module_bytecode_virtualizations<'ctx>(
@@ -209,24 +247,35 @@ fn apply_module_bytecode_virtualizations<'ctx>(
     }
 
     let placements = module_bytecode_placements(&prepared);
+    let used_opcodes = prepared
+        .iter()
+        .flat_map(|item| item.bytecode.used_opcodes.iter().copied())
+        .collect::<BTreeSet<_>>();
     let bytecode_global = emit_module_bytecode_global(module, &prepared)?;
     let _meta_global = emit_marker_global(module, "module")?;
 
+    let mut emitted = Vec::with_capacity(prepared.len());
     for (prepared, base_offset) in prepared.into_iter().zip(placements) {
         // bytecode blob 是 module 共享的，但 native thunk 仍按函数生成。call_native 的 callee
         // 类型取决于源函数内部调用点，不能在不同被保护函数之间盲目复用。
         let native_table_global = emit_native_call_table(module, &prepared.safe_name, &prepared.native_calls)?;
-        let runtime = runtime::emit_runtime(
+        let dispatch = runtime::emit_runtime(
             module,
             &prepared.profile,
             prepared.profile.runtime.scope,
             &prepared.safe_name,
-        )?;
+            &used_opcodes,
+        )?
+        .dispatch;
 
+        emitted.push((prepared, base_offset, native_table_global, dispatch));
+    }
+
+    for (prepared, base_offset, native_table_global, dispatch) in emitted {
         rewrite_as_wrapper(
             module,
             prepared.original,
-            runtime.dispatch,
+            dispatch,
             bytecode_global,
             native_table_global,
             prepared.native_calls.len(),
@@ -422,36 +471,7 @@ fn emit_native_call_thunk<'ctx>(
     let builder = ctx.create_builder();
     builder.position_at_end(entry);
 
-    let args = target
-        .function
-        .get_type()
-        .get_param_types()
-        .iter()
-        .enumerate()
-        .map(|(arg_index, ty)| {
-            // native thunk 是通用 VM x-register 值和 callee LLVM 函数类型之间的 ABI 防火墙。
-            // 固定 thunk 宽度能让 bytecode call_native 保持 profile 可序列化，同时在真实调用点保留
-            // 指针/整数重建逻辑。
-            if target.param_is_pointer[arg_index] != matches!(ty, BasicMetadataTypeEnum::PointerType(_))
-                || target.param_is_float[arg_index] != matches!(ty, BasicMetadataTypeEnum::FloatType(_))
-            {
-                anyhow::bail!("native thunk parameter kind mismatch");
-            }
-            let raw = thunk
-                .get_nth_param(arg_index as u32)
-                .ok_or_else(|| anyhow::anyhow!("missing native thunk parameter {arg_index}"))?
-                .into_int_value();
-            let value: BasicMetadataValueEnum<'ctx> = match ty {
-                BasicMetadataTypeEnum::IntType(int_ty) => int_from_i64(&builder, raw, *int_ty)?.into(),
-                BasicMetadataTypeEnum::PointerType(ptr_ty) => builder
-                    .build_int_to_ptr(raw, *ptr_ty, "amice.vm.native.arg.ptr")?
-                    .into(),
-                BasicMetadataTypeEnum::FloatType(float_ty) => float_from_i64_bits(&builder, raw, *float_ty)?.into(),
-                _ => anyhow::bail!("native thunk target has a non-scalar parameter"),
-            };
-            Ok(value)
-        })
-        .collect::<anyhow::Result<Vec<BasicMetadataValueEnum<'ctx>>>>()?;
+    let args = rebuild_native_thunk_args(&builder, thunk, target)?;
 
     let call = builder.build_call(target.function, &args, "amice.vm.native.target")?;
     copy_function_attributes_to_call_site(call, target.function);
@@ -461,20 +481,15 @@ fn emit_native_call_thunk<'ctx>(
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| anyhow::anyhow!("native thunk target should return a value"))?;
-        let returns = if target.return_fields.len() == 1 {
+        let returns = if matches!(
+            ret.get_type(),
+            BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_)
+        ) {
+            collect_native_aggregate_return_values(&builder, i64_type, ret, &target.return_fields)?
+        } else if target.return_fields.len() == 1 {
             vec![native_return_to_i64(&builder, i64_type, ret, target.return_fields[0])?]
         } else {
-            let aggregate = ret.into_struct_value();
-            target
-                .return_fields
-                .iter()
-                .enumerate()
-                .map(|(field_index, field)| {
-                    let value =
-                        builder.build_extract_value(aggregate, field_index as u32, "amice.vm.native.ret.field")?;
-                    native_return_to_i64(&builder, i64_type, value, *field)
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?
+            anyhow::bail!("native thunk has multiple return slots but callee did not return an aggregate");
         };
         for (index, value) in returns.into_iter().take(NATIVE_CALL_MAX_RETURNS).enumerate() {
             ret_tuple = builder
@@ -499,8 +514,8 @@ fn rewrite_as_wrapper<'ctx>(
     signature: &translator::FunctionSignature,
     abi_return_count: usize,
 ) -> anyhow::Result<()> {
-    // 改写策略是“原函数改名 + 新建同名 wrapper”。这样外部符号、调用约定和属性仍挂在
-    // 原名称上，而原函数体保留为 private，供 direct-call retarget 和 native thunk 使用。
+    // 改写策略是“原函数临时改名 + 新建同名 wrapper”。这样外部符号、调用约定和属性仍挂在
+    // 原名称上；wrapper 构建完成后会删除临时原函数体，避免在产物里留下明文逻辑。
     let ctx = module.get_context();
     let i64_type = ctx.i64_type();
     let fn_type = original.get_type();
@@ -511,8 +526,8 @@ fn rewrite_as_wrapper<'ctx>(
     original.set_linkage(Linkage::Private);
     original.as_global_value().set_unnamed_address(UnnamedAddress::Global);
 
-    // 原始函数体会先保存在 private symbol 下，直到所有直接 call operand 完成 retarget。
-    // 这样替换 public symbol 为 VM wrapper 时，不会让 annotation metadata use 失效。
+    // 原始函数体只在 wrapper 生成期间作为属性和 direct-call retarget 的锚点保留。
+    // 最终会把 annotation metadata 等剩余 use 指向 wrapper，再删除这个 private body。
     let wrapper = module.add_function(&original_name, fn_type, Some(original_linkage));
     copy_function_attributes(wrapper, original);
     wrapper.clear_stale_analysis_attrs_after_cfg_rewrite();
@@ -552,21 +567,12 @@ fn rewrite_as_wrapper<'ctx>(
     args.push(i64_type.const_int(native_call_count as u64, false).into());
     args.push(ret_slots.into());
 
+    let flattened_params = flattened_wrapper_params(&builder, i64_type, wrapper, signature)?;
     for index in 0..8 {
-        let value = if index < signature.param_widths.len() {
-            let param = wrapper
-                .get_nth_param(index as u32)
-                .ok_or_else(|| anyhow::anyhow!("missing wrapper parameter {index}"))?;
-            wrapper_param_to_i64(
-                &builder,
-                i64_type,
-                param,
-                signature.param_is_pointer[index],
-                signature.param_is_float[index],
-            )?
-        } else {
-            i64_type.const_zero()
-        };
+        let value = flattened_params
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| i64_type.const_zero());
         args.push(value.into());
     }
 
@@ -575,7 +581,7 @@ fn rewrite_as_wrapper<'ctx>(
         // void 函数仍需要执行 dispatcher，因为副作用已经被 VM bytecode 表达；只是 wrapper
         // 不从返回寄存器取值。
         builder.build_return(None)?;
-        redirect_direct_calls_to_wrapper(module, original, wrapper);
+        finalize_virtualized_original(module, original, wrapper);
         return Ok(());
     }
 
@@ -590,10 +596,10 @@ fn rewrite_as_wrapper<'ctx>(
         .ok_or_else(|| anyhow::anyhow!("wrapper return type unexpectedly void"))?;
     if signature.has_aggregate_return() {
         // 多字段 aggregate return 通过 ret_slots 返回。dispatcher 的 i64 返回值只保留标量快捷路径，
-        // struct 字段需要逐槽重建回原 LLVM struct。
+        // struct/array 字段需要逐槽重建回原 LLVM aggregate。
         let ret = rebuild_aggregate_return(&builder, i64_type, ret_slots_type, ret_slots, return_type, signature)?;
         builder.build_return(Some(&ret))?;
-        redirect_direct_calls_to_wrapper(module, original, wrapper);
+        finalize_virtualized_original(module, original, wrapper);
         return Ok(());
     }
 
@@ -613,9 +619,24 @@ fn rewrite_as_wrapper<'ctx>(
         builder.build_return(Some(&ret))?;
     }
 
-    redirect_direct_calls_to_wrapper(module, original, wrapper);
+    finalize_virtualized_original(module, original, wrapper);
 
     Ok(())
+}
+
+fn finalize_virtualized_original<'ctx>(
+    module: &Module<'ctx>,
+    original: FunctionValue<'ctx>,
+    wrapper: FunctionValue<'ctx>,
+) {
+    redirect_direct_calls_to_wrapper(module, original, wrapper);
+    original.replace_all_uses_with(wrapper);
+    // SAFETY: `has_unsupported_function_uses` 已经保证原函数地址不会被非 direct-call 或
+    // annotation metadata 泄露。上面先把 direct-call 和剩余 metadata use 都改到 wrapper，
+    // 删除 private original 不会留下悬挂引用。
+    unsafe {
+        original.delete();
+    }
 }
 
 fn copy_function_attributes<'ctx>(target: FunctionValue<'ctx>, source: FunctionValue<'ctx>) {
@@ -669,37 +690,93 @@ fn rebuild_aggregate_return<'ctx>(
     return_type: BasicTypeEnum<'ctx>,
     signature: &translator::FunctionSignature,
 ) -> anyhow::Result<BasicValueEnum<'ctx>> {
-    let BasicTypeEnum::StructType(struct_type) = return_type else {
-        anyhow::bail!("aggregate signature return type is not a struct");
-    };
-    let field_types = struct_type.get_field_types();
-    if field_types.len() != signature.aggregate_return_fields.len() {
+    if !matches!(return_type, BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_)) {
+        anyhow::bail!("aggregate signature return type is not a struct or array");
+    }
+    let mut slot_index = 0;
+    let value = rebuild_aggregate_return_value(
+        builder,
+        i64_type,
+        ret_slots_type,
+        ret_slots,
+        return_type,
+        &mut slot_index,
+    )?;
+    if slot_index != signature.aggregate_return_fields.len() {
         anyhow::bail!(
-            "aggregate return field count mismatch: signature has {}, LLVM type has {}",
+            "aggregate return field count mismatch: signature has {}, wrapper rebuilt {}",
             signature.aggregate_return_fields.len(),
-            field_types.len()
+            slot_index
         );
     }
+    Ok(value)
+}
 
-    let zero = i64_type.const_zero();
-    let mut aggregate = struct_type.get_undef();
-    for (index, field_type) in field_types.into_iter().enumerate() {
-        let slot_ptr = builder.build_in_bounds_gep2(
-            ret_slots_type,
-            ret_slots,
-            &[zero, i64_type.const_int(index as u64, false)],
-            "amice.vm.ret.slot.ptr",
-        )?;
-        let raw = builder
-            .build_load2(i64_type, slot_ptr, "amice.vm.ret.slot.raw")?
-            .into_int_value();
-        let field = return_slot_to_value(builder, raw, field_type)?;
-        aggregate = builder
-            .build_insert_value(aggregate, field, index as u32, "amice.vm.ret.field")?
-            .into_struct_value();
+fn rebuild_aggregate_return_value<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
+    ret_slots_type: amice_plugin::inkwell::types::ArrayType<'ctx>,
+    ret_slots: amice_plugin::inkwell::values::PointerValue<'ctx>,
+    return_type: BasicTypeEnum<'ctx>,
+    slot_index: &mut usize,
+) -> anyhow::Result<BasicValueEnum<'ctx>> {
+    match return_type {
+        BasicTypeEnum::StructType(struct_type) => {
+            let mut aggregate = struct_type.get_undef();
+            for index in 0..struct_type.count_fields() {
+                let field_type = struct_type
+                    .get_field_type_at_index(index)
+                    .ok_or_else(|| anyhow::anyhow!("aggregate return struct field {index} is unavailable"))?;
+                let field = rebuild_aggregate_return_value(
+                    builder,
+                    i64_type,
+                    ret_slots_type,
+                    ret_slots,
+                    field_type,
+                    slot_index,
+                )
+                .with_context(|| format!("aggregate return struct field {index}"))?;
+                aggregate = builder
+                    .build_insert_value(aggregate, field, index, "amice.vm.ret.field")?
+                    .into_struct_value();
+            }
+            Ok(aggregate.into())
+        },
+        BasicTypeEnum::ArrayType(array_type) => {
+            let mut aggregate = array_type.get_undef();
+            let element_type = array_type.get_element_type();
+            for index in 0..array_type.len() {
+                let element = rebuild_aggregate_return_value(
+                    builder,
+                    i64_type,
+                    ret_slots_type,
+                    ret_slots,
+                    element_type,
+                    slot_index,
+                )
+                .with_context(|| format!("aggregate return array element {index}"))?;
+                aggregate = builder
+                    .build_insert_value(aggregate, element, index, "amice.vm.ret.element")?
+                    .into_array_value();
+            }
+            Ok(aggregate.into())
+        },
+        scalar_type => {
+            let zero = i64_type.const_zero();
+            let slot = *slot_index;
+            *slot_index += 1;
+            let slot_ptr = builder.build_in_bounds_gep2(
+                ret_slots_type,
+                ret_slots,
+                &[zero, i64_type.const_int(slot as u64, false)],
+                "amice.vm.ret.slot.ptr",
+            )?;
+            let raw = builder
+                .build_load2(i64_type, slot_ptr, "amice.vm.ret.slot.raw")?
+                .into_int_value();
+            return_slot_to_value(builder, raw, scalar_type)
+        },
     }
-
-    Ok(aggregate.into())
 }
 
 fn redirect_direct_calls_to_wrapper<'ctx>(
@@ -805,19 +882,112 @@ fn int_to_i64<'ctx>(
     }
 }
 
-fn wrapper_param_to_i64<'ctx>(
+fn flattened_wrapper_params<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
+    wrapper: FunctionValue<'ctx>,
+    signature: &translator::FunctionSignature,
+) -> anyhow::Result<Vec<amice_plugin::inkwell::values::IntValue<'ctx>>> {
+    let mut flattened = Vec::with_capacity(signature.param_widths.len());
+    for (index, slots) in signature.params.iter().enumerate() {
+        let param = wrapper
+            .get_nth_param(index as u32)
+            .ok_or_else(|| anyhow::anyhow!("missing wrapper parameter {index}"))?;
+        match param.get_type() {
+            BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
+                let mut field_index = 0;
+                append_aggregate_wrapper_param(
+                    builder,
+                    i64_type,
+                    param,
+                    &slots.fields,
+                    &mut field_index,
+                    &mut flattened,
+                )
+                .with_context(|| format!("aggregate wrapper parameter {index}"))?;
+                if field_index != slots.fields.len() {
+                    anyhow::bail!(
+                        "aggregate wrapper parameter {index} field count mismatch: signature has {}, flattened {}",
+                        slots.fields.len(),
+                        field_index
+                    );
+                }
+            },
+            _ => {
+                let field = slots
+                    .fields
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("scalar wrapper parameter {index} has no field mapping"))?;
+                if slots.fields.len() != 1 {
+                    anyhow::bail!(
+                        "scalar wrapper parameter {index} unexpectedly maps to {} fields",
+                        slots.fields.len()
+                    );
+                }
+                flattened.push(wrapper_param_leaf_to_i64(builder, i64_type, param, field)?);
+            },
+        }
+    }
+    if flattened.len() != signature.param_widths.len() {
+        anyhow::bail!(
+            "flattened wrapper parameter count mismatch: signature has {}, wrapper produced {}",
+            signature.param_widths.len(),
+            flattened.len()
+        );
+    }
+    Ok(flattened)
+}
+
+fn append_aggregate_wrapper_param<'ctx>(
     builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
     i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
     value: BasicValueEnum<'ctx>,
-    is_pointer: bool,
-    is_float: bool,
+    fields: &[translator::ReturnField],
+    field_index: &mut usize,
+    flattened: &mut Vec<amice_plugin::inkwell::values::IntValue<'ctx>>,
+) -> anyhow::Result<()> {
+    match value.get_type() {
+        BasicTypeEnum::StructType(struct_type) => {
+            let aggregate = value.into_struct_value();
+            for index in 0..struct_type.count_fields() {
+                let field = builder.build_extract_value(aggregate, index, "amice.vm.arg.field")?;
+                append_aggregate_wrapper_param(builder, i64_type, field, fields, field_index, flattened)
+                    .with_context(|| format!("aggregate wrapper struct field {index}"))?;
+            }
+            Ok(())
+        },
+        BasicTypeEnum::ArrayType(array_type) => {
+            let aggregate = value.into_array_value();
+            for index in 0..array_type.len() {
+                let element = builder.build_extract_value(aggregate, index, "amice.vm.arg.element")?;
+                append_aggregate_wrapper_param(builder, i64_type, element, fields, field_index, flattened)
+                    .with_context(|| format!("aggregate wrapper array element {index}"))?;
+            }
+            Ok(())
+        },
+        _ => {
+            let field = fields
+                .get(*field_index)
+                .ok_or_else(|| anyhow::anyhow!("aggregate wrapper parameter has more leaves than signature"))?;
+            *field_index += 1;
+            flattened.push(wrapper_param_leaf_to_i64(builder, i64_type, value, field)?);
+            Ok(())
+        },
+    }
+}
+
+fn wrapper_param_leaf_to_i64<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
+    value: BasicValueEnum<'ctx>,
+    field: &translator::ReturnField,
 ) -> anyhow::Result<amice_plugin::inkwell::values::IntValue<'ctx>> {
-    if is_pointer {
-        Ok(builder.build_ptr_to_int(value.into_pointer_value(), i64_type, "amice.vm.arg.ptr")?)
-    } else if is_float {
-        float_to_i64_bits(builder, i64_type, value)
-    } else {
-        int_to_i64(builder, i64_type, value.into_int_value())
+    match field.kind {
+        translator::ScalarKind::Integer => int_to_i64(builder, i64_type, value.into_int_value()),
+        translator::ScalarKind::Pointer => {
+            Ok(builder.build_ptr_to_int(value.into_pointer_value(), i64_type, "amice.vm.arg.ptr")?)
+        },
+        translator::ScalarKind::Float => float_to_i64_bits(builder, i64_type, value),
     }
 }
 
@@ -883,6 +1053,187 @@ fn int_from_i64<'ctx>(
     }
 }
 
+fn rebuild_native_thunk_args<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    thunk: FunctionValue<'ctx>,
+    target: &translator::NativeCallTarget<'ctx>,
+) -> anyhow::Result<Vec<BasicMetadataValueEnum<'ctx>>> {
+    if target.arg_types.len() != target.params.len() {
+        anyhow::bail!(
+            "native thunk parameter count mismatch: call site has {}, signature has {}",
+            target.arg_types.len(),
+            target.params.len()
+        );
+    }
+    target
+        .arg_types
+        .iter()
+        .copied()
+        .zip(target.params.iter())
+        .enumerate()
+        .map(|(index, (ty, slots))| rebuild_native_thunk_arg(builder, thunk, ty, slots, index))
+        .collect()
+}
+
+fn rebuild_native_thunk_arg<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    thunk: FunctionValue<'ctx>,
+    ty: BasicMetadataTypeEnum<'ctx>,
+    slots: &translator::FunctionParamSlots,
+    arg_index: usize,
+) -> anyhow::Result<BasicMetadataValueEnum<'ctx>> {
+    match ty {
+        BasicMetadataTypeEnum::IntType(int_ty) => {
+            ensure_native_scalar_param_slot(slots, translator::ScalarKind::Integer, arg_index)?;
+            let raw = native_thunk_raw_arg(thunk, slots.start)?;
+            Ok(int_from_i64(builder, raw, int_ty)?.into())
+        },
+        BasicMetadataTypeEnum::PointerType(ptr_ty) => {
+            ensure_native_scalar_param_slot(slots, translator::ScalarKind::Pointer, arg_index)?;
+            let raw = native_thunk_raw_arg(thunk, slots.start)?;
+            Ok(builder.build_int_to_ptr(raw, ptr_ty, "amice.vm.native.arg.ptr")?.into())
+        },
+        BasicMetadataTypeEnum::FloatType(float_ty) => {
+            ensure_native_scalar_param_slot(slots, translator::ScalarKind::Float, arg_index)?;
+            let raw = native_thunk_raw_arg(thunk, slots.start)?;
+            Ok(float_from_i64_bits(builder, raw, float_ty)?.into())
+        },
+        BasicMetadataTypeEnum::StructType(struct_ty) => {
+            let mut field_index = 0;
+            let value = rebuild_native_aggregate_arg_value(
+                builder,
+                thunk,
+                BasicTypeEnum::StructType(struct_ty),
+                slots,
+                &mut field_index,
+            )
+            .with_context(|| format!("native aggregate argument {arg_index}"))?;
+            if field_index != slots.fields.len() {
+                anyhow::bail!(
+                    "native aggregate argument {arg_index} field count mismatch: signature has {}, thunk rebuilt {}",
+                    slots.fields.len(),
+                    field_index
+                );
+            }
+            Ok(value.into())
+        },
+        BasicMetadataTypeEnum::ArrayType(array_ty) => {
+            let mut field_index = 0;
+            let value = rebuild_native_aggregate_arg_value(
+                builder,
+                thunk,
+                BasicTypeEnum::ArrayType(array_ty),
+                slots,
+                &mut field_index,
+            )
+            .with_context(|| format!("native aggregate argument {arg_index}"))?;
+            if field_index != slots.fields.len() {
+                anyhow::bail!(
+                    "native aggregate argument {arg_index} field count mismatch: signature has {}, thunk rebuilt {}",
+                    slots.fields.len(),
+                    field_index
+                );
+            }
+            Ok(value.into())
+        },
+        _ => anyhow::bail!("native thunk target has an unsupported parameter type"),
+    }
+}
+
+fn ensure_native_scalar_param_slot(
+    slots: &translator::FunctionParamSlots,
+    kind: translator::ScalarKind,
+    arg_index: usize,
+) -> anyhow::Result<()> {
+    if slots.fields.len() != 1 || slots.fields[0].kind != kind {
+        anyhow::bail!("native scalar parameter {arg_index} kind mismatch");
+    }
+    Ok(())
+}
+
+fn rebuild_native_aggregate_arg_value<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    thunk: FunctionValue<'ctx>,
+    value_type: BasicTypeEnum<'ctx>,
+    slots: &translator::FunctionParamSlots,
+    field_index: &mut usize,
+) -> anyhow::Result<BasicValueEnum<'ctx>> {
+    match value_type {
+        BasicTypeEnum::StructType(struct_type) => {
+            let mut aggregate = struct_type.get_undef();
+            for index in 0..struct_type.count_fields() {
+                let field_type = struct_type
+                    .get_field_type_at_index(index)
+                    .ok_or_else(|| anyhow::anyhow!("native argument struct field {index} is unavailable"))?;
+                let field = rebuild_native_aggregate_arg_value(builder, thunk, field_type, slots, field_index)
+                    .with_context(|| format!("native argument struct field {index}"))?;
+                aggregate = builder
+                    .build_insert_value(aggregate, field, index, "amice.vm.native.arg.field")?
+                    .into_struct_value();
+            }
+            Ok(aggregate.into())
+        },
+        BasicTypeEnum::ArrayType(array_type) => {
+            let mut aggregate = array_type.get_undef();
+            let element_type = array_type.get_element_type();
+            for index in 0..array_type.len() {
+                let element = rebuild_native_aggregate_arg_value(builder, thunk, element_type, slots, field_index)
+                    .with_context(|| format!("native argument array element {index}"))?;
+                aggregate = builder
+                    .build_insert_value(aggregate, element, index, "amice.vm.native.arg.element")?
+                    .into_array_value();
+            }
+            Ok(aggregate.into())
+        },
+        scalar_type => {
+            let field = slots
+                .fields
+                .get(*field_index)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("native aggregate argument has more leaves than signature"))?;
+            let raw = native_thunk_raw_arg(thunk, slots.start + *field_index)?;
+            let value = native_arg_from_i64(builder, raw, scalar_type, field)?;
+            *field_index += 1;
+            Ok(value)
+        },
+    }
+}
+
+fn native_thunk_raw_arg<'ctx>(
+    thunk: FunctionValue<'ctx>,
+    slot: usize,
+) -> anyhow::Result<amice_plugin::inkwell::values::IntValue<'ctx>> {
+    Ok(thunk
+        .get_nth_param(slot as u32)
+        .ok_or_else(|| anyhow::anyhow!("missing native thunk parameter slot {slot}"))?
+        .into_int_value())
+}
+
+fn native_arg_from_i64<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    raw: amice_plugin::inkwell::values::IntValue<'ctx>,
+    target_type: BasicTypeEnum<'ctx>,
+    field: translator::ReturnField,
+) -> anyhow::Result<BasicValueEnum<'ctx>> {
+    match (target_type, field.kind) {
+        (BasicTypeEnum::IntType(int_type), translator::ScalarKind::Integer) => {
+            if int_type.get_bit_width() > 64 {
+                anyhow::bail!("native aggregate integer argument leaf is wider than 64 bits");
+            }
+            Ok(int_from_i64(builder, raw, int_type)?.into())
+        },
+        (BasicTypeEnum::PointerType(ptr_type), translator::ScalarKind::Pointer) => Ok(builder
+            .build_int_to_ptr(raw, ptr_type, "amice.vm.native.arg.ptr")?
+            .into()),
+        (BasicTypeEnum::FloatType(float_type), translator::ScalarKind::Float) => {
+            Ok(float_from_i64_bits(builder, raw, float_type)?.into())
+        },
+        (other, _) => {
+            anyhow::bail!("native aggregate argument leaf type mismatch: {other:?}")
+        },
+    }
+}
+
 fn native_return_to_i64<'ctx>(
     builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
     i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
@@ -895,6 +1246,118 @@ fn native_return_to_i64<'ctx>(
         },
         translator::ScalarKind::Integer => int_to_i64(builder, i64_type, value.into_int_value()),
         translator::ScalarKind::Float => float_to_i64_bits(builder, i64_type, value),
+    }
+}
+
+fn collect_native_aggregate_return_values<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
+    value: BasicValueEnum<'ctx>,
+    fields: &[translator::ReturnField],
+) -> anyhow::Result<Vec<amice_plugin::inkwell::values::IntValue<'ctx>>> {
+    let mut slot_index = 0;
+    let mut values = Vec::with_capacity(fields.len());
+    collect_native_aggregate_return_value(
+        builder,
+        i64_type,
+        value,
+        value.get_type(),
+        fields,
+        &mut slot_index,
+        &mut values,
+    )?;
+    if slot_index != fields.len() {
+        anyhow::bail!(
+            "native aggregate return field count mismatch: signature has {}, thunk extracted {}",
+            fields.len(),
+            slot_index
+        );
+    }
+    Ok(values)
+}
+
+fn collect_native_aggregate_return_value<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
+    value: BasicValueEnum<'ctx>,
+    value_type: BasicTypeEnum<'ctx>,
+    fields: &[translator::ReturnField],
+    slot_index: &mut usize,
+    values: &mut Vec<amice_plugin::inkwell::values::IntValue<'ctx>>,
+) -> anyhow::Result<()> {
+    match value_type {
+        BasicTypeEnum::StructType(struct_type) => {
+            let aggregate = value.into_struct_value();
+            for index in 0..struct_type.count_fields() {
+                let field_type = struct_type
+                    .get_field_type_at_index(index)
+                    .ok_or_else(|| anyhow::anyhow!("native return struct field {index} is unavailable"))?;
+                let field_value = builder.build_extract_value(aggregate, index, "amice.vm.native.ret.field")?;
+                collect_native_aggregate_return_value(
+                    builder,
+                    i64_type,
+                    field_value,
+                    field_type,
+                    fields,
+                    slot_index,
+                    values,
+                )
+                .with_context(|| format!("native return struct field {index}"))?;
+            }
+            Ok(())
+        },
+        BasicTypeEnum::ArrayType(array_type) => {
+            let aggregate = value.into_array_value();
+            let element_type = array_type.get_element_type();
+            for index in 0..array_type.len() {
+                let element = builder.build_extract_value(aggregate, index, "amice.vm.native.ret.element")?;
+                collect_native_aggregate_return_value(
+                    builder,
+                    i64_type,
+                    element,
+                    element_type,
+                    fields,
+                    slot_index,
+                    values,
+                )
+                .with_context(|| format!("native return array element {index}"))?;
+            }
+            Ok(())
+        },
+        scalar_type => {
+            let field = fields
+                .get(*slot_index)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("native aggregate return has more scalar leaves than signature"))?;
+            ensure_native_return_leaf_type(scalar_type, field)?;
+            values.push(native_return_to_i64(builder, i64_type, value, field)?);
+            *slot_index += 1;
+            Ok(())
+        },
+    }
+}
+
+fn ensure_native_return_leaf_type(value_type: BasicTypeEnum<'_>, field: translator::ReturnField) -> anyhow::Result<()> {
+    match (value_type, field.kind) {
+        (BasicTypeEnum::IntType(int_type), translator::ScalarKind::Integer) => {
+            if int_type.get_bit_width() > 64 {
+                anyhow::bail!("native aggregate integer return leaf is wider than 64 bits");
+            }
+            Ok(())
+        },
+        (BasicTypeEnum::PointerType(_), translator::ScalarKind::Pointer) => Ok(()),
+        (BasicTypeEnum::FloatType(float_type), translator::ScalarKind::Float) => {
+            let width = translator::float_type_width(float_type.as_type_ref())?;
+            if width != field.width {
+                anyhow::bail!(
+                    "native aggregate float return leaf width mismatch: type is {}, signature is {}",
+                    width,
+                    field.width
+                );
+            }
+            Ok(())
+        },
+        (other, kind) => anyhow::bail!("native aggregate return leaf type {other:?} does not match {kind:?}"),
     }
 }
 

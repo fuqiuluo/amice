@@ -53,6 +53,43 @@ pub enum BinOp {
     LShr,
     /// 算术右移。
     AShr,
+    /// 有符号最大值，等价于 LLVM `smax` intrinsic。
+    SMax,
+    /// 有符号最小值，等价于 LLVM `smin` intrinsic。
+    SMin,
+    /// 无符号最大值，等价于 LLVM `umax` intrinsic。
+    UMax,
+    /// 无符号最小值，等价于 LLVM `umin` intrinsic。
+    UMin,
+    /// 无符号饱和加法，等价于 LLVM `uadd.sat` intrinsic。
+    UAddSat,
+    /// 无符号饱和减法，等价于 LLVM `usub.sat` intrinsic。
+    USubSat,
+    /// 有符号饱和加法，等价于 LLVM `sadd.sat` intrinsic。
+    SAddSat,
+    /// 有符号饱和减法，等价于 LLVM `ssub.sat` intrinsic。
+    SSubSat,
+    /// 无符号饱和左移，等价于 LLVM `ushl.sat` intrinsic。
+    UShlSat,
+    /// 有符号饱和左移，等价于 LLVM `sshl.sat` intrinsic。
+    SShlSat,
+}
+
+/// 内置 VM profile 支持的整数溢出标志计算。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum IntOverflowOp {
+    /// 无符号加法溢出，等价于 LLVM `uadd.with.overflow` intrinsic 的 flag。
+    UAdd,
+    /// 有符号加法溢出，等价于 LLVM `sadd.with.overflow` intrinsic 的 flag。
+    SAdd,
+    /// 无符号减法溢出，等价于 LLVM `usub.with.overflow` intrinsic 的 flag。
+    USub,
+    /// 有符号减法溢出，等价于 LLVM `ssub.with.overflow` intrinsic 的 flag。
+    SSub,
+    /// 无符号乘法溢出，等价于 LLVM `umul.with.overflow` intrinsic 的 flag。
+    UMul,
+    /// 有符号乘法溢出，等价于 LLVM `smul.with.overflow` intrinsic 的 flag。
+    SMul,
 }
 
 /// 内置 VM profile 支持的标量整数一元操作。
@@ -60,6 +97,12 @@ pub enum BinOp {
 pub enum IntUnaryOp {
     /// 统计置位 bit 数，等价于 LLVM `ctpop` intrinsic。
     CtPop,
+    /// 统计前导零 bit 数，等价于 `is_zero_undef=false` 的 LLVM `ctlz` intrinsic。
+    CtLz,
+    /// 统计尾随零 bit 数，等价于 `is_zero_undef=false` 的 LLVM `cttz` intrinsic。
+    CtTz,
+    /// 计算有符号绝对值，等价于 `is_int_min_poison=false` 的 LLVM `abs` intrinsic。
+    Abs,
     /// 按整数位宽做字节序反转，等价于 LLVM `bswap` intrinsic。
     BSwap,
     /// 按整数位宽做 bit 顺序反转，等价于 LLVM `bitreverse` intrinsic。
@@ -88,6 +131,15 @@ pub enum SuperOp {
     LoadAdd,
 }
 
+/// 内置 VM profile 支持的硬件/系统计数器读取。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CounterKind {
+    /// LLVM `llvm.readcyclecounter`，读取目标相关 cycle counter。
+    Cycle,
+    /// LLVM `llvm.readsteadycounter`，读取单调 steady counter。
+    Steady,
+}
+
 /// 内置 VM profile 支持的标量浮点 ALU 操作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FloatBinOp {
@@ -101,6 +153,16 @@ pub enum FloatBinOp {
     Div,
     /// IEEE 浮点余数。
     Rem,
+    /// IEEE minnum，等价于 LLVM `llvm.minnum` intrinsic。
+    MinNum,
+    /// IEEE maxnum，等价于 LLVM `llvm.maxnum` intrinsic。
+    MaxNum,
+    /// IEEE minimum，等价于 LLVM `llvm.minimum` intrinsic。
+    Minimum,
+    /// IEEE maximum，等价于 LLVM `llvm.maximum` intrinsic。
+    Maximum,
+    /// 复制第二个 operand 的符号位到第一个 operand，等价于 LLVM `llvm.copysign`。
+    CopySign,
 }
 
 /// 内置 VM profile 支持的标量浮点一元操作。
@@ -108,6 +170,35 @@ pub enum FloatBinOp {
 pub enum FloatUnaryOp {
     /// IEEE 浮点取反，等价于 LLVM `fneg`。
     Neg,
+    /// IEEE 浮点绝对值，等价于 LLVM `llvm.fabs`。
+    Abs,
+    /// IEEE 浮点平方根，等价于 LLVM `llvm.sqrt`。
+    Sqrt,
+    /// IEEE 浮点 canonicalize，等价于 LLVM `llvm.canonicalize`。
+    Canonicalize,
+    /// 向负无穷方向取整，等价于 LLVM `llvm.floor`。
+    Floor,
+    /// 向正无穷方向取整，等价于 LLVM `llvm.ceil`。
+    Ceil,
+    /// 向零方向取整，等价于 LLVM 浮点 `llvm.trunc` intrinsic。
+    Trunc,
+    /// 按当前舍入模式取整，等价于 LLVM `llvm.rint`。
+    Rint,
+    /// 按当前舍入模式取整但不触发不精确异常，等价于 LLVM `llvm.nearbyint`。
+    NearbyInt,
+    /// 四舍五入到远离零的整数，等价于 LLVM `llvm.round`。
+    Round,
+    /// 四舍五入到最近偶数，等价于 LLVM `llvm.roundeven`。
+    RoundEven,
+}
+
+/// 内置 VM profile 支持的标量浮点三元操作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FloatTernaryOp {
+    /// IEEE fused multiply-add，等价于 LLVM `llvm.fma`。
+    Fma,
+    /// 可融合乘加，等价于 LLVM `llvm.fmuladd` intrinsic。
+    MulAdd,
 }
 
 /// 内置 VM profile 支持的标量整数/浮点转换。
@@ -219,10 +310,10 @@ pub enum MemoryOrdering {
     SequentiallyConsistent,
 }
 
-/// VM bytecode 中编码的整数 atomic read-modify-write 操作。
+/// VM bytecode 中编码的 atomic read-modify-write 操作。
 ///
-/// 当前只列出 LLVM 在整数标量上可直接恢复成 `atomicrmw` 的操作；
-/// 浮点、wrapping 和 saturating atomicrmw 仍由 translator 安全跳过。
+/// 整数操作直接恢复成同名 LLVM `atomicrmw`；浮点操作只允许 `float` / `double`
+/// 标量，x 寄存器里保存参与 RMW 的 IEEE 原始 bit。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum AtomicRmwOp {
@@ -248,6 +339,36 @@ pub enum AtomicRmwOp {
     UMax,
     /// LLVM `atomicrmw umin`。
     UMin,
+    /// LLVM `atomicrmw uinc_wrap`。
+    UIncWrap,
+    /// LLVM `atomicrmw udec_wrap`。
+    UDecWrap,
+    /// LLVM `atomicrmw usub_cond`。
+    USubCond,
+    /// LLVM `atomicrmw usub_sat`。
+    USubSat,
+    /// LLVM `atomicrmw fadd`。
+    FAdd,
+    /// LLVM `atomicrmw fsub`。
+    FSub,
+    /// LLVM `atomicrmw fmax`。
+    FMax,
+    /// LLVM `atomicrmw fmin`。
+    FMin,
+    /// LLVM `atomicrmw fmaximum`。
+    FMaximum,
+    /// LLVM `atomicrmw fminimum`。
+    FMinimum,
+}
+
+impl AtomicRmwOp {
+    /// 当前操作是否要求 LLVM 浮点标量 operand。
+    pub fn is_floating_point(self) -> bool {
+        matches!(
+            self,
+            Self::FAdd | Self::FSub | Self::FMax | Self::FMin | Self::FMaximum | Self::FMinimum
+        )
+    }
 }
 
 /// 当前 lowering 子集支持的整数 cast 操作。
@@ -275,6 +396,8 @@ pub enum HandlerSemantic {
     ConstLoad,
     /// profile 声明的受限超级指令。
     Super(SuperOp),
+    /// 读取 LLVM 计数器 intrinsic，结果写入 x 寄存器。
+    ReadCounter(CounterKind),
     /// 复制一个 VM 寄存器。
     Mov,
     /// 整数二元运算。
@@ -283,12 +406,18 @@ pub enum HandlerSemantic {
     IntUnary(IntUnaryOp),
     /// 标量整数三元运算。
     IntTernary(IntTernaryOp),
+    /// 标量整数 with.overflow intrinsic，一条 handler 写入结果和溢出标志两个 x 寄存器。
+    IntOverflow(IntOverflowOp),
     /// 标量浮点二元运算，x 寄存器保存 f32/f64 原始 bit。
     FloatBin(FloatBinOp),
     /// 标量浮点一元运算，x 寄存器保存 f32/f64 原始 bit。
     FloatUnary(FloatUnaryOp),
+    /// 标量浮点三元运算，x 寄存器保存 f32/f64 原始 bit。
+    FloatTernary(FloatTernaryOp),
     /// 标量整数/浮点转换，x 寄存器保存整数值或 f32/f64 原始 bit。
     FloatCast(FloatCastOp),
+    /// 标量浮点分类，按 LLVM `is.fpclass` mask 生成 i1。
+    FloatClass,
     /// 整数比较。
     Icmp,
     /// 标量浮点比较。
@@ -297,18 +426,44 @@ pub enum HandlerSemantic {
     Cast(CastOp),
     /// 固定大小栈分配。
     Alloca,
+    /// 运行时元素个数栈分配。
+    DynamicAlloca,
     /// 标量内存读取。
     Load,
     /// 标量内存写入。
     Store,
+    /// 标量 volatile 内存读取。
+    VolatileLoad,
+    /// 标量 volatile 内存写入。
+    VolatileStore,
+    /// 运行时长度 memcpy。
+    MemcpyDynamic,
+    /// 运行时长度 memmove。
+    MemmoveDynamic,
+    /// 运行时长度 memset。
+    MemsetDynamic,
+    /// 运行时长度 volatile memcpy。
+    VolatileMemcpyDynamic,
+    /// 运行时长度 volatile memmove。
+    VolatileMemmoveDynamic,
+    /// 运行时长度 volatile memset。
+    VolatileMemsetDynamic,
     /// 标量 atomic load。
     AtomicLoad,
     /// 标量 atomic store。
     AtomicStore,
+    /// 标量 volatile atomic load。
+    VolatileAtomicLoad,
+    /// 标量 volatile atomic store。
+    VolatileAtomicStore,
     /// 标量整数 atomic read-modify-write，结果为内存中的旧值。
     AtomicRmw(AtomicRmwOp),
+    /// 标量 volatile atomic read-modify-write，结果为内存中的旧值。
+    VolatileAtomicRmw(AtomicRmwOp),
     /// 标量整数/指针 compare-exchange，结果为旧值和成功标志两个 x 寄存器。
     CmpXchg,
+    /// 标量 volatile compare-exchange，结果为旧值和成功标志两个 x 寄存器。
+    VolatileCmpXchg,
     /// LLVM atomic fence，同步副作用由 ordering operand 决定。
     Fence,
     /// 按字节偏移做指针运算。
@@ -325,6 +480,10 @@ pub enum HandlerSemantic {
     VmCall,
     /// VM 内部返回。
     VmRet,
+    /// LLVM `unreachable` 终结指令，执行到该路径时保持未定义行为。
+    Unreachable,
+    /// LLVM `trap` intrinsic，执行到该路径时触发运行时陷阱并终止控制流。
+    Trap,
     /// 受保护函数返回。
     Ret,
 }
@@ -378,6 +537,15 @@ pub enum SemanticStmt {
         /// 位宽表达式。
         width: SemanticExpr,
     },
+    /// 向内存执行 volatile 标量写入。
+    VolatileStoreWidth {
+        /// 指针表达式。
+        ptr: SemanticExpr,
+        /// 值表达式。
+        value: SemanticExpr,
+        /// 位宽表达式。
+        width: SemanticExpr,
+    },
     /// 按指定 ordering 向内存原子写入标量值。
     AtomicStoreWidth {
         /// 指针表达式。
@@ -389,8 +557,92 @@ pub enum SemanticStmt {
         /// memory ordering 表达式。
         ordering: SemanticExpr,
     },
+    /// 按指定 ordering 向内存执行 volatile atomic 标量写入。
+    VolatileAtomicStoreWidth {
+        /// 指针表达式。
+        ptr: SemanticExpr,
+        /// 值表达式。
+        value: SemanticExpr,
+        /// 位宽表达式。
+        width: SemanticExpr,
+        /// memory ordering 表达式。
+        ordering: SemanticExpr,
+    },
+    /// 按运行时长度从源地址逐字节复制到目标地址。
+    MemcpyDynamic {
+        /// 目标指针表达式。
+        dst: SemanticExpr,
+        /// 源指针表达式。
+        src: SemanticExpr,
+        /// 复制长度表达式，单位为字节。
+        len: SemanticExpr,
+    },
+    /// 按运行时长度执行允许重叠的逐字节复制。
+    MemmoveDynamic {
+        /// 目标指针表达式。
+        dst: SemanticExpr,
+        /// 源指针表达式。
+        src: SemanticExpr,
+        /// 复制长度表达式，单位为字节。
+        len: SemanticExpr,
+    },
+    /// 按运行时长度逐字节写入同一个 i8 值。
+    MemsetDynamic {
+        /// 目标指针表达式。
+        dst: SemanticExpr,
+        /// 写入的 i8 值表达式。
+        value: SemanticExpr,
+        /// 写入长度表达式，单位为字节。
+        len: SemanticExpr,
+    },
+    /// 按运行时长度执行 volatile 逐字节复制。
+    VolatileMemcpyDynamic {
+        /// 目标指针表达式。
+        dst: SemanticExpr,
+        /// 源指针表达式。
+        src: SemanticExpr,
+        /// 复制长度表达式，单位为字节。
+        len: SemanticExpr,
+    },
+    /// 按运行时长度执行允许重叠的 volatile 逐字节复制。
+    VolatileMemmoveDynamic {
+        /// 目标指针表达式。
+        dst: SemanticExpr,
+        /// 源指针表达式。
+        src: SemanticExpr,
+        /// 复制长度表达式，单位为字节。
+        len: SemanticExpr,
+    },
+    /// 按运行时长度 volatile 逐字节写入同一个 i8 值。
+    VolatileMemsetDynamic {
+        /// 目标指针表达式。
+        dst: SemanticExpr,
+        /// 写入的 i8 值表达式。
+        value: SemanticExpr,
+        /// 写入长度表达式，单位为字节。
+        len: SemanticExpr,
+    },
     /// 对内存执行 compare-exchange，并把旧值和成功标志写入两个寄存器。
     CmpXchg {
+        /// 保存内存旧值的目标 register operand 名称。
+        old: String,
+        /// 保存比较是否成功的目标 register operand 名称。
+        success: String,
+        /// 指针表达式。
+        ptr: SemanticExpr,
+        /// 期望旧值表达式。
+        compare: SemanticExpr,
+        /// 成功时写入的新值表达式。
+        new: SemanticExpr,
+        /// 操作位宽表达式。
+        width: SemanticExpr,
+        /// 成功 ordering 表达式。
+        success_ordering: SemanticExpr,
+        /// 失败 ordering 表达式。
+        failure_ordering: SemanticExpr,
+    },
+    /// 对内存执行 volatile compare-exchange，并把旧值和成功标志写入两个寄存器。
+    VolatileCmpXchg {
         /// 保存内存旧值的目标 register operand 名称。
         old: String,
         /// 保存比较是否成功的目标 register operand 名称。
@@ -413,6 +665,10 @@ pub enum SemanticStmt {
         /// fence ordering 表达式。
         ordering: SemanticExpr,
     },
+    /// 直接终止当前 LLVM 控制流路径，对应 LLVM `unreachable`。
+    Unreachable,
+    /// 触发 LLVM `trap` intrinsic 并终止当前控制流路径。
+    Trap,
     /// 声明 handler 不改变 VM 数据状态。
     StateUnchanged,
 }
@@ -493,6 +749,17 @@ pub enum SemanticExpr {
         /// 操作数位宽。
         width: Box<SemanticExpr>,
     },
+    /// 整数加减运算的溢出标志表达式。
+    IntOverflow {
+        /// 要检测的加减溢出类别。
+        op: SemanticIntOverflowOp,
+        /// 左操作数。
+        lhs: Box<SemanticExpr>,
+        /// 右操作数。
+        rhs: Box<SemanticExpr>,
+        /// 操作数位宽。
+        width: Box<SemanticExpr>,
+    },
     /// 整数比较表达式。
     Compare {
         /// 按 LLVM `icmp` 方式编码的谓词表达式。
@@ -524,6 +791,19 @@ pub enum SemanticExpr {
         /// 操作数位宽，仅支持 32 或 64。
         width: Box<SemanticExpr>,
     },
+    /// 标量浮点三元表达式。
+    FloatTernary {
+        /// 要应用的浮点操作。
+        op: SemanticFloatTernaryOp,
+        /// 左操作数。
+        lhs: Box<SemanticExpr>,
+        /// 右操作数。
+        rhs: Box<SemanticExpr>,
+        /// 第三个操作数。
+        third: Box<SemanticExpr>,
+        /// 操作数位宽，仅支持 32 或 64。
+        width: Box<SemanticExpr>,
+    },
     /// 标量整数/浮点转换表达式。
     FloatCast {
         /// 要应用的转换操作。
@@ -546,6 +826,15 @@ pub enum SemanticExpr {
         /// 操作数位宽，仅支持 32 或 64。
         width: Box<SemanticExpr>,
     },
+    /// 标量浮点分类表达式，按 LLVM `FPClassTest` mask 生成 i1。
+    FloatClass {
+        /// 源浮点 bit。
+        value: Box<SemanticExpr>,
+        /// LLVM `FPClassTest` mask。
+        mask: Box<SemanticExpr>,
+        /// 操作数位宽，仅支持 32 或 64。
+        width: Box<SemanticExpr>,
+    },
     /// 无分支 select 表达式。
     Select {
         /// 条件表达式；零表示 false。
@@ -555,6 +844,11 @@ pub enum SemanticExpr {
         /// 条件为零时选择的值。
         else_value: Box<SemanticExpr>,
     },
+    /// 读取 LLVM 计数器 intrinsic。
+    ReadCounter {
+        /// 计数器类别。
+        kind: CounterKind,
+    },
     /// 分配 VM stack slot。
     StackAlloc {
         /// 分配大小，单位为字节。
@@ -562,8 +856,24 @@ pub enum SemanticExpr {
         /// 所需对齐，单位为字节。
         align: Box<SemanticExpr>,
     },
+    /// 按运行时元素个数分配 VM stack slot。
+    StackAllocDynamic {
+        /// 元素个数表达式。
+        count: Box<SemanticExpr>,
+        /// 单元素大小，单位为字节。
+        elem_size: Box<SemanticExpr>,
+        /// 所需对齐，单位为字节。
+        align: Box<SemanticExpr>,
+    },
     /// 从内存加载标量值。
     LoadWidth {
+        /// 指针表达式。
+        ptr: Box<SemanticExpr>,
+        /// 位宽表达式。
+        width: Box<SemanticExpr>,
+    },
+    /// 从内存执行 volatile 标量加载。
+    VolatileLoadWidth {
         /// 指针表达式。
         ptr: Box<SemanticExpr>,
         /// 位宽表达式。
@@ -578,8 +888,30 @@ pub enum SemanticExpr {
         /// memory ordering 表达式。
         ordering: Box<SemanticExpr>,
     },
+    /// 从内存执行 volatile atomic 标量加载。
+    VolatileAtomicLoadWidth {
+        /// 指针表达式。
+        ptr: Box<SemanticExpr>,
+        /// 位宽表达式。
+        width: Box<SemanticExpr>,
+        /// memory ordering 表达式。
+        ordering: Box<SemanticExpr>,
+    },
     /// 对内存执行 atomic read-modify-write，并返回旧值。
     AtomicRmw {
+        /// 要应用的 atomicrmw 操作。
+        op: SemanticAtomicRmwOp,
+        /// 指针表达式。
+        ptr: Box<SemanticExpr>,
+        /// 参与 RMW 的新值表达式。
+        value: Box<SemanticExpr>,
+        /// 位宽表达式。
+        width: Box<SemanticExpr>,
+        /// memory ordering 表达式。
+        ordering: Box<SemanticExpr>,
+    },
+    /// 对内存执行 volatile atomic read-modify-write，并返回旧值。
+    VolatileAtomicRmw {
         /// 要应用的 atomicrmw 操作。
         op: SemanticAtomicRmwOp,
         /// 指针表达式。
@@ -631,6 +963,26 @@ pub enum SemanticBinOp {
     LShr,
     /// 算术右移。
     AShr,
+    /// 有符号最大值。
+    SMax,
+    /// 有符号最小值。
+    SMin,
+    /// 无符号最大值。
+    UMax,
+    /// 无符号最小值。
+    UMin,
+    /// 无符号饱和加法。
+    UAddSat,
+    /// 无符号饱和减法。
+    USubSat,
+    /// 有符号饱和加法。
+    SAddSat,
+    /// 有符号饱和减法。
+    SSubSat,
+    /// 无符号饱和左移。
+    UShlSat,
+    /// 有符号饱和左移。
+    SShlSat,
 }
 
 /// handler semantic DSL 中的整数一元运算符。
@@ -638,6 +990,12 @@ pub enum SemanticBinOp {
 pub enum SemanticIntUnaryOp {
     /// 统计置位 bit 数。
     CtPop,
+    /// 统计前导零 bit 数。
+    CtLz,
+    /// 统计尾随零 bit 数。
+    CtTz,
+    /// 计算有符号绝对值。
+    Abs,
     /// 按整数位宽做字节序反转。
     BSwap,
     /// 按整数位宽做 bit 顺序反转。
@@ -653,6 +1011,23 @@ pub enum SemanticIntTernaryOp {
     FShr,
 }
 
+/// handler semantic DSL 中的整数溢出检测操作符。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SemanticIntOverflowOp {
+    /// 无符号加法溢出。
+    UAdd,
+    /// 有符号加法溢出。
+    SAdd,
+    /// 无符号减法溢出。
+    USub,
+    /// 有符号减法溢出。
+    SSub,
+    /// 无符号乘法溢出。
+    UMul,
+    /// 有符号乘法溢出。
+    SMul,
+}
+
 /// handler semantic DSL 中的浮点二元运算符。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticFloatBinOp {
@@ -666,6 +1041,16 @@ pub enum SemanticFloatBinOp {
     Div,
     /// 浮点余数。
     Rem,
+    /// 浮点 minnum。
+    MinNum,
+    /// 浮点 maxnum。
+    MaxNum,
+    /// 浮点 minimum。
+    Minimum,
+    /// 浮点 maximum。
+    Maximum,
+    /// 浮点符号位复制。
+    CopySign,
 }
 
 /// handler semantic DSL 中的浮点一元运算符。
@@ -673,6 +1058,35 @@ pub enum SemanticFloatBinOp {
 pub enum SemanticFloatUnaryOp {
     /// 浮点取反。
     Neg,
+    /// 浮点绝对值。
+    Abs,
+    /// 浮点平方根。
+    Sqrt,
+    /// 浮点 canonicalize。
+    Canonicalize,
+    /// 浮点 floor。
+    Floor,
+    /// 浮点 ceil。
+    Ceil,
+    /// 浮点 trunc。
+    Trunc,
+    /// 浮点 rint。
+    Rint,
+    /// 浮点 nearbyint。
+    NearbyInt,
+    /// 浮点 round。
+    Round,
+    /// 浮点 roundeven。
+    RoundEven,
+}
+
+/// handler semantic DSL 中的浮点三元运算符。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SemanticFloatTernaryOp {
+    /// fused multiply-add。
+    Fma,
+    /// 可融合乘加。
+    MulAdd,
 }
 
 /// handler semantic DSL 中的标量整数/浮点转换操作符。
@@ -717,6 +1131,26 @@ pub enum SemanticAtomicRmwOp {
     UMax,
     /// 原子无符号最小值。
     UMin,
+    /// 原子无符号加一并按输入上界回绕。
+    UIncWrap,
+    /// 原子无符号减一并按输入上界回绕。
+    UDecWrap,
+    /// 原子无符号条件减法。
+    USubCond,
+    /// 原子无符号饱和减法。
+    USubSat,
+    /// 原子浮点加法。
+    FAdd,
+    /// 原子浮点减法。
+    FSub,
+    /// 原子浮点 maxnum 风格最大值。
+    FMax,
+    /// 原子浮点 minnum 风格最小值。
+    FMin,
+    /// 原子浮点 maximum 风格最大值。
+    FMaximum,
+    /// 原子浮点 minimum 风格最小值。
+    FMinimum,
 }
 
 /// `pc = ...` 赋值中接受的 program-counter 表达式。
@@ -813,25 +1247,55 @@ impl HandlerSemantic {
                 .reads(["ptr", "addend"])
                 .writes(["dst"])
                 .with_memory_read(),
+            Self::ReadCounter(_) => HandlerEffect::new(PcEffect::Next).writes(["dst"]).with_native_call(),
             Self::Mov => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
             Self::Bin(_) => HandlerEffect::new(PcEffect::Next).reads(["lhs", "rhs"]).writes(["dst"]),
             Self::IntUnary(_) => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
             Self::IntTernary(_) => HandlerEffect::new(PcEffect::Next)
                 .reads(["lhs", "rhs", "third"])
                 .writes(["dst"]),
+            Self::IntOverflow(_) => HandlerEffect::new(PcEffect::Next)
+                .reads(["lhs", "rhs"])
+                .writes(["dst", "overflow"]),
             Self::FloatBin(_) => HandlerEffect::new(PcEffect::Next).reads(["lhs", "rhs"]).writes(["dst"]),
             Self::FloatUnary(_) => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
+            Self::FloatTernary(_) => HandlerEffect::new(PcEffect::Next)
+                .reads(["lhs", "rhs", "third"])
+                .writes(["dst"]),
             Self::FloatCast(_) => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
+            Self::FloatClass => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
             Self::Icmp => HandlerEffect::new(PcEffect::Next).reads(["lhs", "rhs"]).writes(["dst"]),
             Self::Fcmp => HandlerEffect::new(PcEffect::Next).reads(["lhs", "rhs"]).writes(["dst"]),
             Self::Cast(_) => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
             Self::Alloca => HandlerEffect::new(PcEffect::Next).writes(["dst"]),
+            Self::DynamicAlloca => HandlerEffect::new(PcEffect::Next).reads(["count"]).writes(["dst"]),
             Self::Load => HandlerEffect::new(PcEffect::Next)
                 .reads(["ptr"])
                 .writes(["dst"])
                 .with_memory_read(),
             Self::Store => HandlerEffect::new(PcEffect::Next)
                 .reads(["ptr", "src"])
+                .with_memory_write(),
+            Self::VolatileLoad => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::VolatileStore => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "src"])
+                .with_memory_write(),
+            Self::MemcpyDynamic | Self::MemmoveDynamic => HandlerEffect::new(PcEffect::Next)
+                .reads(["dst", "src", "len"])
+                .with_memory_read()
+                .with_memory_write(),
+            Self::MemsetDynamic => HandlerEffect::new(PcEffect::Next)
+                .reads(["dst", "value", "len"])
+                .with_memory_write(),
+            Self::VolatileMemcpyDynamic | Self::VolatileMemmoveDynamic => HandlerEffect::new(PcEffect::Next)
+                .reads(["dst", "src", "len"])
+                .with_memory_read()
+                .with_memory_write(),
+            Self::VolatileMemsetDynamic => HandlerEffect::new(PcEffect::Next)
+                .reads(["dst", "value", "len"])
                 .with_memory_write(),
             Self::AtomicLoad => HandlerEffect::new(PcEffect::Next)
                 .reads(["ptr"])
@@ -840,12 +1304,29 @@ impl HandlerSemantic {
             Self::AtomicStore => HandlerEffect::new(PcEffect::Next)
                 .reads(["ptr", "src"])
                 .with_memory_write(),
+            Self::VolatileAtomicLoad => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::VolatileAtomicStore => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "src"])
+                .with_memory_write(),
             Self::AtomicRmw(_) => HandlerEffect::new(PcEffect::Next)
                 .reads(["ptr", "src"])
                 .writes(["dst"])
                 .with_memory_read()
                 .with_memory_write(),
+            Self::VolatileAtomicRmw(_) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "src"])
+                .writes(["dst"])
+                .with_memory_read()
+                .with_memory_write(),
             Self::CmpXchg => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "cmp", "new"])
+                .writes(["old", "success"])
+                .with_memory_read()
+                .with_memory_write(),
+            Self::VolatileCmpXchg => HandlerEffect::new(PcEffect::Next)
                 .reads(["ptr", "cmp", "new"])
                 .writes(["old", "success"])
                 .with_memory_read()
@@ -863,6 +1344,8 @@ impl HandlerSemantic {
             Self::BrCond => HandlerEffect::new(PcEffect::Branch).reads(["cond"]),
             Self::VmCall => HandlerEffect::new(PcEffect::Branch).writes(["lr"]),
             Self::VmRet => HandlerEffect::new(PcEffect::Branch).reads(["lr"]),
+            Self::Unreachable => HandlerEffect::new(PcEffect::Return),
+            Self::Trap => HandlerEffect::new(PcEffect::Return).with_native_call(),
             Self::Ret => HandlerEffect::new(PcEffect::Return).reads(["src"]).writes(["ret0"]),
         }
     }
@@ -1049,12 +1532,15 @@ impl Default for IsaProfile {
         use BinOp::*;
         use CastOp::*;
         use HandlerSemantic::*;
+        use IntOverflowOp::*;
         use IntTernaryOp::*;
         use IntUnaryOp::*;
 
         let instructions = vec![
             InstructionDesc::new("mov_imm", vec![0x01], 3, MovImm),
             InstructionDesc::new("const_load", vec![0x03], 3, ConstLoad),
+            InstructionDesc::new("read_cycle", vec![0x12e], 2, ReadCounter(CounterKind::Cycle)),
+            InstructionDesc::new("read_steady", vec![0x12f], 2, ReadCounter(CounterKind::Steady)),
             InstructionDesc::new("mov", vec![0x02], 3, Mov),
             InstructionDesc::new("iadd", vec![0x10], 4, Bin(Add)),
             InstructionDesc::new("isub", vec![0x11], 4, Bin(Sub)),
@@ -1069,7 +1555,26 @@ impl Default for IsaProfile {
             InstructionDesc::new("ishl", vec![0x16], 4, Bin(Shl)),
             InstructionDesc::new("ilshr", vec![0x17], 4, Bin(LShr)),
             InstructionDesc::new("iashr", vec![0x18], 4, Bin(AShr)),
+            InstructionDesc::new("ismax", vec![0x54], 4, Bin(SMax)),
+            InstructionDesc::new("ismin", vec![0x55], 4, Bin(SMin)),
+            InstructionDesc::new("iumax", vec![0x56], 4, Bin(UMax)),
+            InstructionDesc::new("iumin", vec![0x57], 4, Bin(UMin)),
+            InstructionDesc::new("iuadd_sat", vec![0x58], 4, Bin(UAddSat)),
+            InstructionDesc::new("iusub_sat", vec![0x59], 4, Bin(USubSat)),
+            InstructionDesc::new("isadd_sat", vec![0x5a], 4, Bin(SAddSat)),
+            InstructionDesc::new("issub_sat", vec![0x5b], 4, Bin(SSubSat)),
+            InstructionDesc::new("iushl_sat", vec![0x5c], 4, Bin(UShlSat)),
+            InstructionDesc::new("isshl_sat", vec![0x5d], 4, Bin(SShlSat)),
+            InstructionDesc::new("iuadd_overflow", vec![0x5e], 5, IntOverflow(UAdd)),
+            InstructionDesc::new("isadd_overflow", vec![0x5f], 5, IntOverflow(SAdd)),
+            InstructionDesc::new("iusub_overflow", vec![0x60], 5, IntOverflow(USub)),
+            InstructionDesc::new("issub_overflow", vec![0x61], 5, IntOverflow(SSub)),
+            InstructionDesc::new("iumul_overflow", vec![0x62], 5, IntOverflow(UMul)),
+            InstructionDesc::new("ismul_overflow", vec![0x63], 5, IntOverflow(SMul)),
             InstructionDesc::new("ctpop", vec![0x1d], 3, IntUnary(CtPop)),
+            InstructionDesc::new("ctlz", vec![0x101], 3, IntUnary(CtLz)),
+            InstructionDesc::new("cttz", vec![0x102], 3, IntUnary(CtTz)),
+            InstructionDesc::new("iabs", vec![0x53], 3, IntUnary(Abs)),
             InstructionDesc::new("bswap", vec![0x1e], 3, IntUnary(BSwap)),
             InstructionDesc::new("bitreverse", vec![0x1f], 3, IntUnary(BitReverse)),
             InstructionDesc::new("fshl", vec![0x22], 5, IntTernary(FShl)),
@@ -1080,10 +1585,21 @@ impl Default for IsaProfile {
             InstructionDesc::new("trunc", vec![0x32], 4, Cast(Trunc)),
             InstructionDesc::new("bitcast", vec![0x33], 4, Cast(Bitcast)),
             InstructionDesc::new("alloca", vec![0x34], 3, Alloca),
+            InstructionDesc::new("alloca_dyn", vec![0x6a], 4, DynamicAlloca),
             InstructionDesc::new("load", vec![0x35], 3, Load),
             InstructionDesc::new("store", vec![0x36], 3, Store),
+            InstructionDesc::new("volatile_load", vec![0x113], 3, VolatileLoad),
+            InstructionDesc::new("volatile_store", vec![0x114], 3, VolatileStore),
+            InstructionDesc::new("memcpy_dyn", vec![0x6c], 3, MemcpyDynamic),
+            InstructionDesc::new("memmove_dyn", vec![0x6d], 3, MemmoveDynamic),
+            InstructionDesc::new("memset_dyn", vec![0x6b], 3, MemsetDynamic),
+            InstructionDesc::new("volatile_memcpy_dyn", vec![0x129], 3, VolatileMemcpyDynamic),
+            InstructionDesc::new("volatile_memmove_dyn", vec![0x12a], 3, VolatileMemmoveDynamic),
+            InstructionDesc::new("volatile_memset_dyn", vec![0x12b], 3, VolatileMemsetDynamic),
             InstructionDesc::new("atomic_load", vec![0x44], 4, AtomicLoad),
             InstructionDesc::new("atomic_store", vec![0x45], 4, AtomicStore),
+            InstructionDesc::new("volatile_atomic_load", vec![0x127], 4, VolatileAtomicLoad),
+            InstructionDesc::new("volatile_atomic_store", vec![0x128], 4, VolatileAtomicStore),
             InstructionDesc::new("atomic_rmw_xchg", vec![0x46], 5, AtomicRmw(AtomicRmwOp::Xchg)),
             InstructionDesc::new("atomic_rmw_add", vec![0x47], 5, AtomicRmw(AtomicRmwOp::Add)),
             InstructionDesc::new("atomic_rmw_sub", vec![0x48], 5, AtomicRmw(AtomicRmwOp::Sub)),
@@ -1095,7 +1611,24 @@ impl Default for IsaProfile {
             InstructionDesc::new("atomic_rmw_min", vec![0x4e], 5, AtomicRmw(AtomicRmwOp::Min)),
             InstructionDesc::new("atomic_rmw_umax", vec![0x4f], 5, AtomicRmw(AtomicRmwOp::UMax)),
             InstructionDesc::new("atomic_rmw_umin", vec![0x50], 5, AtomicRmw(AtomicRmwOp::UMin)),
+            InstructionDesc::new("atomic_rmw_uinc_wrap", vec![0x11d], 5, AtomicRmw(AtomicRmwOp::UIncWrap)),
+            InstructionDesc::new("atomic_rmw_udec_wrap", vec![0x11e], 5, AtomicRmw(AtomicRmwOp::UDecWrap)),
+            InstructionDesc::new("atomic_rmw_usub_cond", vec![0x11f], 5, AtomicRmw(AtomicRmwOp::USubCond)),
+            InstructionDesc::new("atomic_rmw_usub_sat", vec![0x120], 5, AtomicRmw(AtomicRmwOp::USubSat)),
+            InstructionDesc::new("atomic_rmw_fadd", vec![0x117], 5, AtomicRmw(AtomicRmwOp::FAdd)),
+            InstructionDesc::new("atomic_rmw_fsub", vec![0x118], 5, AtomicRmw(AtomicRmwOp::FSub)),
+            InstructionDesc::new("atomic_rmw_fmax", vec![0x119], 5, AtomicRmw(AtomicRmwOp::FMax)),
+            InstructionDesc::new("atomic_rmw_fmin", vec![0x11a], 5, AtomicRmw(AtomicRmwOp::FMin)),
+            InstructionDesc::new("atomic_rmw_fmaximum", vec![0x11b], 5, AtomicRmw(AtomicRmwOp::FMaximum)),
+            InstructionDesc::new("atomic_rmw_fminimum", vec![0x11c], 5, AtomicRmw(AtomicRmwOp::FMinimum)),
+            InstructionDesc::new(
+                "volatile_atomic_rmw_add",
+                vec![0x12d],
+                5,
+                VolatileAtomicRmw(AtomicRmwOp::Add),
+            ),
             InstructionDesc::new("cmpxchg", vec![0x51], 8, CmpXchg),
+            InstructionDesc::new("volatile_cmpxchg", vec![0x12c], 8, VolatileCmpXchg),
             InstructionDesc::new("fence", vec![0x52], 1, Fence),
             InstructionDesc::new("gep", vec![0x37], 3, Gep),
             InstructionDesc::new("call_native", vec![0x38], 27, CallNative),
@@ -1103,6 +1636,25 @@ impl Default for IsaProfile {
             InstructionDesc::new("br_if", vec![0x41], 3, BrCond),
             InstructionDesc::new("vm_call", vec![0x42], 1, VmCall),
             InstructionDesc::new("vm_ret", vec![0x43], 0, VmRet),
+            InstructionDesc::new("fminnum", vec![0x68], 4, FloatBin(FloatBinOp::MinNum)),
+            InstructionDesc::new("fmaxnum", vec![0x69], 4, FloatBin(FloatBinOp::MaxNum)),
+            InstructionDesc::new("fminimum", vec![0x6e], 4, FloatBin(FloatBinOp::Minimum)),
+            InstructionDesc::new("fmaximum", vec![0x6f], 4, FloatBin(FloatBinOp::Maximum)),
+            InstructionDesc::new("fcopysign", vec![0x66], 4, FloatBin(FloatBinOp::CopySign)),
+            InstructionDesc::new("fabs", vec![0x64], 3, FloatUnary(FloatUnaryOp::Abs)),
+            InstructionDesc::new("fsqrt", vec![0x65], 3, FloatUnary(FloatUnaryOp::Sqrt)),
+            InstructionDesc::new("fcanonicalize", vec![0x71], 3, FloatUnary(FloatUnaryOp::Canonicalize)),
+            InstructionDesc::new("ffloor", vec![0x72], 3, FloatUnary(FloatUnaryOp::Floor)),
+            InstructionDesc::new("fceil", vec![0x73], 3, FloatUnary(FloatUnaryOp::Ceil)),
+            InstructionDesc::new("ftrunc", vec![0x74], 3, FloatUnary(FloatUnaryOp::Trunc)),
+            InstructionDesc::new("frint", vec![0x75], 3, FloatUnary(FloatUnaryOp::Rint)),
+            InstructionDesc::new("fnearbyint", vec![0x76], 3, FloatUnary(FloatUnaryOp::NearbyInt)),
+            InstructionDesc::new("fround", vec![0x77], 3, FloatUnary(FloatUnaryOp::Round)),
+            InstructionDesc::new("froundeven", vec![0x78], 3, FloatUnary(FloatUnaryOp::RoundEven)),
+            InstructionDesc::new("ffma", vec![0x67], 5, FloatTernary(FloatTernaryOp::Fma)),
+            InstructionDesc::new("ffmuladd", vec![0x70], 5, FloatTernary(FloatTernaryOp::MulAdd)),
+            InstructionDesc::new("unreachable", vec![0x79], 0, Unreachable),
+            InstructionDesc::new("trap", vec![0x7a], 0, Trap),
             InstructionDesc::new("ret", vec![0x7f], 1, Ret),
         ];
 

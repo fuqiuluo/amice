@@ -14,15 +14,15 @@
 //! `debug_dump` 只用于诊断文本。runtime 生成必须消费结构化 offset 和 `bytes` 字段。
 
 use crate::isa::{
-    AtomicRmwOp, BinOp, CastOp, FloatBinOp, FloatCastOp, FloatUnaryOp, HandlerSemantic, IntTernaryOp, IntUnaryOp,
-    MemoryOrdering, SuperOp,
+    AtomicRmwOp, BinOp, CastOp, FloatBinOp, FloatCastOp, FloatTernaryOp, FloatUnaryOp, HandlerSemantic, IntOverflowOp,
+    IntTernaryOp, IntUnaryOp, MemoryOrdering, Opcode, SuperOp,
 };
 use crate::lowering::{
     LabelId, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, NativeReturn, VmFunction, VmInstruction,
 };
 use crate::profile::{DecoderStep, ProfilePackage, RuntimeScope, SegmentMode};
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 
 const BYTECODE_MAGIC: &[u8; 8] = b"AMICEVMP";
@@ -50,6 +50,8 @@ pub struct BytecodeImage {
     pub key: u64,
     /// 插入 fake/dead 指令后的编码指令记录数。
     pub instruction_count: u32,
+    /// 编码后 code segment 中实际出现过的 opcode alias。
+    pub used_opcodes: BTreeSet<Opcode>,
     /// 测试和 debug dump 使用的人类可读编码轨迹。
     pub debug_dump: String,
 }
@@ -109,6 +111,7 @@ impl<'a> BytecodeEncoder<'a> {
         let expanded_instruction_count = function.instructions.len() * (1 + fake_count) + dead_count;
         let mut records = Vec::with_capacity(expanded_instruction_count);
         let mut debug_lines = Vec::with_capacity(expanded_instruction_count);
+        let mut used_opcodes = BTreeSet::new();
         let mut record_index = 0;
 
         for (pc, instruction) in function.instructions.iter().enumerate() {
@@ -131,6 +134,7 @@ impl<'a> BytecodeEncoder<'a> {
                 tokens.opcode(),
                 tokens.operands()
             ));
+            used_opcodes.insert(tokens.opcode() as Opcode);
             records.push(tokens);
             record_index += 1;
             for _ in 0..fake_count {
@@ -142,6 +146,7 @@ impl<'a> BytecodeEncoder<'a> {
                     tokens.opcode(),
                     tokens.operands()
                 ));
+                used_opcodes.insert(tokens.opcode() as Opcode);
                 records.push(tokens);
                 record_index += 1;
             }
@@ -156,6 +161,7 @@ impl<'a> BytecodeEncoder<'a> {
                 tokens.opcode(),
                 tokens.operands()
             ));
+            used_opcodes.insert(tokens.opcode() as Opcode);
             records.push(tokens);
             record_index += 1;
         }
@@ -180,6 +186,7 @@ impl<'a> BytecodeEncoder<'a> {
             reloc_len: package.reloc_len,
             key,
             instruction_count: expanded_instruction_count as u32,
+            used_opcodes,
             debug_dump: debug_lines.join("\n"),
         })
     }
@@ -213,6 +220,14 @@ impl<'a> BytecodeEncoder<'a> {
                     ("index", const_pool.index_of(*value)?),
                     ("width", *width as u64),
                 ]),
+            ),
+            VmInstruction::ReadCounter { kind, dst, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::ReadCounter(*kind),
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("width", *width as u64)]),
             ),
             VmInstruction::SuperAddXor {
                 dst,
@@ -368,6 +383,27 @@ impl<'a> BytecodeEncoder<'a> {
                     ("width", *width as u64),
                 ]),
             ),
+            VmInstruction::IntOverflow {
+                op,
+                dst,
+                overflow,
+                lhs,
+                rhs,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::IntOverflow(*op),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("overflow", *overflow as u64),
+                    ("lhs", *lhs as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
             VmInstruction::FloatBin {
                 op,
                 dst,
@@ -394,6 +430,27 @@ impl<'a> BytecodeEncoder<'a> {
                 key,
                 pc,
                 operands([("dst", *dst as u64), ("src", *src as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::FloatTernary {
+                op,
+                dst,
+                lhs,
+                rhs,
+                third,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::FloatTernary(*op),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("lhs", *lhs as u64),
+                    ("rhs", *rhs as u64),
+                    ("third", *third as u64),
+                    ("width", *width as u64),
+                ]),
             ),
             VmInstruction::FloatCast {
                 op,
@@ -434,6 +491,19 @@ impl<'a> BytecodeEncoder<'a> {
                     ("width", *width as u64),
                 ]),
             ),
+            VmInstruction::FloatClass { dst, src, mask, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::FloatClass,
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("src", *src as u64),
+                    ("mask", *mask as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
             VmInstruction::Cast {
                 op,
                 dst,
@@ -461,6 +531,24 @@ impl<'a> BytecodeEncoder<'a> {
                 pc,
                 operands([("dst", *dst as u64), ("bytes", *bytes), ("align", *align as u64)]),
             ),
+            VmInstruction::DynamicAlloca {
+                dst,
+                count,
+                elem_size,
+                align,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::DynamicAlloca,
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("count", *count as u64),
+                    ("elem_size", *elem_size),
+                    ("align", *align as u64),
+                ]),
+            ),
             VmInstruction::Load { dst, ptr, width } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -476,6 +564,70 @@ impl<'a> BytecodeEncoder<'a> {
                 key,
                 pc,
                 operands([("src", *src as u64), ("ptr", *ptr as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::VolatileLoad { dst, ptr, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::VolatileLoad,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("ptr", *ptr as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::VolatileStore { src, ptr, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::VolatileStore,
+                key,
+                pc,
+                operands([("src", *src as u64), ("ptr", *ptr as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::MemcpyDynamic { dst, src, len } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::MemcpyDynamic,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("src", *src as u64), ("len", *len as u64)]),
+            ),
+            VmInstruction::MemmoveDynamic { dst, src, len } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::MemmoveDynamic,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("src", *src as u64), ("len", *len as u64)]),
+            ),
+            VmInstruction::MemsetDynamic { dst, value, len } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::MemsetDynamic,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("value", *value as u64), ("len", *len as u64)]),
+            ),
+            VmInstruction::VolatileMemcpyDynamic { dst, src, len } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::VolatileMemcpyDynamic,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("src", *src as u64), ("len", *len as u64)]),
+            ),
+            VmInstruction::VolatileMemmoveDynamic { dst, src, len } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::VolatileMemmoveDynamic,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("src", *src as u64), ("len", *len as u64)]),
+            ),
+            VmInstruction::VolatileMemsetDynamic { dst, value, len } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::VolatileMemsetDynamic,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("value", *value as u64), ("len", *len as u64)]),
             ),
             VmInstruction::AtomicLoad {
                 dst,
@@ -513,6 +665,42 @@ impl<'a> BytecodeEncoder<'a> {
                     ("ordering", memory_ordering_tag(*ordering) as u64),
                 ]),
             ),
+            VmInstruction::VolatileAtomicLoad {
+                dst,
+                ptr,
+                width,
+                ordering,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::VolatileAtomicLoad,
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("width", *width as u64),
+                    ("ordering", memory_ordering_tag(*ordering) as u64),
+                ]),
+            ),
+            VmInstruction::VolatileAtomicStore {
+                src,
+                ptr,
+                width,
+                ordering,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::VolatileAtomicStore,
+                key,
+                pc,
+                operands([
+                    ("src", *src as u64),
+                    ("ptr", *ptr as u64),
+                    ("width", *width as u64),
+                    ("ordering", memory_ordering_tag(*ordering) as u64),
+                ]),
+            ),
             VmInstruction::AtomicRmw {
                 op,
                 dst,
@@ -524,6 +712,27 @@ impl<'a> BytecodeEncoder<'a> {
                 self.profile,
                 profile_instruction,
                 &HandlerSemantic::AtomicRmw(*op),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("src", *src as u64),
+                    ("width", *width as u64),
+                    ("ordering", memory_ordering_tag(*ordering) as u64),
+                ]),
+            ),
+            VmInstruction::VolatileAtomicRmw {
+                op,
+                dst,
+                ptr,
+                src,
+                width,
+                ordering,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::VolatileAtomicRmw(*op),
                 key,
                 pc,
                 operands([
@@ -547,6 +756,32 @@ impl<'a> BytecodeEncoder<'a> {
                 self.profile,
                 profile_instruction,
                 &HandlerSemantic::CmpXchg,
+                key,
+                pc,
+                operands([
+                    ("old", *old as u64),
+                    ("success", *success as u64),
+                    ("ptr", *ptr as u64),
+                    ("cmp", *cmp as u64),
+                    ("new", *new as u64),
+                    ("width", *width as u64),
+                    ("success_ordering", memory_ordering_tag(*success_ordering) as u64),
+                    ("failure_ordering", memory_ordering_tag(*failure_ordering) as u64),
+                ]),
+            ),
+            VmInstruction::VolatileCmpXchg {
+                old,
+                success,
+                ptr,
+                cmp,
+                new,
+                width,
+                success_ordering,
+                failure_ordering,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::VolatileCmpXchg,
                 key,
                 pc,
                 operands([
@@ -613,6 +848,14 @@ impl<'a> BytecodeEncoder<'a> {
                     operands,
                 )
             },
+            VmInstruction::Nop => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Nop,
+                key,
+                pc,
+                Vec::new(),
+            ),
             VmInstruction::Br { target } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -649,6 +892,22 @@ impl<'a> BytecodeEncoder<'a> {
                 self.profile,
                 profile_instruction,
                 &HandlerSemantic::VmRet,
+                key,
+                pc,
+                Vec::new(),
+            ),
+            VmInstruction::Unreachable => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Unreachable,
+                key,
+                pc,
+                Vec::new(),
+            ),
+            VmInstruction::Trap => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Trap,
                 key,
                 pc,
                 Vec::new(),
@@ -944,6 +1203,7 @@ fn collect_const_pool_values(function: &VmFunction) -> Vec<u64> {
             VmInstruction::ConstLoad { value, .. } => constants.push(*value),
             VmInstruction::MovImm { .. }
             | VmInstruction::Mov { .. }
+            | VmInstruction::ReadCounter { .. }
             | VmInstruction::SuperAddXor { .. }
             | VmInstruction::SuperIcmpBrIf { .. }
             | VmInstruction::SuperGepLoad { .. }
@@ -951,26 +1211,45 @@ fn collect_const_pool_values(function: &VmFunction) -> Vec<u64> {
             | VmInstruction::Bin { .. }
             | VmInstruction::IntUnary { .. }
             | VmInstruction::IntTernary { .. }
+            | VmInstruction::IntOverflow { .. }
             | VmInstruction::Icmp { .. }
             | VmInstruction::FloatBin { .. }
             | VmInstruction::FloatUnary { .. }
+            | VmInstruction::FloatTernary { .. }
             | VmInstruction::FloatCast { .. }
             | VmInstruction::Fcmp { .. }
+            | VmInstruction::FloatClass { .. }
             | VmInstruction::Cast { .. }
             | VmInstruction::Alloca { .. }
+            | VmInstruction::DynamicAlloca { .. }
             | VmInstruction::Load { .. }
             | VmInstruction::Store { .. }
+            | VmInstruction::VolatileLoad { .. }
+            | VmInstruction::VolatileStore { .. }
+            | VmInstruction::MemcpyDynamic { .. }
+            | VmInstruction::MemmoveDynamic { .. }
+            | VmInstruction::MemsetDynamic { .. }
+            | VmInstruction::VolatileMemcpyDynamic { .. }
+            | VmInstruction::VolatileMemmoveDynamic { .. }
+            | VmInstruction::VolatileMemsetDynamic { .. }
             | VmInstruction::AtomicLoad { .. }
             | VmInstruction::AtomicStore { .. }
+            | VmInstruction::VolatileAtomicLoad { .. }
+            | VmInstruction::VolatileAtomicStore { .. }
             | VmInstruction::AtomicRmw { .. }
+            | VmInstruction::VolatileAtomicRmw { .. }
             | VmInstruction::CmpXchg { .. }
+            | VmInstruction::VolatileCmpXchg { .. }
             | VmInstruction::Fence { .. }
             | VmInstruction::Gep { .. }
             | VmInstruction::CallNative { .. }
+            | VmInstruction::Nop
             | VmInstruction::Br { .. }
             | VmInstruction::BrCond { .. }
             | VmInstruction::VmCall { .. }
             | VmInstruction::VmRet
+            | VmInstruction::Unreachable
+            | VmInstruction::Trap
             | VmInstruction::Ret { .. }
             | VmInstruction::RetVoid => {},
         }
@@ -1179,6 +1458,11 @@ impl Hash for VmInstruction {
                 value.hash(state);
                 width.hash(state);
             },
+            VmInstruction::ReadCounter { kind, dst, width } => {
+                (*kind as u8).hash(state);
+                dst.hash(state);
+                width.hash(state);
+            },
             VmInstruction::SuperAddXor {
                 dst,
                 lhs,
@@ -1279,6 +1563,21 @@ impl Hash for VmInstruction {
                 src.hash(state);
                 width.hash(state);
             },
+            VmInstruction::FloatTernary {
+                op,
+                dst,
+                lhs,
+                rhs,
+                third,
+                width,
+            } => {
+                float_ternary_tag(*op).hash(state);
+                dst.hash(state);
+                lhs.hash(state);
+                rhs.hash(state);
+                third.hash(state);
+                width.hash(state);
+            },
             VmInstruction::FloatCast {
                 op,
                 dst,
@@ -1305,6 +1604,12 @@ impl Hash for VmInstruction {
                 rhs.hash(state);
                 width.hash(state);
             },
+            VmInstruction::FloatClass { dst, src, mask, width } => {
+                dst.hash(state);
+                src.hash(state);
+                mask.hash(state);
+                width.hash(state);
+            },
             VmInstruction::IntUnary { op, dst, src, width } => {
                 int_unary_tag(*op).hash(state);
                 dst.hash(state);
@@ -1326,6 +1631,21 @@ impl Hash for VmInstruction {
                 third.hash(state);
                 width.hash(state);
             },
+            VmInstruction::IntOverflow {
+                op,
+                dst,
+                overflow,
+                lhs,
+                rhs,
+                width,
+            } => {
+                int_overflow_tag(*op).hash(state);
+                dst.hash(state);
+                overflow.hash(state);
+                lhs.hash(state);
+                rhs.hash(state);
+                width.hash(state);
+            },
             VmInstruction::Cast {
                 op,
                 dst,
@@ -1344,6 +1664,17 @@ impl Hash for VmInstruction {
                 bytes.hash(state);
                 align.hash(state);
             },
+            VmInstruction::DynamicAlloca {
+                dst,
+                count,
+                elem_size,
+                align,
+            } => {
+                dst.hash(state);
+                count.hash(state);
+                elem_size.hash(state);
+                align.hash(state);
+            },
             VmInstruction::Load { dst, ptr, width } => {
                 dst.hash(state);
                 ptr.hash(state);
@@ -1353,6 +1684,37 @@ impl Hash for VmInstruction {
                 src.hash(state);
                 ptr.hash(state);
                 width.hash(state);
+            },
+            VmInstruction::VolatileLoad { dst, ptr, width } => {
+                dst.hash(state);
+                ptr.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::VolatileStore { src, ptr, width } => {
+                src.hash(state);
+                ptr.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::MemcpyDynamic { dst, src, len } | VmInstruction::MemmoveDynamic { dst, src, len } => {
+                dst.hash(state);
+                src.hash(state);
+                len.hash(state);
+            },
+            VmInstruction::MemsetDynamic { dst, value, len } => {
+                dst.hash(state);
+                value.hash(state);
+                len.hash(state);
+            },
+            VmInstruction::VolatileMemcpyDynamic { dst, src, len }
+            | VmInstruction::VolatileMemmoveDynamic { dst, src, len } => {
+                dst.hash(state);
+                src.hash(state);
+                len.hash(state);
+            },
+            VmInstruction::VolatileMemsetDynamic { dst, value, len } => {
+                dst.hash(state);
+                value.hash(state);
+                len.hash(state);
             },
             VmInstruction::AtomicLoad {
                 dst,
@@ -1366,6 +1728,28 @@ impl Hash for VmInstruction {
                 memory_ordering_tag(*ordering).hash(state);
             },
             VmInstruction::AtomicStore {
+                src,
+                ptr,
+                width,
+                ordering,
+            } => {
+                src.hash(state);
+                ptr.hash(state);
+                width.hash(state);
+                memory_ordering_tag(*ordering).hash(state);
+            },
+            VmInstruction::VolatileAtomicLoad {
+                dst,
+                ptr,
+                width,
+                ordering,
+            } => {
+                dst.hash(state);
+                ptr.hash(state);
+                width.hash(state);
+                memory_ordering_tag(*ordering).hash(state);
+            },
+            VmInstruction::VolatileAtomicStore {
                 src,
                 ptr,
                 width,
@@ -1391,7 +1775,41 @@ impl Hash for VmInstruction {
                 width.hash(state);
                 memory_ordering_tag(*ordering).hash(state);
             },
+            VmInstruction::VolatileAtomicRmw {
+                op,
+                dst,
+                ptr,
+                src,
+                width,
+                ordering,
+            } => {
+                atomic_rmw_tag(*op).hash(state);
+                dst.hash(state);
+                ptr.hash(state);
+                src.hash(state);
+                width.hash(state);
+                memory_ordering_tag(*ordering).hash(state);
+            },
             VmInstruction::CmpXchg {
+                old,
+                success,
+                ptr,
+                cmp,
+                new,
+                width,
+                success_ordering,
+                failure_ordering,
+            } => {
+                old.hash(state);
+                success.hash(state);
+                ptr.hash(state);
+                cmp.hash(state);
+                new.hash(state);
+                width.hash(state);
+                memory_ordering_tag(*success_ordering).hash(state);
+                memory_ordering_tag(*failure_ordering).hash(state);
+            },
+            VmInstruction::VolatileCmpXchg {
                 old,
                 success,
                 ptr,
@@ -1426,6 +1844,7 @@ impl Hash for VmInstruction {
                     ret.width.hash(state);
                 });
             },
+            VmInstruction::Nop => 2_u8.hash(state),
             VmInstruction::Br { target } => target.hash(state),
             VmInstruction::BrCond {
                 cond,
@@ -1438,6 +1857,8 @@ impl Hash for VmInstruction {
             },
             VmInstruction::VmCall { target } => target.hash(state),
             VmInstruction::VmRet => 1_u8.hash(state),
+            VmInstruction::Unreachable => 3_u8.hash(state),
+            VmInstruction::Trap => 4_u8.hash(state),
             VmInstruction::Ret { src } => src.hash(state),
             VmInstruction::RetVoid => 0_u8.hash(state),
         }
@@ -1459,6 +1880,16 @@ fn bin_tag(op: BinOp) -> u8 {
         BinOp::Shl => 10,
         BinOp::LShr => 11,
         BinOp::AShr => 12,
+        BinOp::SMax => 13,
+        BinOp::SMin => 14,
+        BinOp::UMax => 15,
+        BinOp::UMin => 16,
+        BinOp::UAddSat => 17,
+        BinOp::USubSat => 18,
+        BinOp::SAddSat => 19,
+        BinOp::SSubSat => 20,
+        BinOp::UShlSat => 21,
+        BinOp::SShlSat => 22,
     }
 }
 
@@ -1467,6 +1898,9 @@ fn int_unary_tag(op: IntUnaryOp) -> u8 {
         IntUnaryOp::CtPop => 0,
         IntUnaryOp::BSwap => 1,
         IntUnaryOp::BitReverse => 2,
+        IntUnaryOp::CtLz => 3,
+        IntUnaryOp::CtTz => 4,
+        IntUnaryOp::Abs => 5,
     }
 }
 
@@ -1477,6 +1911,17 @@ fn int_ternary_tag(op: IntTernaryOp) -> u8 {
     }
 }
 
+fn int_overflow_tag(op: IntOverflowOp) -> u8 {
+    match op {
+        IntOverflowOp::UAdd => 0,
+        IntOverflowOp::SAdd => 1,
+        IntOverflowOp::USub => 2,
+        IntOverflowOp::SSub => 3,
+        IntOverflowOp::UMul => 4,
+        IntOverflowOp::SMul => 5,
+    }
+}
+
 fn float_bin_tag(op: FloatBinOp) -> u8 {
     match op {
         FloatBinOp::Add => 0,
@@ -1484,12 +1929,34 @@ fn float_bin_tag(op: FloatBinOp) -> u8 {
         FloatBinOp::Mul => 2,
         FloatBinOp::Div => 3,
         FloatBinOp::Rem => 4,
+        FloatBinOp::MinNum => 5,
+        FloatBinOp::MaxNum => 6,
+        FloatBinOp::Minimum => 7,
+        FloatBinOp::Maximum => 8,
+        FloatBinOp::CopySign => 9,
     }
 }
 
 fn float_unary_tag(op: FloatUnaryOp) -> u8 {
     match op {
         FloatUnaryOp::Neg => 0,
+        FloatUnaryOp::Abs => 1,
+        FloatUnaryOp::Sqrt => 2,
+        FloatUnaryOp::Canonicalize => 3,
+        FloatUnaryOp::Floor => 4,
+        FloatUnaryOp::Ceil => 5,
+        FloatUnaryOp::Trunc => 6,
+        FloatUnaryOp::Rint => 7,
+        FloatUnaryOp::NearbyInt => 8,
+        FloatUnaryOp::Round => 9,
+        FloatUnaryOp::RoundEven => 10,
+    }
+}
+
+fn float_ternary_tag(op: FloatTernaryOp) -> u8 {
+    match op {
+        FloatTernaryOp::Fma => 0,
+        FloatTernaryOp::MulAdd => 1,
     }
 }
 
@@ -1530,6 +1997,16 @@ fn atomic_rmw_tag(op: AtomicRmwOp) -> u8 {
         AtomicRmwOp::Min => 8,
         AtomicRmwOp::UMax => 9,
         AtomicRmwOp::UMin => 10,
+        AtomicRmwOp::UIncWrap => 11,
+        AtomicRmwOp::UDecWrap => 12,
+        AtomicRmwOp::USubCond => 13,
+        AtomicRmwOp::USubSat => 14,
+        AtomicRmwOp::FAdd => 15,
+        AtomicRmwOp::FSub => 16,
+        AtomicRmwOp::FMax => 17,
+        AtomicRmwOp::FMin => 18,
+        AtomicRmwOp::FMaximum => 19,
+        AtomicRmwOp::FMinimum => 20,
     }
 }
 
@@ -2471,6 +2948,16 @@ pc = next # 执行继续到下一条字节码指令
                         BinOp::Shl => lhs << (rhs & 63),
                         BinOp::LShr => lhs >> (rhs & 63),
                         BinOp::AShr => (sign_extend(lhs, width) >> (rhs & 63)) as u64,
+                        BinOp::SMax => sign_extend(lhs, width).max(sign_extend(rhs, width)) as u64,
+                        BinOp::SMin => sign_extend(lhs, width).min(sign_extend(rhs, width)) as u64,
+                        BinOp::UMax => mask_width(lhs, width).max(mask_width(rhs, width)),
+                        BinOp::UMin => mask_width(lhs, width).min(mask_width(rhs, width)),
+                        BinOp::UAddSat => unsigned_saturating_add(lhs, rhs, width),
+                        BinOp::USubSat => mask_width(lhs, width).saturating_sub(mask_width(rhs, width)),
+                        BinOp::SAddSat => signed_saturating_add(lhs, rhs, width),
+                        BinOp::SSubSat => signed_saturating_sub(lhs, rhs, width),
+                        BinOp::UShlSat => unsigned_saturating_shl(lhs, rhs, width),
+                        BinOp::SShlSat => signed_saturating_shl(lhs, rhs, width),
                     };
                     regs[dst] = mask_width(value, width);
                     pc += record.decoded_width;
@@ -2485,20 +2972,37 @@ pc = next # 执行继续到下一条字节码指令
                     pc += record.decoded_width;
                 },
                 HandlerSemantic::Alloca
+                | HandlerSemantic::DynamicAlloca
                 | HandlerSemantic::Load
                 | HandlerSemantic::Store
+                | HandlerSemantic::VolatileLoad
+                | HandlerSemantic::VolatileStore
+                | HandlerSemantic::MemcpyDynamic
+                | HandlerSemantic::MemmoveDynamic
+                | HandlerSemantic::MemsetDynamic
+                | HandlerSemantic::VolatileMemcpyDynamic
+                | HandlerSemantic::VolatileMemmoveDynamic
+                | HandlerSemantic::VolatileMemsetDynamic
                 | HandlerSemantic::AtomicLoad
                 | HandlerSemantic::AtomicStore
+                | HandlerSemantic::VolatileAtomicLoad
+                | HandlerSemantic::VolatileAtomicStore
                 | HandlerSemantic::AtomicRmw(_)
+                | HandlerSemantic::VolatileAtomicRmw(_)
                 | HandlerSemantic::CmpXchg
+                | HandlerSemantic::VolatileCmpXchg
                 | HandlerSemantic::Fence
                 | HandlerSemantic::Gep
                 | HandlerSemantic::CallNative
+                | HandlerSemantic::ReadCounter(_)
                 | HandlerSemantic::IntUnary(_)
                 | HandlerSemantic::IntTernary(_)
+                | HandlerSemantic::IntOverflow(_)
                 | HandlerSemantic::FloatBin(_)
                 | HandlerSemantic::FloatUnary(_)
+                | HandlerSemantic::FloatTernary(_)
                 | HandlerSemantic::FloatCast(_)
+                | HandlerSemantic::FloatClass
                 | HandlerSemantic::Fcmp => unreachable!("not emitted by this test"),
                 HandlerSemantic::Nop => pc += record.decoded_width,
                 HandlerSemantic::Br => pc = operands[1] as usize,
@@ -2514,6 +3018,8 @@ pc = next # 执行继续到下一条字节码指令
                     pc = operands[1] as usize;
                 },
                 HandlerSemantic::VmRet => pc = regs[30] as usize,
+                HandlerSemantic::Unreachable => panic!("executed VM unreachable in test interpreter"),
+                HandlerSemantic::Trap => panic!("executed VM trap in test interpreter"),
                 HandlerSemantic::Ret => return regs[operands[1] as usize],
                 HandlerSemantic::Mov | HandlerSemantic::Cast(_) => unreachable!("not emitted by this test"),
             }
@@ -2667,5 +3173,51 @@ pc = next # 执行继续到下一条字节码指令
             let shift = 64 - width;
             ((value << shift) as i64) >> shift
         }
+    }
+
+    fn unsigned_saturating_add(lhs: u64, rhs: u64, width: u8) -> u64 {
+        let max = mask_width(u64::MAX, width);
+        mask_width(lhs, width).saturating_add(mask_width(rhs, width)).min(max)
+    }
+
+    fn signed_saturating_add(lhs: u64, rhs: u64, width: u8) -> u64 {
+        signed_saturating_binop(lhs, rhs, width, i128::saturating_add)
+    }
+
+    fn signed_saturating_sub(lhs: u64, rhs: u64, width: u8) -> u64 {
+        signed_saturating_binop(lhs, rhs, width, i128::saturating_sub)
+    }
+
+    fn unsigned_saturating_shl(lhs: u64, rhs: u64, width: u8) -> u64 {
+        let lhs = mask_width(lhs, width);
+        let shift = mask_width(rhs, width);
+        let max = mask_width(u64::MAX, width);
+        if shift >= u64::from(width) {
+            return if lhs == 0 { 0 } else { max };
+        }
+        ((lhs as u128) << shift).min(max as u128) as u64
+    }
+
+    fn signed_saturating_shl(lhs: u64, rhs: u64, width: u8) -> u64 {
+        let lhs = sign_extend(lhs, width) as i128;
+        let shift = mask_width(rhs, width);
+        let min = -(1_i128 << (width - 1));
+        let max = (1_i128 << (width - 1)) - 1;
+        if shift >= u64::from(width) {
+            return match lhs.cmp(&0) {
+                std::cmp::Ordering::Greater => max as i64 as u64,
+                std::cmp::Ordering::Less => min as i64 as u64,
+                std::cmp::Ordering::Equal => 0,
+            };
+        }
+        (lhs * (1_i128 << shift)).clamp(min, max) as i64 as u64
+    }
+
+    fn signed_saturating_binop(lhs: u64, rhs: u64, width: u8, op: fn(i128, i128) -> i128) -> u64 {
+        let lhs = sign_extend(lhs, width) as i128;
+        let rhs = sign_extend(rhs, width) as i128;
+        let min = -(1_i128 << (width - 1));
+        let max = (1_i128 << (width - 1)) - 1;
+        op(lhs, rhs).clamp(min, max) as i64 as u64
     }
 }

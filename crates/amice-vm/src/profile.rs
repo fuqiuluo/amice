@@ -15,9 +15,10 @@
 
 use crate::abi::{AbiProfile, NativeCallPolicy, VmRegister};
 use crate::isa::{
-    AtomicRmwOp, BinOp, CastOp, FloatBinOp, FloatCastOp, FloatUnaryOp, HandlerEffect, HandlerSemantic, InstructionDesc,
-    IntTernaryOp, IntUnaryOp, IsaProfile, Opcode, OperandDesc, OperandKind, PcEffect, PcExpr, SUPPORTED_DECODED_WIDTHS,
-    SemanticAtomicRmwOp, SemanticBinOp, SemanticExpr, SemanticFloatBinOp, SemanticFloatCastOp, SemanticFloatUnaryOp,
+    AtomicRmwOp, BinOp, CastOp, CounterKind, FloatBinOp, FloatCastOp, FloatTernaryOp, FloatUnaryOp, HandlerEffect,
+    HandlerSemantic, InstructionDesc, IntOverflowOp, IntTernaryOp, IntUnaryOp, IsaProfile, Opcode, OperandDesc,
+    OperandKind, PcEffect, PcExpr, SUPPORTED_DECODED_WIDTHS, SemanticAtomicRmwOp, SemanticBinOp, SemanticExpr,
+    SemanticFloatBinOp, SemanticFloatCastOp, SemanticFloatTernaryOp, SemanticFloatUnaryOp, SemanticIntOverflowOp,
     SemanticIntTernaryOp, SemanticIntUnaryOp, SemanticProgram, SemanticStmt, SuperOp,
 };
 use crate::runtime::{
@@ -328,54 +329,219 @@ pub const REQUIRED_LOWERING_MATCHES: &[(&str, &str)] = &[
     ("llvm.sdiv.integer", "%r = llvm.sdiv integer %a, %b"),
     ("llvm.urem.integer", "%r = llvm.urem integer %a, %b"),
     ("llvm.srem.integer", "%r = llvm.srem integer %a, %b"),
+    ("llvm.smax.integer", "%r = llvm.smax integer %a, %b"),
+    ("llvm.smin.integer", "%r = llvm.smin integer %a, %b"),
+    ("llvm.umax.integer", "%r = llvm.umax integer %a, %b"),
+    ("llvm.umin.integer", "%r = llvm.umin integer %a, %b"),
+    ("llvm.uadd.sat.integer", "%r = llvm.uadd.sat integer %a, %b"),
+    ("llvm.usub.sat.integer", "%r = llvm.usub.sat integer %a, %b"),
+    ("llvm.sadd.sat.integer", "%r = llvm.sadd.sat integer %a, %b"),
+    ("llvm.ssub.sat.integer", "%r = llvm.ssub.sat integer %a, %b"),
+    ("llvm.ushl.sat.integer", "%r = llvm.ushl.sat integer %a, %b"),
+    ("llvm.sshl.sat.integer", "%r = llvm.sshl.sat integer %a, %b"),
+    (
+        "llvm.uadd.with.overflow.integer",
+        "%r = llvm.uadd.with.overflow integer %a, %b",
+    ),
+    (
+        "llvm.sadd.with.overflow.integer",
+        "%r = llvm.sadd.with.overflow integer %a, %b",
+    ),
+    (
+        "llvm.usub.with.overflow.integer",
+        "%r = llvm.usub.with.overflow integer %a, %b",
+    ),
+    (
+        "llvm.ssub.with.overflow.integer",
+        "%r = llvm.ssub.with.overflow integer %a, %b",
+    ),
+    (
+        "llvm.umul.with.overflow.integer",
+        "%r = llvm.umul.with.overflow integer %a, %b",
+    ),
+    (
+        "llvm.smul.with.overflow.integer",
+        "%r = llvm.smul.with.overflow integer %a, %b",
+    ),
     ("llvm.ctpop.integer", "%r = llvm.ctpop integer %value"),
+    ("llvm.ctlz.integer", "%r = llvm.ctlz integer %value"),
+    ("llvm.cttz.integer", "%r = llvm.cttz integer %value"),
+    ("llvm.abs.integer", "%r = llvm.abs integer %value"),
     ("llvm.bswap.integer", "%r = llvm.bswap integer %value"),
     ("llvm.bitreverse.integer", "%r = llvm.bitreverse integer %value"),
     ("llvm.fshl.integer", "%r = llvm.fshl integer %a, %b, %shift"),
     ("llvm.fshr.integer", "%r = llvm.fshr integer %a, %b, %shift"),
+    ("llvm.objectsize.integer", "%r = llvm.objectsize pointer %ptr"),
+    ("llvm.readcyclecounter.integer", "%r = llvm.readcyclecounter"),
+    ("llvm.readsteadycounter.integer", "%r = llvm.readsteadycounter"),
     ("llvm.fadd.float", "%r = llvm.fadd float %a, %b"),
     ("llvm.fsub.float", "%r = llvm.fsub float %a, %b"),
     ("llvm.fmul.float", "%r = llvm.fmul float %a, %b"),
     ("llvm.fdiv.float", "%r = llvm.fdiv float %a, %b"),
     ("llvm.frem.float", "%r = llvm.frem float %a, %b"),
+    ("llvm.minnum.float", "%r = llvm.minnum float %a, %b"),
+    ("llvm.maxnum.float", "%r = llvm.maxnum float %a, %b"),
+    ("llvm.minimum.float", "%r = llvm.minimum float %a, %b"),
+    ("llvm.maximum.float", "%r = llvm.maximum float %a, %b"),
+    ("llvm.copysign.float", "%r = llvm.copysign float %a, %b"),
+    ("llvm.sqrt.float", "%r = llvm.sqrt float %a"),
+    ("llvm.canonicalize.float", "%r = llvm.canonicalize float %a"),
+    ("llvm.floor.float", "%r = llvm.floor float %a"),
+    ("llvm.ceil.float", "%r = llvm.ceil float %a"),
+    ("llvm.trunc.float", "%r = llvm.trunc float %a"),
+    ("llvm.rint.float", "%r = llvm.rint float %a"),
+    ("llvm.nearbyint.float", "%r = llvm.nearbyint float %a"),
+    ("llvm.round.float", "%r = llvm.round float %a"),
+    ("llvm.roundeven.float", "%r = llvm.roundeven float %a"),
+    ("llvm.fma.float", "%r = llvm.fma float %a, %b, %c"),
+    ("llvm.fmuladd.float", "%r = llvm.fmuladd float %a, %b, %c"),
     ("llvm.fneg.float", "%r = llvm.fneg float %a"),
+    ("llvm.fabs.float", "%r = llvm.fabs float %a"),
     ("llvm.sitofp.float", "%r = llvm.sitofp scalar %a"),
     ("llvm.uitofp.float", "%r = llvm.uitofp scalar %a"),
     ("llvm.fptosi.float", "%r = llvm.fptosi scalar %a"),
     ("llvm.fptoui.float", "%r = llvm.fptoui scalar %a"),
     ("llvm.fptrunc.float", "%r = llvm.fptrunc scalar %a"),
     ("llvm.fpext.float", "%r = llvm.fpext scalar %a"),
+    ("llvm.is.fpclass.float", "%r = llvm.is.fpclass float %a, mask"),
     ("llvm.bitops.integer", "%r = llvm.bitop integer %a, %b"),
     ("llvm.shift.integer", "%r = llvm.shift integer %a, %b"),
-    ("llvm.icmp.integer", "%r = llvm.icmp integer %a, %b"),
+    ("llvm.icmp.scalar", "%r = llvm.icmp scalar %a, %b"),
     ("llvm.fcmp.float", "%r = llvm.fcmp float %a, %b"),
     ("llvm.cast.integer", "%r = llvm.cast integer %a"),
     ("llvm.cast.pointer", "%r = llvm.cast pointer %a"),
+    ("llvm.cast.bitcast.scalar", "%r = llvm.bitcast scalar %a"),
+    (
+        "llvm.constexpr.integer.binop",
+        "%r = llvm.constexpr.binop integer %a, %b",
+    ),
+    ("llvm.constexpr.integer.cast", "%r = llvm.constexpr.cast integer %value"),
+    ("llvm.constexpr.ptrtoint", "%r = llvm.constexpr.ptrtoint pointer %value"),
+    ("llvm.constexpr.inttoptr", "%r = llvm.constexpr.inttoptr integer %value"),
     ("llvm.freeze.scalar", "%r = llvm.freeze scalar %value"),
+    ("llvm.aggregate.freeze", "%r = llvm.freeze aggregate %value"),
     ("llvm.const_pool.materialize", "%v = llvm.constant integer"),
+    ("llvm.expect.integer", "%r = llvm.expect integer %value, %expected"),
+    (
+        "llvm.expect.with_probability.integer",
+        "%r = llvm.expect.with_probability integer %value, %expected, %probability",
+    ),
+    ("llvm.ssa.copy.scalar", "%r = llvm.ssa.copy scalar %value"),
+    (
+        "llvm.launder.invariant.group.pointer",
+        "%r = llvm.launder.invariant.group pointer %value",
+    ),
+    (
+        "llvm.strip.invariant.group.pointer",
+        "%r = llvm.strip.invariant.group pointer %value",
+    ),
+    (
+        "llvm.invariant.start.pointer",
+        "%r = llvm.invariant.start pointer %value",
+    ),
+    ("llvm.invariant.end", "llvm.invariant.end %descriptor, %ptr"),
+    ("llvm.prefetch", "llvm.prefetch %ptr"),
+    (
+        "llvm.experimental.noalias.scope.decl",
+        "llvm.experimental.noalias.scope.decl metadata",
+    ),
+    ("llvm.donothing", "llvm.donothing"),
+    ("llvm.annotation.integer", "%r = llvm.annotation integer %value"),
+    ("llvm.ptr.annotation.pointer", "%r = llvm.ptr.annotation pointer %value"),
+    ("llvm.ptrmask.pointer", "%r = llvm.ptrmask pointer %ptr, %mask"),
+    (
+        "llvm.threadlocal.address.pointer",
+        "%r = llvm.threadlocal.address pointer %value",
+    ),
+    ("llvm.global.address.pointer", "%r = llvm.global.address pointer %value"),
+    ("llvm.var.annotation", "llvm.var.annotation %ptr"),
+    ("llvm.codeview.annotation", "llvm.codeview.annotation metadata"),
+    ("llvm.lifetime.start", "llvm.lifetime.start %ptr"),
+    ("llvm.lifetime.end", "llvm.lifetime.end %ptr"),
+    ("llvm.assume", "llvm.assume %cond"),
+    ("llvm.dbg.nop", "llvm.dbg intrinsic"),
     ("llvm.alloca.stack", "%r = llvm.alloca fixed %ty"),
+    ("llvm.alloca.dynamic", "%r = llvm.alloca dynamic %count, %ty"),
     ("llvm.memory.scalar", "llvm.memory scalar %ptr"),
+    ("llvm.memory.volatile.scalar", "llvm.memory volatile scalar %ptr"),
+    ("llvm.memory.aggregate.load", "%r = llvm.load aggregate %ptr"),
+    ("llvm.memory.aggregate.store", "llvm.store aggregate %ptr, %value"),
+    (
+        "llvm.memory.volatile.aggregate.load",
+        "%r = llvm.load volatile aggregate %ptr",
+    ),
+    (
+        "llvm.memory.volatile.aggregate.store",
+        "llvm.store volatile aggregate %ptr, %value",
+    ),
     ("llvm.atomic.load.scalar", "%r = llvm.atomic.load scalar %ptr"),
     ("llvm.atomic.store.scalar", "llvm.atomic.store scalar %ptr"),
+    (
+        "llvm.atomic.volatile.load.scalar",
+        "%r = llvm.atomic.volatile.load scalar %ptr",
+    ),
+    (
+        "llvm.atomic.volatile.store.scalar",
+        "llvm.atomic.volatile.store scalar %ptr",
+    ),
     ("llvm.atomic.rmw.scalar", "%r = llvm.atomic.rmw scalar %ptr, %value"),
+    (
+        "llvm.atomic.volatile.rmw.scalar",
+        "%r = llvm.atomic.volatile.rmw scalar %ptr, %value",
+    ),
     ("llvm.cmpxchg.scalar", "llvm.cmpxchg scalar %ptr, %cmp, %new"),
+    (
+        "llvm.volatile.cmpxchg.scalar",
+        "llvm.volatile.cmpxchg scalar %ptr, %cmp, %new",
+    ),
     ("llvm.fence", "llvm.fence ordering"),
     ("llvm.memcpy.fixed", "llvm.memcpy fixed %dst, %src, %len"),
     ("llvm.memmove.fixed", "llvm.memmove fixed %dst, %src, %len"),
+    ("llvm.memcpy.dynamic", "llvm.memcpy dynamic %dst, %src, %len"),
+    ("llvm.memmove.dynamic", "llvm.memmove dynamic %dst, %src, %len"),
     ("llvm.memset.fixed", "llvm.memset fixed %dst, %value, %len"),
+    ("llvm.memset.dynamic", "llvm.memset dynamic %dst, %value, %len"),
+    (
+        "llvm.volatile.memcpy.dynamic",
+        "llvm.volatile.memcpy dynamic %dst, %src, %len",
+    ),
+    (
+        "llvm.volatile.memmove.dynamic",
+        "llvm.volatile.memmove dynamic %dst, %src, %len",
+    ),
+    (
+        "llvm.volatile.memset.dynamic",
+        "llvm.volatile.memset dynamic %dst, %value, %len",
+    ),
     ("llvm.gep.constant", "%r = llvm.gep constant %base"),
     ("llvm.gep.dynamic", "%r = llvm.gep dynamic %base, %index"),
     ("llvm.call.direct", "%r = llvm.call direct %callee"),
+    ("llvm.call.indirect", "%r = llvm.call indirect %callee"),
     ("llvm.select.scalar", "%r = llvm.select scalar %cond, %then, %else"),
+    (
+        "llvm.select.aggregate",
+        "%r = llvm.select aggregate %cond, %then, %else",
+    ),
     ("llvm.aggregate.insert", "%r = llvm.insertvalue aggregate %agg, %field"),
+    (
+        "llvm.aggregate.insert.subaggregate",
+        "%r = llvm.insertvalue aggregate %agg, subaggregate %field",
+    ),
     ("llvm.aggregate.extract", "%r = llvm.extractvalue aggregate %agg"),
+    (
+        "llvm.aggregate.extract.subaggregate",
+        "%r = llvm.extractvalue subaggregate %agg",
+    ),
     ("llvm.br.control", "llvm.br terminator"),
     ("llvm.switch.control", "llvm.switch terminator"),
+    ("llvm.unreachable", "llvm.unreachable terminator"),
+    ("llvm.trap", "llvm.trap intrinsic"),
     ("llvm.ret.scalar", "llvm.ret scalar %value"),
     ("llvm.ret.void", "llvm.ret void"),
     ("llvm.ret.aggregate", "llvm.ret aggregate %value"),
     ("llvm.ret.sret", "llvm.ret sret %ptr"),
     ("llvm.phi.edge_move", "%r = llvm.phi edge %incoming"),
+    ("llvm.aggregate.phi.edge_move", "%r = llvm.phi aggregate edge %incoming"),
 ];
 
 /// 返回指定契约名对应的必需 lowering matcher pattern。
@@ -1784,6 +1950,12 @@ fn parse_semantic_statement(line: &str) -> Result<SemanticStmt, ProfileError> {
     if line == "state = unchanged" {
         return Ok(SemanticStmt::StateUnchanged);
     }
+    if line == "unreachable" {
+        return Ok(SemanticStmt::Unreachable);
+    }
+    if line == "trap" {
+        return Ok(SemanticStmt::Trap);
+    }
     if let Some(value) = line.strip_prefix("pc =") {
         return Ok(SemanticStmt::AssignPc {
             value: parse_pc_expr(value.trim())?,
@@ -1807,6 +1979,23 @@ fn parse_semantic_statement(line: &str) -> Result<SemanticStmt, ProfileError> {
         });
     }
     if let Some(args) = line
+        .strip_prefix("volatile_store_width(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 3 {
+            return Err(ProfileError::Invalid(format!(
+                "volatile_store_width expects 3 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::VolatileStoreWidth {
+            ptr: parse_semantic_expr(&args[0])?,
+            value: parse_semantic_expr(&args[1])?,
+            width: parse_semantic_expr(&args[2])?,
+        });
+    }
+    if let Some(args) = line
         .strip_prefix("atomic_store_width(")
         .and_then(|rest| rest.strip_suffix(')'))
     {
@@ -1824,6 +2013,126 @@ fn parse_semantic_statement(line: &str) -> Result<SemanticStmt, ProfileError> {
             ordering: parse_semantic_expr(&args[3])?,
         });
     }
+    if let Some(args) = line
+        .strip_prefix("volatile_atomic_store_width(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 4 {
+            return Err(ProfileError::Invalid(format!(
+                "volatile_atomic_store_width expects 4 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::VolatileAtomicStoreWidth {
+            ptr: parse_semantic_expr(&args[0])?,
+            value: parse_semantic_expr(&args[1])?,
+            width: parse_semantic_expr(&args[2])?,
+            ordering: parse_semantic_expr(&args[3])?,
+        });
+    }
+    if let Some(args) = line
+        .strip_prefix("memcpy_dynamic(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 3 {
+            return Err(ProfileError::Invalid(format!(
+                "memcpy_dynamic expects 3 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::MemcpyDynamic {
+            dst: parse_semantic_expr(&args[0])?,
+            src: parse_semantic_expr(&args[1])?,
+            len: parse_semantic_expr(&args[2])?,
+        });
+    }
+    if let Some(args) = line
+        .strip_prefix("memmove_dynamic(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 3 {
+            return Err(ProfileError::Invalid(format!(
+                "memmove_dynamic expects 3 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::MemmoveDynamic {
+            dst: parse_semantic_expr(&args[0])?,
+            src: parse_semantic_expr(&args[1])?,
+            len: parse_semantic_expr(&args[2])?,
+        });
+    }
+    if let Some(args) = line
+        .strip_prefix("memset_dynamic(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 3 {
+            return Err(ProfileError::Invalid(format!(
+                "memset_dynamic expects 3 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::MemsetDynamic {
+            dst: parse_semantic_expr(&args[0])?,
+            value: parse_semantic_expr(&args[1])?,
+            len: parse_semantic_expr(&args[2])?,
+        });
+    }
+    if let Some(args) = line
+        .strip_prefix("volatile_memcpy_dynamic(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 3 {
+            return Err(ProfileError::Invalid(format!(
+                "volatile_memcpy_dynamic expects 3 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::VolatileMemcpyDynamic {
+            dst: parse_semantic_expr(&args[0])?,
+            src: parse_semantic_expr(&args[1])?,
+            len: parse_semantic_expr(&args[2])?,
+        });
+    }
+    if let Some(args) = line
+        .strip_prefix("volatile_memmove_dynamic(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 3 {
+            return Err(ProfileError::Invalid(format!(
+                "volatile_memmove_dynamic expects 3 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::VolatileMemmoveDynamic {
+            dst: parse_semantic_expr(&args[0])?,
+            src: parse_semantic_expr(&args[1])?,
+            len: parse_semantic_expr(&args[2])?,
+        });
+    }
+    if let Some(args) = line
+        .strip_prefix("volatile_memset_dynamic(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 3 {
+            return Err(ProfileError::Invalid(format!(
+                "volatile_memset_dynamic expects 3 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::VolatileMemsetDynamic {
+            dst: parse_semantic_expr(&args[0])?,
+            value: parse_semantic_expr(&args[1])?,
+            len: parse_semantic_expr(&args[2])?,
+        });
+    }
     if let Some(args) = line.strip_prefix("cmpxchg(").and_then(|rest| rest.strip_suffix(')')) {
         let args = split_call_args(args)?;
         if args.len() != 8 {
@@ -1838,6 +2147,36 @@ fn parse_semantic_statement(line: &str) -> Result<SemanticStmt, ProfileError> {
             })?,
             success: parse_register_lvalue(&args[1]).ok_or_else(|| {
                 ProfileError::Invalid(format!("cmpxchg success result must be a register lvalue in {line}"))
+            })?,
+            ptr: parse_semantic_expr(&args[2])?,
+            compare: parse_semantic_expr(&args[3])?,
+            new: parse_semantic_expr(&args[4])?,
+            width: parse_semantic_expr(&args[5])?,
+            success_ordering: parse_semantic_expr(&args[6])?,
+            failure_ordering: parse_semantic_expr(&args[7])?,
+        });
+    }
+    if let Some(args) = line
+        .strip_prefix("volatile_cmpxchg(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let args = split_call_args(args)?;
+        if args.len() != 8 {
+            return Err(ProfileError::Invalid(format!(
+                "volatile_cmpxchg expects 8 arguments, got {} in {line}",
+                args.len()
+            )));
+        }
+        return Ok(SemanticStmt::VolatileCmpXchg {
+            old: parse_register_lvalue(&args[0]).ok_or_else(|| {
+                ProfileError::Invalid(format!(
+                    "volatile_cmpxchg old result must be a register lvalue in {line}"
+                ))
+            })?,
+            success: parse_register_lvalue(&args[1]).ok_or_else(|| {
+                ProfileError::Invalid(format!(
+                    "volatile_cmpxchg success result must be a register lvalue in {line}"
+                ))
             })?,
             ptr: parse_semantic_expr(&args[2])?,
             compare: parse_semantic_expr(&args[3])?,
@@ -1929,34 +2268,49 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
         "zero_extend",
         "sign_extend",
         "bitcast_width",
+        "int_bin",
         "int_unary",
         "int_ternary",
+        "int_overflow",
         "compare",
         "float_bin",
         "float_unary",
+        "float_ternary",
         "float_cast",
         "float_compare",
+        "float_class",
         "stack_alloc",
+        "stack_alloc_dynamic",
         "load_width",
+        "volatile_load_width",
         "atomic_load_width",
+        "volatile_atomic_load_width",
         "atomic_rmw",
+        "volatile_atomic_rmw",
+        "read_counter",
     ] {
         let Some(args) = parse_named_call(value, name)? else {
             continue;
         };
         let valid_arity = match name {
             "sign_extend" => matches!(args.len(), 2 | 3),
-            "trunc_width" | "stack_alloc" | "load_width" => args.len() == 2,
-            "atomic_load_width" => args.len() == 3,
-            "atomic_rmw" => args.len() == 5,
+            "trunc_width" | "stack_alloc" | "load_width" | "volatile_load_width" => args.len() == 2,
+            "stack_alloc_dynamic" => args.len() == 3,
+            "atomic_load_width" | "volatile_atomic_load_width" => args.len() == 3,
+            "atomic_rmw" | "volatile_atomic_rmw" => args.len() == 5,
+            "read_counter" => args.len() == 1,
             "zero_extend" | "bitcast_width" => args.len() == 3,
+            "int_bin" => args.len() == 3,
             "int_unary" => args.len() == 3,
             "int_ternary" => args.len() == 5,
+            "int_overflow" => args.len() == 4,
             "compare" => args.len() == 4,
             "float_bin" => args.len() == 4,
             "float_unary" => args.len() == 3,
+            "float_ternary" => args.len() == 5,
             "float_cast" => args.len() == 4,
             "float_compare" => args.len() == 4,
+            "float_class" => args.len() == 3,
             _ => false,
         };
         if !valid_arity {
@@ -1988,6 +2342,11 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
                 from_width: Box::new(parse_semantic_expr(&args[1])?),
                 to_width: Box::new(parse_semantic_expr(&args[2])?),
             },
+            "int_bin" => SemanticExpr::Binary {
+                op: parse_int_bin_op(&args[0])?,
+                lhs: Box::new(parse_semantic_expr(&args[1])?),
+                rhs: Box::new(parse_semantic_expr(&args[2])?),
+            },
             "int_unary" => SemanticExpr::IntUnary {
                 op: parse_int_unary_op(&args[0])?,
                 value: Box::new(parse_semantic_expr(&args[1])?),
@@ -1999,6 +2358,12 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
                 rhs: Box::new(parse_semantic_expr(&args[2])?),
                 third: Box::new(parse_semantic_expr(&args[3])?),
                 width: Box::new(parse_semantic_expr(&args[4])?),
+            },
+            "int_overflow" => SemanticExpr::IntOverflow {
+                op: parse_int_overflow_op(&args[0])?,
+                lhs: Box::new(parse_semantic_expr(&args[1])?),
+                rhs: Box::new(parse_semantic_expr(&args[2])?),
+                width: Box::new(parse_semantic_expr(&args[3])?),
             },
             "compare" => SemanticExpr::Compare {
                 pred: Box::new(parse_semantic_expr(&args[0])?),
@@ -2017,6 +2382,13 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
                 value: Box::new(parse_semantic_expr(&args[1])?),
                 width: Box::new(parse_semantic_expr(&args[2])?),
             },
+            "float_ternary" => SemanticExpr::FloatTernary {
+                op: parse_float_ternary_op(&args[0])?,
+                lhs: Box::new(parse_semantic_expr(&args[1])?),
+                rhs: Box::new(parse_semantic_expr(&args[2])?),
+                third: Box::new(parse_semantic_expr(&args[3])?),
+                width: Box::new(parse_semantic_expr(&args[4])?),
+            },
             "float_cast" => SemanticExpr::FloatCast {
                 op: parse_float_cast_op(&args[0])?,
                 value: Box::new(parse_semantic_expr(&args[1])?),
@@ -2029,15 +2401,34 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
                 rhs: Box::new(parse_semantic_expr(&args[2])?),
                 width: Box::new(parse_semantic_expr(&args[3])?),
             },
+            "float_class" => SemanticExpr::FloatClass {
+                value: Box::new(parse_semantic_expr(&args[0])?),
+                mask: Box::new(parse_semantic_expr(&args[1])?),
+                width: Box::new(parse_semantic_expr(&args[2])?),
+            },
             "stack_alloc" => SemanticExpr::StackAlloc {
                 bytes: Box::new(parse_semantic_expr(&args[0])?),
                 align: Box::new(parse_semantic_expr(&args[1])?),
+            },
+            "stack_alloc_dynamic" => SemanticExpr::StackAllocDynamic {
+                count: Box::new(parse_semantic_expr(&args[0])?),
+                elem_size: Box::new(parse_semantic_expr(&args[1])?),
+                align: Box::new(parse_semantic_expr(&args[2])?),
             },
             "load_width" => SemanticExpr::LoadWidth {
                 ptr: Box::new(parse_semantic_expr(&args[0])?),
                 width: Box::new(parse_semantic_expr(&args[1])?),
             },
+            "volatile_load_width" => SemanticExpr::VolatileLoadWidth {
+                ptr: Box::new(parse_semantic_expr(&args[0])?),
+                width: Box::new(parse_semantic_expr(&args[1])?),
+            },
             "atomic_load_width" => SemanticExpr::AtomicLoadWidth {
+                ptr: Box::new(parse_semantic_expr(&args[0])?),
+                width: Box::new(parse_semantic_expr(&args[1])?),
+                ordering: Box::new(parse_semantic_expr(&args[2])?),
+            },
+            "volatile_atomic_load_width" => SemanticExpr::VolatileAtomicLoadWidth {
                 ptr: Box::new(parse_semantic_expr(&args[0])?),
                 width: Box::new(parse_semantic_expr(&args[1])?),
                 ordering: Box::new(parse_semantic_expr(&args[2])?),
@@ -2049,11 +2440,29 @@ fn parse_function_expr(value: &str) -> Result<Option<SemanticExpr>, ProfileError
                 width: Box::new(parse_semantic_expr(&args[3])?),
                 ordering: Box::new(parse_semantic_expr(&args[4])?),
             },
+            "volatile_atomic_rmw" => SemanticExpr::VolatileAtomicRmw {
+                op: parse_atomic_rmw_op(&args[0])?,
+                ptr: Box::new(parse_semantic_expr(&args[1])?),
+                value: Box::new(parse_semantic_expr(&args[2])?),
+                width: Box::new(parse_semantic_expr(&args[3])?),
+                ordering: Box::new(parse_semantic_expr(&args[4])?),
+            },
+            "read_counter" => SemanticExpr::ReadCounter {
+                kind: parse_counter_kind(&args[0])?,
+            },
             _ => unreachable!("function name is selected from fixed table"),
         }));
     }
 
     Ok(None)
+}
+
+fn parse_counter_kind(value: &str) -> Result<CounterKind, ProfileError> {
+    match value.trim() {
+        "cycle" | "readcyclecounter" => Ok(CounterKind::Cycle),
+        "steady" | "readsteadycounter" => Ok(CounterKind::Steady),
+        other => Err(ProfileError::Invalid(format!("unsupported counter kind {other}"))),
+    }
 }
 
 fn parse_float_bin_op(value: &str) -> Result<SemanticFloatBinOp, ProfileError> {
@@ -2063,6 +2472,11 @@ fn parse_float_bin_op(value: &str) -> Result<SemanticFloatBinOp, ProfileError> {
         "fmul" => Ok(SemanticFloatBinOp::Mul),
         "fdiv" => Ok(SemanticFloatBinOp::Div),
         "frem" => Ok(SemanticFloatBinOp::Rem),
+        "fminnum" | "minnum" => Ok(SemanticFloatBinOp::MinNum),
+        "fmaxnum" | "maxnum" => Ok(SemanticFloatBinOp::MaxNum),
+        "fminimum" | "minimum" => Ok(SemanticFloatBinOp::Minimum),
+        "fmaximum" | "maximum" => Ok(SemanticFloatBinOp::Maximum),
+        "fcopysign" | "copysign" => Ok(SemanticFloatBinOp::CopySign),
         other => Err(ProfileError::Invalid(format!(
             "unsupported float_bin operation {other}"
         ))),
@@ -2072,11 +2486,30 @@ fn parse_float_bin_op(value: &str) -> Result<SemanticFloatBinOp, ProfileError> {
 fn parse_int_unary_op(value: &str) -> Result<SemanticIntUnaryOp, ProfileError> {
     match value.trim() {
         "ctpop" => Ok(SemanticIntUnaryOp::CtPop),
+        "ctlz" => Ok(SemanticIntUnaryOp::CtLz),
+        "cttz" => Ok(SemanticIntUnaryOp::CtTz),
+        "abs" => Ok(SemanticIntUnaryOp::Abs),
         "bswap" => Ok(SemanticIntUnaryOp::BSwap),
         "bitreverse" => Ok(SemanticIntUnaryOp::BitReverse),
         other => Err(ProfileError::Invalid(format!(
             "unsupported int_unary operation {other}"
         ))),
+    }
+}
+
+fn parse_int_bin_op(value: &str) -> Result<SemanticBinOp, ProfileError> {
+    match value.trim() {
+        "smax" => Ok(SemanticBinOp::SMax),
+        "smin" => Ok(SemanticBinOp::SMin),
+        "umax" => Ok(SemanticBinOp::UMax),
+        "umin" => Ok(SemanticBinOp::UMin),
+        "uadd_sat" => Ok(SemanticBinOp::UAddSat),
+        "usub_sat" => Ok(SemanticBinOp::USubSat),
+        "sadd_sat" => Ok(SemanticBinOp::SAddSat),
+        "ssub_sat" => Ok(SemanticBinOp::SSubSat),
+        "ushl_sat" => Ok(SemanticBinOp::UShlSat),
+        "sshl_sat" => Ok(SemanticBinOp::SShlSat),
+        other => Err(ProfileError::Invalid(format!("unsupported int_bin operation {other}"))),
     }
 }
 
@@ -2090,11 +2523,45 @@ fn parse_int_ternary_op(value: &str) -> Result<SemanticIntTernaryOp, ProfileErro
     }
 }
 
+fn parse_int_overflow_op(value: &str) -> Result<SemanticIntOverflowOp, ProfileError> {
+    match value.trim() {
+        "uadd" => Ok(SemanticIntOverflowOp::UAdd),
+        "sadd" => Ok(SemanticIntOverflowOp::SAdd),
+        "usub" => Ok(SemanticIntOverflowOp::USub),
+        "ssub" => Ok(SemanticIntOverflowOp::SSub),
+        "umul" => Ok(SemanticIntOverflowOp::UMul),
+        "smul" => Ok(SemanticIntOverflowOp::SMul),
+        other => Err(ProfileError::Invalid(format!(
+            "unsupported int_overflow operation {other}"
+        ))),
+    }
+}
+
 fn parse_float_unary_op(value: &str) -> Result<SemanticFloatUnaryOp, ProfileError> {
     match value.trim() {
         "fneg" => Ok(SemanticFloatUnaryOp::Neg),
+        "fabs" => Ok(SemanticFloatUnaryOp::Abs),
+        "fsqrt" | "sqrt" => Ok(SemanticFloatUnaryOp::Sqrt),
+        "fcanonicalize" | "canonicalize" => Ok(SemanticFloatUnaryOp::Canonicalize),
+        "ffloor" | "floor" => Ok(SemanticFloatUnaryOp::Floor),
+        "fceil" | "ceil" => Ok(SemanticFloatUnaryOp::Ceil),
+        "ftrunc" | "trunc" => Ok(SemanticFloatUnaryOp::Trunc),
+        "frint" | "rint" => Ok(SemanticFloatUnaryOp::Rint),
+        "fnearbyint" | "nearbyint" => Ok(SemanticFloatUnaryOp::NearbyInt),
+        "fround" | "round" => Ok(SemanticFloatUnaryOp::Round),
+        "froundeven" | "roundeven" => Ok(SemanticFloatUnaryOp::RoundEven),
         other => Err(ProfileError::Invalid(format!(
             "unsupported float_unary operation {other}"
+        ))),
+    }
+}
+
+fn parse_float_ternary_op(value: &str) -> Result<SemanticFloatTernaryOp, ProfileError> {
+    match value.trim() {
+        "fma" | "ffma" => Ok(SemanticFloatTernaryOp::Fma),
+        "fmuladd" | "ffmuladd" => Ok(SemanticFloatTernaryOp::MulAdd),
+        other => Err(ProfileError::Invalid(format!(
+            "unsupported float_ternary operation {other}"
         ))),
     }
 }
@@ -2126,6 +2593,16 @@ fn parse_atomic_rmw_op(value: &str) -> Result<SemanticAtomicRmwOp, ProfileError>
         "min" => Ok(SemanticAtomicRmwOp::Min),
         "umax" => Ok(SemanticAtomicRmwOp::UMax),
         "umin" => Ok(SemanticAtomicRmwOp::UMin),
+        "uinc_wrap" => Ok(SemanticAtomicRmwOp::UIncWrap),
+        "udec_wrap" => Ok(SemanticAtomicRmwOp::UDecWrap),
+        "usub_cond" => Ok(SemanticAtomicRmwOp::USubCond),
+        "usub_sat" => Ok(SemanticAtomicRmwOp::USubSat),
+        "fadd" => Ok(SemanticAtomicRmwOp::FAdd),
+        "fsub" => Ok(SemanticAtomicRmwOp::FSub),
+        "fmax" => Ok(SemanticAtomicRmwOp::FMax),
+        "fmin" => Ok(SemanticAtomicRmwOp::FMin),
+        "fmaximum" => Ok(SemanticAtomicRmwOp::FMaximum),
+        "fminimum" => Ok(SemanticAtomicRmwOp::FMinimum),
         other => Err(ProfileError::Invalid(format!(
             "unsupported atomic_rmw operation {other}"
         ))),
@@ -2266,6 +2743,7 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
     use BinOp::*;
     use CastOp::*;
     use HandlerSemantic::*;
+    use IntOverflowOp::*;
 
     let statements = &program.statements;
     if matches_assign_reg_expr(statements, "dst", &trunc_width(operand("imm"), operand("width"))) && pc_next(statements)
@@ -2287,6 +2765,36 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         Some(Super(SuperOp::GepLoad))
     } else if load_add_template(statements) {
         Some(Super(SuperOp::LoadAdd))
+    } else if matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::ReadCounter {
+            kind: CounterKind::Cycle,
+        },
+    ) && pc_next(statements)
+    {
+        Some(ReadCounter(CounterKind::Cycle))
+    } else if matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::ReadCounter {
+            kind: CounterKind::Steady,
+        },
+    ) && pc_next(statements)
+    {
+        Some(ReadCounter(CounterKind::Steady))
+    } else if int_overflow_template(statements, SemanticIntOverflowOp::UAdd) {
+        Some(IntOverflow(UAdd))
+    } else if int_overflow_template(statements, SemanticIntOverflowOp::SAdd) {
+        Some(IntOverflow(SAdd))
+    } else if int_overflow_template(statements, SemanticIntOverflowOp::USub) {
+        Some(IntOverflow(USub))
+    } else if int_overflow_template(statements, SemanticIntOverflowOp::SSub) {
+        Some(IntOverflow(SSub))
+    } else if int_overflow_template(statements, SemanticIntOverflowOp::UMul) {
+        Some(IntOverflow(UMul))
+    } else if int_overflow_template(statements, SemanticIntOverflowOp::SMul) {
+        Some(IntOverflow(SMul))
     } else if bin_template(statements, SemanticBinOp::Add) {
         Some(Bin(Add))
     } else if bin_template(statements, SemanticBinOp::Sub) {
@@ -2313,6 +2821,26 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         Some(Bin(LShr))
     } else if ashr_template(statements) {
         Some(Bin(AShr))
+    } else if bin_template(statements, SemanticBinOp::SMax) {
+        Some(Bin(SMax))
+    } else if bin_template(statements, SemanticBinOp::SMin) {
+        Some(Bin(SMin))
+    } else if bin_template(statements, SemanticBinOp::UMax) {
+        Some(Bin(UMax))
+    } else if bin_template(statements, SemanticBinOp::UMin) {
+        Some(Bin(UMin))
+    } else if bin_template(statements, SemanticBinOp::UAddSat) {
+        Some(Bin(UAddSat))
+    } else if bin_template(statements, SemanticBinOp::USubSat) {
+        Some(Bin(USubSat))
+    } else if bin_template(statements, SemanticBinOp::SAddSat) {
+        Some(Bin(SAddSat))
+    } else if bin_template(statements, SemanticBinOp::SSubSat) {
+        Some(Bin(SSubSat))
+    } else if bin_template(statements, SemanticBinOp::UShlSat) {
+        Some(Bin(UShlSat))
+    } else if bin_template(statements, SemanticBinOp::SShlSat) {
+        Some(Bin(SShlSat))
     } else if float_bin_template(statements, SemanticFloatBinOp::Add) {
         Some(FloatBin(FloatBinOp::Add))
     } else if float_bin_template(statements, SemanticFloatBinOp::Sub) {
@@ -2323,8 +2851,42 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         Some(FloatBin(FloatBinOp::Div))
     } else if float_bin_template(statements, SemanticFloatBinOp::Rem) {
         Some(FloatBin(FloatBinOp::Rem))
+    } else if float_bin_template(statements, SemanticFloatBinOp::MinNum) {
+        Some(FloatBin(FloatBinOp::MinNum))
+    } else if float_bin_template(statements, SemanticFloatBinOp::MaxNum) {
+        Some(FloatBin(FloatBinOp::MaxNum))
+    } else if float_bin_template(statements, SemanticFloatBinOp::Minimum) {
+        Some(FloatBin(FloatBinOp::Minimum))
+    } else if float_bin_template(statements, SemanticFloatBinOp::Maximum) {
+        Some(FloatBin(FloatBinOp::Maximum))
+    } else if float_bin_template(statements, SemanticFloatBinOp::CopySign) {
+        Some(FloatBin(FloatBinOp::CopySign))
     } else if float_unary_template(statements, SemanticFloatUnaryOp::Neg) {
         Some(FloatUnary(FloatUnaryOp::Neg))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::Abs) {
+        Some(FloatUnary(FloatUnaryOp::Abs))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::Sqrt) {
+        Some(FloatUnary(FloatUnaryOp::Sqrt))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::Canonicalize) {
+        Some(FloatUnary(FloatUnaryOp::Canonicalize))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::Floor) {
+        Some(FloatUnary(FloatUnaryOp::Floor))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::Ceil) {
+        Some(FloatUnary(FloatUnaryOp::Ceil))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::Trunc) {
+        Some(FloatUnary(FloatUnaryOp::Trunc))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::Rint) {
+        Some(FloatUnary(FloatUnaryOp::Rint))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::NearbyInt) {
+        Some(FloatUnary(FloatUnaryOp::NearbyInt))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::Round) {
+        Some(FloatUnary(FloatUnaryOp::Round))
+    } else if float_unary_template(statements, SemanticFloatUnaryOp::RoundEven) {
+        Some(FloatUnary(FloatUnaryOp::RoundEven))
+    } else if float_ternary_template(statements, SemanticFloatTernaryOp::Fma) {
+        Some(FloatTernary(FloatTernaryOp::Fma))
+    } else if float_ternary_template(statements, SemanticFloatTernaryOp::MulAdd) {
+        Some(FloatTernary(FloatTernaryOp::MulAdd))
     } else if float_cast_template(statements, SemanticFloatCastOp::SignedIntToFloat) {
         Some(FloatCast(FloatCastOp::SignedIntToFloat))
     } else if float_cast_template(statements, SemanticFloatCastOp::UnsignedIntToFloat) {
@@ -2337,6 +2899,8 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         Some(FloatCast(FloatCastOp::FloatTrunc))
     } else if float_cast_template(statements, SemanticFloatCastOp::FloatExt) {
         Some(FloatCast(FloatCastOp::FloatExt))
+    } else if float_class_template(statements) {
+        Some(FloatClass)
     } else if matches_assign_reg_expr(
         statements,
         "dst",
@@ -2351,6 +2915,12 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         Some(Icmp)
     } else if int_unary_template(statements, SemanticIntUnaryOp::CtPop) {
         Some(IntUnary(IntUnaryOp::CtPop))
+    } else if int_unary_template(statements, SemanticIntUnaryOp::CtLz) {
+        Some(IntUnary(IntUnaryOp::CtLz))
+    } else if int_unary_template(statements, SemanticIntUnaryOp::CtTz) {
+        Some(IntUnary(IntUnaryOp::CtTz))
+    } else if int_unary_template(statements, SemanticIntUnaryOp::Abs) {
+        Some(IntUnary(IntUnaryOp::Abs))
     } else if int_unary_template(statements, SemanticIntUnaryOp::BSwap) {
         Some(IntUnary(IntUnaryOp::BSwap))
     } else if int_unary_template(statements, SemanticIntUnaryOp::BitReverse) {
@@ -2394,6 +2964,17 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
     } else if matches_assign_reg_expr(
         statements,
         "dst",
+        &SemanticExpr::StackAllocDynamic {
+            count: Box::new(reg("count")),
+            elem_size: Box::new(operand("elem_size")),
+            align: Box::new(operand("align")),
+        },
+    ) && pc_next(statements)
+    {
+        Some(DynamicAlloca)
+    } else if matches_assign_reg_expr(
+        statements,
+        "dst",
         &SemanticExpr::LoadWidth {
             ptr: Box::new(reg("ptr")),
             width: Box::new(operand("width")),
@@ -2401,6 +2982,16 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
     ) && pc_next(statements)
     {
         Some(Load)
+    } else if matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::VolatileLoadWidth {
+            ptr: Box::new(reg("ptr")),
+            width: Box::new(operand("width")),
+        },
+    ) && pc_next(statements)
+    {
+        Some(VolatileLoad)
     } else if matches_assign_reg_expr(
         statements,
         "dst",
@@ -2412,34 +3003,45 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
     ) && pc_next(statements)
     {
         Some(AtomicLoad)
+    } else if matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::VolatileAtomicLoadWidth {
+            ptr: Box::new(reg("ptr")),
+            width: Box::new(operand("width")),
+            ordering: Box::new(operand("ordering")),
+        },
+    ) && pc_next(statements)
+    {
+        Some(VolatileAtomicLoad)
     } else if store_template(statements) {
         Some(Store)
+    } else if volatile_store_template(statements) {
+        Some(VolatileStore)
     } else if atomic_store_template(statements) {
         Some(AtomicStore)
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Xchg) {
-        Some(AtomicRmw(AtomicRmwOp::Xchg))
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Add) {
-        Some(AtomicRmw(AtomicRmwOp::Add))
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Sub) {
-        Some(AtomicRmw(AtomicRmwOp::Sub))
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::And) {
-        Some(AtomicRmw(AtomicRmwOp::And))
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Or) {
-        Some(AtomicRmw(AtomicRmwOp::Or))
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Xor) {
-        Some(AtomicRmw(AtomicRmwOp::Xor))
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Nand) {
-        Some(AtomicRmw(AtomicRmwOp::Nand))
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Max) {
-        Some(AtomicRmw(AtomicRmwOp::Max))
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::Min) {
-        Some(AtomicRmw(AtomicRmwOp::Min))
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::UMax) {
-        Some(AtomicRmw(AtomicRmwOp::UMax))
-    } else if atomic_rmw_template(statements, SemanticAtomicRmwOp::UMin) {
-        Some(AtomicRmw(AtomicRmwOp::UMin))
+    } else if volatile_atomic_store_template(statements) {
+        Some(VolatileAtomicStore)
+    } else if memcpy_dynamic_template(statements) {
+        Some(MemcpyDynamic)
+    } else if memmove_dynamic_template(statements) {
+        Some(MemmoveDynamic)
+    } else if memset_dynamic_template(statements) {
+        Some(MemsetDynamic)
+    } else if volatile_memcpy_dynamic_template(statements) {
+        Some(VolatileMemcpyDynamic)
+    } else if volatile_memmove_dynamic_template(statements) {
+        Some(VolatileMemmoveDynamic)
+    } else if volatile_memset_dynamic_template(statements) {
+        Some(VolatileMemsetDynamic)
+    } else if let Some(op) = atomic_rmw_template(statements, false) {
+        Some(AtomicRmw(op))
+    } else if let Some(op) = atomic_rmw_template(statements, true) {
+        Some(VolatileAtomicRmw(op))
     } else if cmpxchg_template(statements) {
         Some(CmpXchg)
+    } else if volatile_cmpxchg_template(statements) {
+        Some(VolatileCmpXchg)
     } else if fence_template(statements) {
         Some(Fence)
     } else if matches_assign_reg_expr(
@@ -2455,6 +3057,10 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         Some(Gep)
     } else if call_native_template(statements) {
         Some(CallNative)
+    } else if unreachable_template(statements) {
+        Some(Unreachable)
+    } else if trap_template(statements) {
+        Some(Trap)
     } else if statements
         .iter()
         .any(|stmt| matches!(stmt, SemanticStmt::StateUnchanged))
@@ -2515,6 +3121,20 @@ fn float_unary_template(statements: &[SemanticStmt], op: SemanticFloatUnaryOp) -
     ) && pc_next(statements)
 }
 
+fn float_ternary_template(statements: &[SemanticStmt], op: SemanticFloatTernaryOp) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::FloatTernary {
+            op,
+            lhs: Box::new(reg("lhs")),
+            rhs: Box::new(reg("rhs")),
+            third: Box::new(reg("third")),
+            width: Box::new(operand("width")),
+        },
+    ) && pc_next(statements)
+}
+
 fn float_cast_template(statements: &[SemanticStmt], op: SemanticFloatCastOp) -> bool {
     matches_assign_reg_expr(
         statements,
@@ -2524,6 +3144,18 @@ fn float_cast_template(statements: &[SemanticStmt], op: SemanticFloatCastOp) -> 
             value: Box::new(reg("src")),
             from_width: Box::new(operand("from_width")),
             to_width: Box::new(operand("to_width")),
+        },
+    ) && pc_next(statements)
+}
+
+fn float_class_template(statements: &[SemanticStmt]) -> bool {
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &SemanticExpr::FloatClass {
+            value: Box::new(reg("src")),
+            mask: Box::new(operand("mask")),
+            width: Box::new(operand("width")),
         },
     ) && pc_next(statements)
 }
@@ -2540,7 +3172,10 @@ fn analyze_semantic_effect(statements: &[SemanticStmt]) -> Result<HandlerEffect,
         match statement {
             SemanticStmt::AssignReg { dst, value } => {
                 push_unique(&mut writes, dst.clone());
-                if matches!(value, SemanticExpr::AtomicRmw { .. }) {
+                if matches!(
+                    value,
+                    SemanticExpr::AtomicRmw { .. } | SemanticExpr::VolatileAtomicRmw { .. }
+                ) {
                     memory_write = true;
                 }
                 collect_expr_effects(value, &mut reads, &mut memory_read, &mut native_call);
@@ -2564,6 +3199,12 @@ fn analyze_semantic_effect(statements: &[SemanticStmt]) -> Result<HandlerEffect,
                 collect_expr_effects(value, &mut reads, &mut memory_read, &mut native_call);
                 collect_expr_effects(width, &mut reads, &mut memory_read, &mut native_call);
             },
+            SemanticStmt::VolatileStoreWidth { ptr, value, width } => {
+                memory_write = true;
+                collect_expr_effects(ptr, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(value, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(width, &mut reads, &mut memory_read, &mut native_call);
+            },
             SemanticStmt::AtomicStoreWidth {
                 ptr,
                 value,
@@ -2576,7 +3217,46 @@ fn analyze_semantic_effect(statements: &[SemanticStmt]) -> Result<HandlerEffect,
                 collect_expr_effects(width, &mut reads, &mut memory_read, &mut native_call);
                 collect_expr_effects(ordering, &mut reads, &mut memory_read, &mut native_call);
             },
+            SemanticStmt::VolatileAtomicStoreWidth {
+                ptr,
+                value,
+                width,
+                ordering,
+            } => {
+                memory_write = true;
+                collect_expr_effects(ptr, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(value, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(width, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(ordering, &mut reads, &mut memory_read, &mut native_call);
+            },
+            SemanticStmt::MemcpyDynamic { dst, src, len }
+            | SemanticStmt::MemmoveDynamic { dst, src, len }
+            | SemanticStmt::VolatileMemcpyDynamic { dst, src, len }
+            | SemanticStmt::VolatileMemmoveDynamic { dst, src, len } => {
+                memory_read = true;
+                memory_write = true;
+                collect_expr_effects(dst, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(src, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(len, &mut reads, &mut memory_read, &mut native_call);
+            },
+            SemanticStmt::MemsetDynamic { dst, value, len }
+            | SemanticStmt::VolatileMemsetDynamic { dst, value, len } => {
+                memory_write = true;
+                collect_expr_effects(dst, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(value, &mut reads, &mut memory_read, &mut native_call);
+                collect_expr_effects(len, &mut reads, &mut memory_read, &mut native_call);
+            },
             SemanticStmt::CmpXchg {
+                old,
+                success,
+                ptr,
+                compare,
+                new,
+                width,
+                success_ordering,
+                failure_ordering,
+            }
+            | SemanticStmt::VolatileCmpXchg {
                 old,
                 success,
                 ptr,
@@ -2601,6 +3281,21 @@ fn analyze_semantic_effect(statements: &[SemanticStmt]) -> Result<HandlerEffect,
                 collect_expr_effects(ordering, &mut reads, &mut memory_read, &mut native_call);
                 memory_read = true;
                 memory_write = true;
+            },
+            SemanticStmt::Unreachable => {
+                if pc.replace(PcEffect::Return).is_some() {
+                    return Err(ProfileError::Invalid(
+                        "handler semantic has multiple pc effects".to_owned(),
+                    ));
+                }
+            },
+            SemanticStmt::Trap => {
+                if pc.replace(PcEffect::Return).is_some() {
+                    return Err(ProfileError::Invalid(
+                        "handler semantic has multiple pc effects".to_owned(),
+                    ));
+                }
+                native_call = true;
             },
             SemanticStmt::StateUnchanged => {},
         }
@@ -2700,6 +3395,14 @@ fn load_add_template(statements: &[SemanticStmt]) -> bool {
     ) && pc_next(statements)
 }
 
+fn unreachable_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| matches!(stmt, SemanticStmt::Unreachable))
+}
+
+fn trap_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| matches!(stmt, SemanticStmt::Trap))
+}
+
 fn bin_template(statements: &[SemanticStmt], op: SemanticBinOp) -> bool {
     matches_assign_reg_expr(
         statements,
@@ -2712,6 +3415,35 @@ fn bin_template(statements: &[SemanticStmt], op: SemanticBinOp) -> bool {
             },
             operand("width"),
         ),
+    ) && pc_next(statements)
+}
+
+fn int_overflow_template(statements: &[SemanticStmt], op: SemanticIntOverflowOp) -> bool {
+    let value_op = match op {
+        SemanticIntOverflowOp::UAdd | SemanticIntOverflowOp::SAdd => SemanticBinOp::Add,
+        SemanticIntOverflowOp::USub | SemanticIntOverflowOp::SSub => SemanticBinOp::Sub,
+        SemanticIntOverflowOp::UMul | SemanticIntOverflowOp::SMul => SemanticBinOp::Mul,
+    };
+    matches_assign_reg_expr(
+        statements,
+        "dst",
+        &trunc_width(
+            SemanticExpr::Binary {
+                op: value_op,
+                lhs: Box::new(reg("lhs")),
+                rhs: Box::new(reg("rhs")),
+            },
+            operand("width"),
+        ),
+    ) && matches_assign_reg_expr(
+        statements,
+        "overflow",
+        &SemanticExpr::IntOverflow {
+            op,
+            lhs: Box::new(reg("lhs")),
+            rhs: Box::new(reg("rhs")),
+            width: Box::new(operand("width")),
+        },
     ) && pc_next(statements)
 }
 
@@ -2744,6 +3476,16 @@ fn store_template(statements: &[SemanticStmt]) -> bool {
     }) && pc_next(statements)
 }
 
+fn volatile_store_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::VolatileStoreWidth { ptr, value, width }
+                if ptr == &reg("ptr") && value == &reg("src") && width == &operand("width")
+        )
+    }) && pc_next(statements)
+}
+
 fn atomic_store_template(statements: &[SemanticStmt]) -> bool {
     statements.iter().any(|stmt| {
         matches!(
@@ -2761,18 +3503,130 @@ fn atomic_store_template(statements: &[SemanticStmt]) -> bool {
     }) && pc_next(statements)
 }
 
-fn atomic_rmw_template(statements: &[SemanticStmt], op: SemanticAtomicRmwOp) -> bool {
-    matches_assign_reg_expr(
-        statements,
-        "dst",
-        &SemanticExpr::AtomicRmw {
-            op,
-            ptr: Box::new(reg("ptr")),
-            value: Box::new(reg("src")),
-            width: Box::new(operand("width")),
-            ordering: Box::new(operand("ordering")),
-        },
-    ) && pc_next(statements)
+fn volatile_atomic_store_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::VolatileAtomicStoreWidth {
+                ptr,
+                value,
+                width,
+                ordering,
+            } if ptr == &reg("ptr")
+                && value == &reg("src")
+                && width == &operand("width")
+                && ordering == &operand("ordering")
+        )
+    }) && pc_next(statements)
+}
+
+fn memset_dynamic_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::MemsetDynamic { dst, value, len }
+                if dst == &reg("dst") && value == &reg("value") && len == &reg("len")
+        )
+    }) && pc_next(statements)
+}
+
+fn memcpy_dynamic_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::MemcpyDynamic { dst, src, len }
+                if dst == &reg("dst") && src == &reg("src") && len == &reg("len")
+        )
+    }) && pc_next(statements)
+}
+
+fn memmove_dynamic_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::MemmoveDynamic { dst, src, len }
+                if dst == &reg("dst") && src == &reg("src") && len == &reg("len")
+        )
+    }) && pc_next(statements)
+}
+
+fn volatile_memset_dynamic_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::VolatileMemsetDynamic { dst, value, len }
+                if dst == &reg("dst") && value == &reg("value") && len == &reg("len")
+        )
+    }) && pc_next(statements)
+}
+
+fn volatile_memcpy_dynamic_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::VolatileMemcpyDynamic { dst, src, len }
+                if dst == &reg("dst") && src == &reg("src") && len == &reg("len")
+        )
+    }) && pc_next(statements)
+}
+
+fn volatile_memmove_dynamic_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::VolatileMemmoveDynamic { dst, src, len }
+                if dst == &reg("dst") && src == &reg("src") && len == &reg("len")
+        )
+    }) && pc_next(statements)
+}
+
+fn atomic_rmw_template(statements: &[SemanticStmt], volatile: bool) -> Option<AtomicRmwOp> {
+    atomic_rmw_ops().into_iter().find_map(|(semantic_op, runtime_op)| {
+        let expected = if volatile {
+            SemanticExpr::VolatileAtomicRmw {
+                op: semantic_op,
+                ptr: Box::new(reg("ptr")),
+                value: Box::new(reg("src")),
+                width: Box::new(operand("width")),
+                ordering: Box::new(operand("ordering")),
+            }
+        } else {
+            SemanticExpr::AtomicRmw {
+                op: semantic_op,
+                ptr: Box::new(reg("ptr")),
+                value: Box::new(reg("src")),
+                width: Box::new(operand("width")),
+                ordering: Box::new(operand("ordering")),
+            }
+        };
+        (matches_assign_reg_expr(statements, "dst", &expected) && pc_next(statements)).then_some(runtime_op)
+    })
+}
+
+fn atomic_rmw_ops() -> [(SemanticAtomicRmwOp, AtomicRmwOp); 21] {
+    [
+        (SemanticAtomicRmwOp::Xchg, AtomicRmwOp::Xchg),
+        (SemanticAtomicRmwOp::Add, AtomicRmwOp::Add),
+        (SemanticAtomicRmwOp::Sub, AtomicRmwOp::Sub),
+        (SemanticAtomicRmwOp::And, AtomicRmwOp::And),
+        (SemanticAtomicRmwOp::Or, AtomicRmwOp::Or),
+        (SemanticAtomicRmwOp::Xor, AtomicRmwOp::Xor),
+        (SemanticAtomicRmwOp::Nand, AtomicRmwOp::Nand),
+        (SemanticAtomicRmwOp::Max, AtomicRmwOp::Max),
+        (SemanticAtomicRmwOp::Min, AtomicRmwOp::Min),
+        (SemanticAtomicRmwOp::UMax, AtomicRmwOp::UMax),
+        (SemanticAtomicRmwOp::UMin, AtomicRmwOp::UMin),
+        (SemanticAtomicRmwOp::UIncWrap, AtomicRmwOp::UIncWrap),
+        (SemanticAtomicRmwOp::UDecWrap, AtomicRmwOp::UDecWrap),
+        (SemanticAtomicRmwOp::USubCond, AtomicRmwOp::USubCond),
+        (SemanticAtomicRmwOp::USubSat, AtomicRmwOp::USubSat),
+        (SemanticAtomicRmwOp::FAdd, AtomicRmwOp::FAdd),
+        (SemanticAtomicRmwOp::FSub, AtomicRmwOp::FSub),
+        (SemanticAtomicRmwOp::FMax, AtomicRmwOp::FMax),
+        (SemanticAtomicRmwOp::FMin, AtomicRmwOp::FMin),
+        (SemanticAtomicRmwOp::FMaximum, AtomicRmwOp::FMaximum),
+        (SemanticAtomicRmwOp::FMinimum, AtomicRmwOp::FMinimum),
+    ]
 }
 
 fn int_unary_template(statements: &[SemanticStmt], op: SemanticIntUnaryOp) -> bool {
@@ -2792,6 +3646,31 @@ fn cmpxchg_template(statements: &[SemanticStmt]) -> bool {
         matches!(
             stmt,
             SemanticStmt::CmpXchg {
+                old,
+                success,
+                ptr,
+                compare,
+                new,
+                width,
+                success_ordering,
+                failure_ordering,
+            } if old == "old"
+                && success == "success"
+                && ptr == &reg("ptr")
+                && compare == &reg("cmp")
+                && new == &reg("new")
+                && width == &operand("width")
+                && success_ordering == &operand("success_ordering")
+                && failure_ordering == &operand("failure_ordering")
+        )
+    }) && pc_next(statements)
+}
+
+fn volatile_cmpxchg_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| {
+        matches!(
+            stmt,
+            SemanticStmt::VolatileCmpXchg {
                 old,
                 success,
                 ptr,
@@ -2976,6 +3855,11 @@ fn collect_expr_effects(expr: &SemanticExpr, reads: &mut Vec<String>, memory_rea
             collect_expr_effects(third, reads, memory_read, native_call);
             collect_expr_effects(width, reads, memory_read, native_call);
         },
+        SemanticExpr::IntOverflow { lhs, rhs, width, .. } => {
+            collect_expr_effects(lhs, reads, memory_read, native_call);
+            collect_expr_effects(rhs, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+        },
         SemanticExpr::Compare { pred, lhs, rhs, width } => {
             collect_expr_effects(pred, reads, memory_read, native_call);
             collect_expr_effects(lhs, reads, memory_read, native_call);
@@ -2989,6 +3873,14 @@ fn collect_expr_effects(expr: &SemanticExpr, reads: &mut Vec<String>, memory_rea
         },
         SemanticExpr::FloatUnary { value, width, .. } => {
             collect_expr_effects(value, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+        },
+        SemanticExpr::FloatTernary {
+            lhs, rhs, third, width, ..
+        } => {
+            collect_expr_effects(lhs, reads, memory_read, native_call);
+            collect_expr_effects(rhs, reads, memory_read, native_call);
+            collect_expr_effects(third, reads, memory_read, native_call);
             collect_expr_effects(width, reads, memory_read, native_call);
         },
         SemanticExpr::FloatCast {
@@ -3007,6 +3899,11 @@ fn collect_expr_effects(expr: &SemanticExpr, reads: &mut Vec<String>, memory_rea
             collect_expr_effects(rhs, reads, memory_read, native_call);
             collect_expr_effects(width, reads, memory_read, native_call);
         },
+        SemanticExpr::FloatClass { value, mask, width } => {
+            collect_expr_effects(value, reads, memory_read, native_call);
+            collect_expr_effects(mask, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+        },
         SemanticExpr::Select {
             cond,
             then_value,
@@ -3016,11 +3913,28 @@ fn collect_expr_effects(expr: &SemanticExpr, reads: &mut Vec<String>, memory_rea
             collect_expr_effects(then_value, reads, memory_read, native_call);
             collect_expr_effects(else_value, reads, memory_read, native_call);
         },
+        SemanticExpr::ReadCounter { .. } => {
+            *native_call = true;
+        },
         SemanticExpr::StackAlloc { bytes, align } => {
             collect_expr_effects(bytes, reads, memory_read, native_call);
             collect_expr_effects(align, reads, memory_read, native_call);
         },
+        SemanticExpr::StackAllocDynamic {
+            count,
+            elem_size,
+            align,
+        } => {
+            collect_expr_effects(count, reads, memory_read, native_call);
+            collect_expr_effects(elem_size, reads, memory_read, native_call);
+            collect_expr_effects(align, reads, memory_read, native_call);
+        },
         SemanticExpr::LoadWidth { ptr, width } => {
+            *memory_read = true;
+            collect_expr_effects(ptr, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+        },
+        SemanticExpr::VolatileLoadWidth { ptr, width } => {
             *memory_read = true;
             collect_expr_effects(ptr, reads, memory_read, native_call);
             collect_expr_effects(width, reads, memory_read, native_call);
@@ -3031,7 +3945,20 @@ fn collect_expr_effects(expr: &SemanticExpr, reads: &mut Vec<String>, memory_rea
             collect_expr_effects(width, reads, memory_read, native_call);
             collect_expr_effects(ordering, reads, memory_read, native_call);
         },
+        SemanticExpr::VolatileAtomicLoadWidth { ptr, width, ordering } => {
+            *memory_read = true;
+            collect_expr_effects(ptr, reads, memory_read, native_call);
+            collect_expr_effects(width, reads, memory_read, native_call);
+            collect_expr_effects(ordering, reads, memory_read, native_call);
+        },
         SemanticExpr::AtomicRmw {
+            ptr,
+            value,
+            width,
+            ordering,
+            ..
+        }
+        | SemanticExpr::VolatileAtomicRmw {
             ptr,
             value,
             width,
@@ -3278,6 +4205,20 @@ mod tests {
         assert!(profile.runtime.enhancements.handler_order_shuffle);
         assert!(profile.runtime.enhancements.opcode_alias);
         assert_eq!(profile.runtime.enhancements.handler_clone, HandlerClonePolicy::Disabled);
+        assert!(
+            profile
+                .lowering
+                .rule_by_match(lowering_match_pattern("llvm.ssa.copy.scalar").unwrap())
+                .is_some()
+        );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.objectsize.integer")
+                .expect("built-in profile should declare objectsize lowering")
+                .emitted_instructions,
+            ["mov_imm"]
+        );
         assert_eq!(
             profile
                 .isa
@@ -3285,8 +4226,18 @@ mod tests {
                 .iter()
                 .map(|instruction| instruction.opcodes().len())
                 .sum::<usize>(),
-            264
+            437
         );
+        let read_cycle = profile
+            .isa
+            .by_semantic(&HandlerSemantic::ReadCounter(CounterKind::Cycle))
+            .unwrap();
+        assert_eq!(read_cycle.name, "read_cycle");
+        let read_steady = profile
+            .isa
+            .by_semantic(&HandlerSemantic::ReadCounter(CounterKind::Steady))
+            .unwrap();
+        assert_eq!(read_steady.name, "read_steady");
         let ctpop = profile
             .isa
             .by_semantic(&HandlerSemantic::IntUnary(IntUnaryOp::CtPop))
@@ -3294,6 +4245,53 @@ mod tests {
         assert_eq!(ctpop.opcodes().len(), 2);
         assert_eq!(ctpop.effect.register_reads, ["src"]);
         assert_eq!(ctpop.effect.register_writes, ["dst"]);
+        let ctlz = profile
+            .isa
+            .by_semantic(&HandlerSemantic::IntUnary(IntUnaryOp::CtLz))
+            .unwrap();
+        assert_eq!(ctlz.opcodes().len(), 2);
+        assert_eq!(ctlz.effect.register_reads, ["src"]);
+        assert_eq!(ctlz.effect.register_writes, ["dst"]);
+        let cttz = profile
+            .isa
+            .by_semantic(&HandlerSemantic::IntUnary(IntUnaryOp::CtTz))
+            .unwrap();
+        assert_eq!(cttz.opcodes().len(), 2);
+        assert_eq!(cttz.effect.register_reads, ["src"]);
+        assert_eq!(cttz.effect.register_writes, ["dst"]);
+        let iabs = profile
+            .isa
+            .by_semantic(&HandlerSemantic::IntUnary(IntUnaryOp::Abs))
+            .unwrap();
+        assert_eq!(iabs.opcodes().len(), 2);
+        assert_eq!(iabs.effect.register_reads, ["src"]);
+        assert_eq!(iabs.effect.register_writes, ["dst"]);
+        let ismax = profile.isa.by_semantic(&HandlerSemantic::Bin(BinOp::SMax)).unwrap();
+        assert_eq!(ismax.opcodes().len(), 2);
+        assert_eq!(ismax.effect.register_reads, ["lhs", "rhs"]);
+        assert_eq!(ismax.effect.register_writes, ["dst"]);
+        let iuadd_sat = profile.isa.by_semantic(&HandlerSemantic::Bin(BinOp::UAddSat)).unwrap();
+        assert_eq!(iuadd_sat.opcodes().len(), 2);
+        assert_eq!(iuadd_sat.effect.register_reads, ["lhs", "rhs"]);
+        assert_eq!(iuadd_sat.effect.register_writes, ["dst"]);
+        let iushl_sat = profile.isa.by_semantic(&HandlerSemantic::Bin(BinOp::UShlSat)).unwrap();
+        assert_eq!(iushl_sat.opcodes().len(), 2);
+        assert_eq!(iushl_sat.effect.register_reads, ["lhs", "rhs"]);
+        assert_eq!(iushl_sat.effect.register_writes, ["dst"]);
+        let iumul_overflow = profile
+            .isa
+            .by_semantic(&HandlerSemantic::IntOverflow(IntOverflowOp::UMul))
+            .unwrap();
+        assert_eq!(iumul_overflow.opcodes().len(), 2);
+        assert_eq!(iumul_overflow.effect.register_reads, ["lhs", "rhs"]);
+        assert_eq!(iumul_overflow.effect.register_writes, ["dst", "overflow"]);
+        let ismul_overflow = profile
+            .isa
+            .by_semantic(&HandlerSemantic::IntOverflow(IntOverflowOp::SMul))
+            .unwrap();
+        assert_eq!(ismul_overflow.opcodes().len(), 2);
+        assert_eq!(ismul_overflow.effect.register_reads, ["lhs", "rhs"]);
+        assert_eq!(ismul_overflow.effect.register_writes, ["dst", "overflow"]);
         let fshl = profile
             .isa
             .by_semantic(&HandlerSemantic::IntTernary(IntTernaryOp::FShl))
@@ -3302,6 +4300,85 @@ mod tests {
         assert_eq!(fshl.decoded_width, 48);
         assert_eq!(fshl.effect.register_reads, ["lhs", "rhs", "third"]);
         assert_eq!(fshl.effect.register_writes, ["dst"]);
+        let fcopysign = profile
+            .isa
+            .by_semantic(&HandlerSemantic::FloatBin(FloatBinOp::CopySign))
+            .unwrap();
+        assert_eq!(fcopysign.opcodes().len(), 2);
+        assert_eq!(fcopysign.effect.register_reads, ["lhs", "rhs"]);
+        assert_eq!(fcopysign.effect.register_writes, ["dst"]);
+        let fminnum = profile
+            .isa
+            .by_semantic(&HandlerSemantic::FloatBin(FloatBinOp::MinNum))
+            .unwrap();
+        assert_eq!(fminnum.opcodes().len(), 2);
+        assert_eq!(fminnum.effect.register_reads, ["lhs", "rhs"]);
+        assert_eq!(fminnum.effect.register_writes, ["dst"]);
+        let fmaxnum = profile
+            .isa
+            .by_semantic(&HandlerSemantic::FloatBin(FloatBinOp::MaxNum))
+            .unwrap();
+        assert_eq!(fmaxnum.opcodes().len(), 2);
+        assert_eq!(fmaxnum.effect.register_reads, ["lhs", "rhs"]);
+        assert_eq!(fmaxnum.effect.register_writes, ["dst"]);
+        let fminimum = profile
+            .isa
+            .by_semantic(&HandlerSemantic::FloatBin(FloatBinOp::Minimum))
+            .unwrap();
+        assert_eq!(fminimum.opcodes().len(), 2);
+        assert_eq!(fminimum.effect.register_reads, ["lhs", "rhs"]);
+        assert_eq!(fminimum.effect.register_writes, ["dst"]);
+        let fmaximum = profile
+            .isa
+            .by_semantic(&HandlerSemantic::FloatBin(FloatBinOp::Maximum))
+            .unwrap();
+        assert_eq!(fmaximum.opcodes().len(), 2);
+        assert_eq!(fmaximum.effect.register_reads, ["lhs", "rhs"]);
+        assert_eq!(fmaximum.effect.register_writes, ["dst"]);
+        let fsqrt = profile
+            .isa
+            .by_semantic(&HandlerSemantic::FloatUnary(FloatUnaryOp::Sqrt))
+            .unwrap();
+        assert_eq!(fsqrt.opcodes().len(), 2);
+        assert_eq!(fsqrt.effect.register_reads, ["src"]);
+        assert_eq!(fsqrt.effect.register_writes, ["dst"]);
+        let fcanonicalize = profile
+            .isa
+            .by_semantic(&HandlerSemantic::FloatUnary(FloatUnaryOp::Canonicalize))
+            .unwrap();
+        assert_eq!(fcanonicalize.opcodes().len(), 2);
+        assert_eq!(fcanonicalize.effect.register_reads, ["src"]);
+        assert_eq!(fcanonicalize.effect.register_writes, ["dst"]);
+        for semantic in [
+            FloatUnaryOp::Floor,
+            FloatUnaryOp::Ceil,
+            FloatUnaryOp::Trunc,
+            FloatUnaryOp::Rint,
+            FloatUnaryOp::NearbyInt,
+            FloatUnaryOp::Round,
+            FloatUnaryOp::RoundEven,
+        ] {
+            let instruction = profile.isa.by_semantic(&HandlerSemantic::FloatUnary(semantic)).unwrap();
+            assert_eq!(instruction.opcodes().len(), 2);
+            assert_eq!(instruction.effect.register_reads, ["src"]);
+            assert_eq!(instruction.effect.register_writes, ["dst"]);
+        }
+        let ffma = profile
+            .isa
+            .by_semantic(&HandlerSemantic::FloatTernary(FloatTernaryOp::Fma))
+            .unwrap();
+        assert_eq!(ffma.opcodes().len(), 2);
+        assert_eq!(ffma.decoded_width, 48);
+        assert_eq!(ffma.effect.register_reads, ["lhs", "rhs", "third"]);
+        assert_eq!(ffma.effect.register_writes, ["dst"]);
+        let ffmuladd = profile
+            .isa
+            .by_semantic(&HandlerSemantic::FloatTernary(FloatTernaryOp::MulAdd))
+            .unwrap();
+        assert_eq!(ffmuladd.opcodes().len(), 2);
+        assert_eq!(ffmuladd.decoded_width, 48);
+        assert_eq!(ffmuladd.effect.register_reads, ["lhs", "rhs", "third"]);
+        assert_eq!(ffmuladd.effect.register_writes, ["dst"]);
         let iadd_xor = profile
             .isa
             .by_semantic(&HandlerSemantic::Super(SuperOp::AddXor))
@@ -3367,14 +4444,105 @@ mod tests {
         assert_eq!(atomic_umax.opcodes().len(), 2);
         assert!(atomic_umax.effect.memory_read);
         assert!(atomic_umax.effect.memory_write);
+        let volatile_atomic_load = profile.isa.by_semantic(&HandlerSemantic::VolatileAtomicLoad).unwrap();
+        assert_eq!(volatile_atomic_load.opcodes().len(), 2);
+        assert_eq!(volatile_atomic_load.effect.register_reads, ["ptr"]);
+        assert_eq!(volatile_atomic_load.effect.register_writes, ["dst"]);
+        assert!(volatile_atomic_load.effect.memory_read);
+        let volatile_atomic_store = profile.isa.by_semantic(&HandlerSemantic::VolatileAtomicStore).unwrap();
+        assert_eq!(volatile_atomic_store.opcodes().len(), 2);
+        assert_eq!(volatile_atomic_store.effect.register_reads, ["ptr", "src"]);
+        assert!(volatile_atomic_store.effect.register_writes.is_empty());
+        assert!(volatile_atomic_store.effect.memory_write);
+        for semantic in [
+            HandlerSemantic::VolatileMemcpyDynamic,
+            HandlerSemantic::VolatileMemmoveDynamic,
+        ] {
+            let instruction = profile.isa.by_semantic(&semantic).unwrap();
+            assert_eq!(instruction.opcodes().len(), 2);
+            assert_eq!(instruction.effect.register_reads, ["dst", "src", "len"]);
+            assert!(instruction.effect.register_writes.is_empty());
+            assert!(instruction.effect.memory_read);
+            assert!(instruction.effect.memory_write);
+        }
+        let volatile_memset = profile
+            .isa
+            .by_semantic(&HandlerSemantic::VolatileMemsetDynamic)
+            .unwrap();
+        assert_eq!(volatile_memset.opcodes().len(), 2);
+        assert_eq!(volatile_memset.effect.register_reads, ["dst", "value", "len"]);
+        assert!(volatile_memset.effect.register_writes.is_empty());
+        assert!(!volatile_memset.effect.memory_read);
+        assert!(volatile_memset.effect.memory_write);
+        for semantic in [
+            AtomicRmwOp::UIncWrap,
+            AtomicRmwOp::UDecWrap,
+            AtomicRmwOp::USubCond,
+            AtomicRmwOp::USubSat,
+        ] {
+            let instruction = profile.isa.by_semantic(&HandlerSemantic::AtomicRmw(semantic)).unwrap();
+            assert_eq!(instruction.opcodes().len(), 2);
+            assert_eq!(instruction.effect.register_reads, ["ptr", "src"]);
+            assert_eq!(instruction.effect.register_writes, ["dst"]);
+            assert!(instruction.effect.memory_read);
+            assert!(instruction.effect.memory_write);
+        }
+        let volatile_atomic_add = profile
+            .isa
+            .by_semantic(&HandlerSemantic::VolatileAtomicRmw(AtomicRmwOp::Add))
+            .unwrap();
+        assert_eq!(volatile_atomic_add.opcodes().len(), 2);
+        assert_eq!(volatile_atomic_add.effect.register_reads, ["ptr", "src"]);
+        assert_eq!(volatile_atomic_add.effect.register_writes, ["dst"]);
+        assert!(volatile_atomic_add.effect.memory_read);
+        assert!(volatile_atomic_add.effect.memory_write);
         let cmpxchg = profile.isa.by_semantic(&HandlerSemantic::CmpXchg).unwrap();
         assert_eq!(cmpxchg.opcodes().len(), 2);
         assert!(cmpxchg.effect.memory_read);
         assert!(cmpxchg.effect.memory_write);
+        let volatile_cmpxchg = profile.isa.by_semantic(&HandlerSemantic::VolatileCmpXchg).unwrap();
+        assert_eq!(volatile_cmpxchg.opcodes().len(), 2);
+        assert_eq!(volatile_cmpxchg.effect.register_reads, ["ptr", "cmp", "new"]);
+        assert_eq!(volatile_cmpxchg.effect.register_writes, ["old", "success"]);
+        assert!(volatile_cmpxchg.effect.memory_read);
+        assert!(volatile_cmpxchg.effect.memory_write);
         let fence = profile.isa.by_semantic(&HandlerSemantic::Fence).unwrap();
         assert_eq!(fence.opcodes().len(), 2);
         assert!(fence.effect.memory_read);
         assert!(fence.effect.memory_write);
+        let unreachable = profile
+            .isa
+            .by_semantic(&HandlerSemantic::Unreachable)
+            .expect("built-in profile should declare unreachable instruction");
+        assert_eq!(unreachable.operands, 0);
+        assert_eq!(unreachable.effect.pc, PcEffect::Return);
+        assert!(unreachable.effect.register_reads.is_empty());
+        assert!(unreachable.effect.register_writes.is_empty());
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.unreachable")
+                .expect("built-in profile should declare unreachable lowering")
+                .emitted_instructions,
+            ["unreachable"]
+        );
+        let trap = profile
+            .isa
+            .by_semantic(&HandlerSemantic::Trap)
+            .expect("built-in profile should declare trap instruction");
+        assert_eq!(trap.operands, 0);
+        assert_eq!(trap.effect.pc, PcEffect::Return);
+        assert!(trap.effect.register_reads.is_empty());
+        assert!(trap.effect.register_writes.is_empty());
+        assert!(trap.effect.native_call);
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.trap")
+                .expect("built-in profile should declare trap lowering")
+                .emitted_instructions,
+            ["trap"]
+        );
         assert_eq!(profile.isa.by_semantic(&HandlerSemantic::MovImm).unwrap().opcode, 0x01);
         let mov_imm = profile.isa.by_semantic(&HandlerSemantic::MovImm).unwrap();
         assert_eq!(mov_imm.effect.pc, PcEffect::Next);
@@ -3385,6 +4553,168 @@ mod tests {
             .rule("llvm.freeze.scalar")
             .expect("built-in profile should declare freeze lowering");
         assert_eq!(freeze_rule.emitted_instructions, ["mov"]);
+        let aggregate_freeze_rule = profile
+            .lowering
+            .rule("llvm.aggregate.freeze")
+            .expect("built-in profile should declare aggregate freeze lowering");
+        assert_eq!(aggregate_freeze_rule.emitted_instructions, ["mov"]);
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.select.aggregate")
+                .expect("built-in profile should declare aggregate select lowering")
+                .emitted_instructions,
+            ["br_if", "mov", "br", "mov"]
+        );
+        for rule_name in [
+            "llvm.aggregate.insert.subaggregate",
+            "llvm.aggregate.extract.subaggregate",
+            "llvm.aggregate.phi.edge_move",
+        ] {
+            assert_eq!(
+                profile
+                    .lowering
+                    .rule(rule_name)
+                    .expect("built-in profile should declare subaggregate lowering")
+                    .emitted_instructions,
+                ["mov"]
+            );
+        }
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.memory.aggregate.load")
+                .expect("built-in profile should declare aggregate load lowering")
+                .emitted_instructions,
+            ["gep", "load", "load", "mov"]
+        );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.memory.aggregate.store")
+                .expect("built-in profile should declare aggregate store lowering")
+                .emitted_instructions,
+            ["gep", "store", "store"]
+        );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.memory.volatile.aggregate.load")
+                .expect("built-in profile should declare volatile aggregate load lowering")
+                .emitted_instructions,
+            ["gep", "volatile_load", "volatile_load", "mov"]
+        );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.memory.volatile.aggregate.store")
+                .expect("built-in profile should declare volatile aggregate store lowering")
+                .emitted_instructions,
+            ["gep", "volatile_store", "volatile_store"]
+        );
+        let ptrmask = profile
+            .isa
+            .by_name("ptrmask")
+            .expect("built-in profile should declare ptrmask instruction");
+        assert_eq!(ptrmask.semantic, HandlerSemantic::Bin(BinOp::And));
+        assert_eq!(ptrmask.decoded_width, 16);
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.ptrmask.pointer")
+                .expect("built-in profile should declare ptrmask lowering")
+                .emitted_instructions,
+            ["ptrmask"]
+        );
+        let tls_addr = profile
+            .isa
+            .by_name("tls_addr")
+            .expect("built-in profile should declare tls_addr instruction");
+        assert_eq!(tls_addr.semantic, HandlerSemantic::Mov);
+        assert_eq!(tls_addr.decoded_width, 8);
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.threadlocal.address.pointer")
+                .expect("built-in profile should declare threadlocal.address lowering")
+                .emitted_instructions,
+            ["tls_addr"]
+        );
+        let global_addr = profile
+            .isa
+            .by_name("global_addr")
+            .expect("built-in profile should declare global_addr instruction");
+        assert_eq!(global_addr.semantic, HandlerSemantic::Mov);
+        assert_eq!(global_addr.decoded_width, 8);
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.global.address.pointer")
+                .expect("built-in profile should declare global.address lowering")
+                .emitted_instructions,
+            ["global_addr"]
+        );
+        for rule_name in ["llvm.constexpr.ptrtoint", "llvm.constexpr.inttoptr"] {
+            let rule = profile
+                .lowering
+                .rule(rule_name)
+                .expect("built-in profile should declare pointer constant expression lowering");
+            assert_eq!(rule.emitted_instructions, ["zext", "trunc", "bitcast"]);
+        }
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.constexpr.integer.binop")
+                .expect("built-in profile should declare integer binop constant expression lowering")
+                .emitted_instructions,
+            [
+                "iadd", "isub", "imul", "iudiv", "isdiv", "iurem", "isrem", "ixor", "iand", "ior", "ishl", "ilshr",
+                "iashr",
+            ]
+        );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.cast.bitcast.scalar")
+                .expect("built-in profile should declare scalar bitcast lowering")
+                .emitted_instructions,
+            ["bitcast"]
+        );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.constexpr.integer.cast")
+                .expect("built-in profile should declare integer cast constant expression lowering")
+                .emitted_instructions,
+            ["zext", "sext", "trunc", "bitcast"]
+        );
+        for rule_name in [
+            "llvm.launder.invariant.group.pointer",
+            "llvm.strip.invariant.group.pointer",
+            "llvm.invariant.start.pointer",
+            "llvm.annotation.integer",
+            "llvm.ptr.annotation.pointer",
+        ] {
+            let rule = profile
+                .lowering
+                .rule(rule_name)
+                .expect("built-in profile should declare identity intrinsic lowering");
+            assert_eq!(rule.emitted_instructions, ["mov"]);
+        }
+        for rule_name in [
+            "llvm.invariant.end",
+            "llvm.prefetch",
+            "llvm.experimental.noalias.scope.decl",
+            "llvm.donothing",
+            "llvm.var.annotation",
+            "llvm.codeview.annotation",
+        ] {
+            let rule = profile
+                .lowering
+                .rule(rule_name)
+                .expect("built-in profile should declare annotation nop lowering");
+            assert_eq!(rule.emitted_instructions, ["fake_nop"]);
+        }
         for rule_name in ["llvm.memcpy.fixed", "llvm.memmove.fixed"] {
             let rule = profile
                 .lowering
@@ -3472,6 +4802,156 @@ mod tests {
                 .emitted_instructions,
             ["mov"]
         );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.aggregate.freeze")
+                .expect("ruoke profile should declare aggregate freeze lowering")
+                .emitted_instructions,
+            ["mov"]
+        );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.objectsize.integer")
+                .expect("ruoke profile should declare objectsize lowering")
+                .emitted_instructions,
+            ["mov_imm"]
+        );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.select.aggregate")
+                .expect("ruoke profile should declare aggregate select lowering")
+                .emitted_instructions,
+            ["br_if", "mov", "br", "mov"]
+        );
+        for rule_name in [
+            "llvm.aggregate.insert.subaggregate",
+            "llvm.aggregate.extract.subaggregate",
+            "llvm.aggregate.phi.edge_move",
+        ] {
+            assert_eq!(
+                profile
+                    .lowering
+                    .rule(rule_name)
+                    .expect("ruoke profile should declare subaggregate lowering")
+                    .emitted_instructions,
+                ["mov"]
+            );
+        }
+        let ptrmask = profile
+            .isa
+            .by_name("ptrmask")
+            .expect("ruoke profile should declare ptrmask instruction");
+        assert_eq!(ptrmask.semantic, HandlerSemantic::Bin(BinOp::And));
+        assert_eq!(ptrmask.decoded_width, 16);
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.ptrmask.pointer")
+                .expect("ruoke profile should declare ptrmask lowering")
+                .emitted_instructions,
+            ["ptrmask"]
+        );
+        let tls_addr = profile
+            .isa
+            .by_name("tls_addr")
+            .expect("ruoke profile should declare tls_addr instruction");
+        assert_eq!(tls_addr.semantic, HandlerSemantic::Mov);
+        assert_eq!(tls_addr.decoded_width, 8);
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.threadlocal.address.pointer")
+                .expect("ruoke profile should declare threadlocal.address lowering")
+                .emitted_instructions,
+            ["tls_addr"]
+        );
+        let global_addr = profile
+            .isa
+            .by_name("global_addr")
+            .expect("ruoke profile should declare global_addr instruction");
+        assert_eq!(global_addr.semantic, HandlerSemantic::Mov);
+        assert_eq!(global_addr.decoded_width, 8);
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.global.address.pointer")
+                .expect("ruoke profile should declare global.address lowering")
+                .emitted_instructions,
+            ["global_addr"]
+        );
+        for rule_name in ["llvm.constexpr.ptrtoint", "llvm.constexpr.inttoptr"] {
+            assert_eq!(
+                profile
+                    .lowering
+                    .rule(rule_name)
+                    .expect("ruoke profile should declare pointer constant expression lowering")
+                    .emitted_instructions,
+                ["zext", "trunc", "bitcast"]
+            );
+        }
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.constexpr.integer.binop")
+                .expect("ruoke profile should declare integer binop constant expression lowering")
+                .emitted_instructions,
+            [
+                "iadd", "isub", "imul", "iudiv", "isdiv", "iurem", "isrem", "ixor", "iand", "ior", "ishl", "ilshr",
+                "iashr",
+            ]
+        );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.cast.bitcast.scalar")
+                .expect("ruoke profile should declare scalar bitcast lowering")
+                .emitted_instructions,
+            ["bitcast"]
+        );
+        assert_eq!(
+            profile
+                .lowering
+                .rule("llvm.constexpr.integer.cast")
+                .expect("ruoke profile should declare integer cast constant expression lowering")
+                .emitted_instructions,
+            ["zext", "sext", "trunc", "bitcast"]
+        );
+        for rule_name in [
+            "llvm.launder.invariant.group.pointer",
+            "llvm.strip.invariant.group.pointer",
+            "llvm.invariant.start.pointer",
+            "llvm.annotation.integer",
+            "llvm.ptr.annotation.pointer",
+        ] {
+            assert_eq!(
+                profile
+                    .lowering
+                    .rule(rule_name)
+                    .expect("ruoke profile should declare identity intrinsic lowering")
+                    .emitted_instructions,
+                ["mov"]
+            );
+        }
+        for rule_name in [
+            "llvm.invariant.end",
+            "llvm.prefetch",
+            "llvm.experimental.noalias.scope.decl",
+            "llvm.donothing",
+            "llvm.var.annotation",
+            "llvm.codeview.annotation",
+        ] {
+            assert_eq!(
+                profile
+                    .lowering
+                    .rule(rule_name)
+                    .expect("ruoke profile should declare annotation nop lowering")
+                    .emitted_instructions,
+                ["fake_nop"]
+            );
+        }
         for rule_name in ["llvm.memcpy.fixed", "llvm.memmove.fixed", "llvm.memset.fixed"] {
             assert!(
                 profile.lowering.rule(rule_name).is_some(),
@@ -3797,6 +5277,10 @@ mod tests {
             .replace(
                 "emit iadd dst=%vr, lhs=%vb, rhs=%vs, width=64 # 缩放偏移与基址相加",
                 "emit add_alias dst=%vr, lhs=%vb, rhs=%vs, width=64 # 缩放偏移与基址相加",
+            )
+            .replace(
+                "emit iadd dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # add 常量表达式发射 iadd 指令",
+                "emit add_alias dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # add 常量表达式发射改名后的加法指令",
             )
             .replace(
                 "sequence iadd, ixor # 只允许把连续的 iadd 与 ixor 两条 VM 指令融合",
