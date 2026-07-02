@@ -2315,6 +2315,9 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             HandlerSemantic::Trap => {
                 self.builder.push_profile(VmInstruction::Trap, desc.name.clone());
             },
+            HandlerSemantic::SideEffect => {
+                self.builder.push_profile(VmInstruction::SideEffect, desc.name.clone());
+            },
             HandlerSemantic::CallNative | HandlerSemantic::Nop | HandlerSemantic::VmCall | HandlerSemantic::VmRet => {
                 if desc.semantic == HandlerSemantic::Nop {
                     self.builder.push_profile(VmInstruction::Nop, desc.name.clone());
@@ -3089,6 +3092,9 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         if let Some(kind) = memory_intrinsic_kind(callee) {
             return self.lower_memory_intrinsic(instruction, kind);
         }
+        if sideeffect_intrinsic(callee) {
+            return self.lower_sideeffect_intrinsic(instruction);
+        }
         if let Some(kind) = nop_intrinsic_kind(callee) {
             return self.lower_nop_intrinsic(instruction, kind);
         }
@@ -3649,6 +3655,15 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             env,
             Some(HandlerSemantic::ReadCounter(kind)),
         )?;
+        Ok(())
+    }
+
+    fn lower_sideeffect_intrinsic(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        let actual_args = instruction.get_num_operands().saturating_sub(1);
+        if actual_args != 0 {
+            bail!("llvm.sideeffect expects exactly 0 arguments, got {actual_args}");
+        }
+        self.execute_lowering_rule("llvm.sideeffect", LoweringEnv::new(), Some(HandlerSemantic::SideEffect))?;
         Ok(())
     }
 
@@ -6990,6 +7005,10 @@ fn counter_intrinsic_kind(function: FunctionValue<'_>) -> Option<CounterKind> {
         "llvm.readsteadycounter" => Some(CounterKind::Steady),
         _ => None,
     }
+}
+
+fn sideeffect_intrinsic(function: FunctionValue<'_>) -> bool {
+    function.get_name().to_string_lossy().as_ref() == "llvm.sideeffect"
 }
 
 fn counter_intrinsic_lowering_rule(kind: CounterKind) -> &'static str {

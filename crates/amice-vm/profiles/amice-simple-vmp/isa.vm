@@ -59,6 +59,15 @@ instr read_steady(dst: vreg<i64>, width: imm<u8>) { # 读取 LLVM readsteadycoun
   } # 结束语义块
 } # 结束 read_steady 指令
 
+instr sideeffect() { # LLVM sideeffect 处理器，用于保留优化器必须看到的副作用屏障
+  opcode alias [0x1ae, 0x1af] # sideeffect 使用独立 opcode，避免退化成 fake_nop 后丢失语义身份
+  decoded_width = 4 # sideeffect 没有操作数，使用最小 4 字节 decoded record
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    side_effect() # runtime 调用 llvm.sideeffect intrinsic，保留可见副作用
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 sideeffect 指令
+
 instr iadd(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数加法处理器
   opcode alias [0x10, 0x2c, 0x5a, 0x6d, 0x7a] # iadd 使用主操作码 0x10，其余为等价混淆别名
   decoded_width = 16 # iadd 使用 16 字节 record，给 opcode alias 和四个操作数留出余量

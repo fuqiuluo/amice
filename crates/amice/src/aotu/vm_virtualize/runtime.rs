@@ -202,6 +202,16 @@ fn llvm_trap_intrinsic<'ctx>(module: &mut Module<'ctx>) -> FunctionValue<'ctx> {
     module.add_function("llvm.trap", fn_type, None)
 }
 
+fn llvm_sideeffect_intrinsic<'ctx>(module: &mut Module<'ctx>) -> FunctionValue<'ctx> {
+    if let Some(function) = module.get_function("llvm.sideeffect") {
+        return function;
+    }
+
+    let ctx = module.get_context();
+    let fn_type = ctx.void_type().fn_type(&[], false);
+    module.add_function("llvm.sideeffect", fn_type, None)
+}
+
 fn llvm_counter_intrinsic<'ctx>(module: &mut Module<'ctx>, kind: CounterKind) -> FunctionValue<'ctx> {
     let name = match kind {
         CounterKind::Cycle => "llvm.readcyclecounter",
@@ -569,6 +579,7 @@ fn emit_dispatch<'ctx>(
     let maximum_f32 = llvm_float_binary_intrinsic(module, "llvm.maximum.f32", 32)?;
     let maximum_f64 = llvm_float_binary_intrinsic(module, "llvm.maximum.f64", 64)?;
     let trap = llvm_trap_intrinsic(module);
+    let sideeffect = llvm_sideeffect_intrinsic(module);
     let read_cycle_counter = llvm_counter_intrinsic(module, CounterKind::Cycle);
     let read_steady_counter = llvm_counter_intrinsic(module, CounterKind::Steady);
 
@@ -734,6 +745,7 @@ fn emit_dispatch<'ctx>(
                 maximum_f32,
                 maximum_f64,
                 trap,
+                sideeffect,
                 read_cycle_counter,
                 read_steady_counter,
                 const_pool,
@@ -803,6 +815,7 @@ fn emit_dispatch<'ctx>(
             maximum_f32,
             maximum_f64,
             trap,
+            sideeffect,
             read_cycle_counter,
             read_steady_counter,
             const_pool,
@@ -877,6 +890,7 @@ struct HandlerContext<'ctx, 'profile> {
     maximum_f32: FunctionValue<'ctx>,
     maximum_f64: FunctionValue<'ctx>,
     trap: FunctionValue<'ctx>,
+    sideeffect: FunctionValue<'ctx>,
     read_cycle_counter: FunctionValue<'ctx>,
     read_steady_counter: FunctionValue<'ctx>,
     const_pool: PointerValue<'ctx>,
@@ -968,6 +982,7 @@ enum RuntimeHandlerTemplate {
     Fence,
     Gep,
     CallNative,
+    SideEffect,
     Nop,
     Br,
     BrCond,
@@ -1097,6 +1112,8 @@ impl RuntimeHandlerTemplate {
             Self::Unreachable
         } else if trap_template(statements) {
             Self::Trap
+        } else if side_effect_template(statements) {
+            Self::SideEffect
         } else if statements
             .iter()
             .any(|stmt| matches!(stmt, SemanticStmt::StateUnchanged))
@@ -1285,6 +1302,12 @@ fn emit_handler<'ctx, 'profile>(
         },
         RuntimeHandlerTemplate::CallNative => {
             emit_call_native_handler(builder, operands, ctx)?;
+        },
+        RuntimeHandlerTemplate::SideEffect => {
+            let args: [BasicMetadataValueEnum<'ctx>; 0] = [];
+            builder.build_call(ctx.sideeffect, &args, "vm.sideeffect")?;
+            increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+            builder.build_unconditional_branch(ctx.loop_check)?;
         },
         RuntimeHandlerTemplate::Nop => {
             increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
@@ -1927,6 +1950,10 @@ fn unreachable_template(statements: &[SemanticStmt]) -> bool {
 
 fn trap_template(statements: &[SemanticStmt]) -> bool {
     statements.iter().any(|stmt| matches!(stmt, SemanticStmt::Trap))
+}
+
+fn side_effect_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| matches!(stmt, SemanticStmt::SideEffect)) && pc_next(statements)
 }
 
 fn pc_select_template(statements: &[SemanticStmt]) -> bool {

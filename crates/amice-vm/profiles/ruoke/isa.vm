@@ -1297,6 +1297,15 @@ instr read_steady(dst: vreg<i64>, width: imm<u8>) { # 读取 LLVM readsteadycoun
   } # 结束语义块
 } # 结束 read_steady 指令
 
+instr sideeffect() { # LLVM sideeffect 处理器，用于保留优化器必须看到的副作用屏障
+  opcode alias [0x110] # 从 ret 的 ruoke 高预算别名挪用 1 个 opcode，总唯一 opcode 数保持 1000
+  decoded_width = 4 # sideeffect 没有操作数，使用最小 4 字节 decoded record
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    side_effect() # runtime 调用 llvm.sideeffect intrinsic，保留可见副作用
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 sideeffect 指令
+
 instr fake_nop() { # 假指令处理器，用于插入不改变 VM 状态的干扰字节码
   opcode alias [0x176] # fake_nop 第 1 组剩余别名，其余 22 个已挪给 atomicrmw、整数 intrinsic、funnel shift、cmpxchg、fence 和超级 handler
   decoded_width = 4 # fake_nop 只有 opcode，使用最小 4 字节 record
@@ -1363,7 +1372,7 @@ instr trap() { # LLVM trap intrinsic 终结处理器
 
 instr ret(src: vreg<i64>) { # 函数返回处理器
   opcode alias [0x22a, 0x37b, 0x0e4, 0x235, 0x386, 0x0ef, 0x240, 0x391] # ret 的 ruoke 操作码别名第 1 组
-  opcode alias [0x0fa, 0x24b, 0x39c, 0x105, 0x256, 0x3a7, 0x110] # ret 的 ruoke 操作码别名第 2 组，9 个别名已挪给 volatile atomicrmw 和 readcounter
+  opcode alias [0x0fa, 0x24b, 0x39c, 0x105, 0x256, 0x3a7] # ret 的 ruoke 操作码别名第 2 组，10 个别名已挪给 volatile atomicrmw、readcounter 和 sideeffect
   decoded_width = 4 # ret 只需要 opcode 和一个寄存器操作数，使用 4 字节 record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[ret0] = reg[src] # 返回值归一化写入 abi.vm 声明的第 0 个返回槽

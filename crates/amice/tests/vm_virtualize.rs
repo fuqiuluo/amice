@@ -1917,6 +1917,83 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_sideeffect_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_sideeffect_intrinsic.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_sideeffect_intrinsic'
+source_filename = "vm_virtualize_sideeffect_intrinsic.ll"
+
+declare void @llvm.sideeffect()
+
+define i64 @vm_sideeffect_intrinsic(i64 %seed) {
+entry:
+  %a = add i64 %seed, 17
+  call void @llvm.sideeffect()
+  %b = xor i64 %a, 3405691582
+  call void @llvm.sideeffect()
+  %c = mul i64 %b, 3
+  ret i64 %c
+}
+"#,
+    )
+    .expect("sideeffect LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_sideeffect_intrinsic_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_sideeffect_intrinsic(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm_sideeffect_intrinsic(0x1111111111111111ULL);
+    uint64_t b = vm_sideeffect_intrinsic(0x2222222222222222ULL);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("sideeffect C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_sideeffect_intrinsic_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_sideeffect_intrinsic.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_sideeffect_intrinsic");
+    assert!(
+        dump.contains(": sideeffect "),
+        "llvm.sideeffect should lower through profile sideeffect handler:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_sideeffect_intrinsic");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized sideeffect LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_sideeffect_intrinsic"));
+    assert!(ir.contains("handler.sideeffect"));
+    assert!(ir.contains("@llvm.sideeffect"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_aggregate_overflow_registers_are_reused() {
     ensure_plugin_built();
 

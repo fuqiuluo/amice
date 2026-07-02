@@ -954,6 +954,13 @@ rule llvm.experimental.noalias.scope.decl { # 将 LLVM noalias scope 声明 intr
   } # 结束 noalias.scope.decl lowering 动作
 } # 结束 noalias.scope.decl 规则
 
+rule llvm.sideeffect { # 将 LLVM sideeffect intrinsic 降低为 ruoke 显式副作用 VM 指令
+  match llvm.sideeffect # 匹配无参数且必须保留的 sideeffect intrinsic
+  lower { # 开始声明 sideeffect lowering 动作
+    emit sideeffect # 发射独立 sideeffect handler，不能退化成 fake_nop
+  } # 结束 sideeffect lowering 动作
+} # 结束 sideeffect 规则
+
 rule llvm.donothing { # 将 LLVM donothing intrinsic 降低为 ruoke 显式 VM 空操作
   match llvm.donothing # 匹配后端会删除且没有运行时效果的 donothing intrinsic
   lower { # 开始声明 donothing lowering 动作

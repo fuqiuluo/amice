@@ -528,6 +528,8 @@ pub enum VmInstruction {
         /// wrapper 使用的返回寄存器与位宽。
         returns: Vec<NativeReturn>,
     },
+    /// 保留 LLVM `sideeffect` intrinsic 的可见副作用。
+    SideEffect,
     /// 不改变 VM 状态的显式 no-op。用于承载 LLVM metadata intrinsic 等无运行时语义的 IR。
     Nop,
     /// 无条件 bytecode 分支。
@@ -742,6 +744,7 @@ impl VmInstruction {
             Self::Fence { .. } => "fence",
             Self::Gep { .. } => "gep",
             Self::CallNative { .. } => "call_native",
+            Self::SideEffect => "sideeffect",
             Self::Nop => "fake_nop",
             Self::Br { .. } => "br",
             Self::BrCond { .. } => "br_if",
@@ -1201,6 +1204,7 @@ fn instruction_register_reads(instruction: &VmInstruction) -> Vec<u8> {
         | VmInstruction::ReadCounter { .. }
         | VmInstruction::Alloca { .. }
         | VmInstruction::Fence { .. }
+        | VmInstruction::SideEffect
         | VmInstruction::Br { .. }
         | VmInstruction::Nop
         | VmInstruction::VmCall { .. }
@@ -1390,6 +1394,7 @@ impl VmFunctionBuilder {
                 | VmInstruction::Fence { .. }
                 | VmInstruction::Gep { .. }
                 | VmInstruction::CallNative { .. }
+                | VmInstruction::SideEffect
                 | VmInstruction::Nop
                 | VmInstruction::VmRet
                 | VmInstruction::Unreachable

@@ -848,6 +848,14 @@ impl<'a> BytecodeEncoder<'a> {
                     operands,
                 )
             },
+            VmInstruction::SideEffect => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::SideEffect,
+                key,
+                pc,
+                Vec::new(),
+            ),
             VmInstruction::Nop => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -1243,6 +1251,7 @@ fn collect_const_pool_values(function: &VmFunction) -> Vec<u64> {
             | VmInstruction::Fence { .. }
             | VmInstruction::Gep { .. }
             | VmInstruction::CallNative { .. }
+            | VmInstruction::SideEffect
             | VmInstruction::Nop
             | VmInstruction::Br { .. }
             | VmInstruction::BrCond { .. }
@@ -1844,6 +1853,7 @@ impl Hash for VmInstruction {
                     ret.width.hash(state);
                 });
             },
+            VmInstruction::SideEffect => 5_u8.hash(state),
             VmInstruction::Nop => 2_u8.hash(state),
             VmInstruction::Br { target } => target.hash(state),
             VmInstruction::BrCond {
@@ -3004,7 +3014,7 @@ pc = next # 执行继续到下一条字节码指令
                 | HandlerSemantic::FloatCast(_)
                 | HandlerSemantic::FloatClass
                 | HandlerSemantic::Fcmp => unreachable!("not emitted by this test"),
-                HandlerSemantic::Nop => pc += record.decoded_width,
+                HandlerSemantic::SideEffect | HandlerSemantic::Nop => pc += record.decoded_width,
                 HandlerSemantic::Br => pc = operands[1] as usize,
                 HandlerSemantic::BrCond => {
                     pc = if regs[operands[1] as usize] != 0 {

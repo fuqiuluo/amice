@@ -470,6 +470,8 @@ pub enum HandlerSemantic {
     Gep,
     /// 直接 native LLVM call bridge。
     CallNative,
+    /// LLVM `sideeffect` intrinsic，必须作为可见副作用保留。
+    SideEffect,
     /// 保持状态不变的 fake 或 no-op 指令。
     Nop,
     /// 无条件分支。
@@ -669,6 +671,8 @@ pub enum SemanticStmt {
     Unreachable,
     /// 触发 LLVM `trap` intrinsic 并终止当前控制流路径。
     Trap,
+    /// 执行 LLVM `sideeffect` intrinsic，保留优化屏障副作用。
+    SideEffect,
     /// 声明 handler 不改变 VM 数据状态。
     StateUnchanged,
 }
@@ -1339,6 +1343,7 @@ impl HandlerSemantic {
                 .reads(["arg0", "arg1", "arg2", "arg3", "arg4", "arg5", "arg6", "arg7"])
                 .writes((0..NATIVE_CALL_MAX_RETURNS).map(|index| format!("ret{index}")))
                 .with_native_call(),
+            Self::SideEffect => HandlerEffect::new(PcEffect::Next).with_native_call(),
             Self::Nop => HandlerEffect::new(PcEffect::Next),
             Self::Br => HandlerEffect::new(PcEffect::Branch),
             Self::BrCond => HandlerEffect::new(PcEffect::Branch).reads(["cond"]),

@@ -445,6 +445,7 @@ pub const REQUIRED_LOWERING_MATCHES: &[(&str, &str)] = &[
         "llvm.experimental.noalias.scope.decl",
         "llvm.experimental.noalias.scope.decl metadata",
     ),
+    ("llvm.sideeffect", "llvm.sideeffect"),
     ("llvm.donothing", "llvm.donothing"),
     ("llvm.annotation.integer", "%r = llvm.annotation integer %value"),
     ("llvm.ptr.annotation.pointer", "%r = llvm.ptr.annotation pointer %value"),
@@ -1956,6 +1957,9 @@ fn parse_semantic_statement(line: &str) -> Result<SemanticStmt, ProfileError> {
     if line == "trap" {
         return Ok(SemanticStmt::Trap);
     }
+    if line == "side_effect()" {
+        return Ok(SemanticStmt::SideEffect);
+    }
     if let Some(value) = line.strip_prefix("pc =") {
         return Ok(SemanticStmt::AssignPc {
             value: parse_pc_expr(value.trim())?,
@@ -3061,6 +3065,8 @@ fn template_for_program(program: &SemanticProgram) -> Option<HandlerSemantic> {
         Some(Unreachable)
     } else if trap_template(statements) {
         Some(Trap)
+    } else if side_effect_template(statements) {
+        Some(SideEffect)
     } else if statements
         .iter()
         .any(|stmt| matches!(stmt, SemanticStmt::StateUnchanged))
@@ -3297,6 +3303,9 @@ fn analyze_semantic_effect(statements: &[SemanticStmt]) -> Result<HandlerEffect,
                 }
                 native_call = true;
             },
+            SemanticStmt::SideEffect => {
+                native_call = true;
+            },
             SemanticStmt::StateUnchanged => {},
         }
     }
@@ -3401,6 +3410,10 @@ fn unreachable_template(statements: &[SemanticStmt]) -> bool {
 
 fn trap_template(statements: &[SemanticStmt]) -> bool {
     statements.iter().any(|stmt| matches!(stmt, SemanticStmt::Trap))
+}
+
+fn side_effect_template(statements: &[SemanticStmt]) -> bool {
+    statements.iter().any(|stmt| matches!(stmt, SemanticStmt::SideEffect)) && pc_next(statements)
 }
 
 fn bin_template(statements: &[SemanticStmt], op: SemanticBinOp) -> bool {
@@ -4226,7 +4239,7 @@ mod tests {
                 .iter()
                 .map(|instruction| instruction.opcodes().len())
                 .sum::<usize>(),
-            437
+            439
         );
         let read_cycle = profile
             .isa
@@ -4238,6 +4251,9 @@ mod tests {
             .by_semantic(&HandlerSemantic::ReadCounter(CounterKind::Steady))
             .unwrap();
         assert_eq!(read_steady.name, "read_steady");
+        let sideeffect = profile.isa.by_semantic(&HandlerSemantic::SideEffect).unwrap();
+        assert_eq!(sideeffect.name, "sideeffect");
+        assert!(sideeffect.effect.native_call);
         let ctpop = profile
             .isa
             .by_semantic(&HandlerSemantic::IntUnary(IntUnaryOp::CtPop))
