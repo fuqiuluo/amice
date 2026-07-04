@@ -80,6 +80,7 @@ Source code: `src/aotu/vm_virtualize`
 | AMICE_VM_VIRTUALIZE     | Enable instruction-level VMP virtualization:<br/>- `true` — enabled<br/>- `false` — disabled      | false                           |
 | AMICE_VM_PROFILE_PATH   | Path to a VM profile package. If empty, AMICE uses the built-in `amice-simple-vmp` profile package | built-in `amice-simple-vmp`     |
 | AMICE_VM_RUNTIME_SCOPE  | Override profile runtime scope:<br/>- `func` — per-function runtime<br/>- `module` — shared module runtime | profile-declared runtime scope |
+| AMICE_VM_EMIT_MARKERS   | Emit stable VMP test/debug markers such as `AMICEVMP` bytecode magic, `AMICE_VMP_RUNTIME_BYTECODE`, `.amice.vm.meta.*`, and readable bytecode symbols. Keep disabled for production. | false                           |
 | AMICE_VM_DUMP_BYTECODE  | Dump encoded VM bytecode through debug logs                                                       | false                           |
 | AMICE_VM_DUMP_LOWERING  | Dump LLVM IR to VM IR lowering through debug logs                                                 | false                           |
 

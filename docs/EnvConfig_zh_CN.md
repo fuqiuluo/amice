@@ -72,6 +72,19 @@
 |------------------|------------------------------------------------|-------|
 | AMICE_VM_FLATTEN | 是否开启：<br/>• `true` —— 启用；<br/>• `false` —— 关闭; | false |
 
+## 指令级 VMP 虚拟化
+
+源代码：`src/aotu/vm_virtualize`
+
+| 变量名                    | 说明                                                                                                         | 默认值                       |
+|------------------------|------------------------------------------------------------------------------------------------------------|---------------------------|
+| AMICE_VM_VIRTUALIZE    | 是否启用指令级 VMP 虚拟化：<br/>• `true` —— 启用；<br/>• `false` —— 关闭;                                                | false                     |
+| AMICE_VM_PROFILE_PATH  | VM profile package 路径；为空时使用内置 `amice-simple-vmp` profile package                                           | 内置 `amice-simple-vmp`      |
+| AMICE_VM_RUNTIME_SCOPE | 覆盖 profile 中的 runtime scope：<br/>• `func` —— 每个函数独立 runtime；<br/>• `module` —— 模块共享 runtime                  | profile 声明的 runtime scope |
+| AMICE_VM_EMIT_MARKERS  | 生成 `AMICEVMP` bytecode magic、`AMICE_VMP_RUNTIME_BYTECODE`、`.amice.vm.meta.*` 和可读 bytecode 符号等稳定 VMP 测试/调试 marker；生产环境保持关闭。 | false                     |
+| AMICE_VM_DUMP_BYTECODE | 通过 debug 日志输出编码后的 VM bytecode                                                                          | false                     |
+| AMICE_VM_DUMP_LOWERING | 通过 debug 日志输出 LLVM IR 到 VM IR 的 lowering 结果                                                            | false                     |
+
 ## 控制流平坦化
 
 源代码：`src/aotu/flatten`

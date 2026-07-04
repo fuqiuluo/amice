@@ -2849,6 +2849,8 @@ fn parse_runtime(source: &str) -> Result<RuntimeProfile, ProfileError> {
             runtime.scope = value.trim().parse()?;
         } else if let Some(value) = line.strip_prefix("polymorph.scope =") {
             runtime.polymorph_scope = value.trim().parse()?;
+        } else if let Some(value) = line.strip_prefix("runtime.emit_markers =") {
+            runtime.emit_markers = parse_runtime_bool_value(value.trim(), "runtime.emit_markers")?;
         } else if let Some(value) = line.strip_prefix("dispatch =") {
             runtime.dispatch = match value.trim() {
                 "switch" => DispatchStrategy::Switch,
@@ -6483,6 +6485,14 @@ fn parse_enabled_value(value: &str, name: &str) -> Result<bool, ProfileError> {
     }
 }
 
+fn parse_runtime_bool_value(value: &str, name: &str) -> Result<bool, ProfileError> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(ProfileError::Invalid(format!("{name} has invalid value {other}"))),
+    }
+}
+
 fn parse_register_range(bank: &str, range: &str) -> Result<(u8, u8), ProfileError> {
     let Some((first, last)) = range.split_once("..") else {
         return Err(ProfileError::Invalid(format!("invalid register range {range}")));
@@ -6533,6 +6543,7 @@ mod tests {
         assert_eq!(profile.runtime.scope, RuntimeScope::Module);
         assert_eq!(profile.bytecode.scope, RuntimeScope::Func);
         assert_eq!(profile.runtime.polymorph_scope, RuntimeScope::Func);
+        assert!(!profile.runtime.emit_markers);
         assert!(profile.runtime.aliases.contains_key("lr"));
         assert_eq!(profile.runtime.q_lowering, WideRegisterPolicy::Disabled);
         assert_eq!(profile.runtime.banks.len(), 2);
@@ -9424,6 +9435,29 @@ mod tests {
             HandlerClonePolicy::PerFunction
         );
         verify_profile(&profile).expect("handler clone is implemented by function-suffixed runtime emission");
+    }
+
+    #[test]
+    fn runtime_emit_markers_is_supported_for_debug_profiles() {
+        let manifest: Manifest =
+            toml::from_str(include_str!("../profiles/amice-simple-vmp/manifest.toml")).expect("manifest");
+        let runtime = include_str!("../profiles/amice-simple-vmp/runtime.vm").replace(
+            "runtime.emit_markers = false # 生产默认不生成 AMICEVMP、AMICE_VMP_RUNTIME_BYTECODE 和 .amice.vm.meta 调试 marker",
+            "runtime.emit_markers = true # 测试和调试 profile 显式生成稳定 VMP marker",
+        );
+        let profile = ProfilePackage::from_sources(
+            manifest,
+            include_str!("../profiles/amice-simple-vmp/abi.vm"),
+            include_str!("../profiles/amice-simple-vmp/isa.vm"),
+            include_str!("../profiles/amice-simple-vmp/lowering.vm"),
+            include_str!("../profiles/amice-simple-vmp/bytecode.vm"),
+            include_str!("../profiles/amice-simple-vmp/decoder.vm"),
+            &runtime,
+        )
+        .expect("profile should parse runtime marker emission");
+
+        assert!(profile.runtime.emit_markers);
+        verify_profile(&profile).expect("emit_markers only controls debug marker symbol emission");
     }
 
     #[test]

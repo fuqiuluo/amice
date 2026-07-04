@@ -272,6 +272,7 @@ pub struct ObfuscationConfig {
     pub vm_virtualize: Option<bool>,
     pub vm_profile_path: Option<String>,
     pub vm_runtime_scope: Option<String>,
+    pub vm_emit_markers: Option<bool>,
     pub vm_dump_bytecode: Option<bool>,
     pub vm_dump_lowering: Option<bool>,
 
@@ -324,6 +325,7 @@ impl ObfuscationConfig {
             vm_virtualize: Some(false),
             vm_profile_path: None,
             vm_runtime_scope: None,
+            vm_emit_markers: None,
             vm_dump_bytecode: None,
             vm_dump_lowering: None,
             shuffle_blocks: Some(false),
@@ -396,6 +398,7 @@ impl ObfuscationConfig {
         set_env_bool!(cmd, "AMICE_VM_VIRTUALIZE", self.vm_virtualize);
         set_env_str!(cmd, "AMICE_VM_PROFILE_PATH", self.vm_profile_path);
         set_env_str!(cmd, "AMICE_VM_RUNTIME_SCOPE", self.vm_runtime_scope);
+        set_env_bool!(cmd, "AMICE_VM_EMIT_MARKERS", self.vm_emit_markers);
         set_env_bool!(cmd, "AMICE_VM_DUMP_BYTECODE", self.vm_dump_bytecode);
         set_env_bool!(cmd, "AMICE_VM_DUMP_LOWERING", self.vm_dump_lowering);
 

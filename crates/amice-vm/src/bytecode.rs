@@ -26,7 +26,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 
-const BYTECODE_MAGIC: &[u8; 8] = b"AMICEVMP";
+const DEBUG_BYTECODE_MAGIC: &[u8; 8] = b"AMICEVMP";
 const BYTECODE_HEADER_LEN: usize = 64;
 const BYTECODE_PACKAGE_VERSION: u32 = 1;
 
@@ -169,7 +169,9 @@ impl<'a> BytecodeEncoder<'a> {
 
         let code_bytes = self.apply_encoder_pipeline(records, key)?;
         let reloc_bytes = encode_label_pc_relocations(&layout.label_pcs, code_bytes.len())?;
+        let header_magic = bytecode_header_magic(self.profile, function, key);
         let package = build_bytecode_package(
+            header_magic,
             key,
             expanded_instruction_count as u32,
             const_pool_bytes,
@@ -1546,6 +1548,7 @@ struct BytecodePackage {
 }
 
 fn build_bytecode_package(
+    header_magic: [u8; 8],
     key: u64,
     instruction_count: u32,
     const_pool: Vec<u8>,
@@ -1560,7 +1563,7 @@ fn build_bytecode_package(
     let reloc_len = reloc_bytes.len();
 
     let mut header = Vec::with_capacity(BYTECODE_HEADER_LEN);
-    header.extend_from_slice(BYTECODE_MAGIC);
+    header.extend_from_slice(&header_magic);
     write_u32_le(BYTECODE_PACKAGE_VERSION, &mut header);
     write_u32_le(0, &mut header);
     write_u32_le(instruction_count, &mut header);
@@ -1590,6 +1593,19 @@ fn build_bytecode_package(
         reloc_offset,
         reloc_len,
     })
+}
+
+fn bytecode_header_magic(profile: &ProfilePackage, function: &VmFunction, key: u64) -> [u8; 8] {
+    if profile.runtime.emit_markers {
+        return *DEBUG_BYTECODE_MAGIC;
+    }
+
+    let mut hasher = DefaultHasher::new();
+    profile.manifest.name.hash(&mut hasher);
+    function.name.hash(&mut hasher);
+    key.hash(&mut hasher);
+    BYTECODE_PACKAGE_VERSION.hash(&mut hasher);
+    hasher.finish().to_le_bytes()
 }
 
 #[derive(Debug)]
@@ -4057,7 +4073,13 @@ mod tests {
 
         let image = BytecodeEncoder::new(&profile).encode(&function).expect("bytecode");
 
-        assert_eq!(&image.bytes[..BYTECODE_MAGIC.len()], BYTECODE_MAGIC);
+        assert_ne!(&image.bytes[..DEBUG_BYTECODE_MAGIC.len()], DEBUG_BYTECODE_MAGIC);
+        assert!(
+            !image
+                .bytes
+                .windows(DEBUG_BYTECODE_MAGIC.len())
+                .any(|window| window == DEBUG_BYTECODE_MAGIC)
+        );
         assert_eq!(read_u32_le_for_test(&image.bytes, 8), BYTECODE_PACKAGE_VERSION);
         assert_eq!(read_u32_le_for_test(&image.bytes, 16), image.instruction_count);
         assert_eq!(read_u64_le_for_test(&image.bytes, 24), image.key);
@@ -4083,6 +4105,18 @@ mod tests {
             .for_each(|(index, byte)| *byte ^= key_byte(image.key, index));
         assert_eq!(decrypted_const_pool, [0]);
         assert_ne!(encrypted_const_pool, decrypted_const_pool);
+    }
+
+    #[test]
+    fn bytecode_package_keeps_debug_magic_when_markers_are_enabled() {
+        let mut profile = ProfilePackage::builtin_test().expect("profile");
+        profile.runtime.emit_markers = true;
+        verify_profile(&profile).expect("verified profile");
+        let function = add_function();
+
+        let image = BytecodeEncoder::new(&profile).encode(&function).expect("bytecode");
+
+        assert_eq!(&image.bytes[..DEBUG_BYTECODE_MAGIC.len()], DEBUG_BYTECODE_MAGIC);
     }
 
     #[test]

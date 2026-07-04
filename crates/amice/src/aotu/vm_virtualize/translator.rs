@@ -57,7 +57,9 @@ use amice_vm::{
     VmFunctionBuilder, VmInstruction, fuse_superinstructions,
 };
 use anyhow::{Context, bail};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 type ValueKey = usize;
 type BlockKey = usize;
@@ -2218,11 +2220,12 @@ pub fn translate_function<'ctx>(
     abi: &AbiProfile,
     lowering: &LoweringProfile,
     isa: &IsaProfile,
+    emit_markers: bool,
 ) -> anyhow::Result<VmTranslation<'ctx>> {
     let signature = supported_signature(function)?;
     let name = function.get_name().to_str().unwrap_or("<invalid-name>").to_owned();
 
-    let lowerer = FunctionLowerer::new(module, function, &name, &signature, abi, lowering, isa)?;
+    let lowerer = FunctionLowerer::new(module, function, &name, &signature, abi, lowering, isa, emit_markers)?;
     let (function, native_calls) = lowerer.lower()?;
     Ok(VmTranslation {
         function,
@@ -2257,6 +2260,7 @@ struct FunctionLowerer<'m, 'ctx, 'profile> {
     native_arg_registers: Vec<u8>,
     native_return_registers: Vec<u8>,
     native_touched_registers: HashSet<u8>,
+    emit_markers: bool,
     aggregate_return: bool,
     aggregate_return_fields: Vec<ReturnField>,
     // 已经真正 materialize 到 VM 寄存器的 SSA value。native_call 保存 clobber 时依赖这个集合，
@@ -2566,6 +2570,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         abi: &AbiProfile,
         lowering: &'profile LoweringProfile,
         isa: &'profile IsaProfile,
+        emit_markers: bool,
     ) -> anyhow::Result<Self> {
         let native_arg_registers = x_register_list("native_call args", &abi.native_args)?;
         let native_return_registers = x_register_list("native_call returns", &abi.native_returns)?;
@@ -2701,6 +2706,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             native_arg_registers,
             native_return_registers,
             native_touched_registers,
+            emit_markers,
             aggregate_return: signature.return_is_aggregate,
             aggregate_return_fields: signature.aggregate_return_fields.clone(),
             defined_values,
@@ -7961,15 +7967,16 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             None => ctx.void_type().fn_type(&adapter_param_types, false),
         };
         let function_name = self.function.get_name().to_str().unwrap_or("anon");
-        let adapter = self.module.add_function(
-            &format!(
-                ".amice.vm.indirect_adapter.{}.{}",
-                translator_symbol_suffix(function_name),
-                self.native_calls.len()
-            ),
-            adapter_type,
-            Some(Linkage::Private),
+        let adapter_name = translator_private_symbol_name(
+            self.emit_markers,
+            ".amice.vm.indirect_adapter",
+            "ia",
+            function_name,
+            self.native_calls.len(),
         );
+        let adapter = self
+            .module
+            .add_function(&adapter_name, adapter_type, Some(Linkage::Private));
         adapter.as_global_value().set_unnamed_address(UnnamedAddress::Global);
         copy_indirect_call_attributes_to_adapter(adapter, source_call);
 
@@ -12153,15 +12160,16 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         };
         let thunk_type = return_type.fn_type(&[], false);
         let function_name = self.function.get_name().to_str().unwrap_or("anon");
-        let thunk = self.module.add_function(
-            &format!(
-                ".amice.vm.tls_addr.{}.{}",
-                translator_symbol_suffix(function_name),
-                self.native_calls.len()
-            ),
-            thunk_type,
-            Some(Linkage::Private),
+        let thunk_name = translator_private_symbol_name(
+            self.emit_markers,
+            ".amice.vm.tls_addr",
+            "tls",
+            function_name,
+            self.native_calls.len(),
         );
+        let thunk = self
+            .module
+            .add_function(&thunk_name, thunk_type, Some(Linkage::Private));
         thunk.as_global_value().set_unnamed_address(UnnamedAddress::Global);
 
         let entry = ctx.append_basic_block(thunk, "entry");
@@ -17972,15 +17980,16 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .ptr_type(pointer_value.get_type().get_address_space())
             .fn_type(&[], false);
         let function_name = self.function.get_name().to_str().unwrap_or("anon");
-        let thunk = self.module.add_function(
-            &format!(
-                ".amice.vm.global_addr.{}.{}",
-                translator_symbol_suffix(function_name),
-                self.native_calls.len()
-            ),
-            thunk_type,
-            Some(Linkage::Private),
+        let thunk_name = translator_private_symbol_name(
+            self.emit_markers,
+            ".amice.vm.global_addr",
+            "ga",
+            function_name,
+            self.native_calls.len(),
         );
+        let thunk = self
+            .module
+            .add_function(&thunk_name, thunk_type, Some(Linkage::Private));
         thunk.as_global_value().set_unnamed_address(UnnamedAddress::Global);
 
         let entry = ctx.append_basic_block(thunk, "entry");
@@ -18369,6 +18378,24 @@ fn translator_symbol_suffix(name: &str) -> String {
             }
         })
         .collect()
+}
+
+fn translator_private_symbol_name(
+    emit_markers: bool,
+    marker_prefix: &str,
+    opaque_kind: &str,
+    function_name: &str,
+    index: usize,
+) -> String {
+    if emit_markers {
+        format!("{marker_prefix}.{}.{}", translator_symbol_suffix(function_name), index)
+    } else {
+        let mut hasher = DefaultHasher::new();
+        opaque_kind.hash(&mut hasher);
+        function_name.hash(&mut hasher);
+        index.hash(&mut hasher);
+        format!(".L__{:016x}", hasher.finish())
+    }
 }
 
 fn should_use_const_pool(imm: u64, width: u8) -> bool {

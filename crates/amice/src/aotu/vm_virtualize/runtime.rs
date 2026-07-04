@@ -63,6 +63,7 @@ pub fn emit_runtime<'ctx>(
     scope: RuntimeScope,
     symbol_suffix: &str,
     used_opcodes: &BTreeSet<Opcode>,
+    emit_markers: bool,
 ) -> anyhow::Result<RuntimeFunctions<'ctx>> {
     // func scope 或 per-function clone 会给 runtime 符号加函数后缀；module scope 则复用同一组 helper。
     // 这样 runtime scope 与 handler clone 策略只影响符号复用，不改变 dispatcher ABI。
@@ -72,11 +73,11 @@ pub fn emit_runtime<'ctx>(
         },
         (RuntimeScope::Module, amice_vm::runtime::HandlerClonePolicy::Disabled) => String::new(),
     };
-    let read_name = opaque_runtime_helper_symbol("rv", &suffix);
-    let read_operand_name = opaque_runtime_helper_symbol("ro", &suffix);
-    let read_const_varint_name = opaque_runtime_helper_symbol("rcv", &suffix);
-    let read_const_name = opaque_runtime_helper_symbol("rc", &suffix);
-    let dispatch_name = opaque_runtime_helper_symbol("d", &suffix);
+    let read_name = opaque_runtime_helper_symbol("rv", &suffix, emit_markers);
+    let read_operand_name = opaque_runtime_helper_symbol("ro", &suffix, emit_markers);
+    let read_const_varint_name = opaque_runtime_helper_symbol("rcv", &suffix, emit_markers);
+    let read_const_name = opaque_runtime_helper_symbol("rc", &suffix, emit_markers);
+    let dispatch_name = opaque_runtime_helper_symbol("d", &suffix, emit_markers);
 
     let read_varint = match module.get_function(&read_name) {
         Some(function) => function,
@@ -139,11 +140,15 @@ fn add_private_runtime_function<'ctx>(
     function
 }
 
-fn opaque_runtime_helper_symbol(kind: &str, suffix: &str) -> String {
+fn opaque_runtime_helper_symbol(kind: &str, suffix: &str, emit_markers: bool) -> String {
     let mut hasher = DefaultHasher::new();
     kind.hash(&mut hasher);
     suffix.hash(&mut hasher);
-    format!(".amice.vm.h.{:016x}", hasher.finish())
+    if emit_markers {
+        format!(".amice.vm.h.{:016x}", hasher.finish())
+    } else {
+        format!(".L__{:016x}", hasher.finish())
+    }
 }
 
 fn llvm_float_unary_intrinsic<'ctx>(

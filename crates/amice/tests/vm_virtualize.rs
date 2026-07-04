@@ -14,6 +14,7 @@ use std::process::{Command, Output};
 fn vm_virtualize_config() -> ObfuscationConfig {
     let mut config = ObfuscationConfig::disabled();
     config.vm_virtualize = Some(true);
+    config.vm_emit_markers = Some(true);
     config
 }
 
@@ -412,6 +413,36 @@ fn handler_order_no_shuffle_profile_path() -> PathBuf {
     profile_dir
 }
 
+fn emit_markers_profile_path() -> PathBuf {
+    let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../amice-vm/profiles/amice-simple-vmp")
+        .canonicalize()
+        .expect("built-in profile dir should exist");
+    let profile_dir = output_dir().join("vm_virtualize_emit_markers_profile");
+    std::fs::create_dir_all(&profile_dir).expect("emit-markers profile dir should be creatable");
+
+    for file in [
+        "manifest.toml",
+        "abi.vm",
+        "isa.vm",
+        "lowering.vm",
+        "bytecode.vm",
+        "decoder.vm",
+    ] {
+        std::fs::copy(source_dir.join(file), profile_dir.join(file)).expect("profile file should be copyable");
+    }
+
+    let runtime = std::fs::read_to_string(source_dir.join("runtime.vm"))
+        .expect("built-in runtime profile should be readable")
+        .replace(
+            "runtime.emit_markers = false # 生产默认不生成 AMICEVMP、AMICE_VMP_RUNTIME_BYTECODE 和 .amice.vm.meta 调试 marker",
+            "runtime.emit_markers = true # 测试 profile 显式开启 VMP marker 生成",
+        );
+    std::fs::write(profile_dir.join("runtime.vm"), runtime).expect("emit-markers runtime should be writable");
+
+    profile_dir
+}
+
 fn module_bytecode_profile_path() -> PathBuf {
     let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../amice-vm/profiles/amice-simple-vmp")
@@ -644,7 +675,6 @@ fn hex_byte(high: u8, low: u8) -> u8 {
 
 fn decrypted_const_pool_from_package(package: &[u8]) -> (Vec<u8>, Vec<u64>) {
     assert!(package.len() >= 64, "bytecode package should include a full header");
-    assert_eq!(&package[..8], b"AMICEVMP");
     let key = read_u64_le_for_test(package, 24);
     let offset = read_u32_le_for_test(package, 32) as usize;
     let len = read_u32_le_for_test(package, 36) as usize;
@@ -22712,6 +22742,7 @@ int main(void) {
     baseline_output.assert_success();
 
     let mut config = ObfuscationConfig::disabled();
+    config.vm_emit_markers = Some(true);
     config.vm_dump_bytecode = Some(true);
     let (virtualized_ir, output) =
         optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_native_aggregate_param.ll", config);
@@ -22816,6 +22847,7 @@ int main(void) {
     baseline_output.assert_success();
 
     let mut config = ObfuscationConfig::disabled();
+    config.vm_emit_markers = Some(true);
     config.vm_dump_bytecode = Some(true);
     let (virtualized_ir, output) =
         optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_native_constant_aggregate_param.ll", config);
@@ -22929,6 +22961,7 @@ int main(void) {
     baseline_output.assert_success();
 
     let mut config = ObfuscationConfig::disabled();
+    config.vm_emit_markers = Some(true);
     config.vm_dump_bytecode = Some(true);
     let (virtualized_ir, output) =
         optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_indirect_aggregate_param.ll", config);
@@ -23029,6 +23062,7 @@ int main(void) {
     baseline_output.assert_success();
 
     let mut config = ObfuscationConfig::disabled();
+    config.vm_emit_markers = Some(true);
     config.vm_dump_bytecode = Some(true);
     let (virtualized_ir, output) =
         optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_array_aggregate_return.ll", config);
@@ -23121,6 +23155,7 @@ int main(void) {
     baseline_output.assert_success();
 
     let mut config = ObfuscationConfig::disabled();
+    config.vm_emit_markers = Some(true);
     config.vm_dump_bytecode = Some(true);
     let (virtualized_ir, output) =
         optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_native_array_return.ll", config);
@@ -23219,6 +23254,7 @@ int main(void) {
     baseline_output.assert_success();
 
     let mut config = ObfuscationConfig::disabled();
+    config.vm_emit_markers = Some(true);
     config.vm_dump_bytecode = Some(true);
     let (virtualized_ir, output) =
         optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_indirect_array_return.ll", config);
@@ -26437,9 +26473,9 @@ fn test_vm_virtualize_function_annotation_enables_pass_without_env() {
     let ir_path =
         compile_virtualized_ir_with_config(&source, "vm_virtualize_annotation_only.ll", annotation_only_config);
     let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
-    assert!(ir.contains(".amice.vm.bytecode.vm_mix"));
-    assert!(ir.contains(".amice.vm.bytecode.vm_loop"));
-    assert!(!ir.contains(".amice.vm.bytecode.main"));
+    assert!(ir.contains("alloca [65 x <16 x i8>]"));
+    assert!(!ir.contains("AMICE_VMP_RUNTIME_BYTECODE"));
+    assert!(!ir.contains(".amice.vm.bytecode"));
 }
 
 #[test]
@@ -26485,7 +26521,9 @@ int main(void) {{
 
     let ir_path = compile_virtualized_ir_with_config(&source, "vm_virtualize_annotation_profile.ll", config);
     let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
-    assert!(ir.contains(".amice.vm.bytecode.vm_annotation_profile"));
+    assert!(ir.contains("alloca [65 x <16 x i8>]"));
+    assert!(!ir.contains("AMICE_VMP_RUNTIME_BYTECODE"));
+    assert!(!ir.contains(".amice.vm.bytecode"));
 }
 
 #[test]
@@ -26984,8 +27022,9 @@ int main(void) {{
     virtualized_output.assert_success();
     assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
 
-    let ir_path =
-        compile_virtualized_ir_with_config(&source, "vm_virtualize_vreg_action.ll", ObfuscationConfig::disabled());
+    let mut ir_config = ObfuscationConfig::disabled();
+    ir_config.vm_emit_markers = Some(true);
+    let ir_path = compile_virtualized_ir_with_config(&source, "vm_virtualize_vreg_action.ll", ir_config);
     let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_vreg_action"));
 }
@@ -27080,6 +27119,7 @@ int main(void) {
     assert_eq!("42\n", baseline_output.stdout());
 
     let mut config = ObfuscationConfig::disabled();
+    config.vm_emit_markers = Some(true);
     config.vm_dump_bytecode = Some(true);
     let virtualized =
         compile_virtualized_binary_with_config(&source, "vm_virtualize_call_native_direct_ret_slot", config.clone());
@@ -27425,6 +27465,71 @@ int main(void) {
     let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized indirect varargs IR should be readable");
     assert!(!ir.contains(".amice.vm.bytecode.vm_indirect_varargs"));
     assert!(ir.contains("call i32 (ptr, i64, ptr, ...) %callee"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_default_does_not_emit_debug_markers() {
+    ensure_plugin_built();
+
+    let mut config = ObfuscationConfig::disabled();
+    config.vm_virtualize = Some(true);
+    let ir_path = compile_virtualized_ir_with_config(
+        &fixture_path("vm_virtualize", "basic.c", Language::C),
+        "vm_virtualize_markers_default.ll",
+        config,
+    );
+
+    let ir = std::fs::read_to_string(ir_path).expect("default-marker LLVM IR output should be readable");
+    assert!(!ir.contains("AMICEVMP"));
+    assert!(!ir.contains("AMICE_VMP_RUNTIME_BYTECODE"));
+    assert!(!ir.contains(".amice.vm.meta"));
+    assert!(!ir.contains(".amice.vm.bytecode"));
+    assert!(!ir.contains(".amice.vm.native_table"));
+    assert!(!ir.contains(".amice.vm.native_thunk"));
+    assert!(!ir.contains(".amice.vm.h."));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_emit_markers_env_enables_debug_markers() {
+    ensure_plugin_built();
+
+    let mut config = ObfuscationConfig::disabled();
+    config.vm_virtualize = Some(true);
+    config.vm_emit_markers = Some(true);
+    let ir_path = compile_virtualized_ir_with_config(
+        &fixture_path("vm_virtualize", "basic.c", Language::C),
+        "vm_virtualize_markers_env.ll",
+        config,
+    );
+
+    let ir = std::fs::read_to_string(ir_path).expect("env-marker LLVM IR output should be readable");
+    assert!(ir.contains("AMICEVMP"));
+    assert!(ir.contains("AMICE_VMP_RUNTIME_BYTECODE"));
+    assert!(ir.contains(".amice.vm.meta."));
+    assert!(ir.contains(".amice.vm.bytecode.vm_mix"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_emit_markers_profile_enables_debug_markers() {
+    ensure_plugin_built();
+
+    let mut config = ObfuscationConfig::disabled();
+    config.vm_virtualize = Some(true);
+    config.vm_profile_path = Some(emit_markers_profile_path().to_string_lossy().into_owned());
+    let ir_path = compile_virtualized_ir_with_config(
+        &fixture_path("vm_virtualize", "basic.c", Language::C),
+        "vm_virtualize_markers_profile.ll",
+        config,
+    );
+
+    let ir = std::fs::read_to_string(ir_path).expect("profile-marker LLVM IR output should be readable");
+    assert!(ir.contains("AMICEVMP"));
+    assert!(ir.contains("AMICE_VMP_RUNTIME_BYTECODE"));
+    assert!(ir.contains(".amice.vm.meta."));
+    assert!(ir.contains(".amice.vm.bytecode.vm_mix"));
 }
 
 #[test]

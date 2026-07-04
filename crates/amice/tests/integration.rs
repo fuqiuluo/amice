@@ -65,6 +65,7 @@ fn md5_obfuscation_config() -> ObfuscationConfig {
 fn crypto_pipeline_all_requested_passes_config() -> ObfuscationConfig {
     ObfuscationConfig {
         vm_virtualize: Some(true),
+        vm_emit_markers: Some(true),
         indirect_branch: Some(true),
         indirect_branch_flags: Some("chained_dummy_blocks,encrypt_block_index,shuffle_table".to_string()),
         string_encryption: Some(true),

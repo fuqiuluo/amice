@@ -37,6 +37,8 @@ use amice_vm::{
 };
 use anyhow::Context;
 use std::collections::BTreeSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 #[amice(
@@ -144,13 +146,23 @@ fn prepare_virtualization<'ctx>(
     if let Some(scope) = cfg.runtime_scope {
         profile.runtime.scope = scope;
     }
+    if let Some(emit_markers) = cfg.emit_markers {
+        profile.runtime.emit_markers = emit_markers;
+    }
     verify_profile(&profile)?;
 
     let translator::VmTranslation {
         function: vm_function,
         signature,
         native_calls,
-    } = translator::translate_function(module, function, &profile.abi, &profile.lowering, &profile.isa)?;
+    } = translator::translate_function(
+        module,
+        function,
+        &profile.abi,
+        &profile.lowering,
+        &profile.isa,
+        profile.runtime.emit_markers,
+    )?;
     ensure_abi_covers_signature(&profile, &signature)?;
     if cfg.dump_lowering {
         debug!("lowering for {:?}: {vm_function:#?}", function.get_name());
@@ -197,9 +209,13 @@ fn apply_function_bytecode_virtualizations<'ctx>(
     for prepared in prepared {
         // func bytecode 下每个函数仍携带自己的 bytecode global；runtime 是否共享由
         // `runtime.scope` 和 handler clone 策略决定。
-        let bytecode_global = emit_bytecode_global(module, &prepared.safe_name, &prepared.bytecode)?;
-        let native_table_global = emit_native_call_table(module, &prepared.safe_name, &prepared.native_calls)?;
-        let _meta_global = emit_marker_global(module, &prepared.safe_name)?;
+        let emit_markers = prepared.profile.runtime.emit_markers;
+        let bytecode_global = emit_bytecode_global(module, &prepared.safe_name, &prepared.bytecode, emit_markers)?;
+        let native_table_global =
+            emit_native_call_table(module, &prepared.safe_name, &prepared.native_calls, emit_markers)?;
+        if emit_markers {
+            let _meta_global = emit_marker_global(module, &prepared.safe_name)?;
+        }
         let used_opcodes = if uses_shared_module_runtime(&prepared.profile) {
             &shared_runtime_opcodes
         } else {
@@ -211,6 +227,7 @@ fn apply_function_bytecode_virtualizations<'ctx>(
             prepared.profile.runtime.scope,
             &prepared.safe_name,
             used_opcodes,
+            emit_markers,
         )?
         .dispatch;
 
@@ -229,6 +246,7 @@ fn apply_function_bytecode_virtualizations<'ctx>(
             0,
             &prepared.signature,
             prepared.profile.abi.integer_returns.len(),
+            prepared.profile.runtime.emit_markers,
         )?;
     }
 
@@ -253,20 +271,29 @@ fn apply_module_bytecode_virtualizations<'ctx>(
         .iter()
         .flat_map(|item| item.bytecode.used_opcodes.iter().copied())
         .collect::<BTreeSet<_>>();
-    let bytecode_global = emit_module_bytecode_global(module, &prepared)?;
-    let _meta_global = emit_marker_global(module, "module")?;
+    let emit_markers = prepared.iter().any(|item| item.profile.runtime.emit_markers);
+    let bytecode_global = emit_module_bytecode_global(module, &prepared, emit_markers)?;
+    if emit_markers {
+        let _meta_global = emit_marker_global(module, "module")?;
+    }
 
     let mut emitted = Vec::with_capacity(prepared.len());
     for (prepared, base_offset) in prepared.into_iter().zip(placements) {
         // bytecode blob 是 module 共享的，但 native thunk 仍按函数生成。call_native 的 callee
         // 类型取决于源函数内部调用点，不能在不同被保护函数之间盲目复用。
-        let native_table_global = emit_native_call_table(module, &prepared.safe_name, &prepared.native_calls)?;
+        let native_table_global = emit_native_call_table(
+            module,
+            &prepared.safe_name,
+            &prepared.native_calls,
+            prepared.profile.runtime.emit_markers,
+        )?;
         let dispatch = runtime::emit_runtime(
             module,
             &prepared.profile,
             prepared.profile.runtime.scope,
             &prepared.safe_name,
             &used_opcodes,
+            prepared.profile.runtime.emit_markers,
         )?
         .dispatch;
 
@@ -285,6 +312,7 @@ fn apply_module_bytecode_virtualizations<'ctx>(
             base_offset,
             &prepared.signature,
             prepared.profile.abi.integer_returns.len(),
+            prepared.profile.runtime.emit_markers,
         )?;
     }
 
@@ -328,6 +356,7 @@ fn emit_bytecode_global<'ctx>(
     module: &mut Module<'ctx>,
     safe_name: &str,
     bytecode: &BytecodeImage,
+    emit_markers: bool,
 ) -> anyhow::Result<GlobalValue<'ctx>> {
     // bytecode 作为 private constant global 进入 IR，并加入 compiler.used，避免后续优化把只有
     // runtime 间接引用的数据删掉。
@@ -339,11 +368,12 @@ fn emit_bytecode_global<'ctx>(
         .map(|byte| i8_type.const_int(*byte as u64, false))
         .collect::<Vec<_>>();
     let array = const_array(i8_type, &values);
-    let global = module.add_global(
-        i8_type.array_type(values.len() as u32),
-        None,
-        &format!(".amice.vm.bytecode.{safe_name}"),
-    );
+    let name = if emit_markers {
+        format!(".amice.vm.bytecode.{safe_name}")
+    } else {
+        private_symbol_name("bc", safe_name)
+    };
+    let global = module.add_global(i8_type.array_type(values.len() as u32), None, &name);
     global.set_initializer(&array);
     global.set_constant(true);
     global.set_linkage(Linkage::Private);
@@ -368,6 +398,7 @@ fn module_bytecode_placements(prepared: &[PreparedVirtualization<'_>]) -> Vec<us
 fn emit_module_bytecode_global<'ctx>(
     module: &mut Module<'ctx>,
     prepared: &[PreparedVirtualization<'ctx>],
+    emit_markers: bool,
 ) -> anyhow::Result<GlobalValue<'ctx>> {
     let ctx = module.get_context();
     let i8_type = ctx.i8_type();
@@ -382,11 +413,12 @@ fn emit_module_bytecode_global<'ctx>(
         .map(|byte| i8_type.const_int(*byte as u64, false))
         .collect::<Vec<_>>();
     let array = const_array(i8_type, &values);
-    let global = module.add_global(
-        i8_type.array_type(values.len() as u32),
-        None,
-        ".amice.vm.bytecode.module",
-    );
+    let name = if emit_markers {
+        ".amice.vm.bytecode.module".to_owned()
+    } else {
+        private_symbol_name("bcm", "module")
+    };
+    let global = module.add_global(i8_type.array_type(values.len() as u32), None, &name);
     global.set_initializer(&array);
     global.set_constant(true);
     global.set_linkage(Linkage::Private);
@@ -419,6 +451,7 @@ fn emit_native_call_table<'ctx>(
     module: &mut Module<'ctx>,
     safe_name: &str,
     native_calls: &[translator::NativeCallTarget<'ctx>],
+    emit_markers: bool,
 ) -> anyhow::Result<GlobalValue<'ctx>> {
     // runtime 只知道固定 i64 调用 ABI。这里为每个真实 LLVM callee 建一个 thunk，
     // 再把 thunk 指针放进表里，bytecode 中的 call_id 就是这个表的索引。
@@ -433,18 +466,19 @@ fn emit_native_call_table<'ctx>(
             .iter()
             .enumerate()
             .map(|(index, target)| {
-                emit_native_call_thunk(module, safe_name, index, target)
+                emit_native_call_thunk(module, safe_name, index, target, emit_markers)
                     .map(|thunk| thunk.as_global_value().as_pointer_value())
             })
             .collect::<anyhow::Result<Vec<_>>>()?
     };
 
     let array = const_array(ptr_type, &values);
-    let global = module.add_global(
-        ptr_type.array_type(values.len() as u32),
-        None,
-        &format!(".amice.vm.native_table.{safe_name}"),
-    );
+    let name = if emit_markers {
+        format!(".amice.vm.native_table.{safe_name}")
+    } else {
+        private_symbol_name("nt", safe_name)
+    };
+    let global = module.add_global(ptr_type.array_type(values.len() as u32), None, &name);
     global.set_initializer(&array);
     global.set_constant(true);
     global.set_linkage(Linkage::Private);
@@ -457,17 +491,19 @@ fn emit_native_call_thunk<'ctx>(
     safe_name: &str,
     index: usize,
     target: &translator::NativeCallTarget<'ctx>,
+    emit_markers: bool,
 ) -> anyhow::Result<FunctionValue<'ctx>> {
     let ctx = module.get_context();
     let i64_type = ctx.i64_type();
     let thunk_arg_types = (0..NATIVE_CALL_MAX_ARGS).map(|_| i64_type.into()).collect::<Vec<_>>();
     let thunk_ret_type = ctx.struct_type(&vec![i64_type.into(); NATIVE_CALL_MAX_RETURNS], false);
     let thunk_type = thunk_ret_type.fn_type(&thunk_arg_types, false);
-    let thunk = module.add_function(
-        &format!(".amice.vm.native_thunk.{safe_name}.{index}"),
-        thunk_type,
-        Some(Linkage::Private),
-    );
+    let name = if emit_markers {
+        format!(".amice.vm.native_thunk.{safe_name}.{index}")
+    } else {
+        private_symbol_name("nth", &format!("{safe_name}.{index}"))
+    };
+    let thunk = module.add_function(&name, thunk_type, Some(Linkage::Private));
     thunk.as_global_value().set_unnamed_address(UnnamedAddress::Global);
     let entry = ctx.append_basic_block(thunk, "entry");
     let builder = ctx.create_builder();
@@ -515,6 +551,7 @@ fn rewrite_as_wrapper<'ctx>(
     bytecode_base_offset: usize,
     signature: &translator::FunctionSignature,
     abi_return_count: usize,
+    emit_markers: bool,
 ) -> anyhow::Result<()> {
     // 改写策略是“原函数临时改名 + 新建同名 wrapper”。这样外部符号、调用约定和属性仍挂在
     // 原名称上；wrapper 构建完成后会删除临时原函数体，避免在产物里留下明文逻辑。
@@ -523,7 +560,11 @@ fn rewrite_as_wrapper<'ctx>(
     let fn_type = original.get_type();
     let original_linkage = original.get_linkage();
     let original_name = original.get_name().to_string_lossy().into_owned();
-    let preserved_name = format!(".amice.vm.original.{}", safe_symbol_suffix(&original_name));
+    let preserved_name = if emit_markers {
+        format!(".amice.vm.original.{}", safe_symbol_suffix(&original_name))
+    } else {
+        private_symbol_name("orig", &original_name)
+    };
     set_function_name(original, &preserved_name);
     original.set_linkage(Linkage::Private);
     original.as_global_value().set_unnamed_address(UnnamedAddress::Global);
@@ -1515,7 +1556,7 @@ fn is_amice_vm_symbol(function: FunctionValue<'_>) -> bool {
     function
         .get_name()
         .to_str()
-        .map(|name| name.starts_with(".amice.vm."))
+        .map(|name| name.starts_with(".amice.vm.") || name.starts_with(".L__"))
         .unwrap_or(false)
 }
 
@@ -1537,4 +1578,11 @@ fn safe_symbol_suffix(name: &str) -> String {
             }
         })
         .collect()
+}
+
+fn private_symbol_name(kind: &str, suffix: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    kind.hash(&mut hasher);
+    suffix.hash(&mut hasher);
+    format!(".L__{:016x}", hasher.finish())
 }

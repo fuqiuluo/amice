@@ -18,6 +18,8 @@ pub struct VmVirtualizeConfig {
     pub profile_path: Option<PathBuf>,
     /// 可选 runtime scope 覆盖值；只接受 `func` 和 `module`。
     pub runtime_scope: Option<RuntimeScope>,
+    /// 可选 marker emission 覆盖值；仅用于测试和调试。
+    pub emit_markers: Option<bool>,
     /// 通过 debug 日志输出编码后的 bytecode。
     pub dump_bytecode: bool,
     /// 通过 debug 日志输出 VM lowering 结果。
@@ -30,6 +32,7 @@ impl Default for VmVirtualizeConfig {
             enable: false,
             profile_path: None,
             runtime_scope: None,
+            emit_markers: None,
             dump_bytecode: false,
             dump_lowering: false,
         }
@@ -50,6 +53,10 @@ impl EnvOverlay for VmVirtualizeConfig {
 
         if let Ok(scope) = std::env::var("AMICE_VM_RUNTIME_SCOPE") {
             self.runtime_scope = parse_scope(&scope).or(self.runtime_scope);
+        }
+
+        if std::env::var("AMICE_VM_EMIT_MARKERS").is_ok() {
+            self.emit_markers = Some(bool_var("AMICE_VM_EMIT_MARKERS", self.emit_markers.unwrap_or(false)));
         }
 
         if std::env::var("AMICE_VM_DUMP_BYTECODE").is_ok() {

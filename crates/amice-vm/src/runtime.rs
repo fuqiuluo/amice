@@ -45,6 +45,8 @@ pub struct RuntimeProfile {
     pub polymorph_scope: RuntimeScope,
     /// 生成的 LLVM runtime 使用的 dispatch 策略。
     pub dispatch: DispatchStrategy,
+    /// 是否生成用于测试和调试识别的稳定 marker 符号。
+    pub emit_markers: bool,
     /// profile 声明的寄存器组；verifier 会强制固定模型。
     pub banks: Vec<RegisterBank>,
     /// 符号别名，例如 `lr -> x30`。
@@ -133,6 +135,7 @@ impl Default for RuntimeProfile {
             scope: RuntimeScope::Module,
             polymorph_scope: RuntimeScope::Func,
             dispatch: DispatchStrategy::Switch,
+            emit_markers: false,
             banks: vec![
                 RegisterBank {
                     name: "x".to_owned(),
