@@ -39,6 +39,47 @@ clang -fpass-plugin="$(pwd)/target/release/libamice.so" /tmp/amice_hello.c -o /t
 
 On macOS, replace the plugin path with `target/release/libamice.dylib`.
 
+### 3. Use Amice (VMP pass example on Linux)
+
+The VMP pass is controlled by `AMICE_VM_VIRTUALIZE`. With a prebuilt `libamice.so`, load it directly through clang:
+
+```bash
+export AMICE_PLUGIN=/absolute/path/to/libamice.so
+
+AMICE_VM_VIRTUALIZE=true \
+clang -fpass-plugin="$AMICE_PLUGIN" input.c -o output
+```
+
+For targeted protection, annotate only the functions that should use VMP:
+
+```c
+__attribute__((annotate("+vm_virtualize")))
+int sensitive(int x) {
+    return (x * 7) ^ 0x55;
+}
+```
+
+```bash
+clang -fpass-plugin="$AMICE_PLUGIN" input.c -o output
+```
+
+VMP uses the built-in profile by default. To use a custom profile package:
+
+```bash
+AMICE_VM_VIRTUALIZE=true \
+AMICE_VM_PROFILE_PATH=/path/to/amice-simple-vmp \
+clang -fpass-plugin="$AMICE_PLUGIN" input.c -o output
+```
+
+You can also select a profile for one annotated function:
+
+```c
+__attribute__((annotate("+vm_virtualize,vm_profile_path=/path/to/amice-simple-vmp")))
+int sensitive_with_profile(int x) {
+    return x + 1;
+}
+```
+
 ---
 
 ## Supported Obfuscations
@@ -51,6 +92,7 @@ On macOS, replace the plugin path with `target/release/libamice.dylib`.
 | Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | Splits basic blocks according to configuration |
 | Lower Switch | `AMICE_LOWER_SWITCH` | ✅ | ✅ | ❌ | Lowers LLVM `switch` instructions |
 | VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM-style control-flow flattening |
+| VM Virtualize | `AMICE_VM_VIRTUALIZE` | ✅ | ✅ | ❌ | Instruction-level VMP virtualization, enabled globally or per function with annotations |
 | Flatten | `AMICE_FLATTEN` | ✅ | ✅ | ❌ | Control-flow flattening with `basic` / `dominator` modes |
 | MBA | `AMICE_MBA` | ✅ | ✅ | ❌ | Mixed Boolean-arithmetic expression rewriting |
 | Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | Inserts bogus control flow; supports basic / polaris-primes modes |

@@ -39,6 +39,47 @@ clang -fpass-plugin="$(pwd)/target/release/libamice.so" /tmp/amice_hello.c -o /t
 
 macOS 下插件后缀是 `.dylib`，请把路径替换为 `target/release/libamice.dylib`。
 
+### 3. 使用amice (以VMP pass,Linux环境下举例)
+
+VMP pass 对应环境变量是 `AMICE_VM_VIRTUALIZE`。拿到一个编译好的 `libamice.so`，直接通过 clang 加载这个插件：
+
+```bash
+export AMICE_PLUGIN=/absolute/path/to/libamice.so
+
+AMICE_VM_VIRTUALIZE=true \
+clang -fpass-plugin="$AMICE_PLUGIN" input.c -o output
+```
+
+更推荐按函数启用，在源码里标记需要保护的函数：
+
+```c
+__attribute__((annotate("+vm_virtualize")))
+int sensitive(int x) {
+    return (x * 7) ^ 0x55;
+}
+```
+
+```bash
+clang -fpass-plugin="$AMICE_PLUGIN" input.c -o output
+```
+
+VMP 默认使用内置 profile。需要指定自定义 profile package 时：
+
+```bash
+AMICE_VM_VIRTUALIZE=true \
+AMICE_VM_PROFILE_PATH=/path/to/amice-simple-vmp \
+clang -fpass-plugin="$AMICE_PLUGIN" input.c -o output
+```
+
+也可以在注解里给单个函数指定 profile：
+
+```c
+__attribute__((annotate("+vm_virtualize,vm_profile_path=/path/to/amice-simple-vmp")))
+int sensitive_with_profile(int x) {
+    return x + 1;
+}
+```
+
 ---
 
 ## 支持的混淆
@@ -51,6 +92,7 @@ macOS 下插件后缀是 `.dylib`，请把路径替换为 `target/release/libami
 | Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | 按配置切割基本块 |
 | Lower Switch | `AMICE_LOWER_SWITCH` | ✅ | ✅ | ❌ | 降级 LLVM `switch` 指令 |
 | VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM 风格控制流扁平化 |
+| VM Virtualize | `AMICE_VM_VIRTUALIZE` | ✅ | ✅ | ❌ | 指令级 VMP 虚拟化，支持全局开启或通过函数注解按函数启用 |
 | Flatten | `AMICE_FLATTEN` | ✅ | ✅ | ❌ | 控制流平坦化，支持 `basic` / `dominator` 模式 |
 | MBA | `AMICE_MBA` | ✅ | ✅ | ❌ | 混合布尔算术表达式重写 |
 | Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | 插入虚假控制流，支持 basic / polaris-primes 模式 |
