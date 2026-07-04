@@ -12,6 +12,7 @@ control_state { # 声明独立于通用寄存器组的控制状态
 } # 结束控制状态声明
 
 runtime.scope = module # 一个 LLVM 模块共享一套分派运行时
+runtime.entry = call # 默认 wrapper 通过三参数 private dispatcher 进入 VM，调试和兼容性最好
 polymorph.scope = func # 每个被保护函数独立派生 key、opcode 选择和 handler 克隆后缀
 runtime.emit_markers = false # 生产默认不生成 AMICEVMP、AMICE_VMP_RUNTIME_BYTECODE 和 .amice.vm.meta 调试 marker
 

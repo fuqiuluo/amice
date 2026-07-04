@@ -131,6 +131,7 @@ AMICE pass 一次处理的是一个 LLVM `Module`。在同一个 `Module` 中创
 
 ```text
 runtime.scope = module       # 当前 LLVM Module 内共享一套 runtime
+runtime.entry = call         # 默认 wrapper 调用 private dispatcher；可显式改为 inline
 bytecode.scope = func        # 每个被保护函数生成自己的 bytecode
 polymorph.scope = func       # 每个函数允许独立 opcode/key/layout 多态化
 ```
@@ -142,7 +143,7 @@ polymorph.scope = func       # 每个函数允许独立 opcode/key/layout 多态
 - `runtime.scope = module` 的共享边界是同一个 descriptor group：同 profile 组内共享一套 module-scope runtime，跨 profile 或跨 descriptor table/seed 的函数必须生成不同 runtime helper 名，不能复用同一个 dispatcher。
 - 所有 native-call thunk pointer 进入同一个模块级 native table；每个函数的 descriptor 记录自己的 `native_base` 和 `native_count`。
 - 每个被保护函数拥有自己的 function key、opcode permutation、bytecode layout salt。
-- 原始函数 body 被替换成 wrapper：负责 marshal 参数到 `arg_slots`、构造混淆后的 `fn_token`、调用 `dispatch(fn_token, ret_slots, arg_slots)`，再 marshal 返回值。
+- 原始函数 body 被替换成 wrapper：负责 marshal 参数到 `arg_slots`、构造混淆后的 `fn_token`，再按 `runtime.entry` 进入 VM；`call` 模式调用 `dispatch(fn_token, ret_slots, arg_slots)`，`inline` 模式把 descriptor decode、VM loop 和 handler CFG 直接嵌入 wrapper，最后统一跳到返回 marshal block。
 
 生成后的形态类似：
 
@@ -160,6 +161,15 @@ foo(...) {
   arg_slots = marshal_args(...)
   fn_token = obfuscated_token(fn_index)
   call .L__<hash>(fn_token, ret_slots, arg_slots)
+  return marshal_ret(ret_slots)
+}
+
+foo_inline(...) {
+  ret_slots = alloca(...)
+  arg_slots = marshal_args(...)
+  fn_token = obfuscated_token(fn_index)
+  descriptor.decode / descriptor.ready / loop.check / execute.decode / handler.*  # 由 runtime CFG emitter 直接写入 wrapper
+  after_vm:
   return marshal_ret(ret_slots)
 }
 ```
@@ -941,9 +951,15 @@ Emitter 输入：
 
 ```text
 runtime {              # 定义 runtime 生成策略
+  runtime.entry = call # 默认入口形态：wrapper 调用 private dispatcher
   dispatch = switch    # 使用 LLVM switch 生成 dispatcher
 }                      # 结束 runtime 生成策略
 ```
+
+`runtime.entry` 只接受：
+
+- `call`：默认值。wrapper marshal 参数后调用 `dispatch(i64 fn_token, ptr ret_slots, ptr arg_slots) -> i64`，便于调试并保持既有测试工作流。
+- `inline`：wrapper marshal 参数后不生成、不引用三参数 dispatcher；runtime emitter 把 descriptor decode、guard 校验、`loop.check`、`execute.decode` 和 handler blocks 直接追加到 wrapper 函数体内。inline 模式不能先生成 dispatcher call 再依赖 LLVM `alwaysinline` 或优化器内联；它必须复用同一套 dispatch CFG emitter，把 VM 完成时的 i64 返回值写入临时 slot，然后 branch 到 wrapper 的 `after_vm` 返回 marshal block。
 
 runtime profile 允许声明以下增强开关：
 
@@ -956,13 +972,13 @@ runtime profile 允许声明以下增强开关：
 
 runtime profile 还允许声明 `runtime.emit_markers = true|false`。该选项只用于测试和调试，开启后会生成 `AMICEVMP` bytecode magic、`AMICE_VMP_RUNTIME_BYTECODE`、`.amice.vm.meta.*` 以及稳定的 `.amice.vm.bytecode.*` 等可识别符号；生产默认必须保持 `false`。
 
-当前 runtime emitter 的默认执行形态是 descriptor table 模式。wrapper 不把 `code_ptr`、`code_len`、`const_pool_ptr`、`const_pool_len`、bytecode key、native table pointer 或 native call count 作为 dispatcher 参数；dispatcher ABI 固定为：
+当前 runtime emitter 的默认数据形态是 descriptor table 模式。无论 `runtime.entry` 是 `call` 还是 `inline`，wrapper 都不把 `code_ptr`、`code_len`、`const_pool_ptr`、`const_pool_len`、bytecode key、native table pointer 或 native call count 作为入口参数；`call` 模式 dispatcher ABI 固定为：
 
 ```text
 dispatch(i64 fn_token, ptr ret_slots, ptr arg_slots) -> i64
 ```
 
-dispatcher 入口先反解 `fn_token` 得到 `fn_index`，检查 `fn_index < descriptor_count`，再读取并解密 descriptor 的 guard 字段。索引越界或 guard 不匹配时必须走 trap/default safe path，不能对 descriptor table 做越界 GEP。guard 校验通过后，dispatcher 从 descriptor 解出执行所需字段，再继续走现有 bytecode decoder、const_pool reader、native-call handler、`ret_slots` 和 `arg_slots` 行为。
+dispatch CFG 入口先反解 `fn_token` 得到 `fn_index`，检查 `fn_index < descriptor_count`，再读取并解密 descriptor 的 guard 字段。索引越界或 guard 不匹配时必须走 trap/default safe path，不能对 descriptor table 做越界 GEP。guard 校验通过后，dispatch CFG 从 descriptor 解出执行所需字段，再继续走现有 bytecode decoder、const_pool reader、native-call handler、`ret_slots` 和 `arg_slots` 行为。`call` 模式把这段 CFG 放在 private dispatcher function 中；`inline` 模式把同一段 CFG 放在 wrapper 中。
 
 每个 descriptor 至少包含：
 
@@ -974,7 +990,7 @@ dispatcher 入口先反解 `fn_token` 得到 `fn_index`，检查 `fn_index < des
 
 descriptor table 必须是 private global。生产默认不能使用 `.amice.vm.*` 可读符号名；只有 `runtime.emit_markers=true` 或 `AMICE_VM_EMIT_MARKERS=true` 时，才允许生成 `.amice.vm.descriptor_table.*` 这类测试/调试名。descriptor 字段不能明文存储：编译期用固定、可复现的 splitmix64/mix64 派生 field key，并对每个字段做 rotate、xor 和 add 组合；dispatcher 内部使用同一套可复现算法按 `fn_index` 和 field id 解密。token 也不能是裸 `fn_index`：wrapper 必须由 `fn_index` 派生 opaque token，并用拆分 immediate 的计算序列构造；dispatcher 再执行反向 affine/rotate 变换得到 `fn_index`。
 
-`runtime.vm` 也必须使用精确语法：`bank x range x0..x31 type u64`、`bank q range q0..q64 type v128`、`alias name = xN|qN`、`pc: label`、`runtime.emit_markers = true|false` 和增强开关 `enhance name = enabled|disabled|func`。alias 缺少 `=`、bank 行存在尾部 token、control-state slot 的类型含多余 token，或 enhancement 名称不在白名单内，都必须在 profile parser/verifier 阶段失败。
+`runtime.vm` 也必须使用精确语法：`bank x range x0..x31 type u64`、`bank q range q0..q64 type v128`、`alias name = xN|qN`、`pc: label`、`runtime.entry = call|inline`、`runtime.emit_markers = true|false` 和增强开关 `enhance name = enabled|disabled|func`。alias 缺少 `=`、bank 行存在尾部 token、control-state slot 的类型含多余 token、`runtime.entry` 不是 `call` 或 `inline`，或 enhancement 名称不在白名单内，都必须在 profile parser/verifier 阶段失败。
 
 Verifier 必须拒绝不在本节枚举内的 dispatch 策略或 runtime 增强开关。
 

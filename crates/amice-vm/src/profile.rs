@@ -23,7 +23,8 @@ use crate::isa::{
     SemanticProgram, SemanticStmt, SuperOp,
 };
 use crate::runtime::{
-    ControlStateSlot, DispatchStrategy, HandlerClonePolicy, RegisterBank, RuntimeProfile, WideRegisterPolicy,
+    ControlStateSlot, DispatchStrategy, HandlerClonePolicy, RegisterBank, RuntimeEntry, RuntimeProfile,
+    WideRegisterPolicy,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -85,6 +86,9 @@ pub enum ProfileError {
     #[error("invalid runtime dispatch: {0}")]
     /// dispatch 策略不被 LLVM runtime emitter 支持。
     InvalidDispatch(String),
+    #[error("invalid runtime entry: {0}")]
+    /// wrapper 进入 runtime 的方式不是 `call` 或 `inline`。
+    InvalidRuntimeEntry(String),
     #[error("profile package is invalid: {0}")]
     /// 解析后的 DSL 违反 VMP 契约或 verifier 不变量。
     Invalid(String),
@@ -2847,6 +2851,12 @@ fn parse_runtime(source: &str) -> Result<RuntimeProfile, ProfileError> {
     for line in semantic_lines(source) {
         if let Some(value) = line.strip_prefix("runtime.scope =") {
             runtime.scope = value.trim().parse()?;
+        } else if let Some(value) = line.strip_prefix("runtime.entry =") {
+            runtime.entry = match value.trim() {
+                "call" => RuntimeEntry::Call,
+                "inline" => RuntimeEntry::Inline,
+                other => return Err(ProfileError::InvalidRuntimeEntry(other.to_owned())),
+            };
         } else if let Some(value) = line.strip_prefix("polymorph.scope =") {
             runtime.polymorph_scope = value.trim().parse()?;
         } else if let Some(value) = line.strip_prefix("runtime.emit_markers =") {
@@ -6541,6 +6551,7 @@ mod tests {
         let profile = ProfilePackage::builtin_test().expect("built-in profile should parse");
 
         assert_eq!(profile.runtime.scope, RuntimeScope::Module);
+        assert_eq!(profile.runtime.entry, RuntimeEntry::Call);
         assert_eq!(profile.bytecode.scope, RuntimeScope::Func);
         assert_eq!(profile.runtime.polymorph_scope, RuntimeScope::Func);
         assert!(!profile.runtime.emit_markers);
@@ -9458,6 +9469,52 @@ mod tests {
 
         assert!(profile.runtime.emit_markers);
         verify_profile(&profile).expect("emit_markers only controls debug marker symbol emission");
+    }
+
+    #[test]
+    fn runtime_entry_inline_is_supported() {
+        let manifest: Manifest =
+            toml::from_str(include_str!("../profiles/amice-simple-vmp/manifest.toml")).expect("manifest");
+        let runtime = include_str!("../profiles/amice-simple-vmp/runtime.vm").replace(
+            "runtime.entry = call # 默认 wrapper 通过三参数 private dispatcher 进入 VM，调试和兼容性最好",
+            "runtime.entry = inline # 测试 wrapper 内直接嵌入 descriptor decode 和 VM dispatch CFG",
+        );
+        let profile = ProfilePackage::from_sources(
+            manifest,
+            include_str!("../profiles/amice-simple-vmp/abi.vm"),
+            include_str!("../profiles/amice-simple-vmp/isa.vm"),
+            include_str!("../profiles/amice-simple-vmp/lowering.vm"),
+            include_str!("../profiles/amice-simple-vmp/bytecode.vm"),
+            include_str!("../profiles/amice-simple-vmp/decoder.vm"),
+            &runtime,
+        )
+        .expect("profile should parse runtime.entry inline");
+
+        assert_eq!(profile.runtime.entry, RuntimeEntry::Inline);
+        verify_profile(&profile).expect("inline entry is implemented by wrapper CFG emission");
+    }
+
+    #[test]
+    fn runtime_parser_rejects_invalid_entry() {
+        let manifest: Manifest =
+            toml::from_str(include_str!("../profiles/amice-simple-vmp/manifest.toml")).expect("manifest");
+        let runtime = include_str!("../profiles/amice-simple-vmp/runtime.vm").replace(
+            "runtime.entry = call # 默认 wrapper 通过三参数 private dispatcher 进入 VM，调试和兼容性最好",
+            "runtime.entry = trampoline # 非法入口模式必须被 parser 拒绝",
+        );
+
+        let err = ProfilePackage::from_sources(
+            manifest,
+            include_str!("../profiles/amice-simple-vmp/abi.vm"),
+            include_str!("../profiles/amice-simple-vmp/isa.vm"),
+            include_str!("../profiles/amice-simple-vmp/lowering.vm"),
+            include_str!("../profiles/amice-simple-vmp/bytecode.vm"),
+            include_str!("../profiles/amice-simple-vmp/decoder.vm"),
+            &runtime,
+        )
+        .expect_err("unsupported runtime.entry must fail parsing");
+
+        assert!(err.to_string().contains("trampoline"));
     }
 
     #[test]

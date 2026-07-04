@@ -23,7 +23,7 @@ use crate::profile::{
     ConstPoolEncryption, DecoderStep, LoweringAction, OpcodeEncoding, OperandEncoding, ProfileError, ProfilePackage,
     REQUIRED_LOWERING_MATCHES, RelocBase, RelocWidth, RuntimeScope, SegmentMode,
 };
-use crate::runtime::{DispatchStrategy, HandlerClonePolicy, WideRegisterPolicy};
+use crate::runtime::{DispatchStrategy, HandlerClonePolicy, RuntimeEntry, WideRegisterPolicy};
 use std::collections::{HashMap, HashSet};
 
 const SUPPORTED_SUPER_FUSIONS: &[(SuperOp, &str)] = &[
@@ -92,6 +92,9 @@ pub fn verify_profile(profile: &ProfilePackage) -> Result<(), ProfileError> {
 
     match profile.runtime.dispatch {
         DispatchStrategy::Switch => {},
+    }
+    match profile.runtime.entry {
+        RuntimeEntry::Call | RuntimeEntry::Inline => {},
     }
 
     for alias in ["lr", "sp"] {

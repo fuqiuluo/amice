@@ -131,6 +131,13 @@ pub struct RuntimeFunctions<'ctx> {
     pub dispatch: FunctionValue<'ctx>,
 }
 
+#[derive(Clone, Copy)]
+pub struct RuntimeHelpers<'ctx> {
+    pub read_varint: FunctionValue<'ctx>,
+    pub read_operand: FunctionValue<'ctx>,
+    pub read_const: FunctionValue<'ctx>,
+}
+
 pub fn emit_runtime<'ctx>(
     module: &mut Module<'ctx>,
     profile: &ProfilePackage,
@@ -140,6 +147,32 @@ pub fn emit_runtime<'ctx>(
     descriptor_data: DescriptorRuntimeData<'ctx>,
     emit_markers: bool,
 ) -> anyhow::Result<RuntimeFunctions<'ctx>> {
+    let helpers = emit_runtime_helpers(module, profile, symbol_suffix, emit_markers)?;
+    let suffix = format!(".{symbol_suffix}");
+    let dispatch_name = opaque_runtime_helper_symbol("d", &suffix, emit_markers);
+
+    let dispatch = match module.get_function(&dispatch_name) {
+        Some(function) => function,
+        None => emit_dispatch(
+            module,
+            profile,
+            helpers,
+            &dispatch_name,
+            handler_salt,
+            used_opcodes,
+            descriptor_data,
+        )?,
+    };
+
+    Ok(RuntimeFunctions { dispatch })
+}
+
+pub fn emit_runtime_helpers<'ctx>(
+    module: &mut Module<'ctx>,
+    profile: &ProfilePackage,
+    symbol_suffix: &str,
+    emit_markers: bool,
+) -> anyhow::Result<RuntimeHelpers<'ctx>> {
     // Descriptor table 是 runtime ABI 的一部分。module-scope runtime 只能在同一个 descriptor
     // group 内共享，因此 helper 名也必须携带 group 后缀，避免跨 profile 复用错 table/seed。
     let suffix = format!(".{symbol_suffix}");
@@ -147,7 +180,6 @@ pub fn emit_runtime<'ctx>(
     let read_operand_name = opaque_runtime_helper_symbol("ro", &suffix, emit_markers);
     let read_const_varint_name = opaque_runtime_helper_symbol("rcv", &suffix, emit_markers);
     let read_const_name = opaque_runtime_helper_symbol("rc", &suffix, emit_markers);
-    let dispatch_name = opaque_runtime_helper_symbol("d", &suffix, emit_markers);
 
     let read_varint = match module.get_function(&read_name) {
         Some(function) => function,
@@ -166,22 +198,11 @@ pub fn emit_runtime<'ctx>(
         None => emit_read_const_pool(module, read_const_varint, &read_const_name)?,
     };
 
-    let dispatch = match module.get_function(&dispatch_name) {
-        Some(function) => function,
-        None => emit_dispatch(
-            module,
-            profile,
-            read_varint,
-            read_operand,
-            read_const,
-            &dispatch_name,
-            handler_salt,
-            used_opcodes,
-            descriptor_data,
-        )?,
-    };
-
-    Ok(RuntimeFunctions { dispatch })
+    Ok(RuntimeHelpers {
+        read_varint,
+        read_operand,
+        read_const,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1005,9 +1026,7 @@ fn emit_read_const_pool<'ctx>(
 fn emit_dispatch<'ctx>(
     module: &mut Module<'ctx>,
     profile: &ProfilePackage,
-    read_varint: FunctionValue<'ctx>,
-    read_operand: FunctionValue<'ctx>,
-    read_const: FunctionValue<'ctx>,
+    helpers: RuntimeHelpers<'ctx>,
     name: &str,
     handler_salt: &str,
     used_opcodes: &BTreeSet<Opcode>,
@@ -1017,7 +1036,6 @@ fn emit_dispatch<'ctx>(
     // 私有 descriptor table，避免 wrapper 静态引用 bytecode/native 全局。
     let ctx = module.get_context();
     let i8_type = ctx.i8_type();
-    let i32_type = ctx.i32_type();
     let i64_type = ctx.i64_type();
     let ptr_type = ptr_type!(ctx, i8_type);
     let _ = i8_type;
@@ -1027,6 +1045,116 @@ fn emit_dispatch<'ctx>(
     params.push(ptr_type.into());
     let fn_type = i64_type.fn_type(&params, false);
     let function = add_private_runtime_function(module, name, fn_type, RuntimeInlinePolicy::Normal);
+    let entry = ctx.append_basic_block(function, "entry");
+    let fn_token = function.get_nth_param(0).unwrap().into_int_value();
+    let ret_slots = function.get_nth_param(1).unwrap().into_pointer_value();
+    let arg_slots = function
+        .get_nth_param(2)
+        .expect("dispatch arg slots pointer should exist")
+        .into_pointer_value();
+
+    emit_dispatch_cfg(
+        module,
+        profile,
+        DispatchCfgParams {
+            function,
+            start_block: entry,
+            fn_token,
+            ret_slots,
+            arg_slots,
+            helpers,
+            handler_salt,
+            used_opcodes,
+            descriptor_data,
+            exit: DispatchExit::Return,
+        },
+    )?;
+
+    Ok(function)
+}
+
+pub struct InlineDispatchParams<'ctx, 'profile> {
+    pub function: FunctionValue<'ctx>,
+    pub start_block: BasicBlock<'ctx>,
+    pub fn_token: IntValue<'ctx>,
+    pub ret_slots: PointerValue<'ctx>,
+    pub arg_slots: PointerValue<'ctx>,
+    pub ret_value_slot: PointerValue<'ctx>,
+    pub after_vm: BasicBlock<'ctx>,
+    pub handler_salt: &'profile str,
+    pub used_opcodes: &'profile BTreeSet<Opcode>,
+    pub descriptor_data: DescriptorRuntimeData<'ctx>,
+}
+
+pub fn emit_inline_dispatch_cfg<'ctx>(
+    module: &mut Module<'ctx>,
+    profile: &ProfilePackage,
+    helpers: RuntimeHelpers<'ctx>,
+    params: InlineDispatchParams<'ctx, '_>,
+) -> anyhow::Result<()> {
+    emit_dispatch_cfg(
+        module,
+        profile,
+        DispatchCfgParams {
+            function: params.function,
+            start_block: params.start_block,
+            fn_token: params.fn_token,
+            ret_slots: params.ret_slots,
+            arg_slots: params.arg_slots,
+            helpers,
+            handler_salt: params.handler_salt,
+            used_opcodes: params.used_opcodes,
+            descriptor_data: params.descriptor_data,
+            exit: DispatchExit::Branch {
+                ret_value_slot: params.ret_value_slot,
+                after_vm: params.after_vm,
+            },
+        },
+    )
+}
+
+struct DispatchCfgParams<'ctx, 'profile> {
+    function: FunctionValue<'ctx>,
+    start_block: BasicBlock<'ctx>,
+    fn_token: IntValue<'ctx>,
+    ret_slots: PointerValue<'ctx>,
+    arg_slots: PointerValue<'ctx>,
+    helpers: RuntimeHelpers<'ctx>,
+    handler_salt: &'profile str,
+    used_opcodes: &'profile BTreeSet<Opcode>,
+    descriptor_data: DescriptorRuntimeData<'ctx>,
+    exit: DispatchExit<'ctx>,
+}
+
+enum DispatchExit<'ctx> {
+    Return,
+    Branch {
+        ret_value_slot: PointerValue<'ctx>,
+        after_vm: BasicBlock<'ctx>,
+    },
+}
+
+fn emit_dispatch_cfg<'ctx>(
+    module: &mut Module<'ctx>,
+    profile: &ProfilePackage,
+    params: DispatchCfgParams<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let ctx = module.get_context();
+    let i8_type = ctx.i8_type();
+    let i32_type = ctx.i32_type();
+    let i64_type = ctx.i64_type();
+    let ptr_type = ptr_type!(ctx, i8_type);
+    let _ = i8_type;
+    let function = params.function;
+    let fn_token = params.fn_token;
+    let ret_slots = params.ret_slots;
+    let arg_slots = params.arg_slots;
+    let read_varint = params.helpers.read_varint;
+    let read_operand = params.helpers.read_operand;
+    let read_const = params.helpers.read_const;
+    let handler_salt = params.handler_salt;
+    let used_opcodes = params.used_opcodes;
+    let descriptor_data = params.descriptor_data;
     let builder = ctx.create_builder();
     let x_type = i64_type.array_type(32);
     let q_lane_type = i8_type.vec_type(16);
@@ -1102,14 +1230,13 @@ fn emit_dispatch<'ctx>(
     let fesetenv = libc_fenv_function(module, "fesetenv");
     let thread_pointer = llvm_thread_pointer_intrinsic(module);
 
-    let entry = ctx.append_basic_block(function, "entry");
     let descriptor_decode = ctx.append_basic_block(function, "descriptor.decode");
     let descriptor_ready = ctx.append_basic_block(function, "descriptor.ready");
     let loop_check = ctx.append_basic_block(function, "loop.check");
     let execute_decode = ctx.append_basic_block(function, "execute.decode");
     let default_return = ctx.append_basic_block(function, "default.return");
 
-    builder.position_at_end(entry);
+    builder.position_at_end(params.start_block);
     let regs = builder.build_alloca(x_type, "x")?;
     // 即使内置 profile 声明 q.lowering = disabled，runtime state 仍保留固定 q0..q64 组。
     // 契约是 verifier 拒绝不支持的宽值 lowering，而不是让 VM 悄悄改变形状并丢掉 v128 寄存器组。
@@ -1131,12 +1258,6 @@ fn emit_dispatch<'ctx>(
         )?;
     }
 
-    let fn_token = function.get_nth_param(0).unwrap().into_int_value();
-    let ret_slots = function.get_nth_param(1).unwrap().into_pointer_value();
-    let arg_slots = function
-        .get_nth_param(2)
-        .expect("dispatch arg slots pointer should exist")
-        .into_pointer_value();
     let fn_index = decode_fn_token(&builder, i64_type, fn_token, descriptor_data.seed)?;
     let index_ok = builder.build_int_compare(
         IntPredicate::ULT,
@@ -1354,6 +1475,7 @@ fn emit_dispatch<'ctx>(
                 regs,
                 pc_ptr,
                 loop_check,
+                vm_exit: default_return,
                 native_table,
                 native_base,
                 native_count,
@@ -1464,6 +1586,7 @@ fn emit_dispatch<'ctx>(
             regs,
             pc_ptr,
             loop_check,
+            vm_exit: default_return,
             native_table,
             native_base,
             native_count,
@@ -1548,9 +1671,20 @@ fn emit_dispatch<'ctx>(
             decoded_width: 0,
         },
     )?;
-    builder.build_return(Some(&ret))?;
+    match params.exit {
+        DispatchExit::Return => {
+            builder.build_return(Some(&ret))?;
+        },
+        DispatchExit::Branch {
+            ret_value_slot,
+            after_vm,
+        } => {
+            builder.build_store(ret_value_slot, ret)?;
+            builder.build_unconditional_branch(after_vm)?;
+        },
+    }
 
-    Ok(function)
+    Ok(())
 }
 
 fn decode_fn_token<'ctx>(
@@ -1783,6 +1917,8 @@ struct HandlerContext<'ctx, 'profile> {
     pc_ptr: PointerValue<'ctx>,
     // handler 执行完后回到 loop_check，重新验证 pc 是否仍在 bytecode 范围内。
     loop_check: BasicBlock<'ctx>,
+    // VM ret 或默认退出路径汇合到此块，由外层 entry 模式决定 return 或 branch。
+    vm_exit: BasicBlock<'ctx>,
     native_table: PointerValue<'ctx>,
     native_base: IntValue<'ctx>,
     native_count: IntValue<'ctx>,
@@ -2573,8 +2709,7 @@ fn emit_handler<'ctx, 'profile>(
                 ctx.i64_type.const_int(ctx.return_reg as u64, false),
                 value,
             )?;
-            store_return_slots(builder, ctx)?;
-            builder.build_return(Some(&value))?;
+            builder.build_unconditional_branch(ctx.vm_exit)?;
         },
     }
 

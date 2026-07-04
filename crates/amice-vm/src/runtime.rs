@@ -41,6 +41,8 @@ pub struct ControlStateSlot {
 pub struct RuntimeProfile {
     /// runtime 生成 scope，仅限 `func` 或 `module`。
     pub scope: RuntimeScope,
+    /// 宿主 wrapper 进入 VM 的方式。
+    pub entry: RuntimeEntry,
     /// 用来派生 opcode、key 和 layout 多态的 scope。
     pub polymorph_scope: RuntimeScope,
     /// 生成的 LLVM runtime 使用的 dispatch 策略。
@@ -64,6 +66,15 @@ pub struct RuntimeProfile {
 pub enum DispatchStrategy {
     /// 基于解码后的 opcode 生成 LLVM `switch`。
     Switch,
+}
+
+/// wrapper 进入 VM runtime 的形态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuntimeEntry {
+    /// wrapper marshal 参数后调用 private dispatcher。
+    Call,
+    /// wrapper 内直接嵌入 descriptor decode 和 VM dispatch CFG。
+    Inline,
 }
 
 /// profile 声明的宽 VM 寄存器的当前策略。
@@ -133,6 +144,7 @@ impl Default for RuntimeProfile {
     fn default() -> Self {
         Self {
             scope: RuntimeScope::Module,
+            entry: RuntimeEntry::Call,
             polymorph_scope: RuntimeScope::Func,
             dispatch: DispatchStrategy::Switch,
             emit_markers: false,

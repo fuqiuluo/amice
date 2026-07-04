@@ -4,7 +4,7 @@
 //! - 读取全局配置、环境变量和函数注解，决定哪些函数启用 VMP。
 //! - 加载并校验 profile，然后把 LLVM 函数 lowering 成 `amice-vm` 的 VM IR。
 //! - 将 VM IR 编码成 bytecode，并按 profile scope 生成 per-function 或 module 级 bytecode blob。
-//! - 生成 runtime dispatcher/native-call thunk，并把原函数替换成调用 dispatcher 的 wrapper。
+//! - 生成 runtime/native-call thunk，并把原函数替换成 call dispatcher 或 inline dispatch CFG 的 wrapper。
 //!
 //! # 关键约束
 //! 不支持的函数不能被半改写。`prepare_virtualization` 之前的检查、translator 的 `bail!`、
@@ -31,6 +31,7 @@ use amice_plugin::inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, UnnamedAddress,
 };
 use amice_vm::bytecode::BytecodeEncoder;
+use amice_vm::runtime::RuntimeEntry;
 use amice_vm::verify::verify_profile;
 use amice_vm::{
     BytecodeImage, HOST_VM_MAX_ARGS, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, ProfilePackage, RuntimeScope,
@@ -248,48 +249,84 @@ fn apply_descriptor_group<'ctx>(
         .flat_map(|item| item.bytecode.used_opcodes.iter().copied())
         .collect::<BTreeSet<_>>();
 
-    let mut emitted = Vec::with_capacity(prepared.len());
-    let shared_runtime = uses_shared_module_runtime(&profile);
-    for (fn_index, prepared) in prepared.into_iter().enumerate() {
-        let used_opcodes = if shared_runtime {
-            &shared_runtime_opcodes
-        } else {
-            &prepared.bytecode.used_opcodes
-        };
-        let runtime_suffix = if shared_runtime {
-            group_suffix.as_str()
-        } else {
-            prepared.safe_name.as_str()
-        };
-        let handler_salt = if shared_runtime {
-            "module"
-        } else {
-            prepared.safe_name.as_str()
-        };
-        let dispatch = runtime::emit_runtime(
-            module,
-            &profile,
-            runtime_suffix,
-            handler_salt,
-            used_opcodes,
-            descriptor_data,
-            emit_markers,
-        )?
-        .dispatch;
-        emitted.push((fn_index, prepared, dispatch));
-    }
+    match profile.runtime.entry {
+        RuntimeEntry::Call => {
+            let mut emitted = Vec::with_capacity(prepared.len());
+            let shared_runtime = uses_shared_module_runtime(&profile);
+            for (fn_index, prepared) in prepared.into_iter().enumerate() {
+                let used_opcodes = if shared_runtime {
+                    &shared_runtime_opcodes
+                } else {
+                    &prepared.bytecode.used_opcodes
+                };
+                let runtime_suffix = if shared_runtime {
+                    group_suffix.as_str()
+                } else {
+                    prepared.safe_name.as_str()
+                };
+                let handler_salt = if shared_runtime {
+                    "module"
+                } else {
+                    prepared.safe_name.as_str()
+                };
+                let dispatch = runtime::emit_runtime(
+                    module,
+                    &profile,
+                    runtime_suffix,
+                    handler_salt,
+                    used_opcodes,
+                    descriptor_data,
+                    emit_markers,
+                )?
+                .dispatch;
+                emitted.push((fn_index, prepared, dispatch));
+            }
 
-    for (fn_index, prepared, dispatch) in emitted {
-        rewrite_as_wrapper(
-            module,
-            prepared.original,
-            dispatch,
-            fn_index,
-            descriptor_seed,
-            &prepared.signature,
-            profile.abi.integer_returns.len(),
-            emit_markers,
-        )?;
+            for (fn_index, prepared, dispatch) in emitted {
+                rewrite_as_wrapper(
+                    module,
+                    prepared.original,
+                    WrapperRuntime::Call { dispatch },
+                    fn_index,
+                    descriptor_seed,
+                    &prepared.signature,
+                    profile.abi.integer_returns.len(),
+                    emit_markers,
+                )?;
+            }
+        },
+        RuntimeEntry::Inline => {
+            let shared_helpers = profile.runtime.scope == RuntimeScope::Module;
+            for (fn_index, prepared) in prepared.into_iter().enumerate() {
+                let helper_suffix = if shared_helpers {
+                    group_suffix.as_str()
+                } else {
+                    prepared.safe_name.as_str()
+                };
+                let handler_salt = if uses_shared_module_runtime(&profile) {
+                    "module"
+                } else {
+                    prepared.safe_name.as_str()
+                };
+                let helpers = runtime::emit_runtime_helpers(module, &profile, helper_suffix, emit_markers)?;
+                rewrite_as_wrapper(
+                    module,
+                    prepared.original,
+                    WrapperRuntime::Inline {
+                        profile: &profile,
+                        helpers,
+                        handler_salt,
+                        used_opcodes: &prepared.bytecode.used_opcodes,
+                        descriptor_data,
+                    },
+                    fn_index,
+                    descriptor_seed,
+                    &prepared.signature,
+                    profile.abi.integer_returns.len(),
+                    emit_markers,
+                )?;
+            }
+        },
     }
 
     Ok(())
@@ -596,10 +633,23 @@ fn emit_native_call_thunk<'ctx>(
     Ok(thunk)
 }
 
+enum WrapperRuntime<'ctx, 'profile> {
+    Call {
+        dispatch: FunctionValue<'ctx>,
+    },
+    Inline {
+        profile: &'profile ProfilePackage,
+        helpers: runtime::RuntimeHelpers<'ctx>,
+        handler_salt: &'profile str,
+        used_opcodes: &'profile BTreeSet<amice_vm::isa::Opcode>,
+        descriptor_data: runtime::DescriptorRuntimeData<'ctx>,
+    },
+}
+
 fn rewrite_as_wrapper<'ctx>(
     module: &mut Module<'ctx>,
     original: FunctionValue<'ctx>,
-    dispatch: FunctionValue<'ctx>,
+    wrapper_runtime: WrapperRuntime<'ctx, '_>,
     fn_index: usize,
     descriptor_seed: u64,
     signature: &translator::FunctionSignature,
@@ -638,10 +688,7 @@ fn rewrite_as_wrapper<'ctx>(
 
     // dispatcher ABI 固定为：opaque fn_token、return slots、host argument slots。
     // wrapper 负责把原函数的整数和指针参数扩展或转换成 i64，再在返回时还原成原 LLVM 类型。
-    let mut args = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(3);
     let fn_token = build_obfuscated_fn_token(&builder, i64_type, fn_index, descriptor_seed)?;
-    args.push(fn_token.into());
-    args.push(ret_slots.into());
 
     let arg_slots_type = i64_type.array_type(HOST_VM_MAX_ARGS as u32);
     let arg_slots = builder.build_alloca(arg_slots_type, "amice.vm.arg.slots")?;
@@ -659,9 +706,53 @@ fn rewrite_as_wrapper<'ctx>(
         )?;
         builder.build_store(slot, value)?;
     }
-    args.push(arg_slots.into());
 
-    let call = builder.build_call(dispatch, &args, "amice.vm.ret")?;
+    let ret64 = match wrapper_runtime {
+        WrapperRuntime::Call { dispatch } => {
+            let args = [
+                BasicMetadataValueEnum::from(fn_token),
+                BasicMetadataValueEnum::from(ret_slots),
+                BasicMetadataValueEnum::from(arg_slots),
+            ];
+            let call = builder.build_call(dispatch, &args, "amice.vm.ret")?;
+            call.try_as_basic_value()
+                .basic()
+                .ok_or_else(|| anyhow::anyhow!("dispatch should return i64"))?
+                .into_int_value()
+        },
+        WrapperRuntime::Inline {
+            profile,
+            helpers,
+            handler_salt,
+            used_opcodes,
+            descriptor_data,
+        } => {
+            let ret_value_slot = builder.build_alloca(i64_type, "amice.vm.ret.value")?;
+            let after_vm = ctx.append_basic_block(wrapper, "after_vm");
+            runtime::emit_inline_dispatch_cfg(
+                module,
+                profile,
+                helpers,
+                runtime::InlineDispatchParams {
+                    function: wrapper,
+                    start_block: entry,
+                    fn_token,
+                    ret_slots,
+                    arg_slots,
+                    ret_value_slot,
+                    after_vm,
+                    handler_salt,
+                    used_opcodes,
+                    descriptor_data,
+                },
+            )?;
+            builder.position_at_end(after_vm);
+            builder
+                .build_load2(i64_type, ret_value_slot, "amice.vm.ret")?
+                .into_int_value()
+        },
+    };
+
     if signature.returns_void {
         // void 函数仍需要执行 dispatcher，因为副作用已经被 VM bytecode 表达；只是 wrapper
         // 不从返回寄存器取值。
@@ -669,12 +760,6 @@ fn rewrite_as_wrapper<'ctx>(
         finalize_virtualized_original(module, original, wrapper);
         return Ok(());
     }
-
-    let ret64 = call
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| anyhow::anyhow!("dispatch should return i64"))?
-        .into_int_value();
 
     let return_type = fn_type
         .get_return_type()
@@ -1688,6 +1773,7 @@ fn descriptor_table_seed(profile: &ProfilePackage, safe_names: &[&str]) -> u64 {
     let mut state = runtime::splitmix64(0x8f2f_0e37_6c91_f0d5 ^ profile.manifest.version as u64);
     state = stable_mix_bytes(state, profile.manifest.name.as_bytes());
     state = stable_mix_bytes(state, format!("{:?}", profile.runtime.scope).as_bytes());
+    state = stable_mix_bytes(state, format!("{:?}", profile.runtime.entry).as_bytes());
     state = stable_mix_bytes(state, format!("{:?}", profile.runtime.dispatch).as_bytes());
     state = stable_mix_bytes(state, format!("{:?}", profile.bytecode.scope).as_bytes());
     for name in safe_names {

@@ -443,6 +443,36 @@ fn emit_markers_profile_path() -> PathBuf {
     profile_dir
 }
 
+fn inline_entry_profile_path() -> PathBuf {
+    let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../amice-vm/profiles/amice-simple-vmp")
+        .canonicalize()
+        .expect("built-in profile dir should exist");
+    let profile_dir = output_dir().join("vm_virtualize_inline_entry_profile");
+    std::fs::create_dir_all(&profile_dir).expect("inline-entry profile dir should be creatable");
+
+    for file in [
+        "manifest.toml",
+        "abi.vm",
+        "isa.vm",
+        "lowering.vm",
+        "bytecode.vm",
+        "decoder.vm",
+    ] {
+        std::fs::copy(source_dir.join(file), profile_dir.join(file)).expect("profile file should be copyable");
+    }
+
+    let runtime = std::fs::read_to_string(source_dir.join("runtime.vm"))
+        .expect("built-in runtime profile should be readable")
+        .replace(
+            "runtime.entry = call # 默认 wrapper 通过三参数 private dispatcher 进入 VM，调试和兼容性最好",
+            "runtime.entry = inline # 测试 wrapper 内直接嵌入 descriptor decode 和 VM dispatch CFG",
+        );
+    std::fs::write(profile_dir.join("runtime.vm"), runtime).expect("inline-entry runtime should be writable");
+
+    profile_dir
+}
+
 fn module_bytecode_profile_path() -> PathBuf {
     let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../amice-vm/profiles/amice-simple-vmp")
@@ -615,6 +645,20 @@ fn wrapper_dispatch_call(ir: &str, function: &str) -> String {
         .unwrap_or_else(|| panic!("wrapper for {function} should call VM dispatch"))
         .trim()
         .to_owned()
+}
+
+fn contains_three_arg_dispatch_call(body: &str) -> bool {
+    body.lines()
+        .filter(|line| line.contains("call i64 @.L__") || line.contains("call i64 @.amice.vm.h."))
+        .any(|line| call_argument_list(line).len() == 3)
+}
+
+fn contains_three_arg_dispatch_definition(ir: &str) -> bool {
+    ir.lines()
+        .filter(|line| {
+            line.starts_with("define private i64 @.L__") || line.starts_with("define private i64 @.amice.vm.h.")
+        })
+        .any(|line| call_argument_list(line).len() == 3)
 }
 
 fn call_argument_list(call: &str) -> Vec<String> {
@@ -27658,6 +27702,145 @@ fn test_vm_virtualize_default_wrapper_uses_descriptor_dispatch_abi() {
     assert!(ir.contains("descriptor.index.ok"));
     assert!(ir.contains("descriptor.guard.ok"));
     assert!(!ir.contains(".amice.vm.descriptor_table"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_inline_entry_embeds_dispatch_cfg_without_dispatcher_call() {
+    ensure_plugin_built();
+
+    let mut config = ObfuscationConfig::disabled();
+    config.vm_virtualize = Some(true);
+    config.vm_profile_path = Some(inline_entry_profile_path().to_string_lossy().into_owned());
+    let ir_path = compile_virtualized_ir_with_config(
+        &fixture_path("vm_virtualize", "basic.c", Language::C),
+        "vm_virtualize_inline_entry.ll",
+        config,
+    );
+
+    let ir = std::fs::read_to_string(ir_path).expect("inline-entry LLVM IR output should be readable");
+    let body = llvm_function_body(&ir, "vm_mix");
+    assert!(
+        !contains_three_arg_dispatch_call(&body),
+        "inline wrapper must not call the three-argument VM dispatcher:\n{body}"
+    );
+    assert!(
+        !contains_three_arg_dispatch_definition(&ir),
+        "inline-only profile should not emit a private three-argument dispatcher function:\n{ir}"
+    );
+    for marker in [
+        "descriptor.index.ok",
+        "descriptor.guard.ok",
+        "loop.check",
+        "execute.decode",
+    ] {
+        assert!(
+            body.contains(marker),
+            "inline wrapper should contain VM dispatch CFG marker {marker}:\n{body}"
+        );
+    }
+    for marker in [
+        "AMICEVMP",
+        "AMICE_VMP_RUNTIME_BYTECODE",
+        ".amice.vm.meta",
+        ".amice.vm.bytecode",
+        ".amice.vm.descriptor_table",
+        ".amice.vm.h.",
+    ] {
+        assert!(
+            !ir.contains(marker),
+            "inline default profile must keep marker {marker} disabled:\n{ir}"
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_inline_entry_matches_baseline_output() {
+    ensure_plugin_built();
+
+    let source = fixture_path("vm_virtualize", "basic.c", Language::C);
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_inline_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = ObfuscationConfig::disabled();
+    config.vm_virtualize = Some(true);
+    config.vm_profile_path = Some(inline_entry_profile_path().to_string_lossy().into_owned());
+    let virtualized = compile_virtualized_binary_with_config(&source, "vm_virtualize_inline_entry", config);
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_inline_entry_mixed_annotation_profiles_run_correctly() {
+    ensure_plugin_built();
+
+    let inline_profile = inline_entry_profile_path();
+    let source = output_dir().join("vm_virtualize_inline_mixed_annotation_profiles.c");
+    std::fs::write(
+        &source,
+        format!(
+            r#"#include <stdio.h>
+__attribute__((noinline, annotate("+vm_virtualize")))
+int vm_call_entry_mix(int a, int b) {{
+    return ((a + b) * 3) ^ (a - 7);
+}}
+__attribute__((noinline, annotate("+vm_virtualize,vm_profile_path={}")))
+int vm_inline_entry_mix(int a, int b) {{
+    return ((a - b) * 5) + (b ^ 19);
+}}
+int main(void) {{
+    int acc = 0;
+    for (int i = 1; i < 8; ++i) {{
+        acc = acc * 131 + vm_call_entry_mix(i * 3, i + 11);
+        acc = acc * 131 + vm_inline_entry_mix(i * 5, i + 17);
+    }}
+    printf("%d\n", acc);
+    return 0;
+}}
+"#,
+            inline_profile.display()
+        ),
+    )
+    .expect("mixed inline annotation profile fixture should be writable");
+
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_inline_mixed_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let config = ObfuscationConfig::disabled();
+    let virtualized = compile_virtualized_binary_with_config(&source, "vm_virtualize_inline_mixed", config.clone());
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir_with_config(&source, "vm_virtualize_inline_mixed.ll", config);
+    let ir = std::fs::read_to_string(ir_path).expect("mixed inline LLVM IR should be readable");
+    let call_body = llvm_function_body(&ir, "vm_call_entry_mix");
+    let inline_body = llvm_function_body(&ir, "vm_inline_entry_mix");
+    assert!(
+        contains_three_arg_dispatch_call(&call_body),
+        "call profile wrapper should keep dispatcher call:\n{call_body}"
+    );
+    assert!(
+        !contains_three_arg_dispatch_call(&inline_body),
+        "inline profile wrapper must not call dispatcher:\n{inline_body}"
+    );
+    assert!(inline_body.contains("descriptor.guard.ok"));
 }
 
 #[test]
