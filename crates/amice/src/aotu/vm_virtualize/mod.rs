@@ -64,8 +64,7 @@ impl AmicePass for VmVirtualize {
             .filter(|function| !function.is_undef_function() && !function.is_llvm_function())
             .collect::<Vec<_>>();
         let mut changed = false;
-        let mut function_bytecode_prepared = Vec::new();
-        let mut module_bytecode_prepared = Vec::new();
+        let mut prepared_virtualizations = Vec::new();
 
         for function in functions {
             if is_amice_vm_symbol(function) {
@@ -80,15 +79,9 @@ impl AmicePass for VmVirtualize {
             // 准备阶段只做“可失败但不改模块语义”的工作：profile 校验、LLVM→VM IR lowering、
             // bytecode 编码。只有这些全部成功后才进入真正的 wrapper/runtime 改写。
             match prepare_virtualization(module, function, &cfg) {
-                Ok(prepared) => match prepared.profile.bytecode.scope {
-                    RuntimeScope::Func => {
-                        function_bytecode_prepared.push(prepared);
-                        changed = true;
-                    },
-                    RuntimeScope::Module => {
-                        module_bytecode_prepared.push(prepared);
-                        changed = true;
-                    },
+                Ok(prepared) => {
+                    prepared_virtualizations.push(prepared);
+                    changed = true;
                 },
                 Err(err) => {
                     debug!("skip function {:?}: {err:#}", function.get_name());
@@ -96,16 +89,8 @@ impl AmicePass for VmVirtualize {
             }
         }
 
-        if !function_bytecode_prepared.is_empty() {
-            // bytecode 是 per-function 时，runtime 仍可能是 module scope；这类共享 dispatcher
-            // 必须用同一批函数的 opcode 并集生成，否则后面的函数会跳到被裁剪成 stub 的 handler。
-            apply_function_bytecode_virtualizations(module, function_bytecode_prepared)?;
-        }
-
-        if !module_bytecode_prepared.is_empty() {
-            // module scope 需要先收集所有函数的 bytecode，再统一拼接成一个共享 blob。
-            // 每个 wrapper 仍通过 base offset 只访问自己的那一段 package。
-            apply_module_bytecode_virtualizations(module, module_bytecode_prepared)?;
+        if !prepared_virtualizations.is_empty() {
+            apply_descriptor_virtualizations(module, prepared_virtualizations)?;
         }
 
         if changed {
@@ -191,7 +176,7 @@ fn prepare_virtualization<'ctx>(
     })
 }
 
-fn apply_function_bytecode_virtualizations<'ctx>(
+fn apply_descriptor_virtualizations<'ctx>(
     module: &mut Module<'ctx>,
     prepared: Vec<PreparedVirtualization<'ctx>>,
 ) -> anyhow::Result<()> {
@@ -199,54 +184,111 @@ fn apply_function_bytecode_virtualizations<'ctx>(
         return Ok(());
     }
 
+    let mut groups: Vec<Vec<PreparedVirtualization<'ctx>>> = Vec::new();
+    for item in prepared {
+        if let Some(group) = groups.iter_mut().find(|group| group[0].profile == item.profile) {
+            group.push(item);
+        } else {
+            groups.push(vec![item]);
+        }
+    }
+
+    for group in groups {
+        apply_descriptor_group(module, group)?;
+    }
+
+    Ok(())
+}
+
+fn apply_descriptor_group<'ctx>(
+    module: &mut Module<'ctx>,
+    prepared: Vec<PreparedVirtualization<'ctx>>,
+) -> anyhow::Result<()> {
+    let profile = prepared
+        .first()
+        .map(|item| item.profile.clone())
+        .context("descriptor group must not be empty")?;
+    let emit_markers = profile.runtime.emit_markers;
+    let safe_names = prepared.iter().map(|item| item.safe_name.as_str()).collect::<Vec<_>>();
+    let group_suffix = descriptor_group_suffix(&profile, &safe_names);
+    let (bytecode_bytes, bytecode_placements) = module_runtime_bytecode_blob(&prepared);
+    let native_bases = module_native_bases(&prepared);
+    let bytecode_global = emit_runtime_bytecode_global(module, &group_suffix, &bytecode_bytes, emit_markers)?;
+    let native_table_global = emit_module_native_call_table(module, &group_suffix, &prepared, emit_markers)?;
+    let descriptor_seed = descriptor_table_seed(&profile, &safe_names);
+    let descriptor_global = emit_descriptor_table(
+        module,
+        &group_suffix,
+        &prepared,
+        &bytecode_placements,
+        &native_bases,
+        descriptor_seed,
+        emit_markers,
+    )?;
+
+    if emit_markers {
+        for item in &prepared {
+            if profile.bytecode.scope == RuntimeScope::Func {
+                let _bytecode_debug_global = emit_bytecode_global(module, &item.safe_name, &item.bytecode, true)?;
+            }
+            let _meta_global = emit_marker_global(module, &item.safe_name)?;
+        }
+    }
+
+    let descriptor_data = runtime::DescriptorRuntimeData {
+        bytecode_global,
+        descriptor_global,
+        descriptor_words: (prepared.len() * runtime::DESCRIPTOR_FIELD_COUNT) as u32,
+        native_table_global,
+        descriptor_count: prepared.len(),
+        seed: descriptor_seed,
+    };
     let shared_runtime_opcodes = prepared
         .iter()
-        .filter(|item| uses_shared_module_runtime(&item.profile))
         .flat_map(|item| item.bytecode.used_opcodes.iter().copied())
         .collect::<BTreeSet<_>>();
 
     let mut emitted = Vec::with_capacity(prepared.len());
-    for prepared in prepared {
-        // func bytecode 下每个函数仍携带自己的 bytecode global；runtime 是否共享由
-        // `runtime.scope` 和 handler clone 策略决定。
-        let emit_markers = prepared.profile.runtime.emit_markers;
-        let bytecode_global = emit_bytecode_global(module, &prepared.safe_name, &prepared.bytecode, emit_markers)?;
-        let native_table_global =
-            emit_native_call_table(module, &prepared.safe_name, &prepared.native_calls, emit_markers)?;
-        if emit_markers {
-            let _meta_global = emit_marker_global(module, &prepared.safe_name)?;
-        }
-        let used_opcodes = if uses_shared_module_runtime(&prepared.profile) {
+    let shared_runtime = uses_shared_module_runtime(&profile);
+    for (fn_index, prepared) in prepared.into_iter().enumerate() {
+        let used_opcodes = if shared_runtime {
             &shared_runtime_opcodes
         } else {
             &prepared.bytecode.used_opcodes
         };
+        let runtime_suffix = if shared_runtime {
+            group_suffix.as_str()
+        } else {
+            prepared.safe_name.as_str()
+        };
+        let handler_salt = if shared_runtime {
+            "module"
+        } else {
+            prepared.safe_name.as_str()
+        };
         let dispatch = runtime::emit_runtime(
             module,
-            &prepared.profile,
-            prepared.profile.runtime.scope,
-            &prepared.safe_name,
+            &profile,
+            runtime_suffix,
+            handler_salt,
             used_opcodes,
+            descriptor_data,
             emit_markers,
         )?
         .dispatch;
-
-        emitted.push((prepared, bytecode_global, native_table_global, dispatch));
+        emitted.push((fn_index, prepared, dispatch));
     }
 
-    for (prepared, bytecode_global, native_table_global, dispatch) in emitted {
+    for (fn_index, prepared, dispatch) in emitted {
         rewrite_as_wrapper(
             module,
             prepared.original,
             dispatch,
-            bytecode_global,
-            native_table_global,
-            prepared.native_calls.len(),
-            &prepared.bytecode,
-            0,
+            fn_index,
+            descriptor_seed,
             &prepared.signature,
-            prepared.profile.abi.integer_returns.len(),
-            prepared.profile.runtime.emit_markers,
+            profile.abi.integer_returns.len(),
+            emit_markers,
         )?;
     }
 
@@ -256,67 +298,6 @@ fn apply_function_bytecode_virtualizations<'ctx>(
 fn uses_shared_module_runtime(profile: &ProfilePackage) -> bool {
     profile.runtime.scope == RuntimeScope::Module
         && profile.runtime.enhancements.handler_clone == amice_vm::runtime::HandlerClonePolicy::Disabled
-}
-
-fn apply_module_bytecode_virtualizations<'ctx>(
-    module: &mut Module<'ctx>,
-    prepared: Vec<PreparedVirtualization<'ctx>>,
-) -> anyhow::Result<()> {
-    if prepared.is_empty() {
-        return Ok(());
-    }
-
-    let placements = module_bytecode_placements(&prepared);
-    let used_opcodes = prepared
-        .iter()
-        .flat_map(|item| item.bytecode.used_opcodes.iter().copied())
-        .collect::<BTreeSet<_>>();
-    let emit_markers = prepared.iter().any(|item| item.profile.runtime.emit_markers);
-    let bytecode_global = emit_module_bytecode_global(module, &prepared, emit_markers)?;
-    if emit_markers {
-        let _meta_global = emit_marker_global(module, "module")?;
-    }
-
-    let mut emitted = Vec::with_capacity(prepared.len());
-    for (prepared, base_offset) in prepared.into_iter().zip(placements) {
-        // bytecode blob 是 module 共享的，但 native thunk 仍按函数生成。call_native 的 callee
-        // 类型取决于源函数内部调用点，不能在不同被保护函数之间盲目复用。
-        let native_table_global = emit_native_call_table(
-            module,
-            &prepared.safe_name,
-            &prepared.native_calls,
-            prepared.profile.runtime.emit_markers,
-        )?;
-        let dispatch = runtime::emit_runtime(
-            module,
-            &prepared.profile,
-            prepared.profile.runtime.scope,
-            &prepared.safe_name,
-            &used_opcodes,
-            prepared.profile.runtime.emit_markers,
-        )?
-        .dispatch;
-
-        emitted.push((prepared, base_offset, native_table_global, dispatch));
-    }
-
-    for (prepared, base_offset, native_table_global, dispatch) in emitted {
-        rewrite_as_wrapper(
-            module,
-            prepared.original,
-            dispatch,
-            bytecode_global,
-            native_table_global,
-            prepared.native_calls.len(),
-            &prepared.bytecode,
-            base_offset,
-            &prepared.signature,
-            prepared.profile.abi.integer_returns.len(),
-            prepared.profile.runtime.emit_markers,
-        )?;
-    }
-
-    Ok(())
 }
 
 fn ensure_abi_covers_signature(
@@ -381,42 +362,58 @@ fn emit_bytecode_global<'ctx>(
     Ok(global)
 }
 
-fn module_bytecode_placements(prepared: &[PreparedVirtualization<'_>]) -> Vec<usize> {
-    // 每个 BytecodeImage 本身已经是自包含 package；module scope 只是做字节级拼接，
-    // 因此 wrapper 需要记录各自 package 在共享 blob 中的起始偏移。
-    let mut offset = 0;
-    prepared
-        .iter()
-        .map(|item| {
-            let current = offset;
-            offset += item.bytecode.bytes.len();
-            current
-        })
-        .collect()
+#[derive(Clone, Copy)]
+struct BytecodeBlobPlacement {
+    const_pool_offset: usize,
+    code_offset: usize,
 }
 
-fn emit_module_bytecode_global<'ctx>(
+fn module_runtime_bytecode_blob(prepared: &[PreparedVirtualization<'_>]) -> (Vec<u8>, Vec<BytecodeBlobPlacement>) {
+    // Runtime 只需要 const_pool 与 code segment。生产 blob 不保留 package header，避免 key/len/offset
+    // 以第二份明文字段出现在 descriptor table 之外。
+    let total_len = prepared
+        .iter()
+        .map(|item| item.bytecode.const_pool_len + item.bytecode.code_len)
+        .sum();
+    let mut bytes = Vec::with_capacity(total_len);
+    let mut placements = Vec::with_capacity(prepared.len());
+    let mut offset = 0;
+    for item in prepared {
+        let const_pool_start = item.bytecode.const_pool_offset;
+        let const_pool_end = const_pool_start + item.bytecode.const_pool_len;
+        let code_start = item.bytecode.code_offset;
+        let code_end = code_start + item.bytecode.code_len;
+        let const_pool_offset = offset;
+        bytes.extend_from_slice(&item.bytecode.bytes[const_pool_start..const_pool_end]);
+        offset += item.bytecode.const_pool_len;
+        let code_offset = offset;
+        bytes.extend_from_slice(&item.bytecode.bytes[code_start..code_end]);
+        offset += item.bytecode.code_len;
+        placements.push(BytecodeBlobPlacement {
+            const_pool_offset,
+            code_offset,
+        });
+    }
+    (bytes, placements)
+}
+
+fn emit_runtime_bytecode_global<'ctx>(
     module: &mut Module<'ctx>,
-    prepared: &[PreparedVirtualization<'ctx>],
+    group_suffix: &str,
+    bytes: &[u8],
     emit_markers: bool,
 ) -> anyhow::Result<GlobalValue<'ctx>> {
     let ctx = module.get_context();
     let i8_type = ctx.i8_type();
-    // `bytecode.scope = module` 改变的是存储所有权，不是 dispatch ABI。每个函数仍在共享 blob
-    // 内保留自包含 package，wrapper 只把该 package 的 code/const_pool slice 传给 runtime。
-    let bytes = prepared
-        .iter()
-        .flat_map(|item| item.bytecode.bytes.iter().copied())
-        .collect::<Vec<_>>();
     let values = bytes
         .iter()
         .map(|byte| i8_type.const_int(*byte as u64, false))
         .collect::<Vec<_>>();
     let array = const_array(i8_type, &values);
     let name = if emit_markers {
-        ".amice.vm.bytecode.module".to_owned()
+        format!(".amice.vm.bytecode.module.{group_suffix}")
     } else {
-        private_symbol_name("bcm", "module")
+        private_symbol_name("bcm", group_suffix)
     };
     let global = module.add_global(i8_type.array_type(values.len() as u32), None, &name);
     global.set_initializer(&array);
@@ -424,6 +421,18 @@ fn emit_module_bytecode_global<'ctx>(
     global.set_linkage(Linkage::Private);
     module.append_to_compiler_used(global);
     Ok(global)
+}
+
+fn module_native_bases(prepared: &[PreparedVirtualization<'_>]) -> Vec<usize> {
+    let mut next_base = 0;
+    prepared
+        .iter()
+        .map(|item| {
+            let base = next_base;
+            next_base += item.native_calls.len();
+            base
+        })
+        .collect()
 }
 
 fn emit_marker_global<'ctx>(module: &mut Module<'ctx>, safe_name: &str) -> anyhow::Result<GlobalValue<'ctx>> {
@@ -447,38 +456,85 @@ fn emit_marker_global<'ctx>(module: &mut Module<'ctx>, safe_name: &str) -> anyho
     Ok(global)
 }
 
-fn emit_native_call_table<'ctx>(
+fn emit_module_native_call_table<'ctx>(
     module: &mut Module<'ctx>,
-    safe_name: &str,
-    native_calls: &[translator::NativeCallTarget<'ctx>],
+    group_suffix: &str,
+    prepared: &[PreparedVirtualization<'ctx>],
     emit_markers: bool,
 ) -> anyhow::Result<GlobalValue<'ctx>> {
     // runtime 只知道固定 i64 调用 ABI。这里为每个真实 LLVM callee 建一个 thunk，
-    // 再把 thunk 指针放进表里，bytecode 中的 call_id 就是这个表的索引。
+    // 再把所有函数的 thunk 指针放进同一张表。descriptor 负责给每个函数记录 base/count。
     let ctx = module.get_context();
     let i8_type = ctx.i8_type();
     let ptr_type = ptr_type!(ctx, i8_type);
     let _ = i8_type;
-    let values = if native_calls.is_empty() {
-        vec![ptr_type.const_null()]
-    } else {
-        native_calls
-            .iter()
-            .enumerate()
-            .map(|(index, target)| {
-                emit_native_call_thunk(module, safe_name, index, target, emit_markers)
-                    .map(|thunk| thunk.as_global_value().as_pointer_value())
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?
-    };
+    let mut values = Vec::new();
+    for item in prepared {
+        for (index, target) in item.native_calls.iter().enumerate() {
+            let thunk = emit_native_call_thunk(module, &item.safe_name, index, target, emit_markers)?;
+            values.push(thunk.as_global_value().as_pointer_value());
+        }
+    }
+    if values.is_empty() {
+        values.push(ptr_type.const_null());
+    }
 
     let array = const_array(ptr_type, &values);
     let name = if emit_markers {
-        format!(".amice.vm.native_table.{safe_name}")
+        format!(".amice.vm.native_table.module.{group_suffix}")
     } else {
-        private_symbol_name("nt", safe_name)
+        private_symbol_name("nt", group_suffix)
     };
     let global = module.add_global(ptr_type.array_type(values.len() as u32), None, &name);
+    global.set_initializer(&array);
+    global.set_constant(true);
+    global.set_linkage(Linkage::Private);
+    module.append_to_compiler_used(global);
+    Ok(global)
+}
+
+fn emit_descriptor_table<'ctx>(
+    module: &mut Module<'ctx>,
+    group_suffix: &str,
+    prepared: &[PreparedVirtualization<'ctx>],
+    bytecode_placements: &[BytecodeBlobPlacement],
+    native_bases: &[usize],
+    seed: u64,
+    emit_markers: bool,
+) -> anyhow::Result<GlobalValue<'ctx>> {
+    let ctx = module.get_context();
+    let i64_type = ctx.i64_type();
+    let mut values = Vec::with_capacity(prepared.len() * runtime::DESCRIPTOR_FIELD_COUNT);
+    for (fn_index, ((item, placement), native_base)) in prepared
+        .iter()
+        .zip(bytecode_placements.iter())
+        .zip(native_bases.iter())
+        .enumerate()
+    {
+        let fields = [
+            placement.code_offset as u64,
+            item.bytecode.code_len as u64,
+            placement.const_pool_offset as u64,
+            item.bytecode.const_pool_len as u64,
+            item.bytecode.key,
+            *native_base as u64,
+            item.native_calls.len() as u64,
+            runtime::descriptor_guard(seed, fn_index),
+        ];
+        for (field_index, plain) in fields.into_iter().enumerate() {
+            values.push(i64_type.const_int(
+                runtime::encrypt_descriptor_field(seed, fn_index, field_index, plain),
+                false,
+            ));
+        }
+    }
+    let array = const_array(i64_type, &values);
+    let name = if emit_markers {
+        format!(".amice.vm.descriptor_table.{group_suffix}")
+    } else {
+        private_symbol_name("dt", group_suffix)
+    };
+    let global = module.add_global(i64_type.array_type(values.len() as u32), None, &name);
     global.set_initializer(&array);
     global.set_constant(true);
     global.set_linkage(Linkage::Private);
@@ -544,11 +600,8 @@ fn rewrite_as_wrapper<'ctx>(
     module: &mut Module<'ctx>,
     original: FunctionValue<'ctx>,
     dispatch: FunctionValue<'ctx>,
-    bytecode_global: GlobalValue<'ctx>,
-    native_table_global: GlobalValue<'ctx>,
-    native_call_count: usize,
-    bytecode: &BytecodeImage,
-    bytecode_base_offset: usize,
+    fn_index: usize,
+    descriptor_seed: u64,
     signature: &translator::FunctionSignature,
     abi_return_count: usize,
     emit_markers: bool,
@@ -583,31 +636,11 @@ fn rewrite_as_wrapper<'ctx>(
     let ret_slots_type = i64_type.array_type(ret_slot_count as u32);
     let ret_slots = builder.build_alloca(ret_slots_type, "amice.vm.ret.slots")?;
 
-    // dispatcher ABI 固定为：code/const_pool/native table/return slots 加宿主参数槽数组指针。
+    // dispatcher ABI 固定为：opaque fn_token、return slots、host argument slots。
     // wrapper 负责把原函数的整数和指针参数扩展或转换成 i64，再在返回时还原成原 LLVM 类型。
-    let mut args = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(10);
-    let code_offset = i64_type.const_int((bytecode_base_offset + bytecode.code_offset) as u64, false);
-    let code_ptr = builder.build_gep2(
-        ctx.i8_type(),
-        bytecode_global.as_pointer_value(),
-        &[code_offset],
-        "amice.vm.code.ptr",
-    )?;
-    let const_pool_offset = i64_type.const_int((bytecode_base_offset + bytecode.const_pool_offset) as u64, false);
-    let const_pool_ptr = builder.build_gep2(
-        ctx.i8_type(),
-        bytecode_global.as_pointer_value(),
-        &[const_pool_offset],
-        "amice.vm.const_pool.ptr",
-    )?;
-    args.push(code_ptr.into());
-    args.push(i64_type.const_int(bytecode.code_len as u64, false).into());
-    args.push(const_pool_ptr.into());
-    args.push(i64_type.const_int(bytecode.const_pool_len as u64, false).into());
-    args.push(i64_type.const_int(bytecode.key, false).into());
-    args.push(i64_type.const_int(bytecode.code_len as u64, false).into());
-    args.push(native_table_global.as_pointer_value().into());
-    args.push(i64_type.const_int(native_call_count as u64, false).into());
+    let mut args = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(3);
+    let fn_token = build_obfuscated_fn_token(&builder, i64_type, fn_index, descriptor_seed)?;
+    args.push(fn_token.into());
     args.push(ret_slots.into());
 
     let arg_slots_type = i64_type.array_type(HOST_VM_MAX_ARGS as u32);
@@ -674,6 +707,71 @@ fn rewrite_as_wrapper<'ctx>(
     finalize_virtualized_original(module, original, wrapper);
 
     Ok(())
+}
+
+fn build_obfuscated_fn_token<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
+    fn_index: usize,
+    descriptor_seed: u64,
+) -> anyhow::Result<amice_plugin::inkwell::values::IntValue<'ctx>> {
+    let token = runtime::obfuscated_fn_token(descriptor_seed, fn_index);
+    let split_a = runtime::splitmix64(descriptor_seed ^ ((fn_index as u64) << 1) ^ 0x2b99_2ddf_a232_49d6);
+    let split_b = token.rotate_right(13).wrapping_sub(split_a);
+    let parts_type = i64_type.array_type(2);
+    let parts = builder.build_alloca(parts_type, "amice.vm.fn.token.parts")?;
+    for (index, value) in [split_a, split_b].into_iter().enumerate() {
+        let slot = builder.build_gep2(
+            parts_type,
+            parts,
+            &[i64_type.const_zero(), i64_type.const_int(index as u64, false)],
+            "amice.vm.fn.token.part.ptr",
+        )?;
+        builder.build_store(slot, i64_type.const_int(value, false))?;
+    }
+    let first = load_token_part(builder, i64_type, parts_type, parts, 0)?;
+    let second = load_token_part(builder, i64_type, parts_type, parts, 1)?;
+    let mixed = builder.build_int_add(first, second, "amice.vm.fn.token.mix")?;
+    rotate_left_i64_const(builder, i64_type, mixed, 13, "amice.vm.fn.token")
+}
+
+fn load_token_part<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
+    parts_type: amice_plugin::inkwell::types::ArrayType<'ctx>,
+    parts: amice_plugin::inkwell::values::PointerValue<'ctx>,
+    index: u64,
+) -> anyhow::Result<amice_plugin::inkwell::values::IntValue<'ctx>> {
+    let ptr = builder.build_gep2(
+        parts_type,
+        parts,
+        &[i64_type.const_zero(), i64_type.const_int(index, false)],
+        "amice.vm.fn.token.part.load.ptr",
+    )?;
+    Ok(builder
+        .build_load2(i64_type, ptr, "amice.vm.fn.token.part")?
+        .into_int_value())
+}
+
+fn rotate_left_i64_const<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: amice_plugin::inkwell::types::IntType<'ctx>,
+    value: amice_plugin::inkwell::values::IntValue<'ctx>,
+    amount: u64,
+    name: &str,
+) -> anyhow::Result<amice_plugin::inkwell::values::IntValue<'ctx>> {
+    let amount = amount & 63;
+    if amount == 0 {
+        return Ok(value);
+    }
+    let left = builder.build_left_shift(value, i64_type.const_int(amount, false), &format!("{name}.left"))?;
+    let right = builder.build_right_shift(
+        value,
+        i64_type.const_int(64 - amount, false),
+        false,
+        &format!("{name}.right"),
+    )?;
+    Ok(builder.build_or(left, right, name)?)
 }
 
 fn finalize_virtualized_original<'ctx>(
@@ -1578,6 +1676,32 @@ fn safe_symbol_suffix(name: &str) -> String {
             }
         })
         .collect()
+}
+
+fn descriptor_group_suffix(profile: &ProfilePackage, safe_names: &[&str]) -> String {
+    let first = safe_names.first().copied().unwrap_or("module");
+    let hash = descriptor_table_seed(profile, safe_names);
+    format!("{}.n{}.h{:016x}", first, safe_names.len(), hash)
+}
+
+fn descriptor_table_seed(profile: &ProfilePackage, safe_names: &[&str]) -> u64 {
+    let mut state = runtime::splitmix64(0x8f2f_0e37_6c91_f0d5 ^ profile.manifest.version as u64);
+    state = stable_mix_bytes(state, profile.manifest.name.as_bytes());
+    state = stable_mix_bytes(state, format!("{:?}", profile.runtime.scope).as_bytes());
+    state = stable_mix_bytes(state, format!("{:?}", profile.runtime.dispatch).as_bytes());
+    state = stable_mix_bytes(state, format!("{:?}", profile.bytecode.scope).as_bytes());
+    for name in safe_names {
+        state = stable_mix_bytes(state, name.as_bytes());
+    }
+    runtime::splitmix64(state ^ safe_names.len() as u64)
+}
+
+fn stable_mix_bytes(mut state: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        state ^= u64::from(*byte);
+        state = runtime::splitmix64(state);
+    }
+    state
 }
 
 fn private_symbol_name(kind: &str, suffix: &str) -> String {

@@ -18,7 +18,8 @@ use amice_plugin::inkwell::llvm_sys::core::{
 use amice_plugin::inkwell::module::{Linkage, Module};
 use amice_plugin::inkwell::types::{ArrayType, FunctionType, IntType, PointerType};
 use amice_plugin::inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValue, FloatValue, FunctionValue, IntValue, PointerValue, UnnamedAddress,
+    AsValueRef, BasicMetadataValueEnum, BasicValue, FloatValue, FunctionValue, GlobalValue, IntValue, PointerValue,
+    UnnamedAddress,
 };
 use amice_plugin::inkwell::{
     AddressSpace, AtomicOrdering, AtomicRMWBinOp, FloatPredicate as LlvmFloatPredicate, IntPredicate,
@@ -32,7 +33,7 @@ use amice_vm::isa::{
     SemanticProgram, SemanticStmt,
 };
 use amice_vm::profile::DecoderStep;
-use amice_vm::{HOST_VM_MAX_ARGS, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, ProfilePackage, RuntimeScope};
+use amice_vm::{HOST_VM_MAX_ARGS, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, ProfilePackage};
 use anyhow::Context;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap};
@@ -51,6 +52,79 @@ const FPCLASS_POS_INF: u64 = 0x0200;
 const FPCLASS_ALL_FLAGS: u64 = 0x03ff;
 const LLVM_SINGLETHREAD_SYNC_SCOPE_ID: u32 = 0;
 const LLVM_SYSTEM_SYNC_SCOPE_ID: u32 = 1;
+pub(crate) const DESCRIPTOR_FIELD_COUNT: usize = 8;
+const DESC_CODE_OFFSET: usize = 0;
+const DESC_CODE_LEN: usize = 1;
+const DESC_CONST_POOL_OFFSET: usize = 2;
+const DESC_CONST_POOL_LEN: usize = 3;
+const DESC_BYTECODE_KEY: usize = 4;
+const DESC_NATIVE_BASE: usize = 5;
+const DESC_NATIVE_COUNT: usize = 6;
+const DESC_GUARD: usize = 7;
+const FN_TOKEN_MUL: u64 = 0x9e37_79b9_7f4a_7c15;
+const FN_TOKEN_MUL_INV: u64 = 0xf1de_83e1_9937_733d;
+
+#[derive(Clone, Copy)]
+pub(crate) struct DescriptorRuntimeData<'ctx> {
+    pub bytecode_global: GlobalValue<'ctx>,
+    pub descriptor_global: GlobalValue<'ctx>,
+    pub descriptor_words: u32,
+    pub native_table_global: GlobalValue<'ctx>,
+    pub descriptor_count: usize,
+    pub seed: u64,
+}
+
+pub(crate) fn splitmix64(value: u64) -> u64 {
+    let mut z = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+pub(crate) fn obfuscated_fn_token(seed: u64, fn_index: usize) -> u64 {
+    let mixed = (fn_index as u64)
+        .wrapping_mul(FN_TOKEN_MUL)
+        .wrapping_add(token_add(seed))
+        ^ token_xor(seed);
+    mixed.rotate_left(token_rot(seed) as u32)
+}
+
+pub(crate) fn descriptor_guard(seed: u64, fn_index: usize) -> u64 {
+    splitmix64(seed ^ (fn_index as u64).wrapping_mul(0xd1b5_4a32_d192_ed03) ^ 0xa826_9d7b_5a21_1f4d)
+}
+
+pub(crate) fn encrypt_descriptor_field(seed: u64, fn_index: usize, field_index: usize, plain: u64) -> u64 {
+    let key = descriptor_field_key(seed, fn_index as u64, field_index as u64);
+    (plain.rotate_left(key.rot as u32) ^ key.mask).wrapping_add(key.add)
+}
+
+fn token_add(seed: u64) -> u64 {
+    splitmix64(seed ^ 0x4f1b_6d86_32c7_49e1)
+}
+
+fn token_xor(seed: u64) -> u64 {
+    splitmix64(seed ^ 0xb204_9f63_a8ce_9d35)
+}
+
+fn token_rot(seed: u64) -> u64 {
+    (splitmix64(seed ^ 0x63d2_97f8_9b44_0c11) & 63).max(1)
+}
+
+#[derive(Clone, Copy)]
+struct DescriptorFieldKey {
+    mask: u64,
+    add: u64,
+    rot: u64,
+}
+
+fn descriptor_field_key(seed: u64, fn_index: u64, field_index: u64) -> DescriptorFieldKey {
+    let base = seed ^ fn_index.wrapping_mul(0xd6e8_feb8_6659_fd93) ^ field_index.wrapping_mul(0xa5a3_56e5_2c1b_4f27);
+    DescriptorFieldKey {
+        mask: splitmix64(base ^ 0x7069_9d5f_3d13_a7c9),
+        add: splitmix64(base ^ 0x9bf1_2f8d_a3e7_4c55),
+        rot: (splitmix64(base ^ 0xc2b2_ae35_87b1_1d09) & 63).max(1),
+    }
+}
 
 pub struct RuntimeFunctions<'ctx> {
     // wrapper 调用的 VM dispatcher。其它 helper 通过 internal symbol 被 dispatcher 引用。
@@ -60,19 +134,15 @@ pub struct RuntimeFunctions<'ctx> {
 pub fn emit_runtime<'ctx>(
     module: &mut Module<'ctx>,
     profile: &ProfilePackage,
-    scope: RuntimeScope,
     symbol_suffix: &str,
+    handler_salt: &str,
     used_opcodes: &BTreeSet<Opcode>,
+    descriptor_data: DescriptorRuntimeData<'ctx>,
     emit_markers: bool,
 ) -> anyhow::Result<RuntimeFunctions<'ctx>> {
-    // func scope 或 per-function clone 会给 runtime 符号加函数后缀；module scope 则复用同一组 helper。
-    // 这样 runtime scope 与 handler clone 策略只影响符号复用，不改变 dispatcher ABI。
-    let suffix = match (scope, profile.runtime.enhancements.handler_clone) {
-        (_, amice_vm::runtime::HandlerClonePolicy::PerFunction) | (RuntimeScope::Func, _) => {
-            format!(".{symbol_suffix}")
-        },
-        (RuntimeScope::Module, amice_vm::runtime::HandlerClonePolicy::Disabled) => String::new(),
-    };
+    // Descriptor table 是 runtime ABI 的一部分。module-scope runtime 只能在同一个 descriptor
+    // group 内共享，因此 helper 名也必须携带 group 后缀，避免跨 profile 复用错 table/seed。
+    let suffix = format!(".{symbol_suffix}");
     let read_name = opaque_runtime_helper_symbol("rv", &suffix, emit_markers);
     let read_operand_name = opaque_runtime_helper_symbol("ro", &suffix, emit_markers);
     let read_const_varint_name = opaque_runtime_helper_symbol("rcv", &suffix, emit_markers);
@@ -105,7 +175,9 @@ pub fn emit_runtime<'ctx>(
             read_operand,
             read_const,
             &dispatch_name,
+            handler_salt,
             used_opcodes,
+            descriptor_data,
         )?,
     };
 
@@ -618,6 +690,19 @@ fn llvm_reset_fp_state_intrinsic<'ctx>(module: &mut Module<'ctx>, kind: FpStateK
     module.add_function(&name, fn_type, None)
 }
 
+fn libc_fenv_function<'ctx>(module: &mut Module<'ctx>, name: &str) -> FunctionValue<'ctx> {
+    if let Some(function) = module.get_function(name) {
+        return function;
+    }
+
+    let ctx = module.get_context();
+    let i8_type = ctx.i8_type();
+    let ptr_type = ptr_type!(ctx, i8_type);
+    let _ = i8_type;
+    let fn_type = ctx.i32_type().fn_type(&[ptr_type.into()], false);
+    module.add_function(name, fn_type, None)
+}
+
 fn llvm_thread_pointer_intrinsic<'ctx>(module: &mut Module<'ctx>) -> FunctionValue<'ctx> {
     if let Some(function) = module.get_function("llvm.thread.pointer.p0") {
         return function;
@@ -924,24 +1009,19 @@ fn emit_dispatch<'ctx>(
     read_operand: FunctionValue<'ctx>,
     read_const: FunctionValue<'ctx>,
     name: &str,
+    handler_salt: &str,
     used_opcodes: &BTreeSet<Opcode>,
+    descriptor_data: DescriptorRuntimeData<'ctx>,
 ) -> anyhow::Result<FunctionValue<'ctx>> {
-    // dispatcher ABI 固定为一组 i64 和指针，避免每个被保护函数都生成不同签名。
-    // wrapper 负责把原函数签名适配到这个 ABI，dispatcher 只执行 VM bytecode。
+    // dispatcher ABI 只暴露 opaque token 和两个 slot 数组；code/key/native table 全部来自
+    // 私有 descriptor table，避免 wrapper 静态引用 bytecode/native 全局。
     let ctx = module.get_context();
     let i8_type = ctx.i8_type();
     let i32_type = ctx.i32_type();
     let i64_type = ctx.i64_type();
     let ptr_type = ptr_type!(ctx, i8_type);
     let _ = i8_type;
-    let mut params = Vec::with_capacity(10);
-    params.push(ptr_type.into());
-    params.push(i64_type.into());
-    params.push(ptr_type.into());
-    params.push(i64_type.into());
-    params.push(i64_type.into());
-    params.push(i64_type.into());
-    params.push(ptr_type.into());
+    let mut params = Vec::with_capacity(3);
     params.push(i64_type.into());
     params.push(ptr_type.into());
     params.push(ptr_type.into());
@@ -1018,9 +1098,13 @@ fn emit_dispatch<'ctx>(
     let set_rounding = llvm_set_rounding_intrinsic(module);
     let fpenv = FpStateIntrinsicSet::declare(module, FpStateKind::Env);
     let fpmode = FpStateIntrinsicSet::declare(module, FpStateKind::Mode);
+    let fegetenv = libc_fenv_function(module, "fegetenv");
+    let fesetenv = libc_fenv_function(module, "fesetenv");
     let thread_pointer = llvm_thread_pointer_intrinsic(module);
 
     let entry = ctx.append_basic_block(function, "entry");
+    let descriptor_decode = ctx.append_basic_block(function, "descriptor.decode");
+    let descriptor_ready = ctx.append_basic_block(function, "descriptor.ready");
     let loop_check = ctx.append_basic_block(function, "loop.check");
     let execute_decode = ctx.append_basic_block(function, "execute.decode");
     let default_return = ctx.append_basic_block(function, "default.return");
@@ -1047,10 +1131,120 @@ fn emit_dispatch<'ctx>(
         )?;
     }
 
+    let fn_token = function.get_nth_param(0).unwrap().into_int_value();
+    let ret_slots = function.get_nth_param(1).unwrap().into_pointer_value();
     let arg_slots = function
-        .get_nth_param(9)
+        .get_nth_param(2)
         .expect("dispatch arg slots pointer should exist")
         .into_pointer_value();
+    let fn_index = decode_fn_token(&builder, i64_type, fn_token, descriptor_data.seed)?;
+    let index_ok = builder.build_int_compare(
+        IntPredicate::ULT,
+        fn_index,
+        i64_type.const_int(descriptor_data.descriptor_count as u64, false),
+        "descriptor.index.ok",
+    )?;
+    builder.build_conditional_branch(index_ok, descriptor_decode, default_return)?;
+
+    builder.position_at_end(descriptor_decode);
+    let guard = read_descriptor_field(
+        &builder,
+        i64_type,
+        descriptor_data.descriptor_global,
+        descriptor_data.descriptor_words,
+        descriptor_data.seed,
+        fn_index,
+        DESC_GUARD,
+        "guard",
+    )?;
+    let expected_guard = emit_descriptor_guard(&builder, i64_type, descriptor_data.seed, fn_index)?;
+    let guard_ok = builder.build_int_compare(IntPredicate::EQ, guard, expected_guard, "descriptor.guard.ok")?;
+    builder.build_conditional_branch(guard_ok, descriptor_ready, default_return)?;
+
+    builder.position_at_end(descriptor_ready);
+    let code_offset = read_descriptor_field(
+        &builder,
+        i64_type,
+        descriptor_data.descriptor_global,
+        descriptor_data.descriptor_words,
+        descriptor_data.seed,
+        fn_index,
+        DESC_CODE_OFFSET,
+        "code.offset",
+    )?;
+    let len = read_descriptor_field(
+        &builder,
+        i64_type,
+        descriptor_data.descriptor_global,
+        descriptor_data.descriptor_words,
+        descriptor_data.seed,
+        fn_index,
+        DESC_CODE_LEN,
+        "code.len",
+    )?;
+    let const_pool_offset = read_descriptor_field(
+        &builder,
+        i64_type,
+        descriptor_data.descriptor_global,
+        descriptor_data.descriptor_words,
+        descriptor_data.seed,
+        fn_index,
+        DESC_CONST_POOL_OFFSET,
+        "const.pool.offset",
+    )?;
+    let const_pool_len = read_descriptor_field(
+        &builder,
+        i64_type,
+        descriptor_data.descriptor_global,
+        descriptor_data.descriptor_words,
+        descriptor_data.seed,
+        fn_index,
+        DESC_CONST_POOL_LEN,
+        "const.pool.len",
+    )?;
+    let key = read_descriptor_field(
+        &builder,
+        i64_type,
+        descriptor_data.descriptor_global,
+        descriptor_data.descriptor_words,
+        descriptor_data.seed,
+        fn_index,
+        DESC_BYTECODE_KEY,
+        "bytecode.key",
+    )?;
+    let native_base = read_descriptor_field(
+        &builder,
+        i64_type,
+        descriptor_data.descriptor_global,
+        descriptor_data.descriptor_words,
+        descriptor_data.seed,
+        fn_index,
+        DESC_NATIVE_BASE,
+        "native.base",
+    )?;
+    let native_count = read_descriptor_field(
+        &builder,
+        i64_type,
+        descriptor_data.descriptor_global,
+        descriptor_data.descriptor_words,
+        descriptor_data.seed,
+        fn_index,
+        DESC_NATIVE_COUNT,
+        "native.count",
+    )?;
+    let code = builder.build_gep2(
+        i8_type,
+        descriptor_data.bytecode_global.as_pointer_value(),
+        &[code_offset],
+        "descriptor.code.ptr",
+    )?;
+    let const_pool = builder.build_gep2(
+        i8_type,
+        descriptor_data.bytecode_global.as_pointer_value(),
+        &[const_pool_offset],
+        "descriptor.const.pool.ptr",
+    )?;
+    let native_table = descriptor_data.native_table_global.as_pointer_value();
     let arg_slots_type = i64_type.array_type(HOST_VM_MAX_ARGS as u32);
     // wrapper 总是写满固定数量的 i64 参数槽；profile ABI 决定这些槽落到哪些 x 寄存器。
     for index in 0..HOST_VM_MAX_ARGS {
@@ -1073,15 +1267,7 @@ fn emit_dispatch<'ctx>(
     }
     builder.build_unconditional_branch(loop_check)?;
 
-    let code = function.get_nth_param(0).unwrap().into_pointer_value();
-    let len = function.get_nth_param(1).unwrap().into_int_value();
-    let const_pool = function.get_nth_param(2).unwrap().into_pointer_value();
-    let const_pool_len = function.get_nth_param(3).unwrap().into_int_value();
-    let key = function.get_nth_param(4).unwrap().into_int_value();
-    let pc_limit = function.get_nth_param(5).unwrap().into_int_value();
-    let native_table = function.get_nth_param(6).unwrap().into_pointer_value();
-    let native_count = function.get_nth_param(7).unwrap().into_int_value();
-    let ret_slots = function.get_nth_param(8).unwrap().into_pointer_value();
+    let pc_limit = len;
     let return_reg = profile
         .abi
         .integer_returns
@@ -1097,7 +1283,7 @@ fn emit_dispatch<'ctx>(
     builder.build_store(offset_ptr, pc)?;
     builder.build_conditional_branch(pc_in_range, execute_decode, default_return)?;
 
-    let handler_alias_order = handler_alias_order(profile, name);
+    let handler_alias_order = handler_alias_order(profile, handler_salt);
 
     builder.position_at_end(execute_decode);
     let opcode = read_token(
@@ -1169,6 +1355,7 @@ fn emit_dispatch<'ctx>(
                 pc_ptr,
                 loop_check,
                 native_table,
+                native_base,
                 native_count,
                 read_const,
                 sqrt_f32,
@@ -1238,6 +1425,8 @@ fn emit_dispatch<'ctx>(
                 set_rounding,
                 fpenv,
                 fpmode,
+                fegetenv,
+                fesetenv,
                 thread_pointer,
                 const_pool,
                 const_pool_len,
@@ -1276,6 +1465,7 @@ fn emit_dispatch<'ctx>(
             pc_ptr,
             loop_check,
             native_table,
+            native_base,
             native_count,
             read_const,
             sqrt_f32,
@@ -1345,6 +1535,8 @@ fn emit_dispatch<'ctx>(
             set_rounding,
             fpenv,
             fpmode,
+            fegetenv,
+            fesetenv,
             thread_pointer,
             const_pool,
             const_pool_len,
@@ -1359,6 +1551,210 @@ fn emit_dispatch<'ctx>(
     builder.build_return(Some(&ret))?;
 
     Ok(function)
+}
+
+fn decode_fn_token<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    token: IntValue<'ctx>,
+    seed: u64,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let unrotated = rotate_right_i64(
+        builder,
+        i64_type,
+        token,
+        i64_type.const_int(token_rot(seed), false),
+        "token.ror",
+    )?;
+    let unxor = builder.build_xor(unrotated, i64_type.const_int(token_xor(seed), false), "token.unxor")?;
+    let unsub = builder.build_int_sub(unxor, i64_type.const_int(token_add(seed), false), "token.unadd")?;
+    Ok(builder.build_int_mul(unsub, i64_type.const_int(FN_TOKEN_MUL_INV, false), "token.index")?)
+}
+
+fn read_descriptor_field<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    descriptor_global: GlobalValue<'ctx>,
+    descriptor_words: u32,
+    seed: u64,
+    fn_index: IntValue<'ctx>,
+    field_index: usize,
+    name: &str,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let table_type = i64_type.array_type(descriptor_words);
+    let row = builder.build_int_mul(
+        fn_index,
+        i64_type.const_int(DESCRIPTOR_FIELD_COUNT as u64, false),
+        &format!("descriptor.{name}.row"),
+    )?;
+    let flat_index = builder.build_int_add(
+        row,
+        i64_type.const_int(field_index as u64, false),
+        &format!("descriptor.{name}.index"),
+    )?;
+    let field_ptr = builder.build_in_bounds_gep2(
+        table_type,
+        descriptor_global.as_pointer_value(),
+        &[i64_type.const_zero(), flat_index],
+        &format!("descriptor.{name}.ptr"),
+    )?;
+    let encrypted = load_i64(builder, i64_type, field_ptr, &format!("descriptor.{name}.encrypted"))?;
+    decrypt_descriptor_field(builder, i64_type, seed, fn_index, field_index, encrypted, name)
+}
+
+fn decrypt_descriptor_field<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    seed: u64,
+    fn_index: IntValue<'ctx>,
+    field_index: usize,
+    encrypted: IntValue<'ctx>,
+    name: &str,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let key = emit_descriptor_field_key(builder, i64_type, seed, fn_index, field_index)?;
+    let without_add = builder.build_int_sub(encrypted, key.add, &format!("descriptor.{name}.unadd"))?;
+    let unmasked = builder.build_xor(without_add, key.mask, &format!("descriptor.{name}.unxor"))?;
+    rotate_right_i64(
+        builder,
+        i64_type,
+        unmasked,
+        key.rot,
+        &format!("descriptor.{name}.plain"),
+    )
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeDescriptorFieldKey<'ctx> {
+    mask: IntValue<'ctx>,
+    add: IntValue<'ctx>,
+    rot: IntValue<'ctx>,
+}
+
+fn emit_descriptor_field_key<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    seed: u64,
+    fn_index: IntValue<'ctx>,
+    field_index: usize,
+) -> anyhow::Result<RuntimeDescriptorFieldKey<'ctx>> {
+    let index_component = builder.build_int_mul(
+        fn_index,
+        i64_type.const_int(0xd6e8_feb8_6659_fd93, false),
+        "descriptor.key.index",
+    )?;
+    let with_seed = builder.build_xor(index_component, i64_type.const_int(seed, false), "descriptor.key.seed")?;
+    let base = builder.build_xor(
+        with_seed,
+        i64_type.const_int((field_index as u64).wrapping_mul(0xa5a3_56e5_2c1b_4f27), false),
+        "descriptor.key.base",
+    )?;
+    let mask = emit_splitmix64(
+        builder,
+        i64_type,
+        builder.build_xor(
+            base,
+            i64_type.const_int(0x7069_9d5f_3d13_a7c9, false),
+            "descriptor.key.mask.seed",
+        )?,
+        "descriptor.key.mask",
+    )?;
+    let add = emit_splitmix64(
+        builder,
+        i64_type,
+        builder.build_xor(
+            base,
+            i64_type.const_int(0x9bf1_2f8d_a3e7_4c55, false),
+            "descriptor.key.add.seed",
+        )?,
+        "descriptor.key.add",
+    )?;
+    let raw_rot = emit_splitmix64(
+        builder,
+        i64_type,
+        builder.build_xor(
+            base,
+            i64_type.const_int(0xc2b2_ae35_87b1_1d09, false),
+            "descriptor.key.rot.seed",
+        )?,
+        "descriptor.key.rot.raw",
+    )?;
+    let rot = builder.build_and(raw_rot, i64_type.const_int(63, false), "descriptor.key.rot.masked")?;
+    let is_zero = builder.build_int_compare(IntPredicate::EQ, rot, i64_type.const_zero(), "descriptor.key.rot.zero")?;
+    let rot = builder
+        .build_select(is_zero, i64_type.const_int(1, false), rot, "descriptor.key.rot")?
+        .into_int_value();
+    Ok(RuntimeDescriptorFieldKey { mask, add, rot })
+}
+
+fn emit_descriptor_guard<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    seed: u64,
+    fn_index: IntValue<'ctx>,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let index_component = builder.build_int_mul(
+        fn_index,
+        i64_type.const_int(0xd1b5_4a32_d192_ed03, false),
+        "descriptor.guard.index",
+    )?;
+    let with_seed = builder.build_xor(
+        index_component,
+        i64_type.const_int(seed, false),
+        "descriptor.guard.seed",
+    )?;
+    let guard_seed = builder.build_xor(
+        with_seed,
+        i64_type.const_int(0xa826_9d7b_5a21_1f4d, false),
+        "descriptor.guard.mix",
+    )?;
+    emit_splitmix64(builder, i64_type, guard_seed, "descriptor.guard.expected")
+}
+
+fn emit_splitmix64<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    value: IntValue<'ctx>,
+    name: &str,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let z = builder.build_int_add(
+        value,
+        i64_type.const_int(0x9e37_79b9_7f4a_7c15, false),
+        &format!("{name}.add"),
+    )?;
+    let shifted = builder.build_right_shift(z, i64_type.const_int(30, false), false, &format!("{name}.shr30"))?;
+    let mixed = builder.build_xor(z, shifted, &format!("{name}.xor30"))?;
+    let z = builder.build_int_mul(
+        mixed,
+        i64_type.const_int(0xbf58_476d_1ce4_e5b9, false),
+        &format!("{name}.mul0"),
+    )?;
+    let shifted = builder.build_right_shift(z, i64_type.const_int(27, false), false, &format!("{name}.shr27"))?;
+    let mixed = builder.build_xor(z, shifted, &format!("{name}.xor27"))?;
+    let z = builder.build_int_mul(
+        mixed,
+        i64_type.const_int(0x94d0_49bb_1331_11eb, false),
+        &format!("{name}.mul1"),
+    )?;
+    let shifted = builder.build_right_shift(z, i64_type.const_int(31, false), false, &format!("{name}.shr31"))?;
+    Ok(builder.build_xor(z, shifted, name)?)
+}
+
+fn rotate_right_i64<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    value: IntValue<'ctx>,
+    amount: IntValue<'ctx>,
+    name: &str,
+) -> anyhow::Result<IntValue<'ctx>> {
+    let amount = builder.build_and(amount, i64_type.const_int(63, false), &format!("{name}.amount"))?;
+    let right = builder.build_right_shift(value, amount, false, &format!("{name}.right"))?;
+    let left_amount = builder.build_and(
+        builder.build_int_sub(i64_type.const_zero(), amount, &format!("{name}.neg"))?,
+        i64_type.const_int(63, false),
+        &format!("{name}.left.amount"),
+    )?;
+    let left = builder.build_left_shift(value, left_amount, &format!("{name}.left"))?;
+    Ok(builder.build_or(left, right, name)?)
 }
 
 #[derive(Clone, Copy)]
@@ -1388,6 +1784,7 @@ struct HandlerContext<'ctx, 'profile> {
     // handler 执行完后回到 loop_check，重新验证 pc 是否仍在 bytecode 范围内。
     loop_check: BasicBlock<'ctx>,
     native_table: PointerValue<'ctx>,
+    native_base: IntValue<'ctx>,
     native_count: IntValue<'ctx>,
     read_const: FunctionValue<'ctx>,
     sqrt_f32: FunctionValue<'ctx>,
@@ -1457,6 +1854,8 @@ struct HandlerContext<'ctx, 'profile> {
     set_rounding: FunctionValue<'ctx>,
     fpenv: FpStateIntrinsicSet<'ctx>,
     fpmode: FpStateIntrinsicSet<'ctx>,
+    fegetenv: FunctionValue<'ctx>,
+    fesetenv: FunctionValue<'ctx>,
     thread_pointer: FunctionValue<'ctx>,
     const_pool: PointerValue<'ctx>,
     const_pool_len: IntValue<'ctx>,
@@ -3602,6 +4001,10 @@ fn emit_write_fp_state_handler<'ctx>(
     ctx: HandlerContext<'ctx, '_>,
     kind: FpStateKind,
 ) -> anyhow::Result<()> {
+    if kind == FpStateKind::Env {
+        return emit_write_fpenv_handler(builder, operands, ctx);
+    }
+
     let src = operands.get("src")?;
     let width = operands.get("width")?;
     let value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, src, "vm.write.fpstate.src")?;
@@ -3633,24 +4036,24 @@ fn emit_write_fp_state_handler<'ctx>(
         builder.position_at_end(case_block);
         let intrinsic_set = fp_state_intrinsics(ctx, kind);
         let (intrinsic, value): (FunctionValue<'ctx>, BasicMetadataValueEnum<'ctx>) = match (kind, width_bits) {
-            (FpStateKind::Env, 32) => {
-                // x86 lowering of llvm.set.fpenv.i32 restores MXCSR from bytes adjacent to the i32.
-                // Preserve the current upper fpenv payload and replace only the low 32 bits.
+            (FpStateKind::Mode, 32) => {
+                // glibc's fpmode restore expects the full mode payload even for i32 lowering.
+                // Preserve the current high half and replace only the requested low control word.
                 let args: [BasicMetadataValueEnum<'ctx>; 0] = [];
                 let current = builder
-                    .build_call(intrinsic_set.get_i64, &args, "vm.write.fpenv.current")?
+                    .build_call(intrinsic_set.get_i64, &args, "vm.write.fpmode.current")?
                     .try_as_basic_value()
                     .basic()
-                    .ok_or_else(|| anyhow::anyhow!("llvm.get.fpenv.i64 should return an integer"))?
+                    .ok_or_else(|| anyhow::anyhow!("llvm.get.fpmode.i64 should return an integer"))?
                     .into_int_value();
                 let low_mask = ctx.i64_type.const_int(u64::from(u32::MAX), false);
-                let low = builder.build_and(value, low_mask, "vm.write.fpenv.low32")?;
+                let low = builder.build_and(value, low_mask, "vm.write.fpmode.low32")?;
                 let high = builder.build_and(
                     current,
                     ctx.i64_type.const_int(!u64::from(u32::MAX), false),
-                    "vm.write.fpenv.keep.high",
+                    "vm.write.fpmode.keep.high",
                 )?;
-                let merged = builder.build_or(high, low, "vm.write.fpenv.merged")?;
+                let merged = builder.build_or(high, low, "vm.write.fpmode.merged")?;
                 (intrinsic_set.set_i64, merged.into())
             },
             (_, 32) => (
@@ -3664,6 +4067,62 @@ fn emit_write_fp_state_handler<'ctx>(
         };
         let args = [value];
         builder.build_call(intrinsic, &args, "vm.write.fpstate")?;
+        builder.build_unconditional_branch(done_block)?;
+        builder.position_at_end(next_block);
+    }
+
+    builder.build_unconditional_branch(done_block)?;
+    builder.position_at_end(done_block);
+    increment_pc(builder, ctx.i64_type, ctx.pc_ptr, ctx.decoded_width)?;
+    builder.build_unconditional_branch(ctx.loop_check)?;
+    Ok(())
+}
+
+fn emit_write_fpenv_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    operands: HandlerOperands<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let src = operands.get("src")?;
+    let width = operands.get("width")?;
+    let value = load_reg(builder, ctx.i64_type, ctx.x_type, ctx.regs, src, "vm.write.fpenv.src")?;
+    let done_block = ctx
+        .function
+        .get_type()
+        .get_context()
+        .append_basic_block(ctx.function, "fpenv.write.done");
+
+    for width_bits in [32, 64] {
+        let case_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "fpenv.write.case");
+        let next_block = ctx
+            .function
+            .get_type()
+            .get_context()
+            .append_basic_block(ctx.function, "fpenv.write.next");
+        let width_match = builder.build_int_compare(
+            IntPredicate::EQ,
+            width,
+            ctx.i64_type.const_int(width_bits, false),
+            "fpenv.write.width.match",
+        )?;
+        builder.build_conditional_branch(width_match, case_block, next_block)?;
+
+        builder.position_at_end(case_block);
+        let fenv_type = ctx.i8_type.array_type(32);
+        let fenv = builder.build_alloca(fenv_type, "vm.write.fpenv.buf")?;
+        let fenv_arg = [fenv.into()];
+        builder.build_call(ctx.fegetenv, &fenv_arg, "vm.write.fpenv.get")?;
+        if width_bits == 32 {
+            let value = builder.build_int_truncate(value, ctx.i32_type, "vm.write.fpenv.i32")?;
+            builder.build_store(fenv, value)?;
+        } else {
+            builder.build_store(fenv, value)?;
+        }
+        builder.build_call(ctx.fesetenv, &fenv_arg, "vm.write.fpenv.set")?;
         builder.build_unconditional_branch(done_block)?;
         builder.position_at_end(next_block);
     }
@@ -5754,7 +6213,8 @@ fn emit_call_native_handler<'ctx>(
     builder.build_conditional_branch(can_call, call_block, done_block)?;
 
     builder.position_at_end(call_block);
-    let slot = builder.build_gep2(ctx.ptr_type, ctx.native_table, &[call_id], "native.slot")?;
+    let table_index = builder.build_int_add(ctx.native_base, call_id, "native.table.index")?;
+    let slot = builder.build_gep2(ctx.ptr_type, ctx.native_table, &[table_index], "native.slot")?;
     let thunk = builder
         .build_load2(ctx.ptr_type, slot, "native.thunk")?
         .into_pointer_value();

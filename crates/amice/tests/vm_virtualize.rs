@@ -592,6 +592,65 @@ fn handler_bodies_that_directly_default(ir: &str) -> Vec<String> {
         .collect()
 }
 
+fn llvm_function_body(ir: &str, function: &str) -> String {
+    let needle = format!("@{function}(");
+    let lines = ir.lines().collect::<Vec<_>>();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("define ") && line.contains(&needle))
+        .unwrap_or_else(|| panic!("LLVM IR should contain definition for {function}"));
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find_map(|(index, line)| (line.trim() == "}").then_some(index))
+        .unwrap_or_else(|| panic!("LLVM IR definition for {function} should terminate"));
+    lines[start..=end].join("\n")
+}
+
+fn wrapper_dispatch_call(ir: &str, function: &str) -> String {
+    let body = llvm_function_body(ir, function);
+    body.lines()
+        .find(|line| line.contains("call i64 @.L__") || line.contains("call i64 @.amice.vm.h."))
+        .unwrap_or_else(|| panic!("wrapper for {function} should call VM dispatch"))
+        .trim()
+        .to_owned()
+}
+
+fn call_argument_list(call: &str) -> Vec<String> {
+    let open = call.find('(').expect("call should contain an argument list");
+    let close = call.rfind(')').expect("call should close its argument list");
+    call[open + 1..close]
+        .split(", ")
+        .map(str::trim)
+        .filter(|arg| !arg.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn called_function_name(call: &str) -> String {
+    let marker = "call i64 @";
+    let start = call.find(marker).expect("call should name an i64 callee") + marker.len();
+    call[start..]
+        .split_once('(')
+        .expect("call callee should be followed by arguments")
+        .0
+        .to_owned()
+}
+
+fn i64_initializer_values(line: &str) -> Vec<i128> {
+    line.split("i64 ")
+        .skip(1)
+        .filter_map(|part| {
+            let digits = part
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit() || *ch == '-')
+                .collect::<String>();
+            (!digits.is_empty()).then(|| digits.parse::<i128>().expect("LLVM i64 initializer value should parse"))
+        })
+        .collect()
+}
+
 fn bytecode_global_bytes(ir: &str, function: &str) -> Vec<u8> {
     let needle = format!("@.amice.vm.bytecode.{function} = private constant ");
     let global_start = ir
@@ -26528,6 +26587,66 @@ int main(void) {{
 
 #[test]
 #[serial]
+fn test_vm_virtualize_mixed_annotation_profiles_use_distinct_descriptor_runtimes() {
+    ensure_plugin_built();
+
+    let custom_profile = custom_abi_profile_path();
+    let source = output_dir().join("vm_virtualize_mixed_annotation_profiles.c");
+    std::fs::write(
+        &source,
+        format!(
+            r#"#include <stdio.h>
+__attribute__((noinline, annotate("+vm_virtualize")))
+int vm_default_profile_mix(int a, int b) {{
+    return ((a + b) * 3) ^ (a - 7);
+}}
+__attribute__((noinline, annotate("+vm_virtualize,vm_profile_path={}")))
+int vm_custom_profile_mix(int a, int b) {{
+    return ((a - b) * 5) + (b ^ 19);
+}}
+int main(void) {{
+    int acc = 0;
+    for (int i = 1; i < 8; ++i) {{
+        acc = acc * 131 + vm_default_profile_mix(i * 3, i + 11);
+        acc = acc * 131 + vm_custom_profile_mix(i * 5, i + 17);
+    }}
+    printf("%d\n", acc);
+    return 0;
+}}
+"#,
+            custom_profile.display()
+        ),
+    )
+    .expect("mixed annotation profile fixture should be writable");
+
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_mixed_annotation_profiles_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let config = ObfuscationConfig::disabled();
+    let virtualized =
+        compile_virtualized_binary_with_config(&source, "vm_virtualize_mixed_annotation_profiles", config.clone());
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir_with_config(&source, "vm_virtualize_mixed_annotation_profiles.ll", config);
+    let ir = std::fs::read_to_string(ir_path).expect("mixed annotation profile IR should be readable");
+    let default_dispatch = called_function_name(&wrapper_dispatch_call(&ir, "vm_default_profile_mix"));
+    let custom_dispatch = called_function_name(&wrapper_dispatch_call(&ir, "vm_custom_profile_mix"));
+    assert_ne!(
+        default_dispatch, custom_dispatch,
+        "different descriptor groups must not reuse the same module-scope dispatcher"
+    );
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_profile_path_drives_abi_mapping() {
     ensure_plugin_built();
 
@@ -27485,9 +27604,60 @@ fn test_vm_virtualize_default_does_not_emit_debug_markers() {
     assert!(!ir.contains("AMICE_VMP_RUNTIME_BYTECODE"));
     assert!(!ir.contains(".amice.vm.meta"));
     assert!(!ir.contains(".amice.vm.bytecode"));
+    assert!(!ir.contains(".amice.vm.descriptor_table"));
     assert!(!ir.contains(".amice.vm.native_table"));
     assert!(!ir.contains(".amice.vm.native_thunk"));
     assert!(!ir.contains(".amice.vm.h."));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_default_wrapper_uses_descriptor_dispatch_abi() {
+    ensure_plugin_built();
+
+    let mut config = ObfuscationConfig::disabled();
+    config.vm_virtualize = Some(true);
+    let ir_path = compile_virtualized_ir_with_config(
+        &fixture_path("vm_virtualize", "basic.c", Language::C),
+        "vm_virtualize_descriptor_default.ll",
+        config,
+    );
+
+    let ir = std::fs::read_to_string(ir_path).expect("descriptor-default LLVM IR output should be readable");
+    let dispatch_call = wrapper_dispatch_call(&ir, "vm_mix");
+    let args = call_argument_list(&dispatch_call);
+    assert_eq!(
+        args.len(),
+        3,
+        "wrapper dispatch call should only pass token/ret_slots/arg_slots"
+    );
+    assert!(
+        args[0].starts_with("i64 %"),
+        "fn_token should be computed in wrapper instead of passed as a naked index: {dispatch_call}"
+    );
+    assert!(
+        args[1].starts_with("ptr %"),
+        "ret_slots should be a local pointer: {dispatch_call}"
+    );
+    assert!(
+        args[2].starts_with("ptr %"),
+        "arg_slots should be a local pointer: {dispatch_call}"
+    );
+    assert!(
+        !args.iter().any(|arg| arg.contains('@')),
+        "wrapper dispatch arguments must not include bytecode or native table globals: {dispatch_call}"
+    );
+
+    let dispatch_name = called_function_name(&dispatch_call);
+    let dispatch_define = ir
+        .lines()
+        .find(|line| line.starts_with(&format!("define private i64 @{dispatch_name}(")))
+        .unwrap_or_else(|| panic!("IR should define dispatch callee {dispatch_name}"));
+    assert_eq!(call_argument_list(dispatch_define).len(), 3);
+    assert!(dispatch_define.contains("(i64 "));
+    assert!(ir.contains("descriptor.index.ok"));
+    assert!(ir.contains("descriptor.guard.ok"));
+    assert!(!ir.contains(".amice.vm.descriptor_table"));
 }
 
 #[test]
@@ -27509,6 +27679,31 @@ fn test_vm_virtualize_emit_markers_env_enables_debug_markers() {
     assert!(ir.contains("AMICE_VMP_RUNTIME_BYTECODE"));
     assert!(ir.contains(".amice.vm.meta."));
     assert!(ir.contains(".amice.vm.bytecode.vm_mix"));
+    assert!(ir.contains(".amice.vm.descriptor_table."));
+
+    let dispatch_call = wrapper_dispatch_call(&ir, "vm_mix");
+    let args = call_argument_list(&dispatch_call);
+    assert_eq!(args.len(), 3, "marker mode must keep descriptor dispatch ABI");
+    assert!(
+        args[0].starts_with("i64 %"),
+        "fn_token should be built from split immediates, not emitted as a naked fn_index: {dispatch_call}"
+    );
+    let descriptor_line = ir
+        .lines()
+        .find(|line| line.contains("@.amice.vm.descriptor_table."))
+        .expect("marker mode should expose descriptor table debug name");
+    let descriptor_values = i64_initializer_values(descriptor_line);
+    let package = bytecode_global_bytes(&ir, "vm_mix");
+    for plain in [
+        read_u64_le_for_test(&package, 24),
+        read_u32_le_for_test(&package, 36) as u64,
+        read_u32_le_for_test(&package, 44) as u64,
+    ] {
+        assert!(
+            !descriptor_values.contains(&((plain as i64) as i128)),
+            "descriptor table should not store plaintext field {plain}: {descriptor_line}"
+        );
+    }
 }
 
 #[test]
@@ -27530,6 +27725,7 @@ fn test_vm_virtualize_emit_markers_profile_enables_debug_markers() {
     assert!(ir.contains("AMICE_VMP_RUNTIME_BYTECODE"));
     assert!(ir.contains(".amice.vm.meta."));
     assert!(ir.contains(".amice.vm.bytecode.vm_mix"));
+    assert!(ir.contains(".amice.vm.descriptor_table."));
 }
 
 #[test]
@@ -27571,13 +27767,10 @@ fn test_vm_virtualize_ir_contains_runtime_and_bytecode() {
     assert!(ir.contains(".amice.vm.bytecode.vm_float32_mix"));
     assert!(ir.contains(".amice.vm.bytecode.vm_float64_mix"));
     assert!(ir.contains(".amice.vm.bytecode.vm_float_cast_mix"));
-    assert!(ir.contains(".amice.vm.native_table.vm_safe_skip_call"));
+    assert!(ir.contains(".amice.vm.native_table.module."));
     assert!(ir.contains(".amice.vm.native_thunk.vm_safe_skip_call"));
-    assert!(ir.contains(".amice.vm.native_table.vm_native_pair"));
     assert!(ir.contains(".amice.vm.native_thunk.vm_native_pair"));
-    assert!(ir.contains(".amice.vm.native_table.vm_native_sret"));
     assert!(ir.contains(".amice.vm.native_thunk.vm_native_sret"));
-    assert!(ir.contains(".amice.vm.native_table.vm_native_float"));
     assert!(ir.contains(".amice.vm.native_thunk.vm_native_float"));
     assert!(
         ir.lines().any(|line| line.contains("call fastcc void @native_big(")

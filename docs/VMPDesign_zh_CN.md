@@ -8,7 +8,7 @@
 - VM 执行模型固定为寄存器虚拟机：LLVM SSA value lowering 后进入虚拟寄存器，handler 通过 register file 读写状态。
 - AMICE 插件只内置 profile 解析、校验、LLVM IR 翻译框架、bytecode encoder 和 runtime emitter。
 - runtime 不能是旧 `vm_flatten` 那类写死解释器；它必须从 profile 解析出的 ISA semantic、ABI、decoder pipeline 和 bytecode layout 生成 LLVM IR。AMICE 允许的 handler semantic 是受限 typed DSL 模板，超出模板的 profile 必须在 verifier 阶段被拒绝。
-- 默认使用模块级 runtime、函数级 bytecode：同一个 LLVM `Module` 内共享一套 runtime，每个被保护函数拥有自己的 bytecode、key、重定位和 wrapper。
+- 默认使用模块级 runtime 和 descriptor table：同一个 LLVM `Module` 内共享 runtime、紧凑 bytecode blob、native thunk table 和加密 descriptor table；wrapper 只传 opaque `fn_token`、`ret_slots` 和 `arg_slots`。
 - profile 必须可验证。插件要能在编译期检查 handler 读写、operand 类型、decoder 可逆性、ABI 映射、LLVM lowering 覆盖范围。
 
 ## VM Profile
@@ -138,23 +138,29 @@ polymorph.scope = func       # 每个函数允许独立 opcode/key/layout 多态
 也就是：
 
 - 每个 LLVM `Module` 生成一套 VM runtime。
-- 每个被保护函数生成一份 bytecode global。
+- pass 默认把每个被保护函数的 const_pool/code segment 拼入模块级紧凑 bytecode blob，即使 profile 写的是 `bytecode.scope = func`，wrapper 也不能直接引用 per-function bytecode global。
+- `runtime.scope = module` 的共享边界是同一个 descriptor group：同 profile 组内共享一套 module-scope runtime，跨 profile 或跨 descriptor table/seed 的函数必须生成不同 runtime helper 名，不能复用同一个 dispatcher。
+- 所有 native-call thunk pointer 进入同一个模块级 native table；每个函数的 descriptor 记录自己的 `native_base` 和 `native_count`。
 - 每个被保护函数拥有自己的 function key、opcode permutation、bytecode layout salt。
-- 原始函数 body 被替换成 wrapper：负责 marshal 参数、调用 VM dispatch、marshal 返回值。
+- 原始函数 body 被替换成 wrapper：负责 marshal 参数到 `arg_slots`、构造混淆后的 `fn_token`、调用 `dispatch(fn_token, ret_slots, arg_slots)`，再 marshal 返回值。
 
 生成后的形态类似：
 
 ```text
 .L__<hash>                # 生产默认使用 private dispatcher / reader helper，不暴露 AMICE/VMP 可搜索符号名
+.L__<hash>                # 生产默认使用 private compact bytecode blob，不保留 AMICEVMP package magic
+.L__<hash>                # 生产默认使用 private encrypted descriptor table
+.L__<hash>                # 生产默认使用 private module native table
 
-.L__<hash>                # 生产默认使用 private bytecode global，不暴露稳定 .amice.vm.bytecode 名称
 .amice.vm.bytecode.foo    # 仅 runtime.emit_markers=true 或 AMICE_VM_EMIT_MARKERS=true 的测试/调试输出
 .amice.vm.meta.foo        # 仅 runtime.emit_markers=true 或 AMICE_VM_EMIT_MARKERS=true 的测试/调试输出
+.amice.vm.descriptor_table.foo # 仅 runtime.emit_markers=true 或 AMICE_VM_EMIT_MARKERS=true 的测试/调试输出
 foo(...) {
-  state = init_state(...)
-  marshal_args(state, ...)
-  call .L__<hash>(&bytecode_foo, &state)
-  return marshal_ret(state)
+  ret_slots = alloca(...)
+  arg_slots = marshal_args(...)
+  fn_token = obfuscated_token(fn_index)
+  call .L__<hash>(fn_token, ret_slots, arg_slots)
+  return marshal_ret(ret_slots)
 }
 ```
 
@@ -949,6 +955,24 @@ runtime profile 允许声明以下增强开关：
 - per-function handler clone。
 
 runtime profile 还允许声明 `runtime.emit_markers = true|false`。该选项只用于测试和调试，开启后会生成 `AMICEVMP` bytecode magic、`AMICE_VMP_RUNTIME_BYTECODE`、`.amice.vm.meta.*` 以及稳定的 `.amice.vm.bytecode.*` 等可识别符号；生产默认必须保持 `false`。
+
+当前 runtime emitter 的默认执行形态是 descriptor table 模式。wrapper 不把 `code_ptr`、`code_len`、`const_pool_ptr`、`const_pool_len`、bytecode key、native table pointer 或 native call count 作为 dispatcher 参数；dispatcher ABI 固定为：
+
+```text
+dispatch(i64 fn_token, ptr ret_slots, ptr arg_slots) -> i64
+```
+
+dispatcher 入口先反解 `fn_token` 得到 `fn_index`，检查 `fn_index < descriptor_count`，再读取并解密 descriptor 的 guard 字段。索引越界或 guard 不匹配时必须走 trap/default safe path，不能对 descriptor table 做越界 GEP。guard 校验通过后，dispatcher 从 descriptor 解出执行所需字段，再继续走现有 bytecode decoder、const_pool reader、native-call handler、`ret_slots` 和 `arg_slots` 行为。
+
+每个 descriptor 至少包含：
+
+- `code_offset` 和 `code_len`：指向模块级紧凑 bytecode blob 中当前函数的 code segment。
+- `const_pool_offset` 和 `const_pool_len`：指向同一 blob 中当前函数的 const_pool segment。
+- `bytecode key`：decoder pipeline 与 const_pool 解密使用的 per-function key。
+- `native_base` 和 `native_count`：指向模块级 native table 中当前函数可用 thunk 的连续区间。
+- `guard`：由 table seed 和 `fn_index` 派生的校验值。
+
+descriptor table 必须是 private global。生产默认不能使用 `.amice.vm.*` 可读符号名；只有 `runtime.emit_markers=true` 或 `AMICE_VM_EMIT_MARKERS=true` 时，才允许生成 `.amice.vm.descriptor_table.*` 这类测试/调试名。descriptor 字段不能明文存储：编译期用固定、可复现的 splitmix64/mix64 派生 field key，并对每个字段做 rotate、xor 和 add 组合；dispatcher 内部使用同一套可复现算法按 `fn_index` 和 field id 解密。token 也不能是裸 `fn_index`：wrapper 必须由 `fn_index` 派生 opaque token，并用拆分 immediate 的计算序列构造；dispatcher 再执行反向 affine/rotate 变换得到 `fn_index`。
 
 `runtime.vm` 也必须使用精确语法：`bank x range x0..x31 type u64`、`bank q range q0..q64 type v128`、`alias name = xN|qN`、`pc: label`、`runtime.emit_markers = true|false` 和增强开关 `enhance name = enabled|disabled|func`。alias 缺少 `=`、bank 行存在尾部 token、control-state slot 的类型含多余 token，或 enhancement 名称不在白名单内，都必须在 profile parser/verifier 阶段失败。
 
