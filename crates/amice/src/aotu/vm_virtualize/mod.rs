@@ -32,7 +32,9 @@ use amice_plugin::inkwell::values::{
 };
 use amice_vm::bytecode::BytecodeEncoder;
 use amice_vm::verify::verify_profile;
-use amice_vm::{BytecodeImage, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, ProfilePackage, RuntimeScope};
+use amice_vm::{
+    BytecodeImage, HOST_VM_MAX_ARGS, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, ProfilePackage, RuntimeScope,
+};
 use anyhow::Context;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -300,10 +302,10 @@ fn ensure_abi_covers_signature(
             signature.param_widths.len()
         );
     }
-    if !signature.returns_void && profile.abi.integer_returns.is_empty() {
+    let needed_returns = signature.return_slot_count();
+    if needed_returns > 0 && profile.abi.integer_returns.is_empty() {
         anyhow::bail!("profile ABI does not define ret0 for a non-void function");
     }
-    let needed_returns = signature.return_slot_count();
     if needed_returns > profile.abi.integer_returns.len() {
         anyhow::bail!(
             "profile ABI maps {} return values but function needs {}",
@@ -483,7 +485,7 @@ fn emit_native_call_thunk<'ctx>(
             .ok_or_else(|| anyhow::anyhow!("native thunk target should return a value"))?;
         let returns = if matches!(
             ret.get_type(),
-            BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_)
+            BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) | BasicTypeEnum::VectorType(_)
         ) {
             collect_native_aggregate_return_values(&builder, i64_type, ret, &target.return_fields)?
         } else if target.return_fields.len() == 1 {
@@ -540,9 +542,9 @@ fn rewrite_as_wrapper<'ctx>(
     let ret_slots_type = i64_type.array_type(ret_slot_count as u32);
     let ret_slots = builder.build_alloca(ret_slots_type, "amice.vm.ret.slots")?;
 
-    // dispatcher ABI 固定为：code/const_pool/native table/return slots 加 8 个 i64 参数槽。
+    // dispatcher ABI 固定为：code/const_pool/native table/return slots 加宿主参数槽数组指针。
     // wrapper 负责把原函数的整数和指针参数扩展或转换成 i64，再在返回时还原成原 LLVM 类型。
-    let mut args = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(17);
+    let mut args = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(10);
     let code_offset = i64_type.const_int((bytecode_base_offset + bytecode.code_offset) as u64, false);
     let code_ptr = builder.build_gep2(
         ctx.i8_type(),
@@ -567,14 +569,23 @@ fn rewrite_as_wrapper<'ctx>(
     args.push(i64_type.const_int(native_call_count as u64, false).into());
     args.push(ret_slots.into());
 
+    let arg_slots_type = i64_type.array_type(HOST_VM_MAX_ARGS as u32);
+    let arg_slots = builder.build_alloca(arg_slots_type, "amice.vm.arg.slots")?;
     let flattened_params = flattened_wrapper_params(&builder, i64_type, wrapper, signature)?;
-    for index in 0..8 {
+    for index in 0..HOST_VM_MAX_ARGS {
         let value = flattened_params
             .get(index)
             .copied()
             .unwrap_or_else(|| i64_type.const_zero());
-        args.push(value.into());
+        let slot = builder.build_gep2(
+            arg_slots_type,
+            arg_slots,
+            &[i64_type.const_zero(), i64_type.const_int(index as u64, false)],
+            "amice.vm.arg.slot",
+        )?;
+        builder.build_store(slot, value)?;
     }
+    args.push(arg_slots.into());
 
     let call = builder.build_call(dispatch, &args, "amice.vm.ret")?;
     if signature.returns_void {
@@ -690,8 +701,11 @@ fn rebuild_aggregate_return<'ctx>(
     return_type: BasicTypeEnum<'ctx>,
     signature: &translator::FunctionSignature,
 ) -> anyhow::Result<BasicValueEnum<'ctx>> {
-    if !matches!(return_type, BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_)) {
-        anyhow::bail!("aggregate signature return type is not a struct or array");
+    if !matches!(
+        return_type,
+        BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) | BasicTypeEnum::VectorType(_)
+    ) {
+        anyhow::bail!("aggregate signature return type is not a struct, array, or fixed vector");
     }
     let mut slot_index = 0;
     let value = rebuild_aggregate_return_value(
@@ -760,6 +774,29 @@ fn rebuild_aggregate_return_value<'ctx>(
                     .into_array_value();
             }
             Ok(aggregate.into())
+        },
+        BasicTypeEnum::VectorType(vector_type) => {
+            let mut vector = vector_type.get_undef();
+            let index_type = i64_type.get_context().i32_type();
+            let element_type = vector_type.get_element_type();
+            for index in 0..vector_type.get_size() {
+                let element = rebuild_aggregate_return_value(
+                    builder,
+                    i64_type,
+                    ret_slots_type,
+                    ret_slots,
+                    element_type,
+                    slot_index,
+                )
+                .with_context(|| format!("aggregate return vector lane {index}"))?;
+                vector = builder.build_insert_element(
+                    vector,
+                    element,
+                    index_type.const_int(u64::from(index), false),
+                    "amice.vm.ret.lane",
+                )?;
+            }
+            Ok(vector.into())
         },
         scalar_type => {
             let zero = i64_type.const_zero();
@@ -894,7 +931,7 @@ fn flattened_wrapper_params<'ctx>(
             .get_nth_param(index as u32)
             .ok_or_else(|| anyhow::anyhow!("missing wrapper parameter {index}"))?;
         match param.get_type() {
-            BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
+            BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) | BasicTypeEnum::VectorType(_) => {
                 let mut field_index = 0;
                 append_aggregate_wrapper_param(
                     builder,
@@ -965,6 +1002,20 @@ fn append_aggregate_wrapper_param<'ctx>(
             }
             Ok(())
         },
+        BasicTypeEnum::VectorType(vector_type) => {
+            let vector = value.into_vector_value();
+            let index_type = i64_type.get_context().i32_type();
+            for index in 0..vector_type.get_size() {
+                let lane = builder.build_extract_element(
+                    vector,
+                    index_type.const_int(u64::from(index), false),
+                    "amice.vm.arg.lane",
+                )?;
+                append_aggregate_wrapper_param(builder, i64_type, lane, fields, field_index, flattened)
+                    .with_context(|| format!("aggregate wrapper vector lane {index}"))?;
+            }
+            Ok(())
+        },
         _ => {
             let field = fields
                 .get(*field_index)
@@ -998,16 +1049,25 @@ fn float_to_i64_bits<'ctx>(
 ) -> anyhow::Result<amice_plugin::inkwell::values::IntValue<'ctx>> {
     let float = value.into_float_value();
     let width = translator::float_value_width(float)?;
-    if width == 32 {
-        let i32_type = i64_type.get_context().i32_type();
-        let bits = builder
-            .build_bit_cast(float, i32_type, "amice.vm.float.arg.bits32")?
-            .into_int_value();
-        Ok(builder.build_int_z_extend(bits, i64_type, "amice.vm.float.arg.bits64")?)
-    } else {
-        Ok(builder
+    match width {
+        16 => {
+            let i16_type = i64_type.get_context().i16_type();
+            let bits = builder
+                .build_bit_cast(float, i16_type, "amice.vm.float.arg.bits16")?
+                .into_int_value();
+            Ok(builder.build_int_z_extend(bits, i64_type, "amice.vm.float.arg.bits64")?)
+        },
+        32 => {
+            let i32_type = i64_type.get_context().i32_type();
+            let bits = builder
+                .build_bit_cast(float, i32_type, "amice.vm.float.arg.bits32")?
+                .into_int_value();
+            Ok(builder.build_int_z_extend(bits, i64_type, "amice.vm.float.arg.bits64")?)
+        },
+        64 => Ok(builder
             .build_bit_cast(float, i64_type, "amice.vm.float.arg.bits64")?
-            .into_int_value())
+            .into_int_value()),
+        _ => anyhow::bail!("unsupported float argument width {width}"),
     }
 }
 
@@ -1028,16 +1088,25 @@ fn float_from_i64_bits<'ctx>(
     float_type: amice_plugin::inkwell::types::FloatType<'ctx>,
 ) -> anyhow::Result<amice_plugin::inkwell::values::FloatValue<'ctx>> {
     let width = translator::float_type_width(float_type.as_type_ref())?;
-    if width == 32 {
-        let i32_type = value.get_type().get_context().i32_type();
-        let bits = builder.build_int_truncate(value, i32_type, "amice.vm.float.ret.bits32")?;
-        Ok(builder
-            .build_bit_cast(bits, float_type, "amice.vm.float.ret.f32")?
-            .into_float_value())
-    } else {
-        Ok(builder
+    match width {
+        16 => {
+            let i16_type = value.get_type().get_context().i16_type();
+            let bits = builder.build_int_truncate(value, i16_type, "amice.vm.float.ret.bits16")?;
+            Ok(builder
+                .build_bit_cast(bits, float_type, "amice.vm.float.ret.f16")?
+                .into_float_value())
+        },
+        32 => {
+            let i32_type = value.get_type().get_context().i32_type();
+            let bits = builder.build_int_truncate(value, i32_type, "amice.vm.float.ret.bits32")?;
+            Ok(builder
+                .build_bit_cast(bits, float_type, "amice.vm.float.ret.f32")?
+                .into_float_value())
+        },
+        64 => Ok(builder
             .build_bit_cast(value, float_type, "amice.vm.float.ret.f64")?
-            .into_float_value())
+            .into_float_value()),
+        _ => anyhow::bail!("unsupported float return width {width}"),
     }
 }
 
@@ -1136,6 +1205,25 @@ fn rebuild_native_thunk_arg<'ctx>(
             }
             Ok(value.into())
         },
+        BasicMetadataTypeEnum::VectorType(vector_ty) => {
+            let mut field_index = 0;
+            let value = rebuild_native_aggregate_arg_value(
+                builder,
+                thunk,
+                BasicTypeEnum::VectorType(vector_ty),
+                slots,
+                &mut field_index,
+            )
+            .with_context(|| format!("native vector argument {arg_index}"))?;
+            if field_index != slots.fields.len() {
+                anyhow::bail!(
+                    "native vector argument {arg_index} lane count mismatch: signature has {}, thunk rebuilt {}",
+                    slots.fields.len(),
+                    field_index
+                );
+            }
+            Ok(value.into())
+        },
         _ => anyhow::bail!("native thunk target has an unsupported parameter type"),
     }
 }
@@ -1184,6 +1272,22 @@ fn rebuild_native_aggregate_arg_value<'ctx>(
                     .into_array_value();
             }
             Ok(aggregate.into())
+        },
+        BasicTypeEnum::VectorType(vector_type) => {
+            let mut vector = vector_type.get_undef();
+            let index_type = vector_type.get_context().i32_type();
+            let element_type = vector_type.get_element_type();
+            for index in 0..vector_type.get_size() {
+                let lane = rebuild_native_aggregate_arg_value(builder, thunk, element_type, slots, field_index)
+                    .with_context(|| format!("native argument vector lane {index}"))?;
+                vector = builder.build_insert_element(
+                    vector,
+                    lane,
+                    index_type.const_int(u64::from(index), false),
+                    "amice.vm.native.arg.lane",
+                )?;
+            }
+            Ok(vector.into())
         },
         scalar_type => {
             let field = slots
@@ -1321,6 +1425,29 @@ fn collect_native_aggregate_return_value<'ctx>(
                     values,
                 )
                 .with_context(|| format!("native return array element {index}"))?;
+            }
+            Ok(())
+        },
+        BasicTypeEnum::VectorType(vector_type) => {
+            let vector = value.into_vector_value();
+            let index_type = i64_type.get_context().i32_type();
+            let element_type = vector_type.get_element_type();
+            for index in 0..vector_type.get_size() {
+                let lane = builder.build_extract_element(
+                    vector,
+                    index_type.const_int(u64::from(index), false),
+                    "amice.vm.native.ret.lane",
+                )?;
+                collect_native_aggregate_return_value(
+                    builder,
+                    i64_type,
+                    lane,
+                    element_type,
+                    fields,
+                    slot_index,
+                    values,
+                )
+                .with_context(|| format!("native return vector lane {index}"))?;
             }
             Ok(())
         },

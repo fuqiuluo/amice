@@ -30,3 +30,9 @@ pub use lowering::{
     fuse_superinstructions,
 };
 pub use profile::{ProfileError, ProfilePackage, RuntimeScope};
+
+/// wrapper 传入 VM dispatcher 的固定宿主入口参数槽数量。
+///
+/// native_call record 仍由 `NATIVE_CALL_MAX_ARGS` 单独限制；这里仅描述原函数入口
+/// `host_to_vm` 能覆盖多少个扁平标量参数槽。
+pub const HOST_VM_MAX_ARGS: usize = 16;

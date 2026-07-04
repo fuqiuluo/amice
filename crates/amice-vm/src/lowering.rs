@@ -10,8 +10,9 @@
 //! 这样同语义的两条指令仍能编码成不同 opcode 和 layout。
 
 use crate::isa::{
-    AtomicRmwOp, BinOp, CastOp, CmpPredicate, CounterKind, FloatBinOp, FloatCastOp, FloatPredicate, FloatTernaryOp,
-    FloatUnaryOp, HandlerSemantic, IntOverflowOp, IntTernaryOp, IntUnaryOp, IsaProfile, MemoryOrdering, SuperOp,
+    AtomicRmwOp, BinOp, CastOp, CmpPredicate, CounterKind, FloatBinOp, FloatCastOp, FloatIntBinOp, FloatPredicate,
+    FloatRoundToIntOp, FloatTernaryOp, FloatUnaryOp, FpStateKind, HandlerSemantic, IntOverflowOp, IntTernaryOp,
+    IntUnaryOp, IsaProfile, MemoryOrdering, SuperOp,
 };
 use crate::profile::LoweringProfile;
 use std::collections::HashMap;
@@ -68,6 +69,64 @@ pub enum VmInstruction {
         /// 结果位宽，LLVM intrinsic 当前固定为 64。
         width: u8,
     },
+    /// 读取 LLVM `vscale` 目标运行时常量并写入 `x` 寄存器。
+    ReadVScale {
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 结果位宽，当前 translator 接受 i1/i8/i16/i32/i64。
+        width: u8,
+    },
+    /// 读取 LLVM 当前浮点 rounding mode 并写入 `x` 寄存器。
+    ReadRounding {
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 结果位宽，LLVM intrinsic 固定返回 i32。
+        width: u8,
+    },
+    /// 读取 C/LLVM `FLT_ROUNDS` 当前舍入方向并写入 `x` 寄存器。
+    ReadFltRounds {
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 结果位宽，LLVM intrinsic 固定返回 i32。
+        width: u8,
+    },
+    /// 设置 LLVM 当前浮点 rounding mode。
+    WriteRounding {
+        /// 源 `x` 寄存器。
+        src: u8,
+        /// 源值位宽，当前固定为 32。
+        width: u8,
+    },
+    /// 读取 LLVM 浮点环境状态并写入 `x` 寄存器。
+    ReadFpState {
+        /// 状态类别。
+        kind: FpStateKind,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 结果位宽。
+        width: u8,
+    },
+    /// 写回 LLVM 浮点环境状态。
+    WriteFpState {
+        /// 状态类别。
+        kind: FpStateKind,
+        /// 源 `x` 寄存器。
+        src: u8,
+        /// 源值位宽。
+        width: u8,
+    },
+    /// 重置 LLVM 浮点环境状态。
+    ResetFpState {
+        /// 状态类别。
+        kind: FpStateKind,
+    },
+    /// 读取 LLVM thread pointer 并写入 `x` 寄存器。
+    ReadThreadPointer {
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 结果位宽，当前固定为 64 位指针 bit。
+        width: u8,
+    },
     /// 保存当前 LLVM 栈状态，返回值作为指针地址写入 `x` 寄存器。
     StackSave {
         /// 目标 `x` 寄存器。
@@ -84,6 +143,28 @@ pub enum VmInstruction {
         start: u8,
         /// 结束地址所在的 `x` 寄存器。
         end: u8,
+    },
+    /// 保留 LLVM `pseudoprobe` intrinsic 的可见采样/PGO 伪探针副作用。
+    PseudoProbe {
+        /// 函数或调用点 GUID。
+        guid: u64,
+        /// 探针索引。
+        index: u64,
+        /// LLVM pseudoprobe 类型。
+        probe_type: u32,
+        /// LLVM pseudoprobe 属性 bitmask。
+        attributes: u64,
+    },
+    /// 执行 LLVM `prefetch` intrinsic，保留源 IR 的显式预取提示。
+    Prefetch {
+        /// 要预取的指针所在的 `x` 寄存器。
+        ptr: u8,
+        /// 读写方向 immarg，0 表示 read，1 表示 write。
+        rw: u8,
+        /// locality immarg，取值范围 0..3。
+        locality: u8,
+        /// cache type immarg，0 表示 instruction，1 表示 data。
+        cache: u8,
     },
     /// 超级指令：先执行整数加法，再与第三个操作数做 xor。
     SuperAddXor {
@@ -133,6 +214,248 @@ pub enum VmInstruction {
         /// 加到已加载值上的寄存器。
         addend: u8,
         /// 加载和加法结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再与寄存器因子做整数乘法。
+    SuperLoadMul {
+        /// 乘法结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 与已加载值相乘的寄存器。
+        factor: u8,
+        /// 加载和乘法结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再除以寄存器无符号除数。
+    SuperLoadUDiv {
+        /// 无符号除法结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 用于除已加载值的无符号除数寄存器。
+        divisor: u8,
+        /// 加载和除法结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再除以寄存器有符号除数。
+    SuperLoadSDiv {
+        /// 有符号除法结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 用于除已加载值的有符号除数寄存器。
+        divisor: u8,
+        /// 加载和除法结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再对寄存器无符号除数取余。
+    SuperLoadURem {
+        /// 无符号取余结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 用于对已加载值取余的无符号除数寄存器。
+        divisor: u8,
+        /// 加载和取余结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再对寄存器有符号除数取余。
+    SuperLoadSRem {
+        /// 有符号取余结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 用于对已加载值取余的有符号除数寄存器。
+        divisor: u8,
+        /// 加载和取余结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再按寄存器移位量左移。
+    SuperLoadShl {
+        /// 左移结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 移位量寄存器。
+        shift: u8,
+        /// 加载和左移结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再按寄存器移位量逻辑右移。
+    SuperLoadLShr {
+        /// 逻辑右移结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 移位量寄存器。
+        shift: u8,
+        /// 加载和逻辑右移结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再按寄存器移位量算术右移。
+    SuperLoadAShr {
+        /// 算术右移结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 移位量寄存器。
+        shift: u8,
+        /// 加载和算术右移结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再与寄存器操作数做有符号最大值。
+    SuperLoadSMax {
+        /// 有符号最大值结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 与已加载值比较的寄存器。
+        rhs: u8,
+        /// 加载和比较结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再与寄存器操作数做有符号最小值。
+    SuperLoadSMin {
+        /// 有符号最小值结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 与已加载值比较的寄存器。
+        rhs: u8,
+        /// 加载和比较结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再与寄存器操作数做无符号最大值。
+    SuperLoadUMax {
+        /// 无符号最大值结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 与已加载值比较的寄存器。
+        rhs: u8,
+        /// 加载和比较结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再与寄存器操作数做无符号最小值。
+    SuperLoadUMin {
+        /// 无符号最小值结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 与已加载值比较的寄存器。
+        rhs: u8,
+        /// 加载和比较结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再做无符号饱和加法。
+    SuperLoadUAddSat {
+        /// 饱和加法结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 与已加载值相加的寄存器。
+        rhs: u8,
+        /// 加载和饱和结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再做无符号饱和减法。
+    SuperLoadUSubSat {
+        /// 饱和减法结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 从已加载值中减去的寄存器。
+        rhs: u8,
+        /// 加载和饱和结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再做有符号饱和加法。
+    SuperLoadSAddSat {
+        /// 饱和加法结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 与已加载值相加的寄存器。
+        rhs: u8,
+        /// 加载和饱和结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再做有符号饱和减法。
+    SuperLoadSSubSat {
+        /// 饱和减法结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 从已加载值中减去的寄存器。
+        rhs: u8,
+        /// 加载和饱和结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再做无符号饱和左移。
+    SuperLoadUShlSat {
+        /// 饱和左移结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 左移位数寄存器。
+        rhs: u8,
+        /// 加载和饱和结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再做有符号饱和左移。
+    SuperLoadSShlSat {
+        /// 饱和左移结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 左移位数寄存器。
+        rhs: u8,
+        /// 加载和饱和结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再与寄存器操作数做整数与。
+    SuperLoadAnd {
+        /// 与运算结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 与已加载值做 and 的寄存器。
+        and_rhs: u8,
+        /// 加载和 and 结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再与寄存器操作数做整数或。
+    SuperLoadOr {
+        /// 或运算结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 与已加载值做 or 的寄存器。
+        or_rhs: u8,
+        /// 加载和 or 结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再减去寄存器减数。
+    SuperLoadSub {
+        /// 减法结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 从已加载值中减去的寄存器。
+        subtrahend: u8,
+        /// 加载和减法结果位宽。
+        width: u8,
+    },
+    /// 超级指令：先从内存读取标量，再与寄存器操作数做整数异或。
+    SuperLoadXor {
+        /// 异或结果目标 `x` 寄存器。
+        dst: u8,
+        /// 被读取的指针寄存器。
+        ptr: u8,
+        /// 与已加载值异或的寄存器。
+        xor_rhs: u8,
+        /// 加载和异或结果位宽。
         width: u8,
     },
     /// 在两个 VM 寄存器之间复制值。
@@ -224,6 +547,19 @@ pub enum VmInstruction {
         /// 浮点位宽，仅支持 32 或 64。
         width: u8,
     },
+    /// 标量浮点/整数混合二元运算，左操作数是浮点 bit，右操作数是整数值。
+    FloatIntBin {
+        /// lowering 选中的后端混合运算。
+        op: FloatIntBinOp,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 浮点左操作数 `x` 寄存器。
+        lhs: u8,
+        /// 整数右操作数 `x` 寄存器。
+        rhs: u8,
+        /// 浮点位宽，仅支持 32 或 64。
+        width: u8,
+    },
     /// 标量浮点一元运算，输入和输出都以原始 bit 存在 `x` 寄存器中。
     FloatUnary {
         /// lowering 选中的后端浮点一元运算。
@@ -261,6 +597,19 @@ pub enum VmInstruction {
         /// 源位宽。
         from_width: u8,
         /// 目标位宽。
+        to_width: u8,
+    },
+    /// 标量浮点到整数取整 intrinsic，输入为浮点 bit，输出为整数值。
+    FloatRoundToInt {
+        /// lowering 选中的后端 round-to-int intrinsic。
+        op: FloatRoundToIntOp,
+        /// 目标 `x` 寄存器。
+        dst: u8,
+        /// 源 `x` 寄存器。
+        src: u8,
+        /// 源浮点位宽。
+        from_width: u8,
+        /// 目标整数位宽。
         to_width: u8,
     },
     /// 标量浮点比较，在 `x` 寄存器中生成 `i1` 值。
@@ -420,6 +769,8 @@ pub enum VmInstruction {
         width: u8,
         /// LLVM atomic ordering 的 VM 编码。
         ordering: MemoryOrdering,
+        /// LLVM atomic syncscope ID，只允许 system 与 singlethread。
+        sync_scope: u8,
     },
     /// 向 `x` 寄存器保存的地址执行标量 atomic store。
     AtomicStore {
@@ -431,6 +782,8 @@ pub enum VmInstruction {
         width: u8,
         /// LLVM atomic ordering 的 VM 编码。
         ordering: MemoryOrdering,
+        /// LLVM atomic syncscope ID，只允许 system 与 singlethread。
+        sync_scope: u8,
     },
     /// 从 `x` 寄存器保存的地址执行标量 volatile atomic load。
     VolatileAtomicLoad {
@@ -442,6 +795,8 @@ pub enum VmInstruction {
         width: u8,
         /// LLVM atomic ordering 的 VM 编码。
         ordering: MemoryOrdering,
+        /// LLVM atomic syncscope ID，只允许 system 与 singlethread。
+        sync_scope: u8,
     },
     /// 向 `x` 寄存器保存的地址执行标量 volatile atomic store。
     VolatileAtomicStore {
@@ -453,6 +808,8 @@ pub enum VmInstruction {
         width: u8,
         /// LLVM atomic ordering 的 VM 编码。
         ordering: MemoryOrdering,
+        /// LLVM atomic syncscope ID，只允许 system 与 singlethread。
+        sync_scope: u8,
     },
     /// 对 `x` 寄存器保存的地址执行标量 atomic read-modify-write，结果是旧值。
     AtomicRmw {
@@ -468,6 +825,8 @@ pub enum VmInstruction {
         width: u8,
         /// LLVM atomic ordering 的 VM 编码。
         ordering: MemoryOrdering,
+        /// LLVM atomic syncscope ID，只允许 system 与 singlethread。
+        sync_scope: u8,
     },
     /// 对 `x` 寄存器保存的地址执行标量 volatile atomic read-modify-write，结果是旧值。
     VolatileAtomicRmw {
@@ -483,6 +842,8 @@ pub enum VmInstruction {
         width: u8,
         /// LLVM atomic ordering 的 VM 编码。
         ordering: MemoryOrdering,
+        /// LLVM atomic syncscope ID，只允许 system 与 singlethread。
+        sync_scope: u8,
     },
     /// 对 `x` 寄存器保存的地址执行 scalar compare-exchange。
     CmpXchg {
@@ -502,6 +863,8 @@ pub enum VmInstruction {
         success_ordering: MemoryOrdering,
         /// LLVM cmpxchg failure ordering 的 VM 编码。
         failure_ordering: MemoryOrdering,
+        /// LLVM atomic syncscope ID，只允许 system 与 singlethread。
+        sync_scope: u8,
     },
     /// 对 `x` 寄存器保存的地址执行 volatile scalar compare-exchange。
     VolatileCmpXchg {
@@ -521,11 +884,15 @@ pub enum VmInstruction {
         success_ordering: MemoryOrdering,
         /// LLVM cmpxchg failure ordering 的 VM 编码。
         failure_ordering: MemoryOrdering,
+        /// LLVM atomic syncscope ID，只允许 system 与 singlethread。
+        sync_scope: u8,
     },
     /// 执行 LLVM atomic fence。
     Fence {
         /// LLVM fence ordering 的 VM 编码。
         ordering: MemoryOrdering,
+        /// LLVM fence syncscope ID，只允许 system 与 singlethread。
+        sync_scope: u8,
     },
     /// 常量字节偏移指针运算。
     Gep {
@@ -598,13 +965,60 @@ impl VmInstruction {
                 kind: CounterKind::Steady,
                 ..
             } => "read_steady",
+            Self::ReadVScale { .. } => "read_vscale",
+            Self::ReadRounding { .. } => "read_rounding",
+            Self::ReadFltRounds { .. } => "read_flt_rounds",
+            Self::WriteRounding { .. } => "write_rounding",
+            Self::ReadFpState {
+                kind: FpStateKind::Env, ..
+            } => "read_fpenv",
+            Self::ReadFpState {
+                kind: FpStateKind::Mode,
+                ..
+            } => "read_fpmode",
+            Self::WriteFpState {
+                kind: FpStateKind::Env, ..
+            } => "write_fpenv",
+            Self::WriteFpState {
+                kind: FpStateKind::Mode,
+                ..
+            } => "write_fpmode",
+            Self::ResetFpState { kind: FpStateKind::Env } => "reset_fpenv",
+            Self::ResetFpState {
+                kind: FpStateKind::Mode,
+            } => "reset_fpmode",
+            Self::ReadThreadPointer { .. } => "read_thread_pointer",
             Self::StackSave { .. } => "stacksave",
             Self::StackRestore { .. } => "stackrestore",
             Self::ClearCache { .. } => "clear_cache",
+            Self::PseudoProbe { .. } => "pseudoprobe",
+            Self::Prefetch { .. } => "prefetch",
             Self::SuperAddXor { .. } => "iadd_xor",
             Self::SuperIcmpBrIf { .. } => "icmp_br_if",
             Self::SuperGepLoad { .. } => "gep_load",
             Self::SuperLoadAdd { .. } => "load_iadd",
+            Self::SuperLoadMul { .. } => "load_imul",
+            Self::SuperLoadUDiv { .. } => "load_iudiv",
+            Self::SuperLoadSDiv { .. } => "load_isdiv",
+            Self::SuperLoadURem { .. } => "load_iurem",
+            Self::SuperLoadSRem { .. } => "load_isrem",
+            Self::SuperLoadShl { .. } => "load_ishl",
+            Self::SuperLoadLShr { .. } => "load_ilshr",
+            Self::SuperLoadAShr { .. } => "load_iashr",
+            Self::SuperLoadSMax { .. } => "load_ismax",
+            Self::SuperLoadSMin { .. } => "load_ismin",
+            Self::SuperLoadUMax { .. } => "load_iumax",
+            Self::SuperLoadUMin { .. } => "load_iumin",
+            Self::SuperLoadUAddSat { .. } => "load_iuadd_sat",
+            Self::SuperLoadUSubSat { .. } => "load_iusub_sat",
+            Self::SuperLoadSAddSat { .. } => "load_isadd_sat",
+            Self::SuperLoadSSubSat { .. } => "load_issub_sat",
+            Self::SuperLoadUShlSat { .. } => "load_iushl_sat",
+            Self::SuperLoadSShlSat { .. } => "load_isshl_sat",
+            Self::SuperLoadAnd { .. } => "load_iand",
+            Self::SuperLoadOr { .. } => "load_ior",
+            Self::SuperLoadSub { .. } => "load_isub",
+            Self::SuperLoadXor { .. } => "load_ixor",
             Self::Mov { .. } => "mov",
             Self::Bin { op, .. } => match op {
                 BinOp::Add => "iadd",
@@ -663,6 +1077,10 @@ impl VmInstruction {
                 FloatBinOp::Minimum => "fminimum",
                 FloatBinOp::Maximum => "fmaximum",
                 FloatBinOp::CopySign => "fcopysign",
+                FloatBinOp::Pow => "fpow",
+            },
+            Self::FloatIntBin { op, .. } => match op {
+                FloatIntBinOp::PowI => "fpowi",
             },
             Self::FloatUnary { op, .. } => match op {
                 FloatUnaryOp::Neg => "fneg",
@@ -676,6 +1094,13 @@ impl VmInstruction {
                 FloatUnaryOp::NearbyInt => "fnearbyint",
                 FloatUnaryOp::Round => "fround",
                 FloatUnaryOp::RoundEven => "froundeven",
+                FloatUnaryOp::Sin => "fsin",
+                FloatUnaryOp::Cos => "fcos",
+                FloatUnaryOp::Exp => "fexp",
+                FloatUnaryOp::Exp2 => "fexp2",
+                FloatUnaryOp::Log => "flog",
+                FloatUnaryOp::Log10 => "flog10",
+                FloatUnaryOp::Log2 => "flog2",
             },
             Self::FloatTernary { op, .. } => match op {
                 FloatTernaryOp::Fma => "ffma",
@@ -686,8 +1111,16 @@ impl VmInstruction {
                 FloatCastOp::UnsignedIntToFloat => "uitofp",
                 FloatCastOp::FloatToSignedInt => "fptosi",
                 FloatCastOp::FloatToUnsignedInt => "fptoui",
+                FloatCastOp::FloatToSignedIntSat => "fptosi_sat",
+                FloatCastOp::FloatToUnsignedIntSat => "fptoui_sat",
                 FloatCastOp::FloatTrunc => "fptrunc",
                 FloatCastOp::FloatExt => "fpext",
+            },
+            Self::FloatRoundToInt { op, .. } => match op {
+                FloatRoundToIntOp::LRint => "flrint",
+                FloatRoundToIntOp::LLRint => "fllrint",
+                FloatRoundToIntOp::LRound => "flround",
+                FloatRoundToIntOp::LLRound => "fllround",
             },
             Self::Fcmp { .. } => "fcmp",
             Self::FloatClass { .. } => "fpclass",
@@ -801,6 +1234,28 @@ pub struct VmFunction {
 /// - `Super(IcmpBrIf)`：`icmp tmp, lhs, rhs` 紧跟使用该 tmp 的 `br_if`。
 /// - `Super(GepLoad)`：`gep tmp, base, offset` 紧跟使用该 tmp 的 `load`。
 /// - `Super(LoadAdd)`：`load tmp, ptr` 紧跟使用该 tmp 的 `iadd`。
+/// - `Super(LoadMul)`：`load tmp, ptr` 紧跟使用该 tmp 的 `imul`。
+/// - `Super(LoadUDiv)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `iudiv`。
+/// - `Super(LoadSDiv)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `isdiv`。
+/// - `Super(LoadURem)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `iurem`。
+/// - `Super(LoadSRem)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `isrem`。
+/// - `Super(LoadShl)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `ishl`。
+/// - `Super(LoadLShr)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `ilshr`。
+/// - `Super(LoadAShr)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `iashr`。
+/// - `Super(LoadSMax)`：`load tmp, ptr` 紧跟使用该 tmp 的 `ismax`。
+/// - `Super(LoadSMin)`：`load tmp, ptr` 紧跟使用该 tmp 的 `ismin`。
+/// - `Super(LoadUMax)`：`load tmp, ptr` 紧跟使用该 tmp 的 `iumax`。
+/// - `Super(LoadUMin)`：`load tmp, ptr` 紧跟使用该 tmp 的 `iumin`。
+/// - `Super(LoadUAddSat)`：`load tmp, ptr` 紧跟使用该 tmp 的 `iuadd_sat`。
+/// - `Super(LoadUSubSat)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `iusub_sat`。
+/// - `Super(LoadSAddSat)`：`load tmp, ptr` 紧跟使用该 tmp 的 `isadd_sat`。
+/// - `Super(LoadSSubSat)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `issub_sat`。
+/// - `Super(LoadUShlSat)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `iushl_sat`。
+/// - `Super(LoadSShlSat)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `isshl_sat`。
+/// - `Super(LoadAnd)`：`load tmp, ptr` 紧跟使用该 tmp 的 `iand`。
+/// - `Super(LoadOr)`：`load tmp, ptr` 紧跟使用该 tmp 的 `ior`。
+/// - `Super(LoadSub)`：`load tmp, ptr` 紧跟使用该 tmp 作为左操作数的 `isub`。
+/// - `Super(LoadXor)`：`load tmp, ptr` 紧跟使用该 tmp 的 `ixor`。
 ///
 /// 如果中间位置是 label target，或临时值还有其它 use，就保持普通指令不变。
 pub fn fuse_superinstructions(function: VmFunction, isa: &IsaProfile, lowering: &LoweringProfile) -> VmFunction {
@@ -822,8 +1277,140 @@ pub fn fuse_superinstructions(function: VmFunction, isa: &IsaProfile, lowering: 
         function
     };
 
-    if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadAdd) {
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadAdd) {
         fuse_load_add(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadMul) {
+        fuse_load_mul(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadUDiv) {
+        fuse_load_udiv(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadSDiv) {
+        fuse_load_sdiv(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadURem) {
+        fuse_load_urem(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadSRem) {
+        fuse_load_srem(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadShl) {
+        fuse_load_shl(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadLShr) {
+        fuse_load_lshr(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadAShr) {
+        fuse_load_ashr(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadSMax) {
+        fuse_load_smax(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadSMin) {
+        fuse_load_smin(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadUMax) {
+        fuse_load_umax(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadUMin) {
+        fuse_load_umin(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadUAddSat) {
+        fuse_load_uadd_sat(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadUSubSat) {
+        fuse_load_usub_sat(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadSAddSat) {
+        fuse_load_sadd_sat(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadSSubSat) {
+        fuse_load_ssub_sat(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadUShlSat) {
+        fuse_load_ushl_sat(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadSShlSat) {
+        fuse_load_sshl_sat(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadAnd) {
+        fuse_load_and(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadOr) {
+        fuse_load_or(function, name)
+    } else {
+        function
+    };
+
+    let function = if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadSub) {
+        fuse_load_sub(function, name)
+    } else {
+        function
+    };
+
+    if let Some(name) = enabled_super_instruction(isa, lowering, SuperOp::LoadXor) {
+        fuse_load_xor(function, name)
     } else {
         function
     }
@@ -836,7 +1423,6 @@ fn enabled_super_instruction<'a>(isa: &'a IsaProfile, lowering: &LoweringProfile
 }
 
 fn fuse_add_xor(function: VmFunction, profile_instruction: &str) -> VmFunction {
-    let read_counts = register_read_counts(&function.instructions);
     let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
     let mut old_to_new = vec![0usize; function.instructions.len() + 1];
     let mut instructions = Vec::with_capacity(function.instructions.len());
@@ -845,7 +1431,7 @@ fn fuse_add_xor(function: VmFunction, profile_instruction: &str) -> VmFunction {
 
     while index < function.instructions.len() {
         old_to_new[index] = instructions.len();
-        if let Some(fused) = try_fuse_add_xor(&function.instructions, &read_counts, &label_targets, index) {
+        if let Some(fused) = try_fuse_add_xor(&function.instructions, &label_targets, index) {
             instructions.push(fused);
             profile_instructions.push(profile_instruction.to_owned());
             index += 2;
@@ -878,7 +1464,6 @@ fn fuse_add_xor(function: VmFunction, profile_instruction: &str) -> VmFunction {
 
 fn try_fuse_add_xor(
     instructions: &[VmInstruction],
-    read_counts: &[usize; 32],
     label_targets: &HashSet<usize>,
     index: usize,
 ) -> Option<VmInstruction> {
@@ -905,7 +1490,11 @@ fn try_fuse_add_xor(
     else {
         return None;
     };
-    if width != xor_width || add_dst != xor_lhs || add_dst == xor_rhs || read_counts[*add_dst as usize] != 1 {
+    if width != xor_width
+        || add_dst != xor_lhs
+        || add_dst == xor_rhs
+        || temporary_read_count_before_next_write(instructions, index + 1, *add_dst) != 1
+    {
         return None;
     }
 
@@ -919,7 +1508,6 @@ fn try_fuse_add_xor(
 }
 
 fn fuse_icmp_br_if(function: VmFunction, profile_instruction: &str) -> VmFunction {
-    let read_counts = register_read_counts(&function.instructions);
     let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
     let mut old_to_new = vec![0usize; function.instructions.len() + 1];
     let mut instructions = Vec::with_capacity(function.instructions.len());
@@ -928,7 +1516,7 @@ fn fuse_icmp_br_if(function: VmFunction, profile_instruction: &str) -> VmFunctio
 
     while index < function.instructions.len() {
         old_to_new[index] = instructions.len();
-        if let Some(fused) = try_fuse_icmp_br_if(&function.instructions, &read_counts, &label_targets, index) {
+        if let Some(fused) = try_fuse_icmp_br_if(&function.instructions, &label_targets, index) {
             instructions.push(fused);
             profile_instructions.push(profile_instruction.to_owned());
             index += 2;
@@ -961,7 +1549,6 @@ fn fuse_icmp_br_if(function: VmFunction, profile_instruction: &str) -> VmFunctio
 
 fn try_fuse_icmp_br_if(
     instructions: &[VmInstruction],
-    read_counts: &[usize; 32],
     label_targets: &HashSet<usize>,
     index: usize,
 ) -> Option<VmInstruction> {
@@ -986,7 +1573,7 @@ fn try_fuse_icmp_br_if(
     else {
         return None;
     };
-    if cmp_dst != cond || read_counts[*cmp_dst as usize] != 1 {
+    if cmp_dst != cond || temporary_read_count_before_next_write(instructions, index + 1, *cmp_dst) != 1 {
         return None;
     }
 
@@ -1001,7 +1588,6 @@ fn try_fuse_icmp_br_if(
 }
 
 fn fuse_gep_load(function: VmFunction, profile_instruction: &str) -> VmFunction {
-    let read_counts = register_read_counts(&function.instructions);
     let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
     let mut old_to_new = vec![0usize; function.instructions.len() + 1];
     let mut instructions = Vec::with_capacity(function.instructions.len());
@@ -1010,7 +1596,7 @@ fn fuse_gep_load(function: VmFunction, profile_instruction: &str) -> VmFunction 
 
     while index < function.instructions.len() {
         old_to_new[index] = instructions.len();
-        if let Some(fused) = try_fuse_gep_load(&function.instructions, &read_counts, &label_targets, index) {
+        if let Some(fused) = try_fuse_gep_load(&function.instructions, &label_targets, index) {
             instructions.push(fused);
             profile_instructions.push(profile_instruction.to_owned());
             index += 2;
@@ -1043,7 +1629,6 @@ fn fuse_gep_load(function: VmFunction, profile_instruction: &str) -> VmFunction 
 
 fn try_fuse_gep_load(
     instructions: &[VmInstruction],
-    read_counts: &[usize; 32],
     label_targets: &HashSet<usize>,
     index: usize,
 ) -> Option<VmInstruction> {
@@ -1061,7 +1646,7 @@ fn try_fuse_gep_load(
     let VmInstruction::Load { dst, ptr, width } = instructions.get(index + 1)? else {
         return None;
     };
-    if gep_dst != ptr || read_counts[*gep_dst as usize] != 1 {
+    if gep_dst != ptr || temporary_read_count_before_next_write(instructions, index + 1, *gep_dst) != 1 {
         return None;
     }
 
@@ -1074,7 +1659,6 @@ fn try_fuse_gep_load(
 }
 
 fn fuse_load_add(function: VmFunction, profile_instruction: &str) -> VmFunction {
-    let read_counts = register_read_counts(&function.instructions);
     let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
     let mut old_to_new = vec![0usize; function.instructions.len() + 1];
     let mut instructions = Vec::with_capacity(function.instructions.len());
@@ -1083,7 +1667,7 @@ fn fuse_load_add(function: VmFunction, profile_instruction: &str) -> VmFunction 
 
     while index < function.instructions.len() {
         old_to_new[index] = instructions.len();
-        if let Some(fused) = try_fuse_load_add(&function.instructions, &read_counts, &label_targets, index) {
+        if let Some(fused) = try_fuse_load_add(&function.instructions, &label_targets, index) {
             instructions.push(fused);
             profile_instructions.push(profile_instruction.to_owned());
             index += 2;
@@ -1116,7 +1700,6 @@ fn fuse_load_add(function: VmFunction, profile_instruction: &str) -> VmFunction 
 
 fn try_fuse_load_add(
     instructions: &[VmInstruction],
-    read_counts: &[usize; 32],
     label_targets: &HashSet<usize>,
     index: usize,
 ) -> Option<VmInstruction> {
@@ -1141,7 +1724,7 @@ fn try_fuse_load_add(
     else {
         return None;
     };
-    if width != add_width || read_counts[*load_dst as usize] != 1 {
+    if width != add_width || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1 {
         return None;
     }
     let addend = if load_dst == lhs {
@@ -1163,16 +1746,1340 @@ fn try_fuse_load_add(
     })
 }
 
-fn register_read_counts(instructions: &[VmInstruction]) -> [usize; 32] {
-    let mut counts = [0usize; 32];
-    for instruction in instructions {
-        for reg in instruction_register_reads(instruction) {
-            if let Some(count) = counts.get_mut(reg as usize) {
-                *count += 1;
-            }
+fn fuse_load_mul(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_mul(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
         }
     }
-    counts
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_mul(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::Mul,
+        dst,
+        lhs,
+        rhs,
+        width: mul_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != mul_width || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1 {
+        return None;
+    }
+    let factor = if load_dst == lhs {
+        *rhs
+    } else if load_dst == rhs {
+        *lhs
+    } else {
+        return None;
+    };
+    if factor == *load_dst {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadMul {
+        dst: *dst,
+        ptr: *ptr,
+        factor,
+        width: *width,
+    })
+}
+
+fn fuse_load_udiv(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_udiv(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_udiv(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::UDiv,
+        dst,
+        lhs,
+        rhs,
+        width: div_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != div_width
+        || load_dst != lhs
+        || load_dst == rhs
+        || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1
+    {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadUDiv {
+        dst: *dst,
+        ptr: *ptr,
+        divisor: *rhs,
+        width: *width,
+    })
+}
+
+fn fuse_load_sdiv(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_sdiv(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_sdiv(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::SDiv,
+        dst,
+        lhs,
+        rhs,
+        width: div_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != div_width
+        || load_dst != lhs
+        || load_dst == rhs
+        || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1
+    {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadSDiv {
+        dst: *dst,
+        ptr: *ptr,
+        divisor: *rhs,
+        width: *width,
+    })
+}
+
+fn fuse_load_urem(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_urem(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_urem(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::URem,
+        dst,
+        lhs,
+        rhs,
+        width: rem_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != rem_width
+        || load_dst != lhs
+        || load_dst == rhs
+        || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1
+    {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadURem {
+        dst: *dst,
+        ptr: *ptr,
+        divisor: *rhs,
+        width: *width,
+    })
+}
+
+fn fuse_load_srem(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_srem(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_srem(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::SRem,
+        dst,
+        lhs,
+        rhs,
+        width: rem_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != rem_width
+        || load_dst != lhs
+        || load_dst == rhs
+        || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1
+    {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadSRem {
+        dst: *dst,
+        ptr: *ptr,
+        divisor: *rhs,
+        width: *width,
+    })
+}
+
+fn fuse_load_shl(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_shl(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_shl(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::Shl,
+        dst,
+        lhs,
+        rhs,
+        width: shl_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != shl_width
+        || load_dst != lhs
+        || load_dst == rhs
+        || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1
+    {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadShl {
+        dst: *dst,
+        ptr: *ptr,
+        shift: *rhs,
+        width: *width,
+    })
+}
+
+fn fuse_load_lshr(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_lshr(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_lshr(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::LShr,
+        dst,
+        lhs,
+        rhs,
+        width: lshr_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != lshr_width
+        || load_dst != lhs
+        || load_dst == rhs
+        || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1
+    {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadLShr {
+        dst: *dst,
+        ptr: *ptr,
+        shift: *rhs,
+        width: *width,
+    })
+}
+
+fn fuse_load_ashr(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_ashr(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_ashr(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::AShr,
+        dst,
+        lhs,
+        rhs,
+        width: ashr_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != ashr_width
+        || load_dst != lhs
+        || load_dst == rhs
+        || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1
+    {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadAShr {
+        dst: *dst,
+        ptr: *ptr,
+        shift: *rhs,
+        width: *width,
+    })
+}
+
+fn fuse_load_smax(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    fuse_load_minmax(function, profile_instruction, BinOp::SMax)
+}
+
+fn fuse_load_smin(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    fuse_load_minmax(function, profile_instruction, BinOp::SMin)
+}
+
+fn fuse_load_umax(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    fuse_load_minmax(function, profile_instruction, BinOp::UMax)
+}
+
+fn fuse_load_umin(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    fuse_load_minmax(function, profile_instruction, BinOp::UMin)
+}
+
+fn fuse_load_uadd_sat(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    fuse_load_saturating(function, profile_instruction, BinOp::UAddSat, true)
+}
+
+fn fuse_load_usub_sat(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    fuse_load_saturating(function, profile_instruction, BinOp::USubSat, false)
+}
+
+fn fuse_load_sadd_sat(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    fuse_load_saturating(function, profile_instruction, BinOp::SAddSat, true)
+}
+
+fn fuse_load_ssub_sat(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    fuse_load_saturating(function, profile_instruction, BinOp::SSubSat, false)
+}
+
+fn fuse_load_ushl_sat(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    fuse_load_saturating(function, profile_instruction, BinOp::UShlSat, false)
+}
+
+fn fuse_load_sshl_sat(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    fuse_load_saturating(function, profile_instruction, BinOp::SShlSat, false)
+}
+
+fn fuse_load_minmax(function: VmFunction, profile_instruction: &str, op: BinOp) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_minmax(&function.instructions, &label_targets, index, op) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_minmax(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+    expected_op: BinOp,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op,
+        dst,
+        lhs,
+        rhs,
+        width: bin_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if *op != expected_op
+        || width != bin_width
+        || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1
+    {
+        return None;
+    }
+    let rhs = if load_dst == lhs {
+        *rhs
+    } else if load_dst == rhs {
+        *lhs
+    } else {
+        return None;
+    };
+    if rhs == *load_dst {
+        return None;
+    }
+
+    match expected_op {
+        BinOp::SMax => Some(VmInstruction::SuperLoadSMax {
+            dst: *dst,
+            ptr: *ptr,
+            rhs,
+            width: *width,
+        }),
+        BinOp::SMin => Some(VmInstruction::SuperLoadSMin {
+            dst: *dst,
+            ptr: *ptr,
+            rhs,
+            width: *width,
+        }),
+        BinOp::UMax => Some(VmInstruction::SuperLoadUMax {
+            dst: *dst,
+            ptr: *ptr,
+            rhs,
+            width: *width,
+        }),
+        BinOp::UMin => Some(VmInstruction::SuperLoadUMin {
+            dst: *dst,
+            ptr: *ptr,
+            rhs,
+            width: *width,
+        }),
+        BinOp::Add
+        | BinOp::Sub
+        | BinOp::Mul
+        | BinOp::UDiv
+        | BinOp::SDiv
+        | BinOp::URem
+        | BinOp::SRem
+        | BinOp::Xor
+        | BinOp::And
+        | BinOp::Or
+        | BinOp::Shl
+        | BinOp::LShr
+        | BinOp::AShr
+        | BinOp::UAddSat
+        | BinOp::USubSat
+        | BinOp::SAddSat
+        | BinOp::SSubSat
+        | BinOp::UShlSat
+        | BinOp::SShlSat => None,
+    }
+}
+
+fn fuse_load_saturating(
+    function: VmFunction,
+    profile_instruction: &str,
+    op: BinOp,
+    allow_commuted: bool,
+) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_saturating(&function.instructions, &label_targets, index, op, allow_commuted)
+        {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| (label, old_to_new[pc]))
+        .collect();
+
+    VmFunction {
+        instructions,
+        profile_instructions,
+        label_pcs,
+        ..function
+    }
+}
+
+fn try_fuse_load_saturating(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+    expected_op: BinOp,
+    allow_commuted: bool,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op,
+        dst,
+        lhs,
+        rhs,
+        width: bin_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if *op != expected_op
+        || width != bin_width
+        || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1
+    {
+        return None;
+    }
+    let rhs = if load_dst == lhs {
+        *rhs
+    } else if allow_commuted && load_dst == rhs {
+        *lhs
+    } else {
+        return None;
+    };
+    if rhs == *load_dst {
+        return None;
+    }
+
+    match expected_op {
+        BinOp::UAddSat => Some(VmInstruction::SuperLoadUAddSat {
+            dst: *dst,
+            ptr: *ptr,
+            rhs,
+            width: *width,
+        }),
+        BinOp::USubSat => Some(VmInstruction::SuperLoadUSubSat {
+            dst: *dst,
+            ptr: *ptr,
+            rhs,
+            width: *width,
+        }),
+        BinOp::SAddSat => Some(VmInstruction::SuperLoadSAddSat {
+            dst: *dst,
+            ptr: *ptr,
+            rhs,
+            width: *width,
+        }),
+        BinOp::SSubSat => Some(VmInstruction::SuperLoadSSubSat {
+            dst: *dst,
+            ptr: *ptr,
+            rhs,
+            width: *width,
+        }),
+        BinOp::UShlSat => Some(VmInstruction::SuperLoadUShlSat {
+            dst: *dst,
+            ptr: *ptr,
+            rhs,
+            width: *width,
+        }),
+        BinOp::SShlSat => Some(VmInstruction::SuperLoadSShlSat {
+            dst: *dst,
+            ptr: *ptr,
+            rhs,
+            width: *width,
+        }),
+        BinOp::Add
+        | BinOp::Sub
+        | BinOp::Mul
+        | BinOp::UDiv
+        | BinOp::SDiv
+        | BinOp::URem
+        | BinOp::SRem
+        | BinOp::Xor
+        | BinOp::And
+        | BinOp::Or
+        | BinOp::Shl
+        | BinOp::LShr
+        | BinOp::AShr
+        | BinOp::SMax
+        | BinOp::SMin
+        | BinOp::UMax
+        | BinOp::UMin => None,
+    }
+}
+
+fn fuse_load_and(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_and(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_and(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::And,
+        dst,
+        lhs,
+        rhs,
+        width: and_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != and_width || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1 {
+        return None;
+    }
+    let and_rhs = if load_dst == lhs {
+        *rhs
+    } else if load_dst == rhs {
+        *lhs
+    } else {
+        return None;
+    };
+    if and_rhs == *load_dst {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadAnd {
+        dst: *dst,
+        ptr: *ptr,
+        and_rhs,
+        width: *width,
+    })
+}
+
+fn fuse_load_or(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_or(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_or(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::Or,
+        dst,
+        lhs,
+        rhs,
+        width: or_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != or_width || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1 {
+        return None;
+    }
+    let or_rhs = if load_dst == lhs {
+        *rhs
+    } else if load_dst == rhs {
+        *lhs
+    } else {
+        return None;
+    };
+    if or_rhs == *load_dst {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadOr {
+        dst: *dst,
+        ptr: *ptr,
+        or_rhs,
+        width: *width,
+    })
+}
+
+fn fuse_load_sub(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_sub(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_sub(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::Sub,
+        dst,
+        lhs,
+        rhs,
+        width: sub_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != sub_width
+        || load_dst != lhs
+        || load_dst == rhs
+        || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1
+    {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadSub {
+        dst: *dst,
+        ptr: *ptr,
+        subtrahend: *rhs,
+        width: *width,
+    })
+}
+
+fn fuse_load_xor(function: VmFunction, profile_instruction: &str) -> VmFunction {
+    let label_targets = function.label_pcs.values().copied().collect::<HashSet<_>>();
+    let mut old_to_new = vec![0usize; function.instructions.len() + 1];
+    let mut instructions = Vec::with_capacity(function.instructions.len());
+    let mut profile_instructions = Vec::with_capacity(function.profile_instructions.len());
+    let mut index = 0;
+
+    while index < function.instructions.len() {
+        old_to_new[index] = instructions.len();
+        if let Some(fused) = try_fuse_load_xor(&function.instructions, &label_targets, index) {
+            instructions.push(fused);
+            profile_instructions.push(profile_instruction.to_owned());
+            index += 2;
+        } else {
+            instructions.push(function.instructions[index].clone());
+            profile_instructions.push(function.profile_instructions[index].clone());
+            index += 1;
+        }
+    }
+    old_to_new[function.instructions.len()] = instructions.len();
+
+    let label_pcs = function
+        .label_pcs
+        .into_iter()
+        .map(|(label, pc)| {
+            let new_pc = old_to_new.get(pc).copied().unwrap_or(instructions.len());
+            (label, new_pc)
+        })
+        .collect();
+
+    VmFunction {
+        name: function.name,
+        vreg_count: function.vreg_count,
+        return_width: function.return_width,
+        instructions,
+        profile_instructions,
+        label_pcs,
+    }
+}
+
+fn try_fuse_load_xor(
+    instructions: &[VmInstruction],
+    label_targets: &HashSet<usize>,
+    index: usize,
+) -> Option<VmInstruction> {
+    if label_targets.contains(&(index + 1)) {
+        return None;
+    }
+    let VmInstruction::Load {
+        dst: load_dst,
+        ptr,
+        width,
+    } = instructions.get(index)?
+    else {
+        return None;
+    };
+    let VmInstruction::Bin {
+        op: BinOp::Xor,
+        dst,
+        lhs,
+        rhs,
+        width: xor_width,
+    } = instructions.get(index + 1)?
+    else {
+        return None;
+    };
+    if width != xor_width || temporary_read_count_before_next_write(instructions, index + 1, *load_dst) != 1 {
+        return None;
+    }
+    let xor_rhs = if load_dst == lhs {
+        *rhs
+    } else if load_dst == rhs {
+        *lhs
+    } else {
+        return None;
+    };
+    if xor_rhs == *load_dst {
+        return None;
+    }
+
+    Some(VmInstruction::SuperLoadXor {
+        dst: *dst,
+        ptr: *ptr,
+        xor_rhs,
+        width: *width,
+    })
+}
+
+fn temporary_read_count_before_next_write(instructions: &[VmInstruction], start_index: usize, reg: u8) -> usize {
+    let mut reads = 0;
+    for instruction in instructions.iter().skip(start_index) {
+        reads += instruction_register_reads(instruction)
+            .into_iter()
+            .filter(|read| *read == reg)
+            .count();
+        if instruction_register_writes(instruction).contains(&reg) {
+            break;
+        }
+    }
+    reads
 }
 
 fn instruction_register_reads(instruction: &VmInstruction) -> Vec<u8> {
@@ -1183,19 +3090,43 @@ fn instruction_register_reads(instruction: &VmInstruction) -> Vec<u8> {
         VmInstruction::SuperIcmpBrIf { lhs, rhs, .. } => vec![*lhs, *rhs],
         VmInstruction::SuperGepLoad { base, .. } => vec![*base],
         VmInstruction::SuperLoadAdd { ptr, addend, .. } => vec![*ptr, *addend],
+        VmInstruction::SuperLoadMul { ptr, factor, .. } => vec![*ptr, *factor],
+        VmInstruction::SuperLoadUDiv { ptr, divisor, .. } => vec![*ptr, *divisor],
+        VmInstruction::SuperLoadSDiv { ptr, divisor, .. } => vec![*ptr, *divisor],
+        VmInstruction::SuperLoadURem { ptr, divisor, .. } => vec![*ptr, *divisor],
+        VmInstruction::SuperLoadSRem { ptr, divisor, .. } => vec![*ptr, *divisor],
+        VmInstruction::SuperLoadShl { ptr, shift, .. } => vec![*ptr, *shift],
+        VmInstruction::SuperLoadLShr { ptr, shift, .. } => vec![*ptr, *shift],
+        VmInstruction::SuperLoadAShr { ptr, shift, .. } => vec![*ptr, *shift],
+        VmInstruction::SuperLoadSMax { ptr, rhs, .. }
+        | VmInstruction::SuperLoadSMin { ptr, rhs, .. }
+        | VmInstruction::SuperLoadUMax { ptr, rhs, .. }
+        | VmInstruction::SuperLoadUMin { ptr, rhs, .. }
+        | VmInstruction::SuperLoadUAddSat { ptr, rhs, .. }
+        | VmInstruction::SuperLoadUSubSat { ptr, rhs, .. }
+        | VmInstruction::SuperLoadSAddSat { ptr, rhs, .. }
+        | VmInstruction::SuperLoadSSubSat { ptr, rhs, .. }
+        | VmInstruction::SuperLoadUShlSat { ptr, rhs, .. }
+        | VmInstruction::SuperLoadSShlSat { ptr, rhs, .. } => vec![*ptr, *rhs],
+        VmInstruction::SuperLoadAnd { ptr, and_rhs, .. } => vec![*ptr, *and_rhs],
+        VmInstruction::SuperLoadOr { ptr, or_rhs, .. } => vec![*ptr, *or_rhs],
+        VmInstruction::SuperLoadSub { ptr, subtrahend, .. } => vec![*ptr, *subtrahend],
+        VmInstruction::SuperLoadXor { ptr, xor_rhs, .. } => vec![*ptr, *xor_rhs],
         VmInstruction::IntUnary { src, .. } => vec![*src],
         VmInstruction::IntTernary { lhs, rhs, third, .. } => vec![*lhs, *rhs, *third],
         VmInstruction::IntOverflow { lhs, rhs, .. } => vec![*lhs, *rhs],
         VmInstruction::Icmp { lhs, rhs, .. } | VmInstruction::Fcmp { lhs, rhs, .. } => vec![*lhs, *rhs],
-        VmInstruction::FloatBin { lhs, rhs, .. } => vec![*lhs, *rhs],
+        VmInstruction::FloatBin { lhs, rhs, .. } | VmInstruction::FloatIntBin { lhs, rhs, .. } => vec![*lhs, *rhs],
         VmInstruction::FloatTernary { lhs, rhs, third, .. } => vec![*lhs, *rhs, *third],
         VmInstruction::FloatUnary { src, .. }
         | VmInstruction::FloatCast { src, .. }
+        | VmInstruction::FloatRoundToInt { src, .. }
         | VmInstruction::FloatClass { src, .. } => vec![*src],
         VmInstruction::Cast { src, .. } => vec![*src],
         VmInstruction::DynamicAlloca { count, .. } => vec![*count],
         VmInstruction::StackRestore { ptr } => vec![*ptr],
         VmInstruction::ClearCache { start, end } => vec![*start, *end],
+        VmInstruction::Prefetch { ptr, .. } => vec![*ptr],
         VmInstruction::Load { ptr, .. } => vec![*ptr],
         VmInstruction::Store { src, ptr, .. } => vec![*src, *ptr],
         VmInstruction::VolatileLoad { ptr, .. } => vec![*ptr],
@@ -1220,12 +3151,20 @@ fn instruction_register_reads(instruction: &VmInstruction) -> Vec<u8> {
         VmInstruction::Gep { base, .. } => vec![*base],
         VmInstruction::CallNative { args, .. } => args.clone(),
         VmInstruction::BrCond { cond, .. } => vec![*cond],
+        VmInstruction::WriteRounding { src, .. } | VmInstruction::WriteFpState { src, .. } => vec![*src],
         VmInstruction::Ret { src } => vec![*src],
         VmInstruction::MovImm { .. }
         | VmInstruction::ConstLoad { .. }
         | VmInstruction::ReadCounter { .. }
+        | VmInstruction::ReadVScale { .. }
+        | VmInstruction::ReadRounding { .. }
+        | VmInstruction::ReadFltRounds { .. }
+        | VmInstruction::ReadFpState { .. }
+        | VmInstruction::ResetFpState { .. }
+        | VmInstruction::ReadThreadPointer { .. }
         | VmInstruction::StackSave { .. }
         | VmInstruction::Alloca { .. }
+        | VmInstruction::PseudoProbe { .. }
         | VmInstruction::Fence { .. }
         | VmInstruction::SideEffect
         | VmInstruction::Br { .. }
@@ -1234,6 +3173,102 @@ fn instruction_register_reads(instruction: &VmInstruction) -> Vec<u8> {
         | VmInstruction::VmRet
         | VmInstruction::Unreachable
         | VmInstruction::Trap
+        | VmInstruction::RetVoid => Vec::new(),
+    }
+}
+
+fn instruction_register_writes(instruction: &VmInstruction) -> Vec<u8> {
+    match instruction {
+        VmInstruction::MovImm { dst, .. }
+        | VmInstruction::ConstLoad { dst, .. }
+        | VmInstruction::ReadCounter { dst, .. }
+        | VmInstruction::ReadVScale { dst, .. }
+        | VmInstruction::ReadRounding { dst, .. }
+        | VmInstruction::ReadFltRounds { dst, .. }
+        | VmInstruction::ReadFpState { dst, .. }
+        | VmInstruction::ReadThreadPointer { dst, .. }
+        | VmInstruction::StackSave { dst }
+        | VmInstruction::SuperAddXor { dst, .. }
+        | VmInstruction::SuperGepLoad { dst, .. }
+        | VmInstruction::SuperLoadAdd { dst, .. }
+        | VmInstruction::SuperLoadMul { dst, .. }
+        | VmInstruction::SuperLoadUDiv { dst, .. }
+        | VmInstruction::SuperLoadSDiv { dst, .. }
+        | VmInstruction::SuperLoadURem { dst, .. }
+        | VmInstruction::SuperLoadSRem { dst, .. }
+        | VmInstruction::SuperLoadShl { dst, .. }
+        | VmInstruction::SuperLoadLShr { dst, .. }
+        | VmInstruction::SuperLoadAShr { dst, .. }
+        | VmInstruction::SuperLoadSMax { dst, .. }
+        | VmInstruction::SuperLoadSMin { dst, .. }
+        | VmInstruction::SuperLoadUMax { dst, .. }
+        | VmInstruction::SuperLoadUMin { dst, .. }
+        | VmInstruction::SuperLoadUAddSat { dst, .. }
+        | VmInstruction::SuperLoadUSubSat { dst, .. }
+        | VmInstruction::SuperLoadSAddSat { dst, .. }
+        | VmInstruction::SuperLoadSSubSat { dst, .. }
+        | VmInstruction::SuperLoadUShlSat { dst, .. }
+        | VmInstruction::SuperLoadSShlSat { dst, .. }
+        | VmInstruction::SuperLoadAnd { dst, .. }
+        | VmInstruction::SuperLoadOr { dst, .. }
+        | VmInstruction::SuperLoadSub { dst, .. }
+        | VmInstruction::SuperLoadXor { dst, .. }
+        | VmInstruction::Mov { dst, .. }
+        | VmInstruction::Bin { dst, .. }
+        | VmInstruction::IntUnary { dst, .. }
+        | VmInstruction::IntTernary { dst, .. }
+        | VmInstruction::Icmp { dst, .. }
+        | VmInstruction::FloatBin { dst, .. }
+        | VmInstruction::FloatIntBin { dst, .. }
+        | VmInstruction::FloatUnary { dst, .. }
+        | VmInstruction::FloatTernary { dst, .. }
+        | VmInstruction::FloatCast { dst, .. }
+        | VmInstruction::FloatRoundToInt { dst, .. }
+        | VmInstruction::Fcmp { dst, .. }
+        | VmInstruction::FloatClass { dst, .. }
+        | VmInstruction::Cast { dst, .. }
+        | VmInstruction::Alloca { dst, .. }
+        | VmInstruction::DynamicAlloca { dst, .. }
+        | VmInstruction::Load { dst, .. }
+        | VmInstruction::VolatileLoad { dst, .. }
+        | VmInstruction::AtomicLoad { dst, .. }
+        | VmInstruction::VolatileAtomicLoad { dst, .. }
+        | VmInstruction::AtomicRmw { dst, .. }
+        | VmInstruction::VolatileAtomicRmw { dst, .. }
+        | VmInstruction::Gep { dst, .. } => vec![*dst],
+        VmInstruction::IntOverflow { dst, overflow, .. } => vec![*dst, *overflow],
+        VmInstruction::CmpXchg { old, success, .. } | VmInstruction::VolatileCmpXchg { old, success, .. } => {
+            vec![*old, *success]
+        },
+        VmInstruction::CallNative { returns, .. } => returns.iter().map(|ret| ret.dst).collect(),
+        VmInstruction::StackRestore { .. }
+        | VmInstruction::WriteRounding { .. }
+        | VmInstruction::WriteFpState { .. }
+        | VmInstruction::ResetFpState { .. }
+        | VmInstruction::ClearCache { .. }
+        | VmInstruction::PseudoProbe { .. }
+        | VmInstruction::Prefetch { .. }
+        | VmInstruction::SuperIcmpBrIf { .. }
+        | VmInstruction::Store { .. }
+        | VmInstruction::VolatileStore { .. }
+        | VmInstruction::MemcpyDynamic { .. }
+        | VmInstruction::MemmoveDynamic { .. }
+        | VmInstruction::MemsetDynamic { .. }
+        | VmInstruction::VolatileMemcpyDynamic { .. }
+        | VmInstruction::VolatileMemmoveDynamic { .. }
+        | VmInstruction::VolatileMemsetDynamic { .. }
+        | VmInstruction::AtomicStore { .. }
+        | VmInstruction::VolatileAtomicStore { .. }
+        | VmInstruction::Fence { .. }
+        | VmInstruction::SideEffect
+        | VmInstruction::Nop
+        | VmInstruction::Br { .. }
+        | VmInstruction::BrCond { .. }
+        | VmInstruction::VmCall { .. }
+        | VmInstruction::VmRet
+        | VmInstruction::Unreachable
+        | VmInstruction::Trap
+        | VmInstruction::Ret { .. }
         | VmInstruction::RetVoid => Vec::new(),
     }
 }
@@ -1378,12 +3413,44 @@ impl VmFunctionBuilder {
                 VmInstruction::MovImm { .. }
                 | VmInstruction::ConstLoad { .. }
                 | VmInstruction::ReadCounter { .. }
+                | VmInstruction::ReadVScale { .. }
+                | VmInstruction::ReadRounding { .. }
+                | VmInstruction::ReadFltRounds { .. }
+                | VmInstruction::WriteRounding { .. }
+                | VmInstruction::ReadFpState { .. }
+                | VmInstruction::WriteFpState { .. }
+                | VmInstruction::ResetFpState { .. }
+                | VmInstruction::ReadThreadPointer { .. }
                 | VmInstruction::StackSave { .. }
                 | VmInstruction::StackRestore { .. }
                 | VmInstruction::ClearCache { .. }
+                | VmInstruction::PseudoProbe { .. }
+                | VmInstruction::Prefetch { .. }
                 | VmInstruction::SuperAddXor { .. }
                 | VmInstruction::SuperGepLoad { .. }
                 | VmInstruction::SuperLoadAdd { .. }
+                | VmInstruction::SuperLoadMul { .. }
+                | VmInstruction::SuperLoadUDiv { .. }
+                | VmInstruction::SuperLoadSDiv { .. }
+                | VmInstruction::SuperLoadURem { .. }
+                | VmInstruction::SuperLoadSRem { .. }
+                | VmInstruction::SuperLoadShl { .. }
+                | VmInstruction::SuperLoadLShr { .. }
+                | VmInstruction::SuperLoadAShr { .. }
+                | VmInstruction::SuperLoadSMax { .. }
+                | VmInstruction::SuperLoadSMin { .. }
+                | VmInstruction::SuperLoadUMax { .. }
+                | VmInstruction::SuperLoadUMin { .. }
+                | VmInstruction::SuperLoadUAddSat { .. }
+                | VmInstruction::SuperLoadUSubSat { .. }
+                | VmInstruction::SuperLoadSAddSat { .. }
+                | VmInstruction::SuperLoadSSubSat { .. }
+                | VmInstruction::SuperLoadUShlSat { .. }
+                | VmInstruction::SuperLoadSShlSat { .. }
+                | VmInstruction::SuperLoadAnd { .. }
+                | VmInstruction::SuperLoadOr { .. }
+                | VmInstruction::SuperLoadSub { .. }
+                | VmInstruction::SuperLoadXor { .. }
                 | VmInstruction::Mov { .. }
                 | VmInstruction::Bin { .. }
                 | VmInstruction::IntUnary { .. }
@@ -1391,9 +3458,11 @@ impl VmFunctionBuilder {
                 | VmInstruction::IntOverflow { .. }
                 | VmInstruction::Icmp { .. }
                 | VmInstruction::FloatBin { .. }
+                | VmInstruction::FloatIntBin { .. }
                 | VmInstruction::FloatUnary { .. }
                 | VmInstruction::FloatTernary { .. }
                 | VmInstruction::FloatCast { .. }
+                | VmInstruction::FloatRoundToInt { .. }
                 | VmInstruction::Fcmp { .. }
                 | VmInstruction::FloatClass { .. }
                 | VmInstruction::Cast { .. }

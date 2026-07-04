@@ -129,6 +129,50 @@ pub enum SuperOp {
     GepLoad,
     /// 先从指针读取标量，再与寄存器加数做整数加法。
     LoadAdd,
+    /// 先从指针读取标量，再与寄存器因子做整数乘法。
+    LoadMul,
+    /// 先从指针读取标量，再除以寄存器无符号除数。
+    LoadUDiv,
+    /// 先从指针读取标量，再除以寄存器有符号除数。
+    LoadSDiv,
+    /// 先从指针读取标量，再对寄存器无符号除数取余。
+    LoadURem,
+    /// 先从指针读取标量，再对寄存器有符号除数取余。
+    LoadSRem,
+    /// 先从指针读取标量，再按寄存器移位量左移。
+    LoadShl,
+    /// 先从指针读取标量，再按寄存器移位量逻辑右移。
+    LoadLShr,
+    /// 先从指针读取标量，再按寄存器移位量算术右移。
+    LoadAShr,
+    /// 先从指针读取标量，再与寄存器操作数做有符号最大值。
+    LoadSMax,
+    /// 先从指针读取标量，再与寄存器操作数做有符号最小值。
+    LoadSMin,
+    /// 先从指针读取标量，再与寄存器操作数做无符号最大值。
+    LoadUMax,
+    /// 先从指针读取标量，再与寄存器操作数做无符号最小值。
+    LoadUMin,
+    /// 先从指针读取标量，再与寄存器操作数做无符号饱和加法。
+    LoadUAddSat,
+    /// 先从指针读取标量，再减去寄存器操作数并按无符号范围饱和。
+    LoadUSubSat,
+    /// 先从指针读取标量，再与寄存器操作数做有符号饱和加法。
+    LoadSAddSat,
+    /// 先从指针读取标量，再减去寄存器操作数并按有符号范围饱和。
+    LoadSSubSat,
+    /// 先从指针读取标量，再按寄存器移位量做无符号饱和左移。
+    LoadUShlSat,
+    /// 先从指针读取标量，再按寄存器移位量做有符号饱和左移。
+    LoadSShlSat,
+    /// 先从指针读取标量，再与寄存器操作数做整数与。
+    LoadAnd,
+    /// 先从指针读取标量，再与寄存器操作数做整数或。
+    LoadOr,
+    /// 先从指针读取标量，再减去寄存器减数。
+    LoadSub,
+    /// 先从指针读取标量，再与寄存器操作数做整数异或。
+    LoadXor,
 }
 
 /// 内置 VM profile 支持的硬件/系统计数器读取。
@@ -138,6 +182,15 @@ pub enum CounterKind {
     Cycle,
     /// LLVM `llvm.readsteadycounter`，读取单调 steady counter。
     Steady,
+}
+
+/// 内置 VM profile 支持的 LLVM 浮点环境状态类别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FpStateKind {
+    /// LLVM floating-point environment。
+    Env,
+    /// LLVM floating-point mode。
+    Mode,
 }
 
 /// 内置 VM profile 支持的标量浮点 ALU 操作。
@@ -163,6 +216,15 @@ pub enum FloatBinOp {
     Maximum,
     /// 复制第二个 operand 的符号位到第一个 operand，等价于 LLVM `llvm.copysign`。
     CopySign,
+    /// 浮点幂函数，等价于 LLVM `llvm.pow` intrinsic。
+    Pow,
+}
+
+/// 内置 VM profile 支持的标量浮点/整数混合二元操作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FloatIntBinOp {
+    /// 浮点底数和 i32 整数指数的幂函数，等价于 LLVM `llvm.powi` intrinsic。
+    PowI,
 }
 
 /// 内置 VM profile 支持的标量浮点一元操作。
@@ -190,6 +252,20 @@ pub enum FloatUnaryOp {
     Round,
     /// 四舍五入到最近偶数，等价于 LLVM `llvm.roundeven`。
     RoundEven,
+    /// 正弦，等价于 LLVM `llvm.sin`。
+    Sin,
+    /// 余弦，等价于 LLVM `llvm.cos`。
+    Cos,
+    /// 自然指数，等价于 LLVM `llvm.exp`。
+    Exp,
+    /// 以 2 为底的指数，等价于 LLVM `llvm.exp2`。
+    Exp2,
+    /// 自然对数，等价于 LLVM `llvm.log`。
+    Log,
+    /// 以 10 为底的对数，等价于 LLVM `llvm.log10`。
+    Log10,
+    /// 以 2 为底的对数，等价于 LLVM `llvm.log2`。
+    Log2,
 }
 
 /// 内置 VM profile 支持的标量浮点三元操作。
@@ -212,10 +288,27 @@ pub enum FloatCastOp {
     FloatToSignedInt,
     /// IEEE 浮点转无符号整数，等价于 LLVM `fptoui`。
     FloatToUnsignedInt,
+    /// IEEE 浮点饱和转有符号整数，等价于 LLVM `fptosi.sat` intrinsic。
+    FloatToSignedIntSat,
+    /// IEEE 浮点饱和转无符号整数，等价于 LLVM `fptoui.sat` intrinsic。
+    FloatToUnsignedIntSat,
     /// IEEE 浮点截断，等价于 LLVM `fptrunc`。
     FloatTrunc,
     /// IEEE 浮点扩展，等价于 LLVM `fpext`。
     FloatExt,
+}
+
+/// 内置 VM profile 支持的标量浮点到整数取整 intrinsic。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FloatRoundToIntOp {
+    /// 按当前舍入模式把浮点转为 C `long` 语义整数，等价于 LLVM `llvm.lrint`。
+    LRint,
+    /// 按当前舍入模式把浮点转为 C `long long` 语义整数，等价于 LLVM `llvm.llrint`。
+    LLRint,
+    /// 按远离零规则把浮点转为 C `long` 语义整数，等价于 LLVM `llvm.lround`。
+    LRound,
+    /// 按远离零规则把浮点转为 C `long long` 语义整数，等价于 LLVM `llvm.llround`。
+    LLRound,
 }
 
 /// VM `icmp` 使用的整数比较谓词。
@@ -312,7 +405,7 @@ pub enum MemoryOrdering {
 
 /// VM bytecode 中编码的 atomic read-modify-write 操作。
 ///
-/// 整数操作直接恢复成同名 LLVM `atomicrmw`；浮点操作只允许 `float` / `double`
+/// 整数操作直接恢复成同名 LLVM `atomicrmw`；浮点操作只允许 `half` / `float` / `double`
 /// 标量，x 寄存器里保存参与 RMW 的 IEEE 原始 bit。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -398,12 +491,32 @@ pub enum HandlerSemantic {
     Super(SuperOp),
     /// 读取 LLVM 计数器 intrinsic，结果写入 x 寄存器。
     ReadCounter(CounterKind),
+    /// 读取 LLVM `vscale` 目标运行时常量，结果写入 x 寄存器。
+    ReadVScale,
+    /// 读取 LLVM 当前浮点 rounding mode，结果写入 x 寄存器。
+    ReadRounding,
+    /// 读取 C/LLVM `FLT_ROUNDS` 当前舍入方向，结果写入 x 寄存器。
+    ReadFltRounds,
+    /// 设置 LLVM 当前浮点 rounding mode。
+    WriteRounding,
+    /// 读取 LLVM 浮点环境状态，结果写入 x 寄存器。
+    ReadFpState(FpStateKind),
+    /// 写回 LLVM 浮点环境状态。
+    WriteFpState(FpStateKind),
+    /// 重置 LLVM 浮点环境状态。
+    ResetFpState(FpStateKind),
+    /// 读取 LLVM thread pointer，结果以指针地址形式写入 x 寄存器。
+    ReadThreadPointer,
     /// 保存当前 LLVM 栈状态，结果以指针地址形式写入 x 寄存器。
     StackSave,
     /// 恢复到此前保存的 LLVM 栈状态。
     StackRestore,
     /// 刷新一段地址范围内的 instruction cache。
     ClearCache,
+    /// 执行 LLVM `pseudoprobe` intrinsic，保留 profile-guided 伪探针副作用。
+    PseudoProbe,
+    /// 执行 LLVM `prefetch` intrinsic，保留显式预取提示。
+    Prefetch,
     /// 复制一个 VM 寄存器。
     Mov,
     /// 整数二元运算。
@@ -416,12 +529,16 @@ pub enum HandlerSemantic {
     IntOverflow(IntOverflowOp),
     /// 标量浮点二元运算，x 寄存器保存 f32/f64 原始 bit。
     FloatBin(FloatBinOp),
+    /// 标量浮点/整数混合二元运算，x 寄存器保存 f32/f64 原始 bit 和整数指数。
+    FloatIntBin(FloatIntBinOp),
     /// 标量浮点一元运算，x 寄存器保存 f32/f64 原始 bit。
     FloatUnary(FloatUnaryOp),
     /// 标量浮点三元运算，x 寄存器保存 f32/f64 原始 bit。
     FloatTernary(FloatTernaryOp),
     /// 标量整数/浮点转换，x 寄存器保存整数值或 f32/f64 原始 bit。
     FloatCast(FloatCastOp),
+    /// 标量浮点到整数取整 intrinsic，x 寄存器保存浮点 bit 和整数结果。
+    FloatRoundToInt(FloatRoundToIntOp),
     /// 标量浮点分类，按 LLVM `is.fpclass` mask 生成 i1。
     FloatClass,
     /// 整数比较。
@@ -564,6 +681,8 @@ pub enum SemanticStmt {
         width: SemanticExpr,
         /// memory ordering 表达式。
         ordering: SemanticExpr,
+        /// atomic syncscope ID 表达式。
+        sync_scope: SemanticExpr,
     },
     /// 按指定 ordering 向内存执行 volatile atomic 标量写入。
     VolatileAtomicStoreWidth {
@@ -575,6 +694,8 @@ pub enum SemanticStmt {
         width: SemanticExpr,
         /// memory ordering 表达式。
         ordering: SemanticExpr,
+        /// atomic syncscope ID 表达式。
+        sync_scope: SemanticExpr,
     },
     /// 按运行时长度从源地址逐字节复制到目标地址。
     MemcpyDynamic {
@@ -648,6 +769,8 @@ pub enum SemanticStmt {
         success_ordering: SemanticExpr,
         /// 失败 ordering 表达式。
         failure_ordering: SemanticExpr,
+        /// atomic syncscope ID 表达式。
+        sync_scope: SemanticExpr,
     },
     /// 对内存执行 volatile compare-exchange，并把旧值和成功标志写入两个寄存器。
     VolatileCmpXchg {
@@ -667,11 +790,15 @@ pub enum SemanticStmt {
         success_ordering: SemanticExpr,
         /// 失败 ordering 表达式。
         failure_ordering: SemanticExpr,
+        /// atomic syncscope ID 表达式。
+        sync_scope: SemanticExpr,
     },
     /// 执行 LLVM atomic fence。
     Fence {
         /// fence ordering 表达式。
         ordering: SemanticExpr,
+        /// fence syncscope ID 表达式。
+        sync_scope: SemanticExpr,
     },
     /// 执行 LLVM `stackrestore` intrinsic，恢复此前保存的栈状态。
     StackRestore {
@@ -684,6 +811,49 @@ pub enum SemanticStmt {
         start: SemanticExpr,
         /// 要刷新的结束地址表达式。
         end: SemanticExpr,
+    },
+    /// 执行 LLVM `pseudoprobe` intrinsic，参数来自 bytecode immediate operand。
+    PseudoProbe {
+        /// 函数或调用点 GUID 表达式。
+        guid: SemanticExpr,
+        /// 探针索引表达式。
+        index: SemanticExpr,
+        /// 探针类型表达式。
+        probe_type: SemanticExpr,
+        /// 探针属性 bitmask 表达式。
+        attributes: SemanticExpr,
+    },
+    /// 执行 LLVM `prefetch` intrinsic。
+    Prefetch {
+        /// 要预取的地址表达式。
+        ptr: SemanticExpr,
+        /// 读写方向 immarg，0 表示 read，1 表示 write。
+        rw: SemanticExpr,
+        /// locality immarg，取值范围 0..3。
+        locality: SemanticExpr,
+        /// cache type immarg，0 表示 instruction，1 表示 data。
+        cache: SemanticExpr,
+    },
+    /// 设置 LLVM 当前浮点 rounding mode。
+    WriteRounding {
+        /// rounding mode 值表达式。
+        value: SemanticExpr,
+        /// 值位宽表达式，当前必须为 i32。
+        width: SemanticExpr,
+    },
+    /// 写回 LLVM 浮点环境状态。
+    WriteFpState {
+        /// 要写回的状态类别。
+        kind: FpStateKind,
+        /// 状态值表达式。
+        value: SemanticExpr,
+        /// 值位宽表达式。
+        width: SemanticExpr,
+    },
+    /// 重置 LLVM 浮点环境状态。
+    ResetFpState {
+        /// 要重置的状态类别。
+        kind: FpStateKind,
     },
     /// 直接终止当前 LLVM 控制流路径，对应 LLVM `unreachable`。
     Unreachable,
@@ -804,6 +974,17 @@ pub enum SemanticExpr {
         /// 操作数位宽，仅支持 32 或 64。
         width: Box<SemanticExpr>,
     },
+    /// 标量浮点/整数混合二元表达式。
+    FloatIntBinary {
+        /// 要应用的混合操作。
+        op: SemanticFloatIntBinOp,
+        /// 浮点左操作数。
+        lhs: Box<SemanticExpr>,
+        /// 整数右操作数。
+        rhs: Box<SemanticExpr>,
+        /// 浮点操作数位宽，仅支持 32 或 64。
+        width: Box<SemanticExpr>,
+    },
     /// 标量浮点一元表达式。
     FloatUnary {
         /// 要应用的浮点操作。
@@ -835,6 +1016,17 @@ pub enum SemanticExpr {
         /// 源位宽；浮点源仅支持 32 或 64。
         from_width: Box<SemanticExpr>,
         /// 目标位宽；浮点目标仅支持 32 或 64。
+        to_width: Box<SemanticExpr>,
+    },
+    /// 标量浮点到整数取整 intrinsic 表达式。
+    FloatRoundToInt {
+        /// 要应用的 LLVM round-to-int intrinsic 语义。
+        op: SemanticFloatRoundToIntOp,
+        /// 源浮点 bit。
+        value: Box<SemanticExpr>,
+        /// 源浮点位宽。
+        from_width: Box<SemanticExpr>,
+        /// 目标整数位宽。
         to_width: Box<SemanticExpr>,
     },
     /// 标量浮点比较表达式。
@@ -871,6 +1063,19 @@ pub enum SemanticExpr {
         /// 计数器类别。
         kind: CounterKind,
     },
+    /// 读取 LLVM `vscale` 目标运行时常量。
+    ReadVScale,
+    /// 读取 LLVM 当前浮点 rounding mode。
+    ReadRounding,
+    /// 读取 C/LLVM `FLT_ROUNDS` 当前舍入方向。
+    ReadFltRounds,
+    /// 读取 LLVM 浮点环境状态。
+    ReadFpState {
+        /// 要读取的状态类别。
+        kind: FpStateKind,
+    },
+    /// 读取 LLVM thread pointer。
+    ReadThreadPointer,
     /// 执行 LLVM `stacksave` intrinsic 并返回栈状态指针。
     StackSave,
     /// 分配 VM stack slot。
@@ -911,6 +1116,8 @@ pub enum SemanticExpr {
         width: Box<SemanticExpr>,
         /// memory ordering 表达式。
         ordering: Box<SemanticExpr>,
+        /// atomic syncscope ID 表达式。
+        sync_scope: Box<SemanticExpr>,
     },
     /// 从内存执行 volatile atomic 标量加载。
     VolatileAtomicLoadWidth {
@@ -920,6 +1127,8 @@ pub enum SemanticExpr {
         width: Box<SemanticExpr>,
         /// memory ordering 表达式。
         ordering: Box<SemanticExpr>,
+        /// atomic syncscope ID 表达式。
+        sync_scope: Box<SemanticExpr>,
     },
     /// 对内存执行 atomic read-modify-write，并返回旧值。
     AtomicRmw {
@@ -933,6 +1142,8 @@ pub enum SemanticExpr {
         width: Box<SemanticExpr>,
         /// memory ordering 表达式。
         ordering: Box<SemanticExpr>,
+        /// atomic syncscope ID 表达式。
+        sync_scope: Box<SemanticExpr>,
     },
     /// 对内存执行 volatile atomic read-modify-write，并返回旧值。
     VolatileAtomicRmw {
@@ -946,6 +1157,8 @@ pub enum SemanticExpr {
         width: Box<SemanticExpr>,
         /// memory ordering 表达式。
         ordering: Box<SemanticExpr>,
+        /// atomic syncscope ID 表达式。
+        sync_scope: Box<SemanticExpr>,
     },
     /// 从生成的 native-call bridge table 读取一个返回槽。
     CallTableReturn {
@@ -1075,6 +1288,15 @@ pub enum SemanticFloatBinOp {
     Maximum,
     /// 浮点符号位复制。
     CopySign,
+    /// 浮点幂函数。
+    Pow,
+}
+
+/// handler semantic DSL 中的浮点/整数混合二元运算符。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SemanticFloatIntBinOp {
+    /// LLVM `llvm.powi` 的浮点底数、i32 指数幂函数。
+    PowI,
 }
 
 /// handler semantic DSL 中的浮点一元运算符。
@@ -1102,6 +1324,20 @@ pub enum SemanticFloatUnaryOp {
     Round,
     /// 浮点 roundeven。
     RoundEven,
+    /// 浮点 sin。
+    Sin,
+    /// 浮点 cos。
+    Cos,
+    /// 浮点 exp。
+    Exp,
+    /// 浮点 exp2。
+    Exp2,
+    /// 浮点 log。
+    Log,
+    /// 浮点 log10。
+    Log10,
+    /// 浮点 log2。
+    Log2,
 }
 
 /// handler semantic DSL 中的浮点三元运算符。
@@ -1124,10 +1360,27 @@ pub enum SemanticFloatCastOp {
     FloatToSignedInt,
     /// 浮点转无符号整数。
     FloatToUnsignedInt,
+    /// 浮点饱和转有符号整数。
+    FloatToSignedIntSat,
+    /// 浮点饱和转无符号整数。
+    FloatToUnsignedIntSat,
     /// 浮点截断。
     FloatTrunc,
     /// 浮点扩展。
     FloatExt,
+}
+
+/// handler semantic DSL 中的标量浮点到整数取整 intrinsic。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SemanticFloatRoundToIntOp {
+    /// LLVM `llvm.lrint`。
+    LRint,
+    /// LLVM `llvm.llrint`。
+    LLRint,
+    /// LLVM `llvm.lround`。
+    LRound,
+    /// LLVM `llvm.llround`。
+    LLRound,
 }
 
 /// handler semantic DSL 中的 atomic read-modify-write 操作符。
@@ -1271,12 +1524,110 @@ impl HandlerSemantic {
                 .reads(["ptr", "addend"])
                 .writes(["dst"])
                 .with_memory_read(),
+            Self::Super(SuperOp::LoadMul) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "factor"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadUDiv) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "divisor"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadSDiv) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "divisor"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadURem) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "divisor"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadSRem) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "divisor"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadShl) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "shift"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadLShr) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "shift"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadAShr) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "shift"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadSMax) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadSMin) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadUMax) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadUMin) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadUAddSat) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadUSubSat) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadSAddSat) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadSSubSat) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadUShlSat) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadSShlSat) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadAnd) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "and_rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadOr) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "or_rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadSub) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "subtrahend"])
+                .writes(["dst"])
+                .with_memory_read(),
+            Self::Super(SuperOp::LoadXor) => HandlerEffect::new(PcEffect::Next)
+                .reads(["ptr", "xor_rhs"])
+                .writes(["dst"])
+                .with_memory_read(),
             Self::ReadCounter(_) => HandlerEffect::new(PcEffect::Next).writes(["dst"]).with_native_call(),
+            Self::ReadVScale => HandlerEffect::new(PcEffect::Next).writes(["dst"]).with_native_call(),
+            Self::ReadRounding => HandlerEffect::new(PcEffect::Next).writes(["dst"]).with_native_call(),
+            Self::ReadFltRounds => HandlerEffect::new(PcEffect::Next).writes(["dst"]).with_native_call(),
+            Self::WriteRounding => HandlerEffect::new(PcEffect::Next).reads(["src"]).with_native_call(),
+            Self::ReadFpState(_) => HandlerEffect::new(PcEffect::Next).writes(["dst"]).with_native_call(),
+            Self::WriteFpState(_) => HandlerEffect::new(PcEffect::Next).reads(["src"]).with_native_call(),
+            Self::ResetFpState(_) => HandlerEffect::new(PcEffect::Next).with_native_call(),
+            Self::ReadThreadPointer => HandlerEffect::new(PcEffect::Next).writes(["dst"]).with_native_call(),
             Self::StackSave => HandlerEffect::new(PcEffect::Next).writes(["dst"]).with_native_call(),
             Self::StackRestore => HandlerEffect::new(PcEffect::Next).reads(["ptr"]).with_native_call(),
             Self::ClearCache => HandlerEffect::new(PcEffect::Next)
                 .reads(["start", "end"])
                 .with_native_call(),
+            Self::PseudoProbe => HandlerEffect::new(PcEffect::Next).with_native_call(),
+            Self::Prefetch => HandlerEffect::new(PcEffect::Next).reads(["ptr"]).with_native_call(),
             Self::Mov => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
             Self::Bin(_) => HandlerEffect::new(PcEffect::Next).reads(["lhs", "rhs"]).writes(["dst"]),
             Self::IntUnary(_) => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
@@ -1287,11 +1638,16 @@ impl HandlerSemantic {
                 .reads(["lhs", "rhs"])
                 .writes(["dst", "overflow"]),
             Self::FloatBin(_) => HandlerEffect::new(PcEffect::Next).reads(["lhs", "rhs"]).writes(["dst"]),
+            Self::FloatIntBin(_) => HandlerEffect::new(PcEffect::Next).reads(["lhs", "rhs"]).writes(["dst"]),
             Self::FloatUnary(_) => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
             Self::FloatTernary(_) => HandlerEffect::new(PcEffect::Next)
                 .reads(["lhs", "rhs", "third"])
                 .writes(["dst"]),
             Self::FloatCast(_) => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
+            Self::FloatRoundToInt(_) => HandlerEffect::new(PcEffect::Next)
+                .reads(["src"])
+                .writes(["dst"])
+                .with_native_call(),
             Self::FloatClass => HandlerEffect::new(PcEffect::Next).reads(["src"]).writes(["dst"]),
             Self::Icmp => HandlerEffect::new(PcEffect::Next).reads(["lhs", "rhs"]).writes(["dst"]),
             Self::Fcmp => HandlerEffect::new(PcEffect::Next).reads(["lhs", "rhs"]).writes(["dst"]),
@@ -1571,9 +1927,22 @@ impl Default for IsaProfile {
             InstructionDesc::new("const_load", vec![0x03], 3, ConstLoad),
             InstructionDesc::new("read_cycle", vec![0x12e], 2, ReadCounter(CounterKind::Cycle)),
             InstructionDesc::new("read_steady", vec![0x12f], 2, ReadCounter(CounterKind::Steady)),
+            InstructionDesc::new("read_vscale", vec![0x141], 2, ReadVScale),
+            InstructionDesc::new("read_rounding", vec![0x142], 2, ReadRounding),
+            InstructionDesc::new("read_flt_rounds", vec![0x1d0], 2, ReadFltRounds),
+            InstructionDesc::new("write_rounding", vec![0x1c2], 2, WriteRounding),
+            InstructionDesc::new("read_fpenv", vec![0x1c3], 2, ReadFpState(FpStateKind::Env)),
+            InstructionDesc::new("write_fpenv", vec![0x1c4], 2, WriteFpState(FpStateKind::Env)),
+            InstructionDesc::new("reset_fpenv", vec![0x1c5], 0, ResetFpState(FpStateKind::Env)),
+            InstructionDesc::new("read_fpmode", vec![0x1c6], 2, ReadFpState(FpStateKind::Mode)),
+            InstructionDesc::new("write_fpmode", vec![0x1c7], 2, WriteFpState(FpStateKind::Mode)),
+            InstructionDesc::new("reset_fpmode", vec![0x1c8], 0, ResetFpState(FpStateKind::Mode)),
+            InstructionDesc::new("read_thread_pointer", vec![0x1c0], 2, ReadThreadPointer),
             InstructionDesc::new("stacksave", vec![0x1b0], 1, StackSave),
             InstructionDesc::new("stackrestore", vec![0x1b1], 1, StackRestore),
             InstructionDesc::new("clear_cache", vec![0x1b4], 2, ClearCache),
+            InstructionDesc::new("pseudoprobe", vec![0x1b6], 4, PseudoProbe),
+            InstructionDesc::new("prefetch", vec![0x200], 4, Prefetch),
             InstructionDesc::new("mov", vec![0x02], 3, Mov),
             InstructionDesc::new("iadd", vec![0x10], 4, Bin(Add)),
             InstructionDesc::new("isub", vec![0x11], 4, Bin(Sub)),
@@ -1629,40 +1998,40 @@ impl Default for IsaProfile {
             InstructionDesc::new("volatile_memcpy_dyn", vec![0x129], 3, VolatileMemcpyDynamic),
             InstructionDesc::new("volatile_memmove_dyn", vec![0x12a], 3, VolatileMemmoveDynamic),
             InstructionDesc::new("volatile_memset_dyn", vec![0x12b], 3, VolatileMemsetDynamic),
-            InstructionDesc::new("atomic_load", vec![0x44], 4, AtomicLoad),
-            InstructionDesc::new("atomic_store", vec![0x45], 4, AtomicStore),
-            InstructionDesc::new("volatile_atomic_load", vec![0x127], 4, VolatileAtomicLoad),
-            InstructionDesc::new("volatile_atomic_store", vec![0x128], 4, VolatileAtomicStore),
-            InstructionDesc::new("atomic_rmw_xchg", vec![0x46], 5, AtomicRmw(AtomicRmwOp::Xchg)),
-            InstructionDesc::new("atomic_rmw_add", vec![0x47], 5, AtomicRmw(AtomicRmwOp::Add)),
-            InstructionDesc::new("atomic_rmw_sub", vec![0x48], 5, AtomicRmw(AtomicRmwOp::Sub)),
-            InstructionDesc::new("atomic_rmw_and", vec![0x49], 5, AtomicRmw(AtomicRmwOp::And)),
-            InstructionDesc::new("atomic_rmw_or", vec![0x4a], 5, AtomicRmw(AtomicRmwOp::Or)),
-            InstructionDesc::new("atomic_rmw_xor", vec![0x4b], 5, AtomicRmw(AtomicRmwOp::Xor)),
-            InstructionDesc::new("atomic_rmw_nand", vec![0x4c], 5, AtomicRmw(AtomicRmwOp::Nand)),
-            InstructionDesc::new("atomic_rmw_max", vec![0x4d], 5, AtomicRmw(AtomicRmwOp::Max)),
-            InstructionDesc::new("atomic_rmw_min", vec![0x4e], 5, AtomicRmw(AtomicRmwOp::Min)),
-            InstructionDesc::new("atomic_rmw_umax", vec![0x4f], 5, AtomicRmw(AtomicRmwOp::UMax)),
-            InstructionDesc::new("atomic_rmw_umin", vec![0x50], 5, AtomicRmw(AtomicRmwOp::UMin)),
-            InstructionDesc::new("atomic_rmw_uinc_wrap", vec![0x11d], 5, AtomicRmw(AtomicRmwOp::UIncWrap)),
-            InstructionDesc::new("atomic_rmw_udec_wrap", vec![0x11e], 5, AtomicRmw(AtomicRmwOp::UDecWrap)),
-            InstructionDesc::new("atomic_rmw_usub_cond", vec![0x11f], 5, AtomicRmw(AtomicRmwOp::USubCond)),
-            InstructionDesc::new("atomic_rmw_usub_sat", vec![0x120], 5, AtomicRmw(AtomicRmwOp::USubSat)),
-            InstructionDesc::new("atomic_rmw_fadd", vec![0x117], 5, AtomicRmw(AtomicRmwOp::FAdd)),
-            InstructionDesc::new("atomic_rmw_fsub", vec![0x118], 5, AtomicRmw(AtomicRmwOp::FSub)),
-            InstructionDesc::new("atomic_rmw_fmax", vec![0x119], 5, AtomicRmw(AtomicRmwOp::FMax)),
-            InstructionDesc::new("atomic_rmw_fmin", vec![0x11a], 5, AtomicRmw(AtomicRmwOp::FMin)),
-            InstructionDesc::new("atomic_rmw_fmaximum", vec![0x11b], 5, AtomicRmw(AtomicRmwOp::FMaximum)),
-            InstructionDesc::new("atomic_rmw_fminimum", vec![0x11c], 5, AtomicRmw(AtomicRmwOp::FMinimum)),
+            InstructionDesc::new("atomic_load", vec![0x44], 5, AtomicLoad),
+            InstructionDesc::new("atomic_store", vec![0x45], 5, AtomicStore),
+            InstructionDesc::new("volatile_atomic_load", vec![0x127], 5, VolatileAtomicLoad),
+            InstructionDesc::new("volatile_atomic_store", vec![0x128], 5, VolatileAtomicStore),
+            InstructionDesc::new("atomic_rmw_xchg", vec![0x46], 6, AtomicRmw(AtomicRmwOp::Xchg)),
+            InstructionDesc::new("atomic_rmw_add", vec![0x47], 6, AtomicRmw(AtomicRmwOp::Add)),
+            InstructionDesc::new("atomic_rmw_sub", vec![0x48], 6, AtomicRmw(AtomicRmwOp::Sub)),
+            InstructionDesc::new("atomic_rmw_and", vec![0x49], 6, AtomicRmw(AtomicRmwOp::And)),
+            InstructionDesc::new("atomic_rmw_or", vec![0x4a], 6, AtomicRmw(AtomicRmwOp::Or)),
+            InstructionDesc::new("atomic_rmw_xor", vec![0x4b], 6, AtomicRmw(AtomicRmwOp::Xor)),
+            InstructionDesc::new("atomic_rmw_nand", vec![0x4c], 6, AtomicRmw(AtomicRmwOp::Nand)),
+            InstructionDesc::new("atomic_rmw_max", vec![0x4d], 6, AtomicRmw(AtomicRmwOp::Max)),
+            InstructionDesc::new("atomic_rmw_min", vec![0x4e], 6, AtomicRmw(AtomicRmwOp::Min)),
+            InstructionDesc::new("atomic_rmw_umax", vec![0x4f], 6, AtomicRmw(AtomicRmwOp::UMax)),
+            InstructionDesc::new("atomic_rmw_umin", vec![0x50], 6, AtomicRmw(AtomicRmwOp::UMin)),
+            InstructionDesc::new("atomic_rmw_uinc_wrap", vec![0x11d], 6, AtomicRmw(AtomicRmwOp::UIncWrap)),
+            InstructionDesc::new("atomic_rmw_udec_wrap", vec![0x11e], 6, AtomicRmw(AtomicRmwOp::UDecWrap)),
+            InstructionDesc::new("atomic_rmw_usub_cond", vec![0x11f], 6, AtomicRmw(AtomicRmwOp::USubCond)),
+            InstructionDesc::new("atomic_rmw_usub_sat", vec![0x120], 6, AtomicRmw(AtomicRmwOp::USubSat)),
+            InstructionDesc::new("atomic_rmw_fadd", vec![0x117], 6, AtomicRmw(AtomicRmwOp::FAdd)),
+            InstructionDesc::new("atomic_rmw_fsub", vec![0x118], 6, AtomicRmw(AtomicRmwOp::FSub)),
+            InstructionDesc::new("atomic_rmw_fmax", vec![0x119], 6, AtomicRmw(AtomicRmwOp::FMax)),
+            InstructionDesc::new("atomic_rmw_fmin", vec![0x11a], 6, AtomicRmw(AtomicRmwOp::FMin)),
+            InstructionDesc::new("atomic_rmw_fmaximum", vec![0x11b], 6, AtomicRmw(AtomicRmwOp::FMaximum)),
+            InstructionDesc::new("atomic_rmw_fminimum", vec![0x11c], 6, AtomicRmw(AtomicRmwOp::FMinimum)),
             InstructionDesc::new(
                 "volatile_atomic_rmw_add",
                 vec![0x12d],
-                5,
+                6,
                 VolatileAtomicRmw(AtomicRmwOp::Add),
             ),
-            InstructionDesc::new("cmpxchg", vec![0x51], 8, CmpXchg),
-            InstructionDesc::new("volatile_cmpxchg", vec![0x12c], 8, VolatileCmpXchg),
-            InstructionDesc::new("fence", vec![0x52], 1, Fence),
+            InstructionDesc::new("cmpxchg", vec![0x51], 9, CmpXchg),
+            InstructionDesc::new("volatile_cmpxchg", vec![0x12c], 9, VolatileCmpXchg),
+            InstructionDesc::new("fence", vec![0x52], 2, Fence),
             InstructionDesc::new("gep", vec![0x37], 3, Gep),
             InstructionDesc::new("call_native", vec![0x38], 27, CallNative),
             InstructionDesc::new("br", vec![0x40], 1, Br),
@@ -1674,6 +2043,8 @@ impl Default for IsaProfile {
             InstructionDesc::new("fminimum", vec![0x6e], 4, FloatBin(FloatBinOp::Minimum)),
             InstructionDesc::new("fmaximum", vec![0x6f], 4, FloatBin(FloatBinOp::Maximum)),
             InstructionDesc::new("fcopysign", vec![0x66], 4, FloatBin(FloatBinOp::CopySign)),
+            InstructionDesc::new("fpow", vec![0x14a], 4, FloatBin(FloatBinOp::Pow)),
+            InstructionDesc::new("fpowi", vec![0x14b], 4, FloatIntBin(FloatIntBinOp::PowI)),
             InstructionDesc::new("fabs", vec![0x64], 3, FloatUnary(FloatUnaryOp::Abs)),
             InstructionDesc::new("fsqrt", vec![0x65], 3, FloatUnary(FloatUnaryOp::Sqrt)),
             InstructionDesc::new("fcanonicalize", vec![0x71], 3, FloatUnary(FloatUnaryOp::Canonicalize)),
@@ -1684,6 +2055,13 @@ impl Default for IsaProfile {
             InstructionDesc::new("fnearbyint", vec![0x76], 3, FloatUnary(FloatUnaryOp::NearbyInt)),
             InstructionDesc::new("fround", vec![0x77], 3, FloatUnary(FloatUnaryOp::Round)),
             InstructionDesc::new("froundeven", vec![0x78], 3, FloatUnary(FloatUnaryOp::RoundEven)),
+            InstructionDesc::new("fsin", vec![0x143], 3, FloatUnary(FloatUnaryOp::Sin)),
+            InstructionDesc::new("fcos", vec![0x144], 3, FloatUnary(FloatUnaryOp::Cos)),
+            InstructionDesc::new("fexp", vec![0x145], 3, FloatUnary(FloatUnaryOp::Exp)),
+            InstructionDesc::new("fexp2", vec![0x146], 3, FloatUnary(FloatUnaryOp::Exp2)),
+            InstructionDesc::new("flog", vec![0x147], 3, FloatUnary(FloatUnaryOp::Log)),
+            InstructionDesc::new("flog10", vec![0x148], 3, FloatUnary(FloatUnaryOp::Log10)),
+            InstructionDesc::new("flog2", vec![0x149], 3, FloatUnary(FloatUnaryOp::Log2)),
             InstructionDesc::new("ffma", vec![0x67], 5, FloatTernary(FloatTernaryOp::Fma)),
             InstructionDesc::new("ffmuladd", vec![0x70], 5, FloatTernary(FloatTernaryOp::MulAdd)),
             InstructionDesc::new("unreachable", vec![0x79], 0, Unreachable),

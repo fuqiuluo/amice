@@ -7,6 +7,14 @@ abi host_to_vm { # ruoke 宿主边界使用非线性槽位布置
   arg5 -> x4 as i64 # 入口槽己进入短距槽
   arg6 -> x10 as i64 # 入口槽庚进入混合槽
   arg7 -> x7 as i64 # 入口槽辛进入回收槽
+  arg8 -> x0 as i64 # 入口槽壬进入反向槽
+  arg9 -> x8 as i64 # 入口槽癸进入桥接槽
+  arg10 -> x13 as i64 # 入口槽子进入高位槽
+  arg11 -> x14 as i64 # 入口槽丑进入旁路槽
+  arg12 -> x15 as i64 # 入口槽寅进入扩展槽
+  arg13 -> x16 as i64 # 入口槽卯进入延迟槽
+  arg14 -> x17 as i64 # 入口槽辰进入散列槽
+  arg15 -> x18 as i64 # 入口槽巳进入尾部槽
   ret0 <- x11 as i64 # 主出口槽从 ruoke 出口甲回收
   ret1 <- x3 as i64 # 辅助出口槽从 ruoke 出口乙回收
   ret2 <- x6 as i64 # 辅助出口槽从 ruoke 出口丙回收

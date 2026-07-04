@@ -335,6 +335,14 @@ fn custom_abi_profile_path() -> PathBuf {
         .replace("arg5 -> x5 as i64", "arg5 -> x9 as i64")
         .replace("arg6 -> x6 as i64", "arg6 -> x10 as i64")
         .replace("arg7 -> x7 as i64", "arg7 -> x11 as i64")
+        .replace("arg8 -> x8 as i64", "arg8 -> x19 as i64")
+        .replace("arg9 -> x9 as i64", "arg9 -> x20 as i64")
+        .replace("arg10 -> x10 as i64", "arg10 -> x21 as i64")
+        .replace("arg11 -> x11 as i64", "arg11 -> x22 as i64")
+        .replace("arg12 -> x12 as i64", "arg12 -> x23 as i64")
+        .replace("arg13 -> x13 as i64", "arg13 -> x24 as i64")
+        .replace("arg14 -> x14 as i64", "arg14 -> x25 as i64")
+        .replace("arg15 -> x15 as i64", "arg15 -> x26 as i64")
         .replace("ret0 <- x0 as i64", "ret0 <- x5 as i64")
         .replace("args = [x0..x7]", "args = [x8..x15]")
         .replace("returns = [x0, x1, x2]", "returns = [x16, x17, x18]")
@@ -370,6 +378,36 @@ fn handler_clone_profile_path() -> PathBuf {
             "enhance handler_clone = func # 测试函数级 handler clone 语义",
         );
     std::fs::write(profile_dir.join("runtime.vm"), runtime).expect("handler clone runtime should be writable");
+
+    profile_dir
+}
+
+fn handler_order_no_shuffle_profile_path() -> PathBuf {
+    let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../amice-vm/profiles/amice-simple-vmp")
+        .canonicalize()
+        .expect("built-in profile dir should exist");
+    let profile_dir = output_dir().join("vm_virtualize_handler_order_no_shuffle_profile");
+    std::fs::create_dir_all(&profile_dir).expect("handler-order profile dir should be creatable");
+
+    for file in [
+        "manifest.toml",
+        "abi.vm",
+        "isa.vm",
+        "lowering.vm",
+        "bytecode.vm",
+        "decoder.vm",
+    ] {
+        std::fs::copy(source_dir.join(file), profile_dir.join(file)).expect("profile file should be copyable");
+    }
+
+    let runtime = std::fs::read_to_string(source_dir.join("runtime.vm"))
+        .expect("built-in runtime profile should be readable")
+        .replace(
+            "enhance handler_order_shuffle = enabled # 分派器中的处理器块按配置包和函数名派生顺序打散",
+            "enhance handler_order_shuffle = disabled # 测试关闭 handler 顺序打散后的稳定 profile 顺序",
+        );
+    std::fs::write(profile_dir.join("runtime.vm"), runtime).expect("handler-order runtime should be writable");
 
     profile_dir
 }
@@ -460,6 +498,25 @@ fn handler_opcode_count(ir: &str) -> usize {
         .len()
 }
 
+fn assert_runtime_helpers_are_opaque(ir: &str) {
+    assert!(
+        ir.contains(".amice.vm.h."),
+        "virtualized IR should still contain private runtime helper symbols"
+    );
+    for leaked_name in [
+        ".amice.vm.dispatch",
+        ".amice.vm.read_varint",
+        ".amice.vm.read_operand",
+        ".amice.vm.read_const_varint",
+        ".amice.vm.read_const",
+    ] {
+        assert!(
+            !ir.contains(leaked_name),
+            "runtime helper name should be opaque, but IR still contains {leaked_name}"
+        );
+    }
+}
+
 fn bytecode_dump_for_function<'a>(stderr: &'a str, function: &str) -> &'a str {
     let marker = format!("bytecode for \"{function}\":");
     let start = stderr
@@ -472,6 +529,194 @@ fn bytecode_dump_for_function<'a>(stderr: &'a str, function: &str) -> &'a str {
     } else {
         rest
     }
+}
+
+fn handler_entry_labels(ir: &str) -> Vec<String> {
+    ir.lines()
+        .filter_map(|line| {
+            let label = line.trim_start().split_once(':')?.0;
+            (label.starts_with("handler.") && label.contains(".split.entry")).then(|| label.to_owned())
+        })
+        .collect()
+}
+
+fn handler_bodies_that_directly_default(ir: &str) -> Vec<String> {
+    let lines = ir.lines().collect::<Vec<_>>();
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(line_index, line)| {
+            let label = line.trim_start().split_once(':')?.0;
+            if !label.starts_with("handler.") || !label.contains(".split.body") {
+                return None;
+            }
+            lines
+                .iter()
+                .skip(line_index + 1)
+                .map(|line| line.trim())
+                .find(|line| !line.is_empty())
+                .filter(|line| line.starts_with("br label %default.return"))
+                .map(|_| label.to_owned())
+        })
+        .collect()
+}
+
+fn bytecode_global_bytes(ir: &str, function: &str) -> Vec<u8> {
+    let needle = format!("@.amice.vm.bytecode.{function} = private constant ");
+    let global_start = ir
+        .find(&needle)
+        .unwrap_or_else(|| panic!("LLVM IR should contain bytecode global for {function}"));
+    let after_global = &ir[global_start..];
+    let literal_start = after_global
+        .find(" c\"")
+        .unwrap_or_else(|| panic!("bytecode global for {function} should be an LLVM C string"))
+        + 3;
+    let literal = &after_global[literal_start..literal_end(after_global, literal_start, function)];
+    decode_llvm_c_string(literal)
+}
+
+fn literal_end(text: &str, literal_start: usize, function: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut index = literal_start;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\'
+                if index + 2 < bytes.len()
+                    && bytes[index + 1].is_ascii_hexdigit()
+                    && bytes[index + 2].is_ascii_hexdigit() =>
+            {
+                index += 3;
+            },
+            b'\\' => index += 2,
+            b'"' => return index,
+            _ => index += 1,
+        }
+    }
+    panic!("bytecode global for {function} should terminate its LLVM C string")
+}
+
+fn decode_llvm_c_string(literal: &str) -> Vec<u8> {
+    let bytes = literal.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\'
+                if index + 2 < bytes.len()
+                    && bytes[index + 1].is_ascii_hexdigit()
+                    && bytes[index + 2].is_ascii_hexdigit() =>
+            {
+                decoded.push(hex_byte(bytes[index + 1], bytes[index + 2]));
+                index += 3;
+            },
+            b'\\' if index + 1 < bytes.len() => {
+                decoded.push(match bytes[index + 1] {
+                    b'\\' => b'\\',
+                    b'"' => b'"',
+                    b'n' => b'\n',
+                    b'r' => b'\r',
+                    b't' => b'\t',
+                    escaped => escaped,
+                });
+                index += 2;
+            },
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            },
+        }
+    }
+    decoded
+}
+
+fn hex_byte(high: u8, low: u8) -> u8 {
+    fn nibble(byte: u8) -> u8 {
+        match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => panic!("invalid LLVM string hex escape"),
+        }
+    }
+
+    (nibble(high) << 4) | nibble(low)
+}
+
+fn decrypted_const_pool_from_package(package: &[u8]) -> (Vec<u8>, Vec<u64>) {
+    assert!(package.len() >= 64, "bytecode package should include a full header");
+    assert_eq!(&package[..8], b"AMICEVMP");
+    let key = read_u64_le_for_test(package, 24);
+    let offset = read_u32_le_for_test(package, 32) as usize;
+    let len = read_u32_le_for_test(package, 36) as usize;
+    let end = offset + len;
+    assert!(
+        end <= package.len(),
+        "const_pool segment must fit inside the bytecode package"
+    );
+
+    let encrypted = &package[offset..end];
+    let mut decrypted = encrypted.to_vec();
+    decrypted
+        .iter_mut()
+        .enumerate()
+        .for_each(|(index, byte)| *byte ^= bytecode_key_byte_for_test(key, index));
+
+    let mut cursor = 0;
+    let count = decode_varint_for_test(&decrypted, &mut cursor);
+    let values = (0..count)
+        .map(|_| decode_varint_for_test(&decrypted, &mut cursor))
+        .collect();
+    (decrypted, values)
+}
+
+fn read_u32_le_for_test(bytes: &[u8], offset: usize) -> u32 {
+    let end = offset + 4;
+    assert!(end <= bytes.len(), "u32 read should stay inside byte slice");
+    u32::from_le_bytes(bytes[offset..end].try_into().expect("u32 slice has fixed length"))
+}
+
+fn read_u64_le_for_test(bytes: &[u8], offset: usize) -> u64 {
+    let end = offset + 8;
+    assert!(end <= bytes.len(), "u64 read should stay inside byte slice");
+    u64::from_le_bytes(bytes[offset..end].try_into().expect("u64 slice has fixed length"))
+}
+
+fn decode_varint_for_test(bytes: &[u8], cursor: &mut usize) -> u64 {
+    let mut value = 0u64;
+    let mut shift = 0u32;
+    loop {
+        assert!(*cursor < bytes.len(), "varint should terminate before the segment ends");
+        let byte = bytes[*cursor];
+        *cursor += 1;
+        value |= ((byte & 0x7f) as u64) << shift;
+        if byte & 0x80 == 0 {
+            return value;
+        }
+        shift += 7;
+        assert!(shift < 64, "test varint should fit in u64");
+    }
+}
+
+fn bytecode_key_byte_for_test(key: u64, index: usize) -> u8 {
+    let index = index as u64;
+    let rotate = ((index.wrapping_mul(13)) & 63) as u32;
+    let mixed =
+        key.rotate_left(rotate) ^ index.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ index.rotate_left(17) ^ (index >> 7);
+    (mixed ^ (mixed >> 32) ^ (mixed >> 16) ^ (mixed >> 8)) as u8
+}
+
+fn bytecode_dump_has_multibyte_opcode(dump: &str, mnemonic: &str, width: u8) -> bool {
+    let marker = format!(": {mnemonic} width={width} opcode=");
+    dump.lines().any(|line| {
+        let Some(opcode) = line.split(&marker).nth(1) else {
+            return false;
+        };
+        opcode
+            .split_whitespace()
+            .next()
+            .and_then(|opcode| opcode.parse::<u64>().ok())
+            .is_some_and(|opcode| opcode > 0x7f)
+    })
 }
 
 fn semantic_renamed_add_profile_path() -> PathBuf {
@@ -489,31 +734,14 @@ fn semantic_renamed_add_profile_path() -> PathBuf {
     let isa = std::fs::read_to_string(source_dir.join("isa.vm"))
         .expect("built-in ISA profile should be readable")
         .replacen("instr iadd", "instr add_alias", 1)
-        .replacen("opcode alias [0x10, 0x2c, 0x5a, 0x6d, 0x7a]", "opcode alias [0x1f4]", 1);
+        .replacen("opcode alias [0x10, 0x2c, 0x5a, 0x6d, 0x7a]", "opcode alias [0x3f4]", 1);
     std::fs::write(profile_dir.join("isa.vm"), isa).expect("renamed ISA profile should be writable");
 
     let lowering = std::fs::read_to_string(source_dir.join("lowering.vm"))
         .expect("built-in lowering profile should be readable")
-        .replace(
-            "emit iadd dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射 profile ISA 中的 iadd 指令",
-            "emit add_alias dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # 发射改名后的加法指令",
-        )
-        .replace(
-            "emit iadd dst=%vr, lhs=%vb, rhs=%vs, width=64 # 缩放偏移与基址相加",
-            "emit add_alias dst=%vr, lhs=%vb, rhs=%vs, width=64 # 缩放偏移与基址相加",
-        )
-        .replace(
-            "emit iadd dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # add 常量表达式发射 iadd 指令",
-            "emit add_alias dst=%vr, lhs=%va, rhs=%vb, width=type_width(%r) # add 常量表达式发射改名后的加法指令",
-        )
-        .replace(
-            "sequence iadd, ixor # 只允许把连续的 iadd 与 ixor 两条 VM 指令融合",
-            "sequence add_alias, ixor # 只允许把连续的改名加法与 ixor 两条 VM 指令融合",
-        )
-        .replace(
-            "sequence load, iadd # 只允许把连续的 load 与 iadd 两条 VM 指令融合",
-            "sequence load, add_alias # 只允许把连续的 load 与改名加法两条 VM 指令融合",
-        );
+        .replace("emit iadd ", "emit add_alias ")
+        .replace("sequence iadd,", "sequence add_alias,")
+        .replace(" iadd ", " add_alias ");
     std::fs::write(profile_dir.join("lowering.vm"), lowering).expect("renamed lowering profile should be writable");
 
     profile_dir
@@ -531,7 +759,7 @@ fn same_semantic_alt_add_profile_path() -> PathBuf {
         std::fs::copy(source_dir.join(file), profile_dir.join(file)).expect("profile file should be copyable");
     }
 
-    let alt_iadd = r#"instr iadd_alt(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 第二条同语义整数加法处理器
+    let alt_iadd = r#"instr iadd_alt(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u7>) { # 第二条同语义整数加法处理器
 opcode alias [0xfa] # iadd_alt 使用测试专用独立操作码，避免与内置原子操作别名冲突
 semantic { # iadd_alt 保持与 iadd 相同的加法语义
 reg[dst] = trunc_width(reg[lhs] + reg[rhs], width) # 加法结果按目标宽度掩码
@@ -577,8 +805,8 @@ fn reordered_add_operands_profile_path() -> PathBuf {
 
     let isa = std::fs::read_to_string(source_dir.join("isa.vm")).expect("built-in ISA profile should be readable");
     let isa = isa.replace(
-        "instr iadd(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 整数加法处理器",
-        "instr iadd(width: imm<u8>, rhs: vreg<i64>, dst: vreg<i64>, lhs: vreg<i64>) { # 整数加法处理器",
+        "instr iadd(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u7>) { # 整数加法处理器",
+        "instr iadd(width: imm<u7>, rhs: vreg<i64>, dst: vreg<i64>, lhs: vreg<i64>) { # 整数加法处理器",
     );
     std::fs::write(profile_dir.join("isa.vm"), isa).expect("reordered ISA profile should be writable");
 
@@ -949,6 +1177,166 @@ fn test_vm_virtualize_basic_c_matches_baseline() {
     virtualized_output.assert_success();
 
     assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_basic.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("basic virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_mix"));
+    assert!(ir.contains("op800"));
+    assert_eq!(handler_opcode_count(&ir), 1000);
+    let default_only_handlers = handler_bodies_that_directly_default(&ir);
+    assert!(
+        default_only_handlers.is_empty(),
+        "default profile opcode aliases must emit real handler bodies instead of default-only stubs: {default_only_handlers:?}"
+    );
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_twelve_integer_parameters_match_baseline() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_twelve_integer_parameters.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP uint64_t vm_many_args(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
+                          uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+                          uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11) {
+    uint64_t mix = a0 + (a1 << 1);
+    mix ^= a2 * 3u;
+    mix += a3 ^ (a4 << 5);
+    mix ^= (a5 + a6) * 17u;
+    mix += (a7 << 9) ^ (a8 >> 2);
+    mix ^= a9 + (a10 << 11);
+    return mix + (a11 ^ 0x9e3779b97f4a7c15ull);
+}
+
+int main(void) {
+    uint64_t a = vm_many_args(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+    uint64_t b = vm_many_args(0x10, 0x21, 0x32, 0x43, 0x54, 0x65,
+                              0x76, 0x87, 0x98, 0xa9, 0xba, 0xcb);
+    printf("%llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("twelve-parameter C fixture should be writable");
+
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_twelve_args_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_twelve_args");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_twelve_args.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("twelve-parameter virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_many_args"));
+    assert!(!ir.contains(".amice.vm.original.vm_many_args"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_reuses_block_local_registers_for_long_ssa_chain() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_register_reuse_long_chain.input.ll");
+    let mut ir = String::from(
+        r#"; ModuleID = 'vm_virtualize_register_reuse_long_chain'
+source_filename = "vm_virtualize_register_reuse_long_chain.ll"
+
+define i64 @vm_register_reuse_long_chain(i64 %a, i64 %b) {
+entry:
+  %v0 = add i64 %a, %b
+"#,
+    );
+    for index in 1..96 {
+        let previous = index - 1;
+        let constant = (index as u64).wrapping_mul(17).wrapping_add(3);
+        match index % 4 {
+            0 => writeln!(ir, "  %v{index} = add i64 %v{previous}, {constant}"),
+            1 => writeln!(ir, "  %v{index} = xor i64 %v{previous}, {constant}"),
+            2 => writeln!(ir, "  %v{index} = mul i64 %v{previous}, 3"),
+            3 => writeln!(ir, "  %v{index} = sub i64 %v{previous}, {constant}"),
+            _ => unreachable!("modulo result is bounded"),
+        }
+        .expect("long SSA chain IR should be writable");
+    }
+    ir.push_str(
+        r#"  ret i64 %v95
+}
+"#,
+    );
+    std::fs::write(&ir_source, ir).expect("long SSA chain LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_register_reuse_long_chain_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_register_reuse_long_chain(uint64_t a, uint64_t b);
+
+int main(void) {
+    uint64_t a = vm_register_reuse_long_chain(0x123456789abcdef0ULL, 0x0fedcba987654321ULL);
+    uint64_t b = vm_register_reuse_long_chain(0x1111222233334444ULL, 0x5555666677778888ULL);
+    printf("%016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n", a, b, a ^ b);
+    return 0;
+}
+"#,
+    )
+    .expect("long SSA chain C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_register_reuse_long_chain_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_register_reuse_long_chain.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        !stderr.contains("VM x-register budget exceeded"),
+        "block-local SSA values should be released after their final use:\n{stderr}"
+    );
+    let dump = bytecode_dump_for_function(&stderr, "vm_register_reuse_long_chain");
+    for handler in [": iadd ", ": ixor ", ": imul ", ": isub "] {
+        assert!(
+            dump.contains(handler),
+            "long SSA chain should lower integer operation {handler} through VM bytecode:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_register_reuse_long_chain");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("long SSA chain virtualized IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_register_reuse_long_chain"));
 }
 
 #[test]
@@ -1055,6 +1443,79 @@ int main(void) {
     let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_add_xor"));
     assert!(ir.contains("handler.iadd_xor"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_super_add_xor_does_not_fuse_extra_use() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_super_add_xor_no_fuse.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_super_add_xor_no_fuse'
+source_filename = "vm_virtualize_super_add_xor_no_fuse.ll"
+
+define i32 @vm_add_xor_no_fuse(i32 %a, i32 %b, i32 %c) {
+entry:
+  %sum = add i32 %a, %b
+  %mix = xor i32 %sum, %c
+  %keep = add i32 %sum, 17
+  %out = xor i32 %mix, %keep
+  ret i32 %out
+}
+"#,
+    )
+    .expect("super add/xor no-fuse LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_super_add_xor_no_fuse_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_add_xor_no_fuse(int32_t a, int32_t b, int32_t c);
+
+int main(void) {
+    int32_t a = vm_add_xor_no_fuse(5, 7, 0x33);
+    int32_t b = vm_add_xor_no_fuse(100, 23, 0x55);
+    int32_t c = vm_add_xor_no_fuse(-9, 41, 0x7f);
+    printf("%d %d %d %d\n", a, b, c, a ^ b ^ c);
+    return 0;
+}
+"#,
+    )
+    .expect("super add/xor no-fuse C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_super_add_xor_no_fuse_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_super_add_xor_no_fuse.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_add_xor_no_fuse");
+    assert!(
+        dump.contains(": iadd ") && dump.contains(": ixor "),
+        "extra-use pattern should keep ordinary iadd/ixor instructions:\n{dump}"
+    );
+    assert!(
+        !dump.contains(": iadd_xor "),
+        "add result has an extra use, so translator must not choose the iadd_xor super instruction:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_super_add_xor_no_fuse");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized no-fuse IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_add_xor_no_fuse"));
 }
 
 #[test]
@@ -1221,6 +1682,971 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_super_load_mul_fusion_matches_baseline() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_super_load_imul.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP uint32_t vm_load_mul(const uint32_t *ptr, uint32_t factor) {
+    return *ptr * factor;
+}
+
+int main(void) {
+    uint32_t values[4] = {3u, 5u, 17u, 257u};
+    uint32_t acc = 0x12345678u;
+    acc ^= vm_load_mul(&values[0], 19u);
+    acc += vm_load_mul(&values[1], 23u);
+    acc ^= vm_load_mul(&values[2], 29u);
+    acc += vm_load_mul(&values[3], 31u);
+    printf("%08x\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("super load/mul fixture should be writable");
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_super_load_imul_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_super_load_imul");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_super_load_imul.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_mul"));
+    assert!(ir.contains("handler.load_imul"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_super_load_udiv_fusion_matches_baseline() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_super_load_iudiv.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP uint32_t vm_load_udiv(const uint32_t *ptr, uint32_t divisor) {
+    return *ptr / divisor;
+}
+
+int main(void) {
+    uint32_t values[4] = {144u, 233u, 610u, 1597u};
+    uint32_t acc = 0x2468ace0u;
+    acc ^= vm_load_udiv(&values[0], 3u);
+    acc += vm_load_udiv(&values[1], 7u);
+    acc ^= vm_load_udiv(&values[2], 10u);
+    acc += vm_load_udiv(&values[3], 31u);
+    printf("%08x\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("super load/udiv fixture should be writable");
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_super_load_iudiv_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_super_load_iudiv");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_super_load_iudiv.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_udiv"));
+    assert!(ir.contains("handler.load_iudiv"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_super_load_div_rem_fusions_match_baseline() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_super_load_div_rem.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP int32_t vm_load_sdiv(const int32_t *ptr, int32_t divisor) {
+    return *ptr / divisor;
+}
+
+VMP uint32_t vm_load_urem(const uint32_t *ptr, uint32_t divisor) {
+    return *ptr % divisor;
+}
+
+VMP int32_t vm_load_srem(const int32_t *ptr, int32_t divisor) {
+    return *ptr % divisor;
+}
+
+int main(void) {
+    int32_t signed_values[4] = {144, -233, 610, -1597};
+    uint32_t unsigned_values[4] = {144u, 233u, 610u, 1597u};
+    int32_t acc = 0x13572468;
+    acc ^= vm_load_sdiv(&signed_values[0], 3);
+    acc += vm_load_sdiv(&signed_values[1], 7);
+    acc ^= (int32_t)vm_load_urem(&unsigned_values[2], 17u);
+    acc += vm_load_srem(&signed_values[3], 31);
+    printf("%08x\n", (uint32_t)acc);
+    return 0;
+}
+"#,
+    )
+    .expect("super load/div/rem fixture should be writable");
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_super_load_div_rem_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_super_load_div_rem");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_super_load_div_rem.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_sdiv"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_urem"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_srem"));
+    assert!(ir.contains("handler.load_isdiv"));
+    assert!(ir.contains("handler.load_iurem"));
+    assert!(ir.contains("handler.load_isrem"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_super_load_shift_fusions_match_baseline() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_super_load_shift.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP uint32_t vm_load_shl(const uint32_t *ptr, uint32_t shift) {
+    return *ptr << shift;
+}
+
+VMP uint32_t vm_load_lshr(const uint32_t *ptr, uint32_t shift) {
+    return *ptr >> shift;
+}
+
+VMP int32_t vm_load_ashr(const int32_t *ptr, uint32_t shift) {
+    return *ptr >> shift;
+}
+
+int main(void) {
+    uint32_t unsigned_values[4] = {0x00012345u, 0x8000f00du, 0x0f0f00ffu, 0xfedcba98u};
+    int32_t signed_values[4] = {-19088743, 305419896, -559038737, 1432778632};
+    uint32_t acc = 0x55aa33ccu;
+    acc ^= vm_load_shl(&unsigned_values[0], 3u);
+    acc += vm_load_lshr(&unsigned_values[1], 5u);
+    acc ^= (uint32_t)vm_load_ashr(&signed_values[0], 4u);
+    acc += (uint32_t)vm_load_ashr(&signed_values[2], 7u);
+    printf("%08x\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("super load/shift fixture should be writable");
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_super_load_shift_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_super_load_shift");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_super_load_shift.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_shl"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_lshr"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_ashr"));
+    assert!(ir.contains("handler.load_ishl"));
+    assert!(ir.contains("handler.load_ilshr"));
+    assert!(ir.contains("handler.load_iashr"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_super_load_minmax_fusions_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_super_load_minmax.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_super_load_minmax'
+source_filename = "vm_virtualize_super_load_minmax.ll"
+
+declare i32 @llvm.smax.i32(i32, i32)
+declare i32 @llvm.smin.i32(i32, i32)
+declare i32 @llvm.umax.i32(i32, i32)
+declare i32 @llvm.umin.i32(i32, i32)
+
+define i32 @vm_load_smax_intrinsic(ptr %ptr, i32 %rhs) {
+entry:
+  %loaded = load i32, ptr %ptr, align 4
+  %value = call i32 @llvm.smax.i32(i32 %loaded, i32 %rhs)
+  ret i32 %value
+}
+
+define i32 @vm_load_smin_intrinsic(ptr %ptr, i32 %rhs) {
+entry:
+  %loaded = load i32, ptr %ptr, align 4
+  %value = call i32 @llvm.smin.i32(i32 %rhs, i32 %loaded)
+  ret i32 %value
+}
+
+define i32 @vm_load_umax_intrinsic(ptr %ptr, i32 %rhs) {
+entry:
+  %loaded = load i32, ptr %ptr, align 4
+  %value = call i32 @llvm.umax.i32(i32 %loaded, i32 %rhs)
+  ret i32 %value
+}
+
+define i32 @vm_load_umin_intrinsic(ptr %ptr, i32 %rhs) {
+entry:
+  %loaded = load i32, ptr %ptr, align 4
+  %value = call i32 @llvm.umin.i32(i32 %rhs, i32 %loaded)
+  ret i32 %value
+}
+"#,
+    )
+    .expect("super load/minmax LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_super_load_minmax_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_load_smax_intrinsic(const int32_t *ptr, int32_t rhs);
+int32_t vm_load_smin_intrinsic(const int32_t *ptr, int32_t rhs);
+uint32_t vm_load_umax_intrinsic(const uint32_t *ptr, uint32_t rhs);
+uint32_t vm_load_umin_intrinsic(const uint32_t *ptr, uint32_t rhs);
+
+int main(void) {
+    int32_t signed_values[4] = {-123456789, 2147483000, -42, 77};
+    uint32_t unsigned_values[4] = {0x00001000u, 0xf0000000u, 0x7fffffffu, 0x80000001u};
+    uint32_t acc = 0x7a3519ddu;
+    acc ^= (uint32_t)vm_load_smax_intrinsic(&signed_values[0], 12345);
+    acc += (uint32_t)vm_load_smin_intrinsic(&signed_values[1], -100);
+    acc ^= vm_load_umax_intrinsic(&unsigned_values[1], 0x80000000u);
+    acc += vm_load_umin_intrinsic(&unsigned_values[3], 0x7ffffffeu);
+    printf("%08x\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("super load/minmax C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_super_load_minmax_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_super_load_minmax.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    for (function, instruction) in [
+        ("vm_load_smax_intrinsic", "load_ismax"),
+        ("vm_load_smin_intrinsic", "load_ismin"),
+        ("vm_load_umax_intrinsic", "load_iumax"),
+        ("vm_load_umin_intrinsic", "load_iumin"),
+    ] {
+        let dump = bytecode_dump_for_function(&stderr, function);
+        assert!(
+            dump.contains(&format!(": {instruction} width=32")),
+            "{function} should use {instruction} super instruction:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_super_load_minmax");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized super load/minmax IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_smax_intrinsic"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_smin_intrinsic"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_umax_intrinsic"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_umin_intrinsic"));
+    assert!(ir.contains("handler.load_ismax"));
+    assert!(ir.contains("handler.load_ismin"));
+    assert!(ir.contains("handler.load_iumax"));
+    assert!(ir.contains("handler.load_iumin"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_super_load_saturating_fusions_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_super_load_saturating.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_super_load_saturating'
+source_filename = "vm_virtualize_super_load_saturating.ll"
+
+declare i32 @llvm.uadd.sat.i32(i32, i32)
+declare i32 @llvm.usub.sat.i32(i32, i32)
+declare i32 @llvm.sadd.sat.i32(i32, i32)
+declare i32 @llvm.ssub.sat.i32(i32, i32)
+declare i32 @llvm.ushl.sat.i32(i32, i32)
+declare i32 @llvm.sshl.sat.i32(i32, i32)
+
+define i32 @vm_load_uadd_sat_intrinsic(ptr %ptr, i32 %rhs) {
+entry:
+  %loaded = load i32, ptr %ptr, align 4
+  %value = call i32 @llvm.uadd.sat.i32(i32 %rhs, i32 %loaded)
+  ret i32 %value
+}
+
+define i32 @vm_load_usub_sat_intrinsic(ptr %ptr, i32 %rhs) {
+entry:
+  %loaded = load i32, ptr %ptr, align 4
+  %value = call i32 @llvm.usub.sat.i32(i32 %loaded, i32 %rhs)
+  ret i32 %value
+}
+
+define i32 @vm_load_sadd_sat_intrinsic(ptr %ptr, i32 %rhs) {
+entry:
+  %loaded = load i32, ptr %ptr, align 4
+  %value = call i32 @llvm.sadd.sat.i32(i32 %loaded, i32 %rhs)
+  ret i32 %value
+}
+
+define i32 @vm_load_ssub_sat_intrinsic(ptr %ptr, i32 %rhs) {
+entry:
+  %loaded = load i32, ptr %ptr, align 4
+  %value = call i32 @llvm.ssub.sat.i32(i32 %loaded, i32 %rhs)
+  ret i32 %value
+}
+
+define i32 @vm_load_ushl_sat_intrinsic(ptr %ptr, i32 %rhs) {
+entry:
+  %loaded = load i32, ptr %ptr, align 4
+  %value = call i32 @llvm.ushl.sat.i32(i32 %loaded, i32 %rhs)
+  ret i32 %value
+}
+
+define i32 @vm_load_sshl_sat_intrinsic(ptr %ptr, i32 %rhs) {
+entry:
+  %loaded = load i32, ptr %ptr, align 4
+  %value = call i32 @llvm.sshl.sat.i32(i32 %loaded, i32 %rhs)
+  ret i32 %value
+}
+"#,
+    )
+    .expect("super load/saturating LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_super_load_saturating_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint32_t vm_load_uadd_sat_intrinsic(const uint32_t *ptr, uint32_t rhs);
+uint32_t vm_load_usub_sat_intrinsic(const uint32_t *ptr, uint32_t rhs);
+int32_t vm_load_sadd_sat_intrinsic(const int32_t *ptr, int32_t rhs);
+int32_t vm_load_ssub_sat_intrinsic(const int32_t *ptr, int32_t rhs);
+uint32_t vm_load_ushl_sat_intrinsic(const uint32_t *ptr, uint32_t rhs);
+int32_t vm_load_sshl_sat_intrinsic(const int32_t *ptr, int32_t rhs);
+
+int main(void) {
+    uint32_t unsigned_values[4] = {0xfffffff0u, 0x00000009u, 0x40000000u, 0x00010000u};
+    int32_t signed_values[4] = {2147483000, -2147483000, 0x10000000, -0x10000000};
+    uint32_t acc = 0x2468ace0u;
+    acc ^= vm_load_uadd_sat_intrinsic(&unsigned_values[0], 0x1234u);
+    acc += vm_load_usub_sat_intrinsic(&unsigned_values[1], 0x20u);
+    acc ^= (uint32_t)vm_load_sadd_sat_intrinsic(&signed_values[0], 1000000);
+    acc += (uint32_t)vm_load_ssub_sat_intrinsic(&signed_values[1], 1000000);
+    acc ^= vm_load_ushl_sat_intrinsic(&unsigned_values[2], 4u);
+    acc += (uint32_t)vm_load_sshl_sat_intrinsic(&signed_values[3], 5u);
+    printf("%08x\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("super load/saturating C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_super_load_saturating_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_super_load_saturating.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    for (function, instruction) in [
+        ("vm_load_uadd_sat_intrinsic", "load_iuadd_sat"),
+        ("vm_load_usub_sat_intrinsic", "load_iusub_sat"),
+        ("vm_load_sadd_sat_intrinsic", "load_isadd_sat"),
+        ("vm_load_ssub_sat_intrinsic", "load_issub_sat"),
+        ("vm_load_ushl_sat_intrinsic", "load_iushl_sat"),
+        ("vm_load_sshl_sat_intrinsic", "load_isshl_sat"),
+    ] {
+        let dump = bytecode_dump_for_function(&stderr, function);
+        assert!(
+            dump.contains(&format!(": {instruction} width=32")),
+            "{function} should use {instruction} super instruction:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_super_load_saturating");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized super load/saturating IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_uadd_sat_intrinsic"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_usub_sat_intrinsic"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_sadd_sat_intrinsic"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_ssub_sat_intrinsic"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_ushl_sat_intrinsic"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_sshl_sat_intrinsic"));
+    assert!(ir.contains("handler.load_iuadd_sat"));
+    assert!(ir.contains("handler.load_iusub_sat"));
+    assert!(ir.contains("handler.load_isadd_sat"));
+    assert!(ir.contains("handler.load_issub_sat"));
+    assert!(ir.contains("handler.load_iushl_sat"));
+    assert!(ir.contains("handler.load_isshl_sat"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_super_load_and_fusion_matches_baseline() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_super_load_iand.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP uint32_t vm_load_and(const uint32_t *ptr, uint32_t mask) {
+    return *ptr & mask;
+}
+
+int main(void) {
+    uint32_t values[4] = {0xff00ff00u, 0x13572468u, 0xa5a55a5au, 0x0f0ff0f0u};
+    uint32_t acc = 0xffffffffu;
+    acc ^= vm_load_and(&values[0], 0x0ff00ff0u);
+    acc ^= vm_load_and(&values[1], 0x00ff00ffu);
+    acc ^= vm_load_and(&values[2], 0xf0f0f0f0u);
+    acc ^= vm_load_and(&values[3], 0x33333333u);
+    printf("%08x\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("super load/and fixture should be writable");
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_super_load_iand_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_super_load_iand");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_super_load_iand.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_and"));
+    assert!(ir.contains("handler.load_iand"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_super_load_or_fusion_matches_baseline() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_super_load_ior.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP uint32_t vm_load_or(const uint32_t *ptr, uint32_t mask) {
+    return *ptr | mask;
+}
+
+int main(void) {
+    uint32_t values[4] = {0x10203040u, 0x55667788u, 0x90abcdefu, 0x0000ffffu};
+    uint32_t acc = 0x13579bdfu;
+    acc ^= vm_load_or(&values[0], 0x0f0f0f0fu);
+    acc ^= vm_load_or(&values[1], 0x00ff00ffu);
+    acc ^= vm_load_or(&values[2], 0xf000000fu);
+    acc ^= vm_load_or(&values[3], 0x33330000u);
+    printf("%08x\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("super load/or fixture should be writable");
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_super_load_ior_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_super_load_ior");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_super_load_ior.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_or"));
+    assert!(ir.contains("handler.load_ior"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_super_load_sub_fusion_matches_baseline() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_super_load_isub.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP int vm_load_sub(const int *ptr, int subtrahend) {
+    return *ptr - subtrahend;
+}
+
+int main(void) {
+    int values[4] = {144, 233, 377, 610};
+    int acc = 0;
+    acc += vm_load_sub(&values[0], 34);
+    acc += vm_load_sub(&values[1], 55);
+    acc += vm_load_sub(&values[2], 89);
+    acc += vm_load_sub(&values[3], 144);
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("super load/sub fixture should be writable");
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_super_load_isub_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_super_load_isub");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_super_load_isub.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_sub"));
+    assert!(ir.contains("handler.load_isub"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_super_load_xor_fusion_matches_baseline() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_super_load_ixor.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP uint32_t vm_load_xor(const uint32_t *ptr, uint32_t mask) {
+    return *ptr ^ mask;
+}
+
+int main(void) {
+    uint32_t values[4] = {0x13572468u, 0x24681357u, 0xa5a55a5au, 0x0f0ff0f0u};
+    uint32_t acc = 0;
+    acc ^= vm_load_xor(&values[0], 0x11111111u);
+    acc ^= vm_load_xor(&values[1], 0x22222222u);
+    acc ^= vm_load_xor(&values[2], 0x33333333u);
+    acc ^= vm_load_xor(&values[3], 0x44444444u);
+    printf("%08x\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("super load/xor fixture should be writable");
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_super_load_ixor_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_super_load_ixor");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_super_load_ixor.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_load_xor"));
+    assert!(ir.contains("handler.load_ixor"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_mixed_decoded_record_widths_execute() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_mixed_record_widths.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_mixed_record_widths'
+source_filename = "vm_virtualize_mixed_record_widths.ll"
+
+declare void @llvm.sideeffect()
+declare i32 @llvm.get.rounding()
+declare i64 @llvm.fshl.i64(i64, i64, i64)
+declare i64 @host_mix_i64(i64)
+
+define i64 @vm_mixed_record_widths(ptr %base, i64 %seed) {
+entry:
+  call void @llvm.sideeffect()
+  %round = call i32 @llvm.get.rounding()
+  %round64 = zext i32 %round to i64
+  %sum = add i64 %seed, %round64
+  %ptr1 = getelementptr i64, ptr %base, i64 1
+  %loaded = load i64, ptr %ptr1, align 8
+  %shift = and i64 %seed, 15
+  %rot = call i64 @llvm.fshl.i64(i64 %sum, i64 %loaded, i64 %shift)
+  %native = call i64 @host_mix_i64(i64 %rot)
+  %out = xor i64 %native, %loaded
+  ret i64 %out
+}
+"#,
+    )
+    .expect("mixed decoded record width LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_mixed_record_widths_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_mixed_record_widths(uint64_t *base, uint64_t seed);
+
+uint64_t host_mix_i64(uint64_t value) {
+    return (value * 0x9e3779b97f4a7c15ULL) ^ (value >> 17);
+}
+
+int main(void) {
+    uint64_t values[3] = {
+        0x0102030405060708ULL,
+        0x1122334455667788ULL,
+        0x8877665544332211ULL,
+    };
+    uint64_t a = vm_mixed_record_widths(values, 0x123456789abcdef0ULL);
+    uint64_t b = vm_mixed_record_widths(values, 0x0fedcba987654321ULL);
+    printf("%016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n", a, b, a ^ b);
+    return 0;
+}
+"#,
+    )
+    .expect("mixed decoded record width C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_mixed_record_widths_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_mixed_record_widths.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_mixed_record_widths");
+    for needle in [
+        ": sideeffect width=4",
+        ": read_rounding width=8",
+        ": iadd width=16",
+        ": gep_load width=32",
+        ": fshl width=48",
+        ": call_native width=64",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "mixed record fixture should contain decoded record marker {needle}:\n{dump}"
+        );
+    }
+    assert!(
+        bytecode_dump_has_multibyte_opcode(&dump, "fshl", 48),
+        "mixed record fixture should exercise a multi-byte opcode alias for fshl:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_mixed_record_widths");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("mixed record width LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_mixed_record_widths"));
+    assert!(ir.contains("handler.sideeffect"));
+    assert!(ir.contains("handler.read_rounding"));
+    assert!(ir.contains("handler.iadd"));
+    assert!(ir.contains("handler.gep_load"));
+    assert!(ir.contains("handler.fshl"));
+    assert!(ir.contains("handler.call_native"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_module_bytecode_mixed_records_with_relocs_runs() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_module_mixed_records.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_module_mixed_records'
+source_filename = "vm_virtualize_module_mixed_records.ll"
+
+declare void @llvm.sideeffect()
+declare i32 @llvm.get.rounding()
+declare i64 @llvm.fshl.i64(i64, i64, i64)
+declare i64 @host_mix_i64(i64)
+
+define i64 @vm_module_mixed_a(ptr %base, i64 %seed) {
+entry:
+  call void @llvm.sideeffect()
+  %round = call i32 @llvm.get.rounding()
+  %round64 = zext i32 %round to i64
+  %sum = add i64 %seed, %round64
+  %ptr1 = getelementptr i64, ptr %base, i64 1
+  %loaded = load i64, ptr %ptr1, align 8
+  %shift = and i64 %seed, 15
+  %rot = call i64 @llvm.fshl.i64(i64 %sum, i64 %loaded, i64 %shift)
+  %native = call i64 @host_mix_i64(i64 %rot)
+  %cmp = icmp ult i64 %rot, %native
+  br i1 %cmp, label %then, label %else
+
+then:
+  %thenv = add i64 %native, %loaded
+  br label %exit
+
+else:
+  %elsev = xor i64 %native, %sum
+  br label %exit
+
+exit:
+  %out = phi i64 [ %thenv, %then ], [ %elsev, %else ]
+  ret i64 %out
+}
+
+define i64 @vm_module_mixed_b(ptr %base, i64 %seed) {
+entry:
+  call void @llvm.sideeffect()
+  %round = call i32 @llvm.get.rounding()
+  %round64 = zext i32 %round to i64
+  %sum = add i64 %seed, %round64
+  %ptr2 = getelementptr i64, ptr %base, i64 2
+  %loaded = load i64, ptr %ptr2, align 8
+  %shift = and i64 %sum, 31
+  %rot = call i64 @llvm.fshl.i64(i64 %loaded, i64 %sum, i64 %shift)
+  %native = call i64 @host_mix_i64(i64 %rot)
+  %cmp = icmp uge i64 %native, %loaded
+  br i1 %cmp, label %then, label %else
+
+then:
+  %thenv = xor i64 %native, %seed
+  br label %exit
+
+else:
+  %elsev = add i64 %native, %sum
+  br label %exit
+
+exit:
+  %out = phi i64 [ %thenv, %then ], [ %elsev, %else ]
+  ret i64 %out
+}
+"#,
+    )
+    .expect("module mixed record LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_module_mixed_records_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_module_mixed_a(uint64_t *base, uint64_t seed);
+uint64_t vm_module_mixed_b(uint64_t *base, uint64_t seed);
+
+uint64_t host_mix_i64(uint64_t value) {
+    value ^= value >> 33;
+    value *= 0xff51afd7ed558ccdULL;
+    value ^= value >> 33;
+    return value;
+}
+
+int main(void) {
+    uint64_t values[4] = {
+        0x0102030405060708ULL,
+        0x1122334455667788ULL,
+        0x8877665544332211ULL,
+        0xfedcba9876543210ULL,
+    };
+    uint64_t a = vm_module_mixed_a(values, 0x123456789abcdef0ULL);
+    uint64_t b = vm_module_mixed_b(values, 0x0fedcba987654321ULL);
+    uint64_t c = vm_module_mixed_a(values, b ^ 0xa5a5a5a5a5a5a5a5ULL);
+    printf("%016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n", a, b, c);
+    return 0;
+}
+"#,
+    )
+    .expect("module mixed record C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_module_mixed_records_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_profile_path = Some(module_bytecode_profile_path().to_string_lossy().into_owned());
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_module_mixed_records.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let a_dump = bytecode_dump_for_function(&stderr, "vm_module_mixed_a");
+    let b_dump = bytecode_dump_for_function(&stderr, "vm_module_mixed_b");
+    let combined_dump = format!("{a_dump}\n{b_dump}");
+    for needle in [
+        ": sideeffect width=4",
+        ": read_rounding width=8",
+        ": iadd width=16",
+        ": gep_load width=32",
+        ": fshl width=48",
+        ": call_native width=64",
+        ": fake_nop ",
+        ": dead_fake_nop ",
+    ] {
+        assert!(
+            combined_dump.contains(needle),
+            "module-scope mixed record fixture should contain bytecode marker {needle}:\n{combined_dump}"
+        );
+    }
+    assert!(
+        combined_dump.contains(": br_if ") || combined_dump.contains(": icmp_br_if "),
+        "conditional control flow should encode label_pc branch operands:\n{combined_dump}"
+    );
+    assert!(
+        bytecode_dump_has_multibyte_opcode(&combined_dump, "fshl", 48),
+        "module-scope mixed record fixture should exercise a multi-byte opcode alias for fshl:\n{combined_dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_module_mixed_records");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("module mixed record LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.module"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_module_mixed_a"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_module_mixed_b"));
+    assert!(ir.contains("handler.sideeffect"));
+    assert!(ir.contains("handler.read_rounding"));
+    assert!(ir.contains("handler.gep_load"));
+    assert!(ir.contains("handler.fshl"));
+    assert!(ir.contains("handler.call_native"));
+    assert!(ir.contains("handler.fake_nop"));
+    assert!(ir.contains("handler.br_if") || ir.contains("handler.icmp_br_if"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_freeze_scalar_ir_matches_baseline() {
     ensure_plugin_built();
 
@@ -1282,6 +2708,88 @@ int main(void) {
     assert!(ir.contains(".amice.vm.bytecode.vm_freeze_scalar"));
     assert!(ir.contains("handler.mov"));
     assert!(!ir.contains(" freeze "));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_i1_signature_select_cast_freeze_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_i1_scalar.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_i1_scalar'
+source_filename = "vm_virtualize_i1_scalar.ll"
+
+@fmt = private unnamed_addr constant [10 x i8] c"%d %d %d\0A\00"
+
+declare i32 @printf(ptr, ...)
+
+define i1 @vm_i1_scalar(i1 %a, i1 %b, i8 %x) {
+entry:
+  %stable_a = freeze i1 %a
+  %stable_b = freeze i1 %b
+  %xa = trunc i8 %x to i1
+  %ab_eq = icmp eq i1 %stable_a, %stable_b
+  %choice = select i1 %xa, i1 %ab_eq, i1 %stable_b
+  %wide = zext i1 %choice to i8
+  %mixed = xor i8 %wide, %x
+  %narrow = trunc i8 %mixed to i1
+  %out = select i1 %stable_a, i1 %choice, i1 %narrow
+  ret i1 %out
+}
+
+define i32 @main() {
+entry:
+  %r0 = call i1 @vm_i1_scalar(i1 true, i1 false, i8 7)
+  %r1 = call i1 @vm_i1_scalar(i1 false, i1 false, i8 2)
+  %r2 = call i1 @vm_i1_scalar(i1 true, i1 true, i8 12)
+  %r0i = zext i1 %r0 to i32
+  %r1i = zext i1 %r1 to i32
+  %r2i = zext i1 %r2 to i32
+  call i32 (ptr, ...) @printf(ptr @fmt, i32 %r0i, i32 %r1i, i32 %r2i)
+  ret i32 0
+}
+"#,
+    )
+    .expect("i1 scalar LLVM IR fixture should be writable");
+
+    let baseline = compile_ir_binary(&ir_source, "vm_virtualize_i1_scalar_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_i1_scalar.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_i1_scalar");
+    assert!(
+        dump.contains(": icmp "),
+        "i1 icmp should lower through the profile icmp handler:\n{dump}"
+    );
+    assert!(
+        dump.contains(": zext ") && dump.contains(": trunc "),
+        "i1 cast chain should lower through profile cast handlers:\n{dump}"
+    );
+    assert!(
+        dump.contains(": br_if ") || dump.contains(": icmp_br_if "),
+        "i1 select should lower through profile branch actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_binary(&virtualized_ir, "vm_virtualize_i1_scalar");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized i1 scalar LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_i1_scalar"));
+    assert!(ir.contains("handler.icmp"));
+    assert!(ir.contains("handler.zext"));
+    assert!(ir.contains("handler.trunc"));
 }
 
 #[test]
@@ -1424,6 +2932,109 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_pointer_return_freeze_cast_select_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_pointer_return_freeze_cast.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_pointer_return_freeze_cast'
+source_filename = "vm_virtualize_pointer_return_freeze_cast.ll"
+
+define ptr @vm_pointer_return_freeze_cast(ptr %base, ptr %fallback, i64 %index, i8 %flag) {
+entry:
+  %stable_base = freeze ptr %base
+  %stable_fallback = freeze ptr %fallback
+  %use_base = trunc i8 %flag to i1
+  %base_bits = ptrtoint ptr %stable_base to i64
+  %offset = shl i64 %index, 2
+  %target_bits = add i64 %base_bits, %offset
+  %target = inttoptr i64 %target_bits to ptr
+  %chosen = select i1 %use_base, ptr %target, ptr %stable_fallback
+  ret ptr %chosen
+}
+"#,
+    )
+    .expect("pointer return/freeze/cast LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_pointer_return_freeze_cast_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int *vm_pointer_return_freeze_cast(int *base, int *fallback, uint64_t index, uint8_t flag);
+
+int main(void) {
+    int values[4] = { 11, 22, 33, 44 };
+    int fallback = 99;
+    int *a = vm_pointer_return_freeze_cast(values, &fallback, 2, 1);
+    int *b = vm_pointer_return_freeze_cast(values, &fallback, 1, 0);
+    int *c = vm_pointer_return_freeze_cast(values, &fallback, 3, 1);
+    printf("%d %d %d\n", *a, *b, *c);
+    return 0;
+}
+"#,
+    )
+    .expect("pointer return/freeze/cast C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_pointer_return_freeze_cast_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_pointer_return_freeze_cast.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_pointer_return_freeze_cast");
+    assert!(
+        dump.contains(": mov "),
+        "pointer freeze/select should lower through profile mov bytecode:\n{dump}"
+    );
+    assert!(
+        dump.contains(": bitcast "),
+        "ptrtoint/inttoptr should lower through same-width profile bitcast bytecode:\n{dump}"
+    );
+    assert!(
+        dump.contains(": trunc "),
+        "i8 flag should lower to an i1 select condition through profile trunc bytecode:\n{dump}"
+    );
+    assert!(
+        dump.contains(": br_if ") || dump.contains(": icmp_br_if "),
+        "pointer select should lower through a VM conditional branch:\n{dump}"
+    );
+    assert!(
+        dump.contains(": ret "),
+        "pointer return should lower through VM ret bytecode:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_pointer_return_freeze_cast");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized pointer return LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_pointer_return_freeze_cast"));
+    assert!(ir.contains("handler.bitcast"));
+    assert!(ir.contains("handler.br_if"));
+    assert!(ir.contains("handler.ret"));
+    assert!(!ir.contains(" freeze "));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_scalar_bitcast_reinterpret_matches_baseline() {
     ensure_plugin_built();
 
@@ -1497,6 +3108,264 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_saturating_float_to_int_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_saturating_float_to_int.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_saturating_float_to_int'
+source_filename = "vm_virtualize_saturating_float_to_int.ll"
+
+declare i8 @llvm.fptosi.sat.i8.f16(half)
+declare i1 @llvm.fptosi.sat.i1.f16(half)
+declare i8 @llvm.fptosi.sat.i8.f32(float)
+declare i16 @llvm.fptosi.sat.i16.f64(double)
+declare i32 @llvm.fptoui.sat.i32.f16(half)
+declare i1 @llvm.fptoui.sat.i1.f64(double)
+declare i32 @llvm.fptoui.sat.i32.f32(float)
+declare i64 @llvm.fptoui.sat.i64.f64(double)
+
+define i64 @vm_saturating_float_to_int(half %h, float %f, double %d) {
+entry:
+  %s8h = call i8 @llvm.fptosi.sat.i8.f16(half %h)
+  %s1h = call i1 @llvm.fptosi.sat.i1.f16(half %h)
+  %s8 = call i8 @llvm.fptosi.sat.i8.f32(float %f)
+  %s16 = call i16 @llvm.fptosi.sat.i16.f64(double %d)
+  %u32h = call i32 @llvm.fptoui.sat.i32.f16(half %h)
+  %u1 = call i1 @llvm.fptoui.sat.i1.f64(double %d)
+  %u32 = call i32 @llvm.fptoui.sat.i32.f32(float %f)
+  %u64 = call i64 @llvm.fptoui.sat.i64.f64(double %d)
+  %s8hb = zext i8 %s8h to i64
+  %s1hb = zext i1 %s1h to i64
+  %s8x = sext i8 %s8 to i64
+  %s16x = sext i16 %s16 to i64
+  %u32hx = zext i32 %u32h to i64
+  %u1x = zext i1 %u1 to i64
+  %u32x = zext i32 %u32 to i64
+  %a = mul i64 %s8x, 131
+  %b = xor i64 %a, %s16x
+  %c = shl i64 %u32x, 24
+  %e = xor i64 %b, %c
+  %h0 = shl i64 %s8hb, 48
+  %h1 = shl i64 %u32hx, 8
+  %h2 = xor i64 %h0, %h1
+  %r0 = xor i64 %e, %u64
+  %p0 = shl i64 %s1hb, 5
+  %p1 = shl i64 %u1x, 6
+  %p = or i64 %p0, %p1
+  %r1 = xor i64 %r0, %h2
+  %r = xor i64 %r1, %p
+  ret i64 %r
+}
+"#,
+    )
+    .expect("saturating float-to-int LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_saturating_float_to_int_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_saturating_float_to_int(_Float16 h, float f, double d);
+
+int main(void) {
+    uint64_t a = vm_saturating_float_to_int((_Float16)300.5, 300.5f, 40000.75);
+    uint64_t b = vm_saturating_float_to_int((_Float16)-42.5, -42.5f, -100000.25);
+    uint64_t c = vm_saturating_float_to_int((_Float16)19.25, 19.25f, 1234.5);
+    printf("%llu %llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)c, (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("saturating float-to-int C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_saturating_float_to_int_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_saturating_float_to_int.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_saturating_float_to_int");
+    assert!(
+        dump.contains(": fptosi_sat "),
+        "llvm.fptosi.sat should lower through the profile fptosi_sat instruction:\n{dump}"
+    );
+    assert!(
+        dump.contains(": fptoui_sat "),
+        "llvm.fptoui.sat should lower through the profile fptoui_sat instruction:\n{dump}"
+    );
+    assert!(
+        dump.contains("from_width: 16"),
+        "llvm.fptosi.sat/fptoui.sat half sources should encode from_width=16:\n{dump}"
+    );
+    assert!(
+        dump.contains("to_width: 1"),
+        "llvm.fptosi.sat/fptoui.sat i1 results should encode to_width=1:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_saturating_float_to_int");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized saturating float-to-int LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_saturating_float_to_int"));
+    assert!(ir.contains("handler.fptosi_sat"));
+    assert!(ir.contains("handler.fptoui_sat"));
+    assert!(ir.contains("@llvm.fptosi.sat"));
+    assert!(ir.contains("@llvm.fptoui.sat"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_saturating_float_to_int_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_saturating_float_to_int.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_saturating_float_to_int'
+source_filename = "vm_virtualize_vector_saturating_float_to_int.ll"
+
+declare <2 x i32> @llvm.fptosi.sat.v2i32.v2f64(<2 x double>)
+declare <2 x i8> @llvm.fptosi.sat.v2i8.v2f32(<2 x float>)
+declare <2 x i64> @llvm.fptoui.sat.v2i64.v2f64(<2 x double>)
+declare <2 x i1> @llvm.fptoui.sat.v2i1.v2f32(<2 x float>)
+
+define i64 @vm_vector_saturating_float_to_int(double %a, double %b, float %c, float %d) {
+entry:
+  %dv0 = insertelement <2 x double> poison, double %a, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double %b, i32 1
+  %fv0 = insertelement <2 x float> poison, float %c, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %d, i32 1
+
+  %si32 = call <2 x i32> @llvm.fptosi.sat.v2i32.v2f64(<2 x double> %dv1)
+  %si8 = call <2 x i8> @llvm.fptosi.sat.v2i8.v2f32(<2 x float> %fv1)
+  %ui64 = call <2 x i64> @llvm.fptoui.sat.v2i64.v2f64(<2 x double> %dv1)
+  %ui1 = call <2 x i1> @llvm.fptoui.sat.v2i1.v2f32(<2 x float> %fv1)
+
+  %si32_0 = extractelement <2 x i32> %si32, i32 0
+  %si32_1 = extractelement <2 x i32> %si32, i32 1
+  %si8_0 = extractelement <2 x i8> %si8, i32 0
+  %si8_1 = extractelement <2 x i8> %si8, i32 1
+  %ui64_0 = extractelement <2 x i64> %ui64, i32 0
+  %ui64_1 = extractelement <2 x i64> %ui64, i32 1
+  %ui1_0 = extractelement <2 x i1> %ui1, i32 0
+  %ui1_1 = extractelement <2 x i1> %ui1, i32 1
+
+  %si32_0x = sext i32 %si32_0 to i64
+  %si32_1x = sext i32 %si32_1 to i64
+  %si8_0x = sext i8 %si8_0 to i64
+  %si8_1x = sext i8 %si8_1 to i64
+  %ui1_0x = zext i1 %ui1_0 to i64
+  %ui1_1x = zext i1 %ui1_1 to i64
+
+  %m0 = xor i64 %si32_0x, %si32_1x
+  %m1 = shl i64 %si8_0x, 8
+  %m2 = xor i64 %m0, %m1
+  %m3 = shl i64 %si8_1x, 16
+  %m4 = xor i64 %m2, %m3
+  %m5 = xor i64 %m4, %ui64_0
+  %m6 = xor i64 %m5, %ui64_1
+  %m7 = shl i64 %ui1_0x, 5
+  %m8 = shl i64 %ui1_1x, 6
+  %m9 = or i64 %m7, %m8
+  %result = xor i64 %m6, %m9
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector saturating float-to-int LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_saturating_float_to_int_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_vector_saturating_float_to_int(double a, double b, float c, float d);
+
+int main(void) {
+    uint64_t a = vm_vector_saturating_float_to_int(300.5, -42.5, 300.5f, -42.5f);
+    uint64_t b = vm_vector_saturating_float_to_int(4000000000.0, -4000000000.0, 1.0f, 0.0f);
+    uint64_t c = vm_vector_saturating_float_to_int(19.25, 1234.5, 19.25f, 1234.5f);
+    printf("%llu %llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("vector saturating float-to-int C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_saturating_float_to_int_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_saturating_float_to_int.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_saturating_float_to_int");
+    assert!(
+        dump.matches(": fptosi_sat ").count() >= 4,
+        "vector llvm.fptosi.sat should lower each lane through profile fptosi_sat handlers:\n{dump}"
+    );
+    assert!(
+        dump.matches(": fptoui_sat ").count() >= 4,
+        "vector llvm.fptoui.sat should lower each lane through profile fptoui_sat handlers:\n{dump}"
+    );
+    assert!(
+        dump.contains("from_width: 64") && dump.contains("from_width: 32"),
+        "vector saturating float-to-int bytecode should preserve source float lane widths:\n{dump}"
+    );
+    assert!(
+        dump.contains("to_width: 1"),
+        "vector saturating float-to-int bytecode should preserve i1 result lane width:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_saturating_float_to_int",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized vector saturating float-to-int LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_saturating_float_to_int"));
+    assert!(ir.contains("handler.fptosi_sat"));
+    assert!(ir.contains("handler.fptoui_sat"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_saturating_float_to_int"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_integer_intrinsics_match_baseline() {
     ensure_plugin_built();
 
@@ -1508,12 +3377,27 @@ source_filename = "vm_virtualize_integer_intrinsics.ll"
 
 declare i32 @llvm.ctpop.i32(i32)
 declare i64 @llvm.ctpop.i64(i64)
+declare i8 @llvm.ctpop.i8(i8)
+declare i16 @llvm.ctpop.i16(i16)
+declare i1 @llvm.ctpop.i1(i1)
 declare i32 @llvm.ctlz.i32(i32, i1 immarg)
 declare i64 @llvm.ctlz.i64(i64, i1 immarg)
+declare i8 @llvm.ctlz.i8(i8, i1 immarg)
+declare i1 @llvm.ctlz.i1(i1, i1 immarg)
 declare i32 @llvm.cttz.i32(i32, i1 immarg)
 declare i64 @llvm.cttz.i64(i64, i1 immarg)
+declare i16 @llvm.cttz.i16(i16, i1 immarg)
+declare i1 @llvm.cttz.i1(i1, i1 immarg)
 declare i32 @llvm.abs.i32(i32, i1 immarg)
 declare i64 @llvm.abs.i64(i64, i1 immarg)
+declare i8 @llvm.abs.i8(i8, i1 immarg)
+declare i1 @llvm.abs.i1(i1, i1 immarg)
+declare i1 @llvm.smax.i1(i1, i1)
+declare i1 @llvm.smin.i1(i1, i1)
+declare i1 @llvm.umax.i1(i1, i1)
+declare i1 @llvm.umin.i1(i1, i1)
+declare i16 @llvm.smax.i16(i16, i16)
+declare i16 @llvm.umin.i16(i16, i16)
 declare i32 @llvm.smax.i32(i32, i32)
 declare i32 @llvm.smin.i32(i32, i32)
 declare i32 @llvm.umax.i32(i32, i32)
@@ -1526,14 +3410,32 @@ declare i32 @llvm.uadd.sat.i32(i32, i32)
 declare i32 @llvm.usub.sat.i32(i32, i32)
 declare i32 @llvm.sadd.sat.i32(i32, i32)
 declare i32 @llvm.ssub.sat.i32(i32, i32)
+declare i8 @llvm.uadd.sat.i8(i8, i8)
+declare i16 @llvm.ssub.sat.i16(i16, i16)
 declare i64 @llvm.uadd.sat.i64(i64, i64)
 declare i64 @llvm.usub.sat.i64(i64, i64)
 declare i64 @llvm.sadd.sat.i64(i64, i64)
 declare i64 @llvm.ssub.sat.i64(i64, i64)
+declare i1 @llvm.uadd.sat.i1(i1, i1)
+declare i1 @llvm.usub.sat.i1(i1, i1)
+declare i1 @llvm.sadd.sat.i1(i1, i1)
+declare i1 @llvm.ssub.sat.i1(i1, i1)
 declare i32 @llvm.ushl.sat.i32(i32, i32)
 declare i32 @llvm.sshl.sat.i32(i32, i32)
+declare i8 @llvm.ushl.sat.i8(i8, i8)
+declare i16 @llvm.sshl.sat.i16(i16, i16)
 declare i64 @llvm.ushl.sat.i64(i64, i64)
 declare i64 @llvm.sshl.sat.i64(i64, i64)
+declare i1 @llvm.ushl.sat.i1(i1, i1)
+declare i1 @llvm.sshl.sat.i1(i1, i1)
+declare { i1, i1 } @llvm.uadd.with.overflow.i1(i1, i1)
+declare { i1, i1 } @llvm.sadd.with.overflow.i1(i1, i1)
+declare { i1, i1 } @llvm.usub.with.overflow.i1(i1, i1)
+declare { i1, i1 } @llvm.ssub.with.overflow.i1(i1, i1)
+declare { i1, i1 } @llvm.umul.with.overflow.i1(i1, i1)
+declare { i1, i1 } @llvm.smul.with.overflow.i1(i1, i1)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
 declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
@@ -1546,10 +3448,17 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)
 declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare i16 @llvm.bswap.i16(i16)
 declare i32 @llvm.bswap.i32(i32)
 declare i64 @llvm.bswap.i64(i64)
+declare i8 @llvm.bitreverse.i8(i8)
+declare i1 @llvm.bitreverse.i1(i1)
 declare i32 @llvm.bitreverse.i32(i32)
 declare i64 @llvm.bitreverse.i64(i64)
+declare i1 @llvm.fshl.i1(i1, i1, i1)
+declare i1 @llvm.fshr.i1(i1, i1, i1)
+declare i8 @llvm.fshl.i8(i8, i8, i8)
+declare i16 @llvm.fshr.i16(i16, i16, i16)
 declare i32 @llvm.fshl.i32(i32, i32, i32)
 declare i64 @llvm.fshl.i64(i64, i64, i64)
 declare i32 @llvm.fshr.i32(i32, i32, i32)
@@ -1756,6 +3665,224 @@ entry:
   %r22 = xor i64 %r21, %smul64ox
   ret i64 %r22
 }
+
+define i64 @vm_integer_narrow_intrinsics(i8 %a, i16 %b, i8 %shift8, i16 %shift16) {
+entry:
+  %pop8 = call i8 @llvm.ctpop.i8(i8 %a)
+  %pop16 = call i16 @llvm.ctpop.i16(i16 %b)
+  %lz8 = call i8 @llvm.ctlz.i8(i8 %a, i1 false)
+  %tz16 = call i16 @llvm.cttz.i16(i16 %b, i1 false)
+  %neg8 = sub i8 0, %a
+  %abs8 = call i8 @llvm.abs.i8(i8 %neg8, i1 false)
+  %smax16 = call i16 @llvm.smax.i16(i16 %b, i16 -1234)
+  %umin16 = call i16 @llvm.umin.i16(i16 %b, i16 30000)
+  %uaddsat8 = call i8 @llvm.uadd.sat.i8(i8 %a, i8 -16)
+  %ssubsat16 = call i16 @llvm.ssub.sat.i16(i16 -32768, i16 %b)
+  %ushlsat8 = call i8 @llvm.ushl.sat.i8(i8 %a, i8 %shift8)
+  %sshlsat16 = call i16 @llvm.sshl.sat.i16(i16 %b, i16 %shift16)
+  %uadd8 = call { i8, i1 } @llvm.uadd.with.overflow.i8(i8 %a, i8 -1)
+  %uadd8v = extractvalue { i8, i1 } %uadd8, 0
+  %uadd8o = extractvalue { i8, i1 } %uadd8, 1
+  %smul16 = call { i16, i1 } @llvm.smul.with.overflow.i16(i16 %b, i16 257)
+  %smul16v = extractvalue { i16, i1 } %smul16, 0
+  %smul16o = extractvalue { i16, i1 } %smul16, 1
+  %swap16 = call i16 @llvm.bswap.i16(i16 %b)
+  %rev8 = call i8 @llvm.bitreverse.i8(i8 %a)
+  %fshl8 = call i8 @llvm.fshl.i8(i8 %a, i8 %rev8, i8 %shift8)
+  %fshr16 = call i16 @llvm.fshr.i16(i16 %swap16, i16 %b, i16 %shift16)
+  %pop8x = zext i8 %pop8 to i64
+  %pop16x = zext i16 %pop16 to i64
+  %lz8x = zext i8 %lz8 to i64
+  %tz16x = zext i16 %tz16 to i64
+  %abs8x = zext i8 %abs8 to i64
+  %smax16x = zext i16 %smax16 to i64
+  %umin16x = zext i16 %umin16 to i64
+  %uaddsat8x = zext i8 %uaddsat8 to i64
+  %ssubsat16x = zext i16 %ssubsat16 to i64
+  %ushlsat8x = zext i8 %ushlsat8 to i64
+  %sshlsat16x = zext i16 %sshlsat16 to i64
+  %uadd8vx = zext i8 %uadd8v to i64
+  %uadd8ox = zext i1 %uadd8o to i64
+  %smul16vx = zext i16 %smul16v to i64
+  %smul16ox = zext i1 %smul16o to i64
+  %swap16x = zext i16 %swap16 to i64
+  %rev8x = zext i8 %rev8 to i64
+  %fshl8x = zext i8 %fshl8 to i64
+  %fshr16x = zext i16 %fshr16 to i64
+  %r0 = xor i64 %pop8x, %pop16x
+  %r1 = add i64 %r0, %lz8x
+  %r2 = xor i64 %r1, %tz16x
+  %r3 = add i64 %r2, %abs8x
+  %r4 = xor i64 %r3, %smax16x
+  %r5 = add i64 %r4, %umin16x
+  %r6 = xor i64 %r5, %uaddsat8x
+  %r7 = add i64 %r6, %ssubsat16x
+  %r8 = xor i64 %r7, %ushlsat8x
+  %r9 = add i64 %r8, %sshlsat16x
+  %r10 = xor i64 %r9, %uadd8vx
+  %r11 = add i64 %r10, %uadd8ox
+  %r12 = xor i64 %r11, %smul16vx
+  %r13 = add i64 %r12, %smul16ox
+  %r14 = xor i64 %r13, %swap16x
+  %r15 = add i64 %r14, %rev8x
+  %r16 = xor i64 %r15, %fshl8x
+  %r17 = add i64 %r16, %fshr16x
+  ret i64 %r17
+}
+
+define i64 @vm_integer_i1_intrinsics(i64 %bits) {
+entry:
+  %flag = trunc i64 %bits to i1
+  %shifted = lshr i64 %bits, 1
+  %other = trunc i64 %shifted to i1
+  %pop = call i1 @llvm.ctpop.i1(i1 %flag)
+  %lz = call i1 @llvm.ctlz.i1(i1 %flag, i1 false)
+  %tz = call i1 @llvm.cttz.i1(i1 %flag, i1 false)
+  %abs = call i1 @llvm.abs.i1(i1 %other, i1 false)
+  %lz0 = call i1 @llvm.ctlz.i1(i1 false, i1 false)
+  %tz0 = call i1 @llvm.cttz.i1(i1 false, i1 false)
+  %popx = zext i1 %pop to i64
+  %lzx = zext i1 %lz to i64
+  %tzx = zext i1 %tz to i64
+  %absx = zext i1 %abs to i64
+  %lz0x = zext i1 %lz0 to i64
+  %tz0x = zext i1 %tz0 to i64
+  %lz_shift = shl i64 %lzx, 1
+  %tz_shift = shl i64 %tzx, 2
+  %abs_shift = shl i64 %absx, 3
+  %lz0_shift = shl i64 %lz0x, 4
+  %tz0_shift = shl i64 %tz0x, 5
+  %r0 = or i64 %popx, %lz_shift
+  %r1 = or i64 %r0, %tz_shift
+  %r2 = or i64 %r1, %abs_shift
+  %r3 = or i64 %r2, %lz0_shift
+  %r4 = or i64 %r3, %tz0_shift
+  ret i64 %r4
+}
+
+define i64 @vm_integer_i1_minmax_intrinsics(i64 %bits) {
+entry:
+  %x = trunc i64 %bits to i1
+  %shifted = lshr i64 %bits, 1
+  %y = trunc i64 %shifted to i1
+  %smax = call i1 @llvm.smax.i1(i1 %x, i1 %y)
+  %smin = call i1 @llvm.smin.i1(i1 %x, i1 %y)
+  %umax = call i1 @llvm.umax.i1(i1 %x, i1 %y)
+  %umin = call i1 @llvm.umin.i1(i1 %x, i1 %y)
+  %smaxx = zext i1 %smax to i64
+  %sminx = zext i1 %smin to i64
+  %umaxx = zext i1 %umax to i64
+  %uminx = zext i1 %umin to i64
+  %smin_shift = shl i64 %sminx, 1
+  %umax_shift = shl i64 %umaxx, 2
+  %umin_shift = shl i64 %uminx, 3
+  %r0 = or i64 %smaxx, %smin_shift
+  %r1 = or i64 %r0, %umax_shift
+  %r2 = or i64 %r1, %umin_shift
+  ret i64 %r2
+}
+
+define i64 @vm_integer_i1_saturating_and_bit_intrinsics(i64 %bits) {
+entry:
+  %x = trunc i64 %bits to i1
+  %shifted = lshr i64 %bits, 1
+  %y = trunc i64 %shifted to i1
+  %uadd = call i1 @llvm.uadd.sat.i1(i1 %x, i1 %y)
+  %usub = call i1 @llvm.usub.sat.i1(i1 %x, i1 %y)
+  %sadd = call i1 @llvm.sadd.sat.i1(i1 %x, i1 %y)
+  %ssub = call i1 @llvm.ssub.sat.i1(i1 %x, i1 %y)
+  %ushl = call i1 @llvm.ushl.sat.i1(i1 %x, i1 %y)
+  %sshl = call i1 @llvm.sshl.sat.i1(i1 %x, i1 %y)
+  %rev = call i1 @llvm.bitreverse.i1(i1 %x)
+  %fshl = call i1 @llvm.fshl.i1(i1 %x, i1 %y, i1 %x)
+  %fshr = call i1 @llvm.fshr.i1(i1 %x, i1 %y, i1 %x)
+  %uaddx = zext i1 %uadd to i64
+  %usubx = zext i1 %usub to i64
+  %saddx = zext i1 %sadd to i64
+  %ssubx = zext i1 %ssub to i64
+  %ushlx = zext i1 %ushl to i64
+  %sshlx = zext i1 %sshl to i64
+  %revx = zext i1 %rev to i64
+  %fshlx = zext i1 %fshl to i64
+  %fshrx = zext i1 %fshr to i64
+  %usub_shift = shl i64 %usubx, 1
+  %sadd_shift = shl i64 %saddx, 2
+  %ssub_shift = shl i64 %ssubx, 3
+  %ushl_shift = shl i64 %ushlx, 4
+  %sshl_shift = shl i64 %sshlx, 5
+  %rev_shift = shl i64 %revx, 6
+  %fshl_shift = shl i64 %fshlx, 7
+  %fshr_shift = shl i64 %fshrx, 8
+  %r0 = or i64 %uaddx, %usub_shift
+  %r1 = or i64 %r0, %sadd_shift
+  %r2 = or i64 %r1, %ssub_shift
+  %r3 = or i64 %r2, %ushl_shift
+  %r4 = or i64 %r3, %sshl_shift
+  %r5 = or i64 %r4, %rev_shift
+  %r6 = or i64 %r5, %fshl_shift
+  %r7 = or i64 %r6, %fshr_shift
+  ret i64 %r7
+}
+
+define i64 @vm_integer_i1_overflow_intrinsics(i64 %bits) {
+entry:
+  %x = trunc i64 %bits to i1
+  %shifted = lshr i64 %bits, 1
+  %y = trunc i64 %shifted to i1
+  %uadd = call { i1, i1 } @llvm.uadd.with.overflow.i1(i1 %x, i1 %y)
+  %uaddv = extractvalue { i1, i1 } %uadd, 0
+  %uaddo = extractvalue { i1, i1 } %uadd, 1
+  %sadd = call { i1, i1 } @llvm.sadd.with.overflow.i1(i1 %x, i1 %y)
+  %saddv = extractvalue { i1, i1 } %sadd, 0
+  %saddo = extractvalue { i1, i1 } %sadd, 1
+  %usub = call { i1, i1 } @llvm.usub.with.overflow.i1(i1 %x, i1 %y)
+  %usubv = extractvalue { i1, i1 } %usub, 0
+  %usubo = extractvalue { i1, i1 } %usub, 1
+  %ssub = call { i1, i1 } @llvm.ssub.with.overflow.i1(i1 %x, i1 %y)
+  %ssubv = extractvalue { i1, i1 } %ssub, 0
+  %ssubo = extractvalue { i1, i1 } %ssub, 1
+  %umul = call { i1, i1 } @llvm.umul.with.overflow.i1(i1 %x, i1 %y)
+  %umulv = extractvalue { i1, i1 } %umul, 0
+  %umulo = extractvalue { i1, i1 } %umul, 1
+  %smul = call { i1, i1 } @llvm.smul.with.overflow.i1(i1 %x, i1 %y)
+  %smulv = extractvalue { i1, i1 } %smul, 0
+  %smulo = extractvalue { i1, i1 } %smul, 1
+  %uaddvx = zext i1 %uaddv to i64
+  %uaddox = zext i1 %uaddo to i64
+  %saddvx = zext i1 %saddv to i64
+  %saddox = zext i1 %saddo to i64
+  %usubvx = zext i1 %usubv to i64
+  %usubox = zext i1 %usubo to i64
+  %ssubvx = zext i1 %ssubv to i64
+  %ssubox = zext i1 %ssubo to i64
+  %umulvx = zext i1 %umulv to i64
+  %umulox = zext i1 %umulo to i64
+  %smulvx = zext i1 %smulv to i64
+  %smulox = zext i1 %smulo to i64
+  %uaddo_shift = shl i64 %uaddox, 1
+  %saddv_shift = shl i64 %saddvx, 2
+  %saddo_shift = shl i64 %saddox, 3
+  %usubv_shift = shl i64 %usubvx, 4
+  %usubo_shift = shl i64 %usubox, 5
+  %ssubv_shift = shl i64 %ssubvx, 6
+  %ssubo_shift = shl i64 %ssubox, 7
+  %umulv_shift = shl i64 %umulvx, 8
+  %umulo_shift = shl i64 %umulox, 9
+  %smulv_shift = shl i64 %smulvx, 10
+  %smulo_shift = shl i64 %smulox, 11
+  %r0 = or i64 %uaddvx, %uaddo_shift
+  %r1 = or i64 %r0, %saddv_shift
+  %r2 = or i64 %r1, %saddo_shift
+  %r3 = or i64 %r2, %usubv_shift
+  %r4 = or i64 %r3, %usubo_shift
+  %r5 = or i64 %r4, %ssubv_shift
+  %r6 = or i64 %r5, %ssubo_shift
+  %r7 = or i64 %r6, %umulv_shift
+  %r8 = or i64 %r7, %umulo_shift
+  %r9 = or i64 %r8, %smulv_shift
+  %r10 = or i64 %r9, %smulo_shift
+  ret i64 %r10
+}
 "#,
     )
     .expect("integer intrinsic LLVM IR fixture should be writable");
@@ -1770,12 +3897,27 @@ uint64_t vm_integer_intrinsics(uint32_t a, uint64_t b);
 uint64_t vm_integer_saturating_intrinsics(uint32_t a, uint64_t b);
 uint64_t vm_integer_saturating_shift_intrinsics(uint32_t a, uint64_t b, uint32_t s);
 uint64_t vm_integer_overflow_intrinsics(uint32_t a, uint64_t b);
+uint64_t vm_integer_narrow_intrinsics(uint8_t a, uint16_t b, uint8_t shift8, uint16_t shift16);
+uint64_t vm_integer_i1_intrinsics(uint64_t bits);
+uint64_t vm_integer_i1_minmax_intrinsics(uint64_t bits);
+uint64_t vm_integer_i1_saturating_and_bit_intrinsics(uint64_t bits);
+uint64_t vm_integer_i1_overflow_intrinsics(uint64_t bits);
 
 int main(void) {
     uint64_t result = vm_integer_intrinsics(0x12345678u, 0x0123456789abcdefULL);
     result ^= vm_integer_saturating_intrinsics(0x12345678u, 0x0123456789abcdefULL);
     result ^= vm_integer_saturating_shift_intrinsics(0x12345678u, 0x0123456789abcdefULL, 37u);
     result ^= vm_integer_overflow_intrinsics(0x12345678u, 0x0123456789abcdefULL);
+    result ^= vm_integer_narrow_intrinsics(0x91u, 0x8123u, 3u, 5u);
+    result ^= vm_integer_narrow_intrinsics(0xfau, 0x7ff0u, 2u, 4u);
+    result ^= vm_integer_i1_intrinsics(0u);
+    result ^= vm_integer_i1_intrinsics(3u);
+    result ^= vm_integer_i1_minmax_intrinsics(1u);
+    result ^= vm_integer_i1_minmax_intrinsics(2u);
+    result ^= vm_integer_i1_saturating_and_bit_intrinsics(1u);
+    result ^= vm_integer_i1_saturating_and_bit_intrinsics(3u);
+    result ^= vm_integer_i1_overflow_intrinsics(1u);
+    result ^= vm_integer_i1_overflow_intrinsics(3u);
     printf("%llu\n", (unsigned long long)result);
     return 0;
 }
@@ -1788,11 +3930,28 @@ int main(void) {
     let baseline_output = baseline.run();
     baseline_output.assert_success();
 
-    let virtualized_ir = optimize_ir_with_plugin(
-        &ir_source,
-        "vm_virtualize_integer_intrinsics.ll",
-        vm_virtualize_config(),
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_integer_intrinsics.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let i1_dump = bytecode_dump_for_function(&stderr, "vm_integer_i1_intrinsics");
+    assert!(
+        i1_dump.contains("width: 1"),
+        "i1 integer intrinsic lowering should record width 1:\n{i1_dump}"
     );
+    for function in [
+        "vm_integer_i1_minmax_intrinsics",
+        "vm_integer_i1_saturating_and_bit_intrinsics",
+        "vm_integer_i1_overflow_intrinsics",
+    ] {
+        let dump = bytecode_dump_for_function(&stderr, function);
+        assert!(
+            dump.contains("width: 1"),
+            "{function} should record i1 intrinsic width in bytecode:\n{dump}"
+        );
+    }
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_integer_intrinsics");
     virtualized.assert_success();
     let virtualized_output = virtualized.run();
@@ -1804,6 +3963,11 @@ int main(void) {
     assert!(ir.contains(".amice.vm.bytecode.vm_integer_saturating_intrinsics"));
     assert!(ir.contains(".amice.vm.bytecode.vm_integer_saturating_shift_intrinsics"));
     assert!(ir.contains(".amice.vm.bytecode.vm_integer_overflow_intrinsics"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_narrow_intrinsics"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_i1_intrinsics"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_i1_minmax_intrinsics"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_i1_saturating_and_bit_intrinsics"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_i1_overflow_intrinsics"));
     assert!(ir.contains("handler.ctpop"));
     assert!(ir.contains("handler.ctlz"));
     assert!(ir.contains("handler.cttz"));
@@ -1828,6 +3992,302 @@ int main(void) {
     assert!(ir.contains("handler.bitreverse"));
     assert!(ir.contains("handler.fshl"));
     assert!(ir.contains("handler.fshr"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_loop_decrement_reg_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_loop_decrement_reg.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_loop_decrement_reg'
+source_filename = "vm_virtualize_loop_decrement_reg.ll"
+
+declare i64 @llvm.loop.decrement.reg.i64(i64, i64)
+
+define i64 @vm_loop_decrement_reg(i64 %counter, i64 %step, i64 %salt) {
+entry:
+  %remaining = call i64 @llvm.loop.decrement.reg.i64(i64 %counter, i64 %step)
+  %mixed0 = xor i64 %remaining, %salt
+  %mixed1 = add i64 %mixed0, %step
+  ret i64 %mixed1
+}
+"#,
+    )
+    .expect("loop.decrement.reg LLVM IR fixture should be writable");
+
+    let baseline_ir = output_dir().join("vm_virtualize_loop_decrement_reg.baseline.ll");
+    std::fs::write(
+        &baseline_ir,
+        r#"; ModuleID = 'vm_virtualize_loop_decrement_reg_baseline'
+source_filename = "vm_virtualize_loop_decrement_reg_baseline.ll"
+
+define i64 @vm_loop_decrement_reg(i64 %counter, i64 %step, i64 %salt) {
+entry:
+  %remaining = sub i64 %counter, %step
+  %mixed0 = xor i64 %remaining, %salt
+  %mixed1 = add i64 %mixed0, %step
+  ret i64 %mixed1
+}
+"#,
+    )
+    .expect("loop.decrement.reg baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_loop_decrement_reg_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_loop_decrement_reg(uint64_t counter, uint64_t step, uint64_t salt);
+int main(void) {
+    uint64_t a = vm_loop_decrement_reg(1000ULL, 7ULL, 0x123456789abcdef0ULL);
+    uint64_t b = vm_loop_decrement_reg(5ULL, 19ULL, 0x0f0e0d0c0b0a0908ULL);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("loop.decrement.reg C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_ir, &harness, "vm_virtualize_loop_decrement_reg_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_loop_decrement_reg.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_loop_decrement_reg");
+    assert!(
+        dump.contains(": isub "),
+        "loop.decrement.reg should lower through the profile isub action:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_loop_decrement_reg");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized loop.decrement.reg LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_loop_decrement_reg"));
+    assert!(ir.contains("handler.isub"));
+    assert!(!ir.contains("call i64 @llvm.loop.decrement.reg"));
+    assert!(!ir.contains(".amice.vm.original.vm_loop_decrement_reg"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_loop_decrement_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_loop_decrement.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_loop_decrement'
+source_filename = "vm_virtualize_loop_decrement.ll"
+
+declare i1 @llvm.loop.decrement.i64(i64)
+
+define i1 @vm_loop_decrement(i64 %counter) {
+entry:
+  %keep = call i1 @llvm.loop.decrement.i64(i64 %counter)
+  ret i1 %keep
+}
+"#,
+    )
+    .expect("loop.decrement LLVM IR fixture should be writable");
+
+    let baseline_ir = output_dir().join("vm_virtualize_loop_decrement.baseline.ll");
+    std::fs::write(
+        &baseline_ir,
+        r#"; ModuleID = 'vm_virtualize_loop_decrement_baseline'
+source_filename = "vm_virtualize_loop_decrement_baseline.ll"
+
+define i1 @vm_loop_decrement(i64 %counter) {
+entry:
+  %remaining = sub i64 %counter, 1
+  %keep = icmp ne i64 %remaining, 0
+  ret i1 %keep
+}
+"#,
+    )
+    .expect("loop.decrement baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_loop_decrement_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+_Bool vm_loop_decrement(uint64_t counter);
+int main(void) {
+    printf("%u %u %u\n",
+           (unsigned)vm_loop_decrement(1ULL),
+           (unsigned)vm_loop_decrement(2ULL),
+           (unsigned)vm_loop_decrement(5ULL));
+    return 0;
+}
+"#,
+    )
+    .expect("loop.decrement C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_ir, &harness, "vm_virtualize_loop_decrement_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_loop_decrement.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_loop_decrement");
+    assert!(
+        dump.contains(": mov_imm ") && dump.contains(": isub ") && dump.contains(": icmp "),
+        "loop.decrement should lower through profile mov_imm/isub/icmp actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_loop_decrement");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized loop.decrement LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_loop_decrement"));
+    assert!(ir.contains("handler.mov_imm"));
+    assert!(ir.contains("handler.isub"));
+    assert!(ir.contains("handler.icmp"));
+    assert!(!ir.contains("call i1 @llvm.loop.decrement"));
+    assert!(!ir.contains(".amice.vm.original.vm_loop_decrement"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_hardware_loop_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_hardware_loop_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_hardware_loop_intrinsics'
+source_filename = "vm_virtualize_hardware_loop_intrinsics.ll"
+
+declare void @llvm.set.loop.iterations.i64(i64)
+declare i64 @llvm.start.loop.iterations.i64(i64)
+declare i1 @llvm.test.set.loop.iterations.i64(i64)
+declare { i64, i1 } @llvm.test.start.loop.iterations.i64(i64)
+
+define i64 @vm_hardware_loop_intrinsics(i64 %counter, i64 %salt) {
+entry:
+  call void @llvm.set.loop.iterations.i64(i64 %counter)
+  %started = call i64 @llvm.start.loop.iterations.i64(i64 %counter)
+  %test_set = call i1 @llvm.test.set.loop.iterations.i64(i64 %counter)
+  %test_start = call { i64, i1 } @llvm.test.start.loop.iterations.i64(i64 %counter)
+  %started_again = extractvalue { i64, i1 } %test_start, 0
+  %test_start_flag = extractvalue { i64, i1 } %test_start, 1
+  %test_set_ext = zext i1 %test_set to i64
+  %test_start_ext = zext i1 %test_start_flag to i64
+  %mixed0 = xor i64 %started, %salt
+  %mixed1 = add i64 %mixed0, %started_again
+  %flag0 = shl i64 %test_set_ext, 8
+  %flag1 = shl i64 %test_start_ext, 9
+  %mixed2 = or i64 %mixed1, %flag0
+  %mixed3 = or i64 %mixed2, %flag1
+  ret i64 %mixed3
+}
+"#,
+    )
+    .expect("hardware loop intrinsic LLVM IR fixture should be writable");
+
+    let baseline_ir = output_dir().join("vm_virtualize_hardware_loop_intrinsics.baseline.ll");
+    std::fs::write(
+        &baseline_ir,
+        r#"; ModuleID = 'vm_virtualize_hardware_loop_intrinsics_baseline'
+source_filename = "vm_virtualize_hardware_loop_intrinsics_baseline.ll"
+
+define i64 @vm_hardware_loop_intrinsics(i64 %counter, i64 %salt) {
+entry:
+  %test_set = icmp ne i64 %counter, 0
+  %test_start_flag = icmp ne i64 %counter, 0
+  %test_set_ext = zext i1 %test_set to i64
+  %test_start_ext = zext i1 %test_start_flag to i64
+  %mixed0 = xor i64 %counter, %salt
+  %mixed1 = add i64 %mixed0, %counter
+  %flag0 = shl i64 %test_set_ext, 8
+  %flag1 = shl i64 %test_start_ext, 9
+  %mixed2 = or i64 %mixed1, %flag0
+  %mixed3 = or i64 %mixed2, %flag1
+  ret i64 %mixed3
+}
+"#,
+    )
+    .expect("hardware loop intrinsic baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_hardware_loop_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_hardware_loop_intrinsics(uint64_t counter, uint64_t salt);
+int main(void) {
+    uint64_t a = vm_hardware_loop_intrinsics(0ULL, 0x1111222233334444ULL);
+    uint64_t b = vm_hardware_loop_intrinsics(1ULL, 0x5555666677778888ULL);
+    uint64_t c = vm_hardware_loop_intrinsics(123456789ULL, 0xabcdef0123456789ULL);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)c);
+    return 0;
+}
+"#,
+    )
+    .expect("hardware loop intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_ir,
+        &harness,
+        "vm_virtualize_hardware_loop_intrinsics_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_hardware_loop_intrinsics.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_hardware_loop_intrinsics");
+    assert!(
+        dump.contains(": fake_nop ")
+            && dump.contains(": mov ")
+            && dump.contains(": mov_imm ")
+            && dump.contains(": icmp "),
+        "hardware loop intrinsics should lower through profile fake_nop/mov/mov_imm/icmp actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_hardware_loop_intrinsics");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized hardware loop LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_hardware_loop_intrinsics"));
+    assert!(ir.contains("handler.fake_nop"));
+    assert!(ir.contains("handler.mov"));
+    assert!(ir.contains("handler.icmp"));
+    assert!(!ir.contains("call void @llvm.set.loop.iterations"));
+    assert!(!ir.contains("call i64 @llvm.start.loop.iterations"));
+    assert!(!ir.contains("call i1 @llvm.test.set.loop.iterations"));
+    assert!(!ir.contains("call { i64, i1 } @llvm.test.start.loop.iterations"));
+    assert!(!ir.contains(".amice.vm.original.vm_hardware_loop_intrinsics"));
 }
 
 #[test]
@@ -1913,6 +4373,411 @@ int main(void) {
     assert!(ir.contains("handler.read_steady"));
     assert!(ir.contains("@llvm.readcyclecounter"));
     assert!(ir.contains("@llvm.readsteadycounter"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vscale_intrinsics_lower_to_profile_handler() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vscale_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vscale_intrinsics'
+source_filename = "vm_virtualize_vscale_intrinsics.ll"
+
+declare i32 @llvm.vscale.i32()
+declare i64 @llvm.vscale.i64()
+
+define i64 @vm_vscale_intrinsics(i64 %seed) {
+entry:
+  %v32 = call i32 @llvm.vscale.i32()
+  %v64 = call i64 @llvm.vscale.i64()
+  %v32x = zext i32 %v32 to i64
+  %hi = shl i64 %v32x, 32
+  %mix = xor i64 %hi, %v64
+  %result = xor i64 %mix, %seed
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vscale LLVM IR fixture should be writable");
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vscale_intrinsics.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vscale_intrinsics");
+    assert!(
+        dump.matches(": read_vscale ").count() >= 2,
+        "llvm.vscale.i32/i64 should lower through profile read_vscale handlers:\n{dump}"
+    );
+    assert!(
+        dump.contains("width: 32") && dump.contains("width: 64"),
+        "vscale bytecode should preserve i32 and i64 result widths:\n{dump}"
+    );
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vscale LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vscale_intrinsics"));
+    assert!(ir.contains("handler.read_vscale"));
+    assert!(ir.contains("@llvm.vscale.i64"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_get_rounding_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_get_rounding.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_get_rounding'
+source_filename = "vm_virtualize_get_rounding.ll"
+
+declare i32 @llvm.get.rounding()
+
+define i64 @vm_get_rounding(i64 %seed) {
+entry:
+  %mode = call i32 @llvm.get.rounding()
+  %mode_z = zext i32 %mode to i64
+  %shifted = shl i64 %mode_z, 8
+  %mix = xor i64 %mode_z, %shifted
+  %result = xor i64 %mix, %seed
+  ret i64 %result
+}
+"#,
+    )
+    .expect("get.rounding LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_get_rounding_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_get_rounding(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm_get_rounding(0x1020304050607080ULL);
+    uint64_t b = vm_get_rounding(0xfedcba9876543210ULL);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("get.rounding C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_get_rounding_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_get_rounding.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_get_rounding");
+    assert!(
+        dump.contains(": read_rounding "),
+        "llvm.get.rounding should lower through profile read_rounding:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_get_rounding");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized get.rounding LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_get_rounding"));
+    assert!(ir.contains("handler.read_rounding"));
+    assert!(ir.contains("@llvm.get.rounding"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_flt_rounds_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_flt_rounds.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_flt_rounds'
+source_filename = "vm_virtualize_flt_rounds.ll"
+
+declare i32 @llvm.flt.rounds()
+
+define i64 @vm_flt_rounds(i64 %seed) {
+entry:
+  %mode = call i32 @llvm.flt.rounds()
+  %mode_z = zext i32 %mode to i64
+  %shifted = shl i64 %mode_z, 16
+  %mixed = xor i64 %mode_z, %shifted
+  %rot = lshr i64 %seed, 7
+  %result = xor i64 %mixed, %rot
+  ret i64 %result
+}
+"#,
+    )
+    .expect("flt.rounds LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_flt_rounds_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_flt_rounds(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm_flt_rounds(0x1020304050607080ULL);
+    uint64_t b = vm_flt_rounds(0xfedcba9876543210ULL);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("flt.rounds C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_flt_rounds_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_flt_rounds.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_flt_rounds");
+    assert!(
+        dump.contains(": read_rounding "),
+        "LLVM 21 canonicalizes llvm.flt.rounds to llvm.get.rounding and should lower through read_rounding:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_flt_rounds");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized flt.rounds LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_flt_rounds"));
+    assert!(ir.contains("handler.read_rounding"));
+    assert!(ir.contains("@llvm.get.rounding"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_fp_environment_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_fp_environment.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_fp_environment'
+source_filename = "vm_virtualize_fp_environment.ll"
+
+declare i32 @llvm.get.rounding()
+declare void @llvm.set.rounding(i32)
+declare i32 @llvm.get.fpenv.i32()
+declare i64 @llvm.get.fpenv.i64()
+declare void @llvm.set.fpenv.i32(i32)
+declare void @llvm.set.fpenv.i64(i64)
+declare void @llvm.reset.fpenv()
+declare i32 @llvm.get.fpmode.i32()
+declare i64 @llvm.get.fpmode.i64()
+declare void @llvm.set.fpmode.i32(i32)
+declare void @llvm.set.fpmode.i64(i64)
+declare void @llvm.reset.fpmode()
+
+define i64 @vm_fp_environment(i64 %seed) {
+entry:
+  %round = call i32 @llvm.get.rounding()
+  call void @llvm.set.rounding(i32 %round)
+  %env32 = call i32 @llvm.get.fpenv.i32()
+  %env64 = call i64 @llvm.get.fpenv.i64()
+  call void @llvm.set.fpenv.i32(i32 %env32)
+  call void @llvm.set.fpenv.i64(i64 %env64)
+  call void @llvm.reset.fpenv()
+  %mode32 = call i32 @llvm.get.fpmode.i32()
+  %mode64 = call i64 @llvm.get.fpmode.i64()
+  call void @llvm.set.fpmode.i32(i32 %mode32)
+  call void @llvm.set.fpmode.i64(i64 %mode64)
+  call void @llvm.reset.fpmode()
+  %round64 = zext i32 %round to i64
+  %env32_64 = zext i32 %env32 to i64
+  %mode32_64 = zext i32 %mode32 to i64
+  %mix0 = xor i64 %seed, %round64
+  %mix1 = xor i64 %mix0, %env32_64
+  %mix2 = xor i64 %mix1, %env64
+  %mix3 = xor i64 %mix2, %mode32_64
+  %mix4 = xor i64 %mix3, %mode64
+  ret i64 %mix4
+}
+"#,
+    )
+    .expect("fp environment LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_fp_environment_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_fp_environment(uint64_t seed);
+
+int main(void) {
+    uint64_t value = vm_fp_environment(0x13579bdf2468ace0ULL);
+    printf("%016" PRIx64 "\n", value);
+    return 0;
+}
+"#,
+    )
+    .expect("fp environment C harness should be writable");
+
+    let baseline =
+        compile_ir_with_c_harness_and_args(&ir_source, &harness, "vm_virtualize_fp_environment_baseline", &["-lm"]);
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_fp_environment.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_fp_environment");
+    for needle in [
+        ": read_rounding ",
+        ": write_rounding ",
+        ": read_fpenv ",
+        ": write_fpenv ",
+        ": reset_fpenv ",
+        ": read_fpmode ",
+        ": write_fpmode ",
+        ": reset_fpmode ",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "FP environment intrinsic should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized =
+        compile_ir_with_c_harness_and_args(&virtualized_ir, &harness, "vm_virtualize_fp_environment", &["-lm"]);
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized FP environment LLVM IR should be readable");
+    for needle in [
+        ".amice.vm.bytecode.vm_fp_environment",
+        "handler.write_rounding",
+        "handler.read_fpenv",
+        "handler.write_fpenv",
+        "handler.reset_fpenv",
+        "handler.read_fpmode",
+        "handler.write_fpmode",
+        "handler.reset_fpmode",
+        "@llvm.set.rounding",
+        "@llvm.get.fpenv.i32",
+        "@llvm.get.fpenv.i64",
+        "@llvm.set.fpenv.i32",
+        "@llvm.set.fpenv.i64",
+        "@llvm.reset.fpenv",
+        "@llvm.get.fpmode.i32",
+        "@llvm.get.fpmode.i64",
+        "@llvm.set.fpmode.i32",
+        "@llvm.set.fpmode.i64",
+        "@llvm.reset.fpmode",
+    ] {
+        assert!(
+            ir.contains(needle),
+            "virtualized FP environment IR should contain {needle}"
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_thread_pointer_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_thread_pointer.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_thread_pointer'
+source_filename = "vm_virtualize_thread_pointer.ll"
+
+declare ptr @llvm.thread.pointer.p0()
+
+define i64 @vm_thread_pointer(i64 %seed) {
+entry:
+  %ptr = call ptr @llvm.thread.pointer.p0()
+  %bits = ptrtoint ptr %ptr to i64
+  %shifted = lshr i64 %bits, 12
+  %mixed0 = xor i64 %bits, %shifted
+  %mixed1 = xor i64 %mixed0, %seed
+  ret i64 %mixed1
+}
+"#,
+    )
+    .expect("thread.pointer LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_thread_pointer_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_thread_pointer(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm_thread_pointer(0x0102030405060708ULL);
+    uint64_t b = vm_thread_pointer(0xf0e0d0c0b0a09080ULL);
+    printf("%llu\n", (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("thread.pointer C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_thread_pointer_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_thread_pointer.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_thread_pointer");
+    assert!(
+        dump.contains(": read_thread_pointer "),
+        "llvm.thread.pointer should lower through profile read_thread_pointer:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_thread_pointer");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized thread.pointer LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_thread_pointer"));
+    assert!(ir.contains("handler.read_thread_pointer"));
+    assert!(ir.contains("@llvm.thread.pointer.p0"));
 }
 
 #[test]
@@ -2078,6 +4943,77 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_linear_ssa_chain_reuses_x_registers() {
+    ensure_plugin_built();
+
+    let step_count = 56;
+    let ir_source = output_dir().join("vm_virtualize_linear_ssa_reuse.input.ll");
+    let mut ir = String::from(
+        r#"; ModuleID = 'vm_virtualize_linear_ssa_reuse'
+source_filename = "vm_virtualize_linear_ssa_reuse.ll"
+
+define i64 @vm_linear_ssa_reuse(i64 %seed) {
+entry:
+  %v0 = xor i64 %seed, 81985529216486895
+"#,
+    );
+    for index in 0..step_count {
+        let next = index + 1;
+        let addend = 0x1001_u64 + (index as u64 * 0x33);
+        ir.push_str(&format!("  %v{next} = add i64 %v{index}, {addend}\n"));
+    }
+    ir.push_str(&format!("  ret i64 %v{step_count}\n}}\n"));
+    std::fs::write(&ir_source, ir).expect("linear SSA register reuse LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_linear_ssa_reuse_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_linear_ssa_reuse(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm_linear_ssa_reuse(0x123456789abcdef0ULL);
+    uint64_t b = vm_linear_ssa_reuse(0x0fedcba987654321ULL);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("linear SSA register reuse C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_linear_ssa_reuse_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_linear_ssa_reuse.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_linear_ssa_reuse");
+    let add_count = dump.matches(": iadd ").count();
+    assert!(
+        add_count >= step_count,
+        "linear SSA chain should virtualize all adds without exhausting x registers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_linear_ssa_reuse");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized linear SSA reuse IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_linear_ssa_reuse"));
+    assert!(ir.contains("handler.iadd"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_expect_intrinsics_match_baseline() {
     ensure_plugin_built();
 
@@ -2143,6 +5079,89 @@ int main(void) {
     let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized expect LLVM IR should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_expect_intrinsics"));
     assert!(ir.contains("handler.mov"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_expect_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_expect_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_expect_intrinsics'
+source_filename = "vm_virtualize_vector_expect_intrinsics.ll"
+
+declare <2 x i32> @llvm.expect.v2i32(<2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.expect.with.probability.v2i32(<2 x i32>, <2 x i32>, double immarg)
+
+define i64 @vm_vector_expect_intrinsics(i32 %a, i32 %b) {
+entry:
+  %v0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <2 x i32> %v0, i32 %b, i32 1
+  %e0 = insertelement <2 x i32> poison, i32 17, i32 0
+  %e1 = insertelement <2 x i32> %e0, i32 -23, i32 1
+  %hinted = call <2 x i32> @llvm.expect.v2i32(<2 x i32> %v1, <2 x i32> %e1)
+  %prob = call <2 x i32> @llvm.expect.with.probability.v2i32(<2 x i32> %hinted, <2 x i32> %e1, double 7.500000e-01)
+  %x0 = extractelement <2 x i32> %prob, i32 0
+  %x1 = extractelement <2 x i32> %prob, i32 1
+  %z0 = zext i32 %x0 to i64
+  %z1 = zext i32 %x1 to i64
+  %mix0 = shl i64 %z0, 17
+  %mix1 = xor i64 %mix0, %z1
+  ret i64 %mix1
+}
+"#,
+    )
+    .expect("vector expect intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_expect_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_expect_intrinsics(uint32_t a, uint32_t b);
+int main(void) {
+    uint64_t a = vm_vector_expect_intrinsics(0x10203040u, 0x55667788u);
+    uint64_t b = vm_vector_expect_intrinsics(0xfedcba98u, 0x76543210u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("vector expect intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_expect_intrinsics_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_expect_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_expect_intrinsics");
+    assert!(
+        dump.matches(": mov ").count() >= 4,
+        "fixed vector expect intrinsics should lower lanes through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_expect_intrinsics");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector expect LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_expect_intrinsics"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_expect_intrinsics"));
 }
 
 #[test]
@@ -2260,6 +5279,8390 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_arithmetic_fence_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_arithmetic_fence_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_arithmetic_fence_intrinsics'
+source_filename = "vm_virtualize_arithmetic_fence_intrinsics.ll"
+
+declare float @llvm.arithmetic.fence.f32(float)
+declare double @llvm.arithmetic.fence.f64(double)
+
+define i64 @vm_arithmetic_fence_intrinsics(i32 %fbits, i64 %dbits) {
+entry:
+  %f = bitcast i32 %fbits to float
+  %fenced_f = call float @llvm.arithmetic.fence.f32(float %f)
+  %fenced_f_bits = bitcast float %fenced_f to i32
+  %d = bitcast i64 %dbits to double
+  %fenced_d = call double @llvm.arithmetic.fence.f64(double %d)
+  %fenced_d_bits = bitcast double %fenced_d to i64
+  %fenced_f_wide = zext i32 %fenced_f_bits to i64
+  %result = xor i64 %fenced_d_bits, %fenced_f_wide
+  ret i64 %result
+}
+"#,
+    )
+    .expect("arithmetic.fence intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_arithmetic_fence_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_arithmetic_fence_intrinsics(uint32_t fbits, uint64_t dbits);
+int main(void) {
+    uint64_t a = vm_arithmetic_fence_intrinsics(0x40400000u, 0x4002000000000000ULL);
+    uint64_t b = vm_arithmetic_fence_intrinsics(0xc0200000u, 0xbff8000000000000ULL);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("arithmetic.fence intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_arithmetic_fence_intrinsics_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_arithmetic_fence_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_arithmetic_fence_intrinsics");
+    assert!(
+        dump.matches(": mov ").count() >= 2,
+        "arithmetic.fence scalar values should lower through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_arithmetic_fence_intrinsics");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized arithmetic.fence LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_arithmetic_fence_intrinsics"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_arithmetic_fence_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_identity_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_identity_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_identity_intrinsics'
+source_filename = "vm_virtualize_vector_identity_intrinsics.ll"
+
+declare <2 x i32> @llvm.ssa.copy.v2i32(<2 x i32>)
+declare <2 x float> @llvm.ssa.copy.v2f32(<2 x float>)
+declare <2 x float> @llvm.arithmetic.fence.v2f32(<2 x float>)
+
+define i64 @vm_vector_identity_intrinsics(i32 %a, i32 %b, float %fa, float %fb) {
+entry:
+  %iv0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %iv1 = insertelement <2 x i32> %iv0, i32 %b, i32 1
+  %fv0 = insertelement <2 x float> poison, float %fa, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %fb, i32 1
+  %copied_i = call <2 x i32> @llvm.ssa.copy.v2i32(<2 x i32> %iv1)
+  %copied_f = call <2 x float> @llvm.ssa.copy.v2f32(<2 x float> %fv1)
+  %fenced_f = call <2 x float> @llvm.arithmetic.fence.v2f32(<2 x float> %copied_f)
+  %i0 = extractelement <2 x i32> %copied_i, i32 0
+  %i1 = extractelement <2 x i32> %copied_i, i32 1
+  %f0 = extractelement <2 x float> %fenced_f, i32 0
+  %f1 = extractelement <2 x float> %fenced_f, i32 1
+  %fi0 = fptosi float %f0 to i32
+  %fi1 = fptosi float %f1 to i32
+  %z0 = zext i32 %i0 to i64
+  %z1 = zext i32 %i1 to i64
+  %s0 = sext i32 %fi0 to i64
+  %s1 = sext i32 %fi1 to i64
+  %m0 = shl i64 %z0, 21
+  %m1 = xor i64 %m0, %z1
+  %m2 = add i64 %m1, %s0
+  %m3 = xor i64 %m2, %s1
+  ret i64 %m3
+}
+"#,
+    )
+    .expect("vector identity intrinsic LLVM IR fixture should be writable");
+
+    let baseline_ir = output_dir().join("vm_virtualize_vector_identity_intrinsics.baseline.ll");
+    std::fs::write(
+        &baseline_ir,
+        r#"; ModuleID = 'vm_virtualize_vector_identity_intrinsics_baseline'
+source_filename = "vm_virtualize_vector_identity_intrinsics_baseline.ll"
+
+define i64 @vm_vector_identity_intrinsics(i32 %a, i32 %b, float %fa, float %fb) {
+entry:
+  %iv0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %iv1 = insertelement <2 x i32> %iv0, i32 %b, i32 1
+  %fv0 = insertelement <2 x float> poison, float %fa, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %fb, i32 1
+  %i0 = extractelement <2 x i32> %iv1, i32 0
+  %i1 = extractelement <2 x i32> %iv1, i32 1
+  %f0 = extractelement <2 x float> %fv1, i32 0
+  %f1 = extractelement <2 x float> %fv1, i32 1
+  %fi0 = fptosi float %f0 to i32
+  %fi1 = fptosi float %f1 to i32
+  %z0 = zext i32 %i0 to i64
+  %z1 = zext i32 %i1 to i64
+  %s0 = sext i32 %fi0 to i64
+  %s1 = sext i32 %fi1 to i64
+  %m0 = shl i64 %z0, 21
+  %m1 = xor i64 %m0, %z1
+  %m2 = add i64 %m1, %s0
+  %m3 = xor i64 %m2, %s1
+  ret i64 %m3
+}
+"#,
+    )
+    .expect("vector identity baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_identity_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_identity_intrinsics(uint32_t a, uint32_t b, float fa, float fb);
+int main(void) {
+    uint64_t a = vm_vector_identity_intrinsics(0x10203040u, 0x55667788u, 12.75f, -8.5f);
+    uint64_t b = vm_vector_identity_intrinsics(0xfedcba98u, 0x76543210u, -3.25f, 44.5f);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("vector identity intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_ir,
+        &harness,
+        "vm_virtualize_vector_identity_intrinsics_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_identity_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_identity_intrinsics");
+    assert!(
+        dump.matches(": mov ").count() >= 6,
+        "fixed vector identity intrinsics should lower lanes through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_identity_intrinsics");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector identity LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_identity_intrinsics"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_identity_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_insert_extract_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_insert_extract.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_insert_extract'
+source_filename = "vm_virtualize_vector_insert_extract.ll"
+
+define i64 @vm_vector_insert_extract(i32 %a, i32 %b, double %d) {
+entry:
+  %low = trunc i64 1311768467463790320 to i32
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %low, i32 2
+  %e0 = extractelement <4 x i32> %v2, i32 0
+  %e1 = extractelement <4 x i32> %v2, i32 1
+  %e2 = extractelement <4 x i32> %v2, i32 2
+  %sum0 = add i32 %e0, %e1
+  %mix = xor i32 %sum0, %e2
+  %mix64 = zext i32 %mix to i64
+  %dv0 = insertelement <2 x double> poison, double %d, i32 1
+  %de = extractelement <2 x double> %dv0, i32 1
+  %dbits = bitcast double %de to i64
+  %result = xor i64 %dbits, %mix64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector insert/extract LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_insert_extract_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_insert_extract(uint32_t a, uint32_t b, double d);
+int main(void) {
+    uint64_t a = vm_vector_insert_extract(7u, 11u, 3.5);
+    uint64_t b = vm_vector_insert_extract(0x12345678u, 0x9abcdef0u, -2.25);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector insert/extract C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_insert_extract_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_insert_extract.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_insert_extract");
+    assert!(
+        dump.matches(": mov ").count() >= 8,
+        "fixed vector insert/extract lanes should lower through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_insert_extract");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector insert/extract LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_insert_extract"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_insert_extract"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_constant_extract_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_constant_extract.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_constant_extract'
+source_filename = "vm_virtualize_vector_constant_extract.ll"
+
+define i64 @vm_vector_constant_extract(i32 %x) {
+entry:
+  %i0 = extractelement <4 x i32> <i32 7, i32 11, i32 19, i32 23>, i32 0
+  %i3 = extractelement <4 x i32> <i32 7, i32 11, i32 19, i32 23>, i32 3
+  %z2 = extractelement <4 x i32> zeroinitializer, i32 2
+  %f1 = extractelement <2 x float> <float 1.500000e+00, float -2.250000e+00>, i32 1
+  %fbits = bitcast float %f1 to i32
+  %a = add i32 %i0, %i3
+  %b = xor i32 %a, %z2
+  %c = xor i32 %b, %fbits
+  %d = xor i32 %c, %x
+  %result = zext i32 %d to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("constant vector extract LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_constant_extract_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_constant_extract(uint32_t x);
+int main(void) {
+    uint64_t a = vm_vector_constant_extract(0u);
+    uint64_t b = vm_vector_constant_extract(0x12345678u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("constant vector extract C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_constant_extract_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_constant_extract.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_constant_extract");
+    assert!(
+        dump.matches(": mov_imm ").count() >= 10 && dump.matches(": mov ").count() >= 4,
+        "constant vector extract should materialize constant lanes and copy selected lanes:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_constant_extract");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized constant vector extract LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_constant_extract"));
+    assert!(ir.contains("handler.mov_imm"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_constant_extract"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_extract_last_active_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_extract_last_active.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_extract_last_active'
+source_filename = "vm_virtualize_vector_extract_last_active.ll"
+
+declare i32 @llvm.experimental.vector.extract.last.active.v4i32(<4 x i32>, <4 x i1>, i32)
+declare float @llvm.experimental.vector.extract.last.active.v4f32(<4 x float>, <4 x i1>, float)
+
+define i64 @vm_vector_extract_last_active_integer(i32 %a, i32 %b, i32 %c, i32 %d, i32 %fallback) {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %active = call i32 @llvm.experimental.vector.extract.last.active.v4i32(<4 x i32> %v3, <4 x i1> <i1 false, i1 true, i1 true, i1 false>, i32 %fallback)
+  %none = call i32 @llvm.experimental.vector.extract.last.active.v4i32(<4 x i32> poison, <4 x i1> zeroinitializer, i32 %fallback)
+  %zactive = zext i32 %active to i64
+  %znone = zext i32 %none to i64
+  %hi = shl i64 %zactive, 32
+  %result = or i64 %hi, %znone
+  ret i64 %result
+}
+
+define i64 @vm_vector_extract_last_active_float(float %a, float %b, float %c, float %d, float %fallback) {
+entry:
+  %v0 = insertelement <4 x float> poison, float %a, i32 0
+  %v1 = insertelement <4 x float> %v0, float %b, i32 1
+  %v2 = insertelement <4 x float> %v1, float %c, i32 2
+  %v3 = insertelement <4 x float> %v2, float %d, i32 3
+  %active = call float @llvm.experimental.vector.extract.last.active.v4f32(<4 x float> %v3, <4 x i1> <i1 false, i1 true, i1 false, i1 true>, float %fallback)
+  %none = call float @llvm.experimental.vector.extract.last.active.v4f32(<4 x float> poison, <4 x i1> zeroinitializer, float %fallback)
+  %active_bits = bitcast float %active to i32
+  %none_bits = bitcast float %none to i32
+  %zactive = zext i32 %active_bits to i64
+  %znone = zext i32 %none_bits to i64
+  %hi = shl i64 %zactive, 32
+  %result = or i64 %hi, %znone
+  ret i64 %result
+}
+"#,
+    )
+    .expect("extract.last.active LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_extract_last_active_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_extract_last_active_integer(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t fallback);
+uint64_t vm_vector_extract_last_active_float(float a, float b, float c, float d, float fallback);
+int main(void) {
+    uint64_t a = vm_vector_extract_last_active_integer(7u, 11u, 13u, 17u, 23u);
+    uint64_t b = vm_vector_extract_last_active_integer(0x80000010u, 0x7ffffff0u, 31u, 5u, 19u);
+    uint64_t c = vm_vector_extract_last_active_float(1.0f, 2.0f, 4.0f, 8.0f, 3.0f);
+    uint64_t d = vm_vector_extract_last_active_float(-0.5f, 4.0f, -2.25f, 9.0f, 1.5f);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)d);
+    return 0;
+}
+"#,
+    )
+    .expect("extract.last.active C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_extract_last_active_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_extract_last_active.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let integer_dump = bytecode_dump_for_function(&stderr, "vm_vector_extract_last_active_integer");
+    assert!(
+        integer_dump.matches(": mov ").count() >= 2,
+        "integer extract.last.active should lower through profile mov actions:\n{integer_dump}"
+    );
+    let float_dump = bytecode_dump_for_function(&stderr, "vm_vector_extract_last_active_float");
+    assert!(
+        float_dump.matches(": mov ").count() >= 2,
+        "float extract.last.active should lower through profile mov actions:\n{float_dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_extract_last_active");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized extract.last.active LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_extract_last_active_integer"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_extract_last_active_float"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call i32 @llvm.experimental.vector.extract.last.active"));
+    assert!(!ir.contains("call float @llvm.experimental.vector.extract.last.active"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_extract_last_active_integer"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_extract_last_active_float"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_unfrozen_vector_poison_safely_skips() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_unfrozen_vector_poison.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_unfrozen_vector_poison'
+source_filename = "vm_virtualize_unfrozen_vector_poison.ll"
+
+define i32 @vm_unfrozen_vector_poison(i32 %x) {
+entry:
+  %lane = extractelement <4 x i32> <i32 7, i32 poison, i32 11, i32 13>, i32 1
+  %mixed = add i32 %lane, %x
+  ret i32 %mixed
+}
+"#,
+    )
+    .expect("unfrozen vector poison LLVM IR fixture should be writable");
+
+    let (output_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_unfrozen_vector_poison.ll",
+        "default<O0>",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let ir = std::fs::read_to_string(output_ir).expect("unfrozen vector poison output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_unfrozen_vector_poison"));
+
+    assert!(stderr.contains("skip function"));
+    assert!(stderr.contains("vm_unfrozen_vector_poison"));
+    assert!(stderr.contains("constant vector operand lane 1 is undef or poison"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_dynamic_lane_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_dynamic_lane.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_dynamic_lane'
+source_filename = "vm_virtualize_vector_dynamic_lane.ll"
+
+define i64 @vm_vector_dynamic_lane(i32 %a, i32 %b, i32 %c, i32 %d, i32 %idx, i32 %value) {
+entry:
+  %lane = and i32 %idx, 3
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %picked = extractelement <4 x i32> %v3, i32 %lane
+  %patched = insertelement <4 x i32> %v3, i32 %value, i32 %lane
+  %p0 = extractelement <4 x i32> %patched, i32 0
+  %p1 = extractelement <4 x i32> %patched, i32 1
+  %p2 = extractelement <4 x i32> %patched, i32 2
+  %p3 = extractelement <4 x i32> %patched, i32 3
+  %s0 = add i32 %p0, %p1
+  %s1 = add i32 %p2, %p3
+  %s2 = xor i32 %s0, %s1
+  %s3 = add i32 %s2, %picked
+  %result = zext i32 %s3 to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("dynamic vector lane LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_dynamic_lane_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_dynamic_lane(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t idx, uint32_t value);
+int main(void) {
+    uint64_t a = vm_vector_dynamic_lane(3u, 5u, 7u, 11u, 0u, 101u);
+    uint64_t b = vm_vector_dynamic_lane(13u, 17u, 19u, 23u, 2u, 103u);
+    uint64_t c = vm_vector_dynamic_lane(29u, 31u, 37u, 41u, 7u, 107u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)c);
+    return 0;
+}
+"#,
+    )
+    .expect("dynamic vector lane C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_dynamic_lane_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_dynamic_lane.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_dynamic_lane");
+    assert!(
+        dump.matches(": mov_imm ").count() >= 8,
+        "dynamic vector lane lowering should materialize candidate lane constants:\n{dump}"
+    );
+    let dynamic_branch_count = dump.matches(": br_if ").count() + dump.matches(": icmp_br_if ").count();
+    let dynamic_compare_count = dump.matches(": icmp ").count() + dump.matches(": icmp_br_if ").count();
+    assert!(
+        dynamic_compare_count >= 8 && dynamic_branch_count >= 8,
+        "dynamic vector lane lowering should use VM comparison and conditional branch chains:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_dynamic_lane");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("dynamic vector lane virtualized IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_dynamic_lane"));
+    assert!(ir.contains("handler.br_if"));
+    assert!(ir.contains("handler.icmp"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_dynamic_lane"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_freeze_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_freeze.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_freeze'
+source_filename = "vm_virtualize_vector_freeze.ll"
+
+define i64 @vm_vector_freeze(i32 %a, i32 %b, double %d) {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 3
+  %vf = freeze <4 x i32> %v1
+  %e0 = extractelement <4 x i32> %vf, i32 0
+  %e3 = extractelement <4 x i32> %vf, i32 3
+  %sum = add i32 %e0, %e3
+  %sum64 = zext i32 %sum to i64
+  %dv0 = insertelement <2 x double> poison, double %d, i32 0
+  %dvf = freeze <2 x double> %dv0
+  %de = extractelement <2 x double> %dvf, i32 0
+  %dbits = bitcast double %de to i64
+  %result = xor i64 %dbits, %sum64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector freeze LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_freeze_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_freeze(uint32_t a, uint32_t b, double d);
+int main(void) {
+    uint64_t a = vm_vector_freeze(7u, 11u, 3.5);
+    uint64_t b = vm_vector_freeze(0x12345678u, 0x9abcdef0u, -2.25);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector freeze C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_freeze_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_freeze.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_freeze");
+    assert!(
+        dump.matches(": mov ").count() >= 8,
+        "fixed vector freeze lanes should lower through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_freeze");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector freeze LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_freeze"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_freeze"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_freeze_constant_operand_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_freeze_constant.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_freeze_constant'
+source_filename = "vm_virtualize_vector_freeze_constant.ll"
+
+define i64 @vm_vector_freeze_constant(i32 %x) {
+entry:
+  %frozen = freeze <4 x i32> <i32 7, i32 11, i32 19, i32 23>
+  %e0 = extractelement <4 x i32> %frozen, i32 0
+  %e1 = extractelement <4 x i32> %frozen, i32 1
+  %e2 = extractelement <4 x i32> %frozen, i32 2
+  %e3 = extractelement <4 x i32> %frozen, i32 3
+  %poisoned = freeze <4 x i32> <i32 29, i32 poison, i32 31, i32 undef>
+  %p0 = extractelement <4 x i32> %poisoned, i32 0
+  %p2 = extractelement <4 x i32> %poisoned, i32 2
+  %s0 = add i32 %e0, %e1
+  %s1 = add i32 %e2, %e3
+  %s2 = add i32 %p0, %p2
+  %s3 = add i32 %s0, %s1
+  %sum = add i32 %s3, %s2
+  %sum64 = zext i32 %sum to i64
+  %x64 = zext i32 %x to i64
+  %result = xor i64 %sum64, %x64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("constant vector freeze LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_freeze_constant_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_freeze_constant(uint32_t x);
+int main(void) {
+    uint64_t a = vm_vector_freeze_constant(0u);
+    uint64_t b = vm_vector_freeze_constant(0x12345678u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("constant vector freeze C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_freeze_constant_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_freeze_constant.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_freeze_constant");
+    assert!(
+        dump.matches(": mov ").count() >= 8,
+        "direct constant vector freeze should lower every lane through profile mov actions:\n{dump}"
+    );
+    assert!(
+        dump.matches(": mov_imm ").count() >= 8,
+        "direct constant vector freeze should materialize constant and frozen poison lanes:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_freeze_constant");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("constant vector freeze virtualized IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_freeze_constant"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_freeze_constant"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_integer_binops_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_integer_binops.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_integer_binops'
+source_filename = "vm_virtualize_vector_integer_binops.ll"
+
+define i64 @vm_vector_integer_binops(i32 %a, i32 %b, i32 %c) {
+entry:
+  %bc = xor i32 %b, %c
+  %v0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <2 x i32> %v0, i32 %bc, i32 1
+  %w0 = insertelement <2 x i32> poison, i32 3, i32 0
+  %w1 = insertelement <2 x i32> %w0, i32 5, i32 1
+  %s0 = insertelement <2 x i32> poison, i32 1, i32 0
+  %s1 = insertelement <2 x i32> %s0, i32 2, i32 1
+  %add = add <2 x i32> %v1, %w1
+  %e0 = extractelement <2 x i32> %add, i32 0
+  %sub = sub <2 x i32> %add, %w1
+  %e1 = extractelement <2 x i32> %sub, i32 1
+  %mul = mul <2 x i32> %sub, %w1
+  %e2 = extractelement <2 x i32> %mul, i32 0
+  %udiv = udiv <2 x i32> %mul, %w1
+  %e3 = extractelement <2 x i32> %udiv, i32 1
+  %sdiv = sdiv <2 x i32> %mul, %w1
+  %e4 = extractelement <2 x i32> %sdiv, i32 0
+  %urem = urem <2 x i32> %mul, %w1
+  %e5 = extractelement <2 x i32> %urem, i32 1
+  %srem = srem <2 x i32> %mul, %w1
+  %e6 = extractelement <2 x i32> %srem, i32 0
+  %xor = xor <2 x i32> %udiv, %sdiv
+  %e7 = extractelement <2 x i32> %xor, i32 1
+  %and = and <2 x i32> %sub, %w1
+  %e8 = extractelement <2 x i32> %and, i32 0
+  %or = or <2 x i32> %and, %xor
+  %e9 = extractelement <2 x i32> %or, i32 1
+  %shl = shl <2 x i32> %or, %s1
+  %e10 = extractelement <2 x i32> %shl, i32 0
+  %lshr = lshr <2 x i32> %shl, %s1
+  %e11 = extractelement <2 x i32> %lshr, i32 1
+  %ashr = ashr <2 x i32> %shl, %s1
+  %e12 = extractelement <2 x i32> %ashr, i32 0
+  %z0 = zext i32 %e0 to i64
+  %z1 = zext i32 %e1 to i64
+  %z2 = zext i32 %e2 to i64
+  %z3 = zext i32 %e3 to i64
+  %z4 = zext i32 %e4 to i64
+  %z5 = zext i32 %e5 to i64
+  %z6 = zext i32 %e6 to i64
+  %z7 = zext i32 %e7 to i64
+  %z8 = zext i32 %e8 to i64
+  %z9 = zext i32 %e9 to i64
+  %z10 = zext i32 %e10 to i64
+  %z11 = zext i32 %e11 to i64
+  %z12 = zext i32 %e12 to i64
+  %m0 = xor i64 %z0, %z1
+  %m1 = add i64 %m0, %z2
+  %m2 = xor i64 %m1, %z3
+  %m3 = add i64 %m2, %z4
+  %m4 = xor i64 %m3, %z5
+  %m5 = add i64 %m4, %z6
+  %m6 = xor i64 %m5, %z7
+  %m7 = add i64 %m6, %z8
+  %m8 = xor i64 %m7, %z9
+  %m9 = add i64 %m8, %z10
+  %m10 = xor i64 %m9, %z11
+  %result = add i64 %m10, %z12
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector integer binop LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_integer_binops_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_integer_binops(uint32_t a, uint32_t b, uint32_t c);
+int main(void) {
+    uint64_t a = vm_vector_integer_binops(7u, 11u, 13u);
+    uint64_t b = vm_vector_integer_binops(0x12345678u, 0x09abcdefu, 0x13579bdfu);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector integer binop C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_integer_binops_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_integer_binops.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_integer_binops");
+    for needle in [
+        ": iadd ", ": isub ", ": imul ", ": iudiv ", ": isdiv ", ": iurem ", ": isrem ", ": ixor ", ": iand ",
+        ": ior ", ": ishl ", ": ilshr ", ": iashr ",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "fixed integer vector binop should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_integer_binops");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector integer binop LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_integer_binops"));
+    assert!(ir.contains("handler.iadd"));
+    assert!(ir.contains("handler.iudiv"));
+    assert!(ir.contains("handler.iashr"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_integer_binops"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_integer_binops_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_binops.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_integer_binops'
+source_filename = "vm_virtualize_vp_vector_integer_binops.ll"
+
+declare <4 x i32> @llvm.vp.add.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.sub.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.mul.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.udiv.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.sdiv.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.urem.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.srem.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.xor.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.and.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.or.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.shl.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.lshr.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.ashr.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_integer_binops(i32 %a, i32 %b) #0 {
+entry:
+  %a0 = or i32 %a, 1024
+  %a1 = xor i32 %b, 305419896
+  %a2 = add i32 %a, 777
+  %a3 = sub i32 %b, 333
+  %lhs0 = insertelement <4 x i32> poison, i32 %a0, i32 0
+  %lhs1 = insertelement <4 x i32> %lhs0, i32 %a1, i32 1
+  %lhs2 = insertelement <4 x i32> %lhs1, i32 %a2, i32 2
+  %lhs = insertelement <4 x i32> %lhs2, i32 %a3, i32 3
+  %rhs0 = insertelement <4 x i32> poison, i32 3, i32 0
+  %rhs1 = insertelement <4 x i32> %rhs0, i32 5, i32 1
+  %rhs2 = insertelement <4 x i32> %rhs1, i32 7, i32 2
+  %rhs = insertelement <4 x i32> %rhs2, i32 11, i32 3
+  %shift0 = insertelement <4 x i32> poison, i32 1, i32 0
+  %shift1 = insertelement <4 x i32> %shift0, i32 2, i32 1
+  %shift2 = insertelement <4 x i32> %shift1, i32 3, i32 2
+  %shift = insertelement <4 x i32> %shift2, i32 4, i32 3
+
+  %add = call <4 x i32> @llvm.vp.add.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 2)
+  %add0 = extractelement <4 x i32> %add, i32 0
+  %add1 = extractelement <4 x i32> %add, i32 1
+  %sub = call <4 x i32> @llvm.vp.sub.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 true, i1 false, i1 false>, i32 4)
+  %sub1 = extractelement <4 x i32> %sub, i32 1
+  %mul = call <4 x i32> @llvm.vp.mul.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 false, i1 true, i1 false>, i32 4)
+  %mul2 = extractelement <4 x i32> %mul, i32 2
+  %udiv = call <4 x i32> @llvm.vp.udiv.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 4)
+  %udiv0 = extractelement <4 x i32> %udiv, i32 0
+  %sdiv = call <4 x i32> @llvm.vp.sdiv.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 false, i1 false, i1 true>, i32 4)
+  %sdiv3 = extractelement <4 x i32> %sdiv, i32 3
+  %urem = call <4 x i32> @llvm.vp.urem.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 false, i1 true, i1 false>, i32 4)
+  %urem2 = extractelement <4 x i32> %urem, i32 2
+  %srem = call <4 x i32> @llvm.vp.srem.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 true, i1 false, i1 false>, i32 4)
+  %srem1 = extractelement <4 x i32> %srem, i32 1
+  %xor = call <4 x i32> @llvm.vp.xor.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 4)
+  %xor0 = extractelement <4 x i32> %xor, i32 0
+  %and = call <4 x i32> @llvm.vp.and.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 true, i1 false, i1 false>, i32 4)
+  %and1 = extractelement <4 x i32> %and, i32 1
+  %or = call <4 x i32> @llvm.vp.or.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 false, i1 false, i1 true>, i32 4)
+  %or3 = extractelement <4 x i32> %or, i32 3
+  %shl = call <4 x i32> @llvm.vp.shl.v4i32(<4 x i32> %lhs, <4 x i32> %shift, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 4)
+  %shl0 = extractelement <4 x i32> %shl, i32 0
+  %lshr = call <4 x i32> @llvm.vp.lshr.v4i32(<4 x i32> %lhs, <4 x i32> %shift, <4 x i1> <i1 false, i1 false, i1 true, i1 false>, i32 4)
+  %lshr2 = extractelement <4 x i32> %lshr, i32 2
+  %ashr = call <4 x i32> @llvm.vp.ashr.v4i32(<4 x i32> %lhs, <4 x i32> %shift, <4 x i1> <i1 false, i1 false, i1 false, i1 true>, i32 4)
+  %ashr3 = extractelement <4 x i32> %ashr, i32 3
+
+  %z0 = zext i32 %add0 to i64
+  %z1 = zext i32 %add1 to i64
+  %z2 = zext i32 %sub1 to i64
+  %z3 = zext i32 %mul2 to i64
+  %z4 = zext i32 %udiv0 to i64
+  %z5 = zext i32 %sdiv3 to i64
+  %z6 = zext i32 %urem2 to i64
+  %z7 = zext i32 %srem1 to i64
+  %z8 = zext i32 %xor0 to i64
+  %z9 = zext i32 %and1 to i64
+  %z10 = zext i32 %or3 to i64
+  %z11 = zext i32 %shl0 to i64
+  %z12 = zext i32 %lshr2 to i64
+  %z13 = zext i32 %ashr3 to i64
+  %m0 = xor i64 %z0, %z1
+  %m1 = add i64 %m0, %z2
+  %m2 = xor i64 %m1, %z3
+  %m3 = add i64 %m2, %z4
+  %m4 = xor i64 %m3, %z5
+  %m5 = add i64 %m4, %z6
+  %m6 = xor i64 %m5, %z7
+  %m7 = add i64 %m6, %z8
+  %m8 = xor i64 %m7, %z9
+  %m9 = add i64 %m8, %z10
+  %m10 = xor i64 %m9, %z11
+  %m11 = add i64 %m10, %z12
+  %result = xor i64 %m11, %z13
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector integer binop LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_integer_binops_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_integer_binops(uint32_t a, uint32_t b);
+int main(void) {
+    uint64_t a = vm_vp_vector_integer_binops(37u, 0x10203040u);
+    uint64_t b = vm_vp_vector_integer_binops(0x87654321u, 0x13579bdfu);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector integer binop C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_vector_integer_binops_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_integer_binops.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_integer_binops");
+    for needle in [
+        ": iadd ", ": isub ", ": imul ", ": iudiv ", ": isdiv ", ": iurem ", ": isrem ", ": ixor ", ": iand ",
+        ": ior ", ": ishl ", ": ilshr ", ": iashr ",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "VP fixed integer vector binop should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_vector_integer_binops");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized VP vector integer binop LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_integer_binops"));
+    assert!(ir.contains("handler.iadd"));
+    assert!(ir.contains("handler.iashr"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp."));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_integer_binops"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_integer_minmax_saturating_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_minmax_saturating.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_integer_minmax_saturating'
+source_filename = "vm_virtualize_vp_vector_integer_minmax_saturating.ll"
+
+declare <4 x i32> @llvm.vp.smax.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.smin.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.umax.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.umin.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.uadd.sat.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.usub.sat.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.sadd.sat.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.ssub.sat.v4i32(<4 x i32>, <4 x i32>, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_integer_minmax_saturating(i32 %a, i32 %b, i32 %c) #0 {
+entry:
+  %a0 = or i32 %a, 1073741824
+  %a1 = xor i32 %b, -2147483648
+  %a2 = add i32 %c, 12345
+  %a3 = sub i32 %a, 54321
+  %lhs0 = insertelement <4 x i32> poison, i32 %a0, i32 0
+  %lhs1 = insertelement <4 x i32> %lhs0, i32 %a1, i32 1
+  %lhs2 = insertelement <4 x i32> %lhs1, i32 %a2, i32 2
+  %lhs = insertelement <4 x i32> %lhs2, i32 %a3, i32 3
+  %rhs0 = insertelement <4 x i32> poison, i32 17, i32 0
+  %rhs1 = insertelement <4 x i32> %rhs0, i32 -33, i32 1
+  %rhs2 = insertelement <4 x i32> %rhs1, i32 5, i32 2
+  %rhs = insertelement <4 x i32> %rhs2, i32 3, i32 3
+
+  %smax = call <4 x i32> @llvm.vp.smax.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 4)
+  %smax0 = extractelement <4 x i32> %smax, i32 0
+  %smin = call <4 x i32> @llvm.vp.smin.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 true, i1 false, i1 false>, i32 4)
+  %smin1 = extractelement <4 x i32> %smin, i32 1
+  %umax = call <4 x i32> @llvm.vp.umax.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 false, i1 true, i1 false>, i32 4)
+  %umax2 = extractelement <4 x i32> %umax, i32 2
+  %umin = call <4 x i32> @llvm.vp.umin.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 false, i1 false, i1 true>, i32 4)
+  %umin3 = extractelement <4 x i32> %umin, i32 3
+  %uadd = call <4 x i32> @llvm.vp.uadd.sat.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 4)
+  %uadd0 = extractelement <4 x i32> %uadd, i32 0
+  %usub = call <4 x i32> @llvm.vp.usub.sat.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 true, i1 false, i1 false>, i32 4)
+  %usub1 = extractelement <4 x i32> %usub, i32 1
+  %sadd = call <4 x i32> @llvm.vp.sadd.sat.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 false, i1 true, i1 false>, i32 4)
+  %sadd2 = extractelement <4 x i32> %sadd, i32 2
+  %ssub = call <4 x i32> @llvm.vp.ssub.sat.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i1> <i1 false, i1 false, i1 false, i1 true>, i32 4)
+  %ssub3 = extractelement <4 x i32> %ssub, i32 3
+
+  %x0 = sext i32 %smax0 to i64
+  %x1 = sext i32 %smin1 to i64
+  %x2 = zext i32 %umax2 to i64
+  %x3 = zext i32 %umin3 to i64
+  %x4 = zext i32 %uadd0 to i64
+  %x5 = zext i32 %usub1 to i64
+  %x6 = sext i32 %sadd2 to i64
+  %x7 = sext i32 %ssub3 to i64
+  %m0 = xor i64 %x0, %x1
+  %m1 = add i64 %m0, %x2
+  %m2 = xor i64 %m1, %x3
+  %m3 = add i64 %m2, %x4
+  %m4 = xor i64 %m3, %x5
+  %m5 = add i64 %m4, %x6
+  %result = xor i64 %m5, %x7
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector integer min/max/saturating LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_integer_minmax_saturating_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_integer_minmax_saturating(int32_t a, int32_t b, int32_t c);
+int main(void) {
+    uint64_t a = vm_vp_vector_integer_minmax_saturating(0x12345678, -37, 99);
+    uint64_t b = vm_vp_vector_integer_minmax_saturating(-2048, 0x7ffff000, 3);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector integer min/max/saturating C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vp_vector_integer_minmax_saturating_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_integer_minmax_saturating.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_integer_minmax_saturating");
+    for needle in [
+        ": ismax ",
+        ": ismin ",
+        ": iumax ",
+        ": iumin ",
+        ": iuadd_sat ",
+        ": iusub_sat ",
+        ": isadd_sat ",
+        ": issub_sat ",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "VP fixed integer vector min/max/saturating should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vp_vector_integer_minmax_saturating",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized VP vector integer min/max/saturating IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_integer_minmax_saturating"));
+    assert!(ir.contains("handler.ismax"));
+    assert!(ir.contains("handler.issub_sat"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.smax"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.ssub.sat"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_integer_minmax_saturating"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_integer_unary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_unary.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_integer_unary'
+source_filename = "vm_virtualize_vp_vector_integer_unary.ll"
+
+declare <4 x i32> @llvm.vp.ctpop.v4i32(<4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.ctlz.v4i32(<4 x i32>, i1, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.cttz.v4i32(<4 x i32>, i1, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.abs.v4i32(<4 x i32>, i1, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.bswap.v4i32(<4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.bitreverse.v4i32(<4 x i32>, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_integer_unary(i32 %a, i32 %b) #0 {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %mix0 = xor i32 %a, 252645135
+  %mix1 = xor i32 %b, -1431655766
+  %v2 = insertelement <4 x i32> %v1, i32 %mix0, i32 2
+  %value = insertelement <4 x i32> %v2, i32 %mix1, i32 3
+
+  %pop = call <4 x i32> @llvm.vp.ctpop.v4i32(<4 x i32> %value, <4 x i1> <i1 true, i1 false, i1 true, i1 false>, i32 3)
+  %lz = call <4 x i32> @llvm.vp.ctlz.v4i32(<4 x i32> %value, i1 false, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 4)
+  %tz = call <4 x i32> @llvm.vp.cttz.v4i32(<4 x i32> %value, i1 false, <4 x i1> <i1 false, i1 true, i1 false, i1 false>, i32 4)
+  %abs = call <4 x i32> @llvm.vp.abs.v4i32(<4 x i32> %value, i1 false, <4 x i1> <i1 false, i1 false, i1 true, i1 false>, i32 4)
+  %swap = call <4 x i32> @llvm.vp.bswap.v4i32(<4 x i32> %value, <4 x i1> <i1 false, i1 true, i1 false, i1 false>, i32 4)
+  %rev = call <4 x i32> @llvm.vp.bitreverse.v4i32(<4 x i32> %value, <4 x i1> <i1 false, i1 false, i1 false, i1 true>, i32 4)
+
+  %p0 = extractelement <4 x i32> %pop, i32 0
+  %p2 = extractelement <4 x i32> %pop, i32 2
+  %l0 = extractelement <4 x i32> %lz, i32 0
+  %t1 = extractelement <4 x i32> %tz, i32 1
+  %a2 = extractelement <4 x i32> %abs, i32 2
+  %s1 = extractelement <4 x i32> %swap, i32 1
+  %r3 = extractelement <4 x i32> %rev, i32 3
+  %z0 = zext i32 %p0 to i64
+  %z1 = zext i32 %p2 to i64
+  %z2 = zext i32 %l0 to i64
+  %z3 = zext i32 %t1 to i64
+  %z4 = zext i32 %a2 to i64
+  %z5 = zext i32 %s1 to i64
+  %z6 = zext i32 %r3 to i64
+  %m0 = xor i64 %z0, %z1
+  %m1 = add i64 %m0, %z2
+  %m2 = xor i64 %m1, %z3
+  %m3 = add i64 %m2, %z4
+  %m4 = xor i64 %m3, %z5
+  %result = add i64 %m4, %z6
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector integer unary LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_integer_unary_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_integer_unary(uint32_t a, uint32_t b);
+int main(void) {
+    uint64_t a = vm_vp_vector_integer_unary(0x01020304u, 0x89abcdefu);
+    uint64_t b = vm_vp_vector_integer_unary(0xfedcba98u, 0x76543210u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector integer unary C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_vector_integer_unary_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_integer_unary.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_integer_unary");
+    for needle in [": ctpop ", ": ctlz ", ": cttz ", ": iabs ", ": bswap ", ": bitreverse "] {
+        assert!(
+            dump.contains(needle),
+            "VP fixed integer vector unary should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_vector_integer_unary");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized VP vector integer unary LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_integer_unary"));
+    assert!(ir.contains("handler.ctpop"));
+    assert!(ir.contains("handler.ctlz"));
+    assert!(ir.contains("handler.cttz"));
+    assert!(ir.contains("handler.iabs"));
+    assert!(ir.contains("handler.bswap"));
+    assert!(ir.contains("handler.bitreverse"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp."));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_integer_unary"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_stepvector_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_stepvector.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_stepvector'
+source_filename = "vm_virtualize_stepvector.ll"
+
+declare <4 x i32> @llvm.stepvector.v4i32()
+declare <4 x i8> @llvm.stepvector.v4i8()
+
+define i64 @vm_stepvector(i64 %seed) #0 {
+entry:
+  %wide = call <4 x i32> @llvm.stepvector.v4i32()
+  %byte = call <4 x i8> @llvm.stepvector.v4i8()
+  %w0 = extractelement <4 x i32> %wide, i32 0
+  %w1 = extractelement <4 x i32> %wide, i32 1
+  %w2 = extractelement <4 x i32> %wide, i32 2
+  %w3 = extractelement <4 x i32> %wide, i32 3
+  %b0 = extractelement <4 x i8> %byte, i32 0
+  %b1 = extractelement <4 x i8> %byte, i32 1
+  %b2 = extractelement <4 x i8> %byte, i32 2
+  %b3 = extractelement <4 x i8> %byte, i32 3
+  %w0x = zext i32 %w0 to i64
+  %w1x = zext i32 %w1 to i64
+  %w2x = zext i32 %w2 to i64
+  %w3x = zext i32 %w3 to i64
+  %b0x = zext i8 %b0 to i64
+  %b1x = zext i8 %b1 to i64
+  %b2x = zext i8 %b2 to i64
+  %b3x = zext i8 %b3 to i64
+  %a0 = xor i64 %seed, %w0x
+  %a1 = shl i64 %w1x, 8
+  %a2 = xor i64 %a0, %a1
+  %a3 = shl i64 %w2x, 20
+  %a4 = xor i64 %a2, %a3
+  %a5 = shl i64 %w3x, 32
+  %a6 = xor i64 %a4, %a5
+  %c0 = shl i64 %b0x, 3
+  %c1 = xor i64 %a6, %c0
+  %c2 = shl i64 %b1x, 11
+  %c3 = xor i64 %c1, %c2
+  %c4 = shl i64 %b2x, 27
+  %c5 = xor i64 %c3, %c4
+  %c6 = shl i64 %b3x, 40
+  %c7 = xor i64 %c5, %c6
+  ret i64 %c7
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("stepvector LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_stepvector.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_stepvector_baseline'
+source_filename = "vm_virtualize_stepvector_baseline.ll"
+
+define i64 @vm_stepvector(i64 %seed) #0 {
+entry:
+  %a0 = xor i64 %seed, 0
+  %a2 = xor i64 %a0, 256
+  %a4 = xor i64 %a2, 2097152
+  %a6 = xor i64 %a4, 12884901888
+  %c1 = xor i64 %a6, 0
+  %c3 = xor i64 %c1, 2048
+  %c5 = xor i64 %c3, 268435456
+  %c7 = xor i64 %c5, 3298534883328
+  ret i64 %c7
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("stepvector baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_stepvector_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_stepvector(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm_stepvector(UINT64_C(0x1020304050607080));
+    uint64_t b = vm_stepvector(UINT64_C(0xfedcba9876543210));
+    printf("%" PRIu64 " %" PRIu64 " %" PRIu64 "\n", a, b, a ^ b);
+    return 0;
+}
+"#,
+    )
+    .expect("stepvector C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_source, &harness, "vm_virtualize_stepvector_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_stepvector.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_stepvector");
+    assert!(
+        dump.matches(": mov_imm ").count() >= 8,
+        "stepvector should materialize each fixed integer lane through profile mov_imm actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_stepvector");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized stepvector IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_stepvector"));
+    assert!(ir.contains("handler.mov_imm"));
+    assert!(!ir.contains("call <4 x i32> @llvm.stepvector"));
+    assert!(!ir.contains("call <4 x i8> @llvm.stepvector"));
+    assert!(!ir.contains(".amice.vm.original.vm_stepvector"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_get_active_lane_mask_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_get_active_lane_mask.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_get_active_lane_mask'
+source_filename = "vm_virtualize_get_active_lane_mask.ll"
+
+declare <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64, i64)
+declare <4 x i1> @llvm.get.active.lane.mask.v4i1.i32(i32, i32)
+
+define i64 @vm_get_active_lane_mask(i64 %start64, i64 %end64, i32 %start32, i32 %end32) #0 {
+entry:
+  %mask64 = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64 %start64, i64 %end64)
+  %m64_0 = extractelement <4 x i1> %mask64, i32 0
+  %m64_1 = extractelement <4 x i1> %mask64, i32 1
+  %m64_2 = extractelement <4 x i1> %mask64, i32 2
+  %m64_3 = extractelement <4 x i1> %mask64, i32 3
+  %z64_0 = zext i1 %m64_0 to i64
+  %z64_1 = zext i1 %m64_1 to i64
+  %z64_2 = zext i1 %m64_2 to i64
+  %z64_3 = zext i1 %m64_3 to i64
+  %s64_1 = shl i64 %z64_1, 1
+  %s64_2 = shl i64 %z64_2, 2
+  %s64_3 = shl i64 %z64_3, 3
+  %o64_0 = or i64 %z64_0, %s64_1
+  %o64_1 = or i64 %o64_0, %s64_2
+  %o64_2 = or i64 %o64_1, %s64_3
+  %mask32 = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i32(i32 %start32, i32 %end32)
+  %m32_0 = extractelement <4 x i1> %mask32, i32 0
+  %m32_1 = extractelement <4 x i1> %mask32, i32 1
+  %m32_2 = extractelement <4 x i1> %mask32, i32 2
+  %m32_3 = extractelement <4 x i1> %mask32, i32 3
+  %z32_0 = zext i1 %m32_0 to i64
+  %z32_1 = zext i1 %m32_1 to i64
+  %z32_2 = zext i1 %m32_2 to i64
+  %z32_3 = zext i1 %m32_3 to i64
+  %s32_0 = shl i64 %z32_0, 8
+  %s32_1 = shl i64 %z32_1, 9
+  %s32_2 = shl i64 %z32_2, 10
+  %s32_3 = shl i64 %z32_3, 11
+  %o32_0 = or i64 %s32_0, %s32_1
+  %o32_1 = or i64 %o32_0, %s32_2
+  %o32_2 = or i64 %o32_1, %s32_3
+  %result = or i64 %o64_2, %o32_2
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("get.active.lane.mask LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_get_active_lane_mask.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_get_active_lane_mask_baseline'
+source_filename = "vm_virtualize_get_active_lane_mask_baseline.ll"
+
+define i64 @vm_get_active_lane_mask(i64 %start64, i64 %end64, i32 %start32, i32 %end32) #0 {
+entry:
+  %i64_0 = add i64 %start64, 0
+  %i64_1 = add i64 %start64, 1
+  %i64_2 = add i64 %start64, 2
+  %i64_3 = add i64 %start64, 3
+  %m64_0 = icmp ult i64 %i64_0, %end64
+  %m64_1 = icmp ult i64 %i64_1, %end64
+  %m64_2 = icmp ult i64 %i64_2, %end64
+  %m64_3 = icmp ult i64 %i64_3, %end64
+  %z64_0 = zext i1 %m64_0 to i64
+  %z64_1 = zext i1 %m64_1 to i64
+  %z64_2 = zext i1 %m64_2 to i64
+  %z64_3 = zext i1 %m64_3 to i64
+  %s64_1 = shl i64 %z64_1, 1
+  %s64_2 = shl i64 %z64_2, 2
+  %s64_3 = shl i64 %z64_3, 3
+  %o64_0 = or i64 %z64_0, %s64_1
+  %o64_1 = or i64 %o64_0, %s64_2
+  %o64_2 = or i64 %o64_1, %s64_3
+  %i32_0 = add i32 %start32, 0
+  %i32_1 = add i32 %start32, 1
+  %i32_2 = add i32 %start32, 2
+  %i32_3 = add i32 %start32, 3
+  %m32_0 = icmp ult i32 %i32_0, %end32
+  %m32_1 = icmp ult i32 %i32_1, %end32
+  %m32_2 = icmp ult i32 %i32_2, %end32
+  %m32_3 = icmp ult i32 %i32_3, %end32
+  %z32_0 = zext i1 %m32_0 to i64
+  %z32_1 = zext i1 %m32_1 to i64
+  %z32_2 = zext i1 %m32_2 to i64
+  %z32_3 = zext i1 %m32_3 to i64
+  %s32_0 = shl i64 %z32_0, 8
+  %s32_1 = shl i64 %z32_1, 9
+  %s32_2 = shl i64 %z32_2, 10
+  %s32_3 = shl i64 %z32_3, 11
+  %o32_0 = or i64 %s32_0, %s32_1
+  %o32_1 = or i64 %o32_0, %s32_2
+  %o32_2 = or i64 %o32_1, %s32_3
+  %result = or i64 %o64_2, %o32_2
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("get.active.lane.mask baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_get_active_lane_mask_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_get_active_lane_mask(uint64_t start64, uint64_t end64, uint32_t start32, uint32_t end32);
+
+int main(void) {
+    uint64_t a = vm_get_active_lane_mask(0, 2, 0, 3);
+    uint64_t b = vm_get_active_lane_mask(2, 5, 3, 4);
+    uint64_t c = vm_get_active_lane_mask(4, 4, 12, 20);
+    printf("%" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64 "\n", a, b, c, a ^ b ^ c);
+    return 0;
+}
+"#,
+    )
+    .expect("get.active.lane.mask C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_get_active_lane_mask_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_get_active_lane_mask.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_get_active_lane_mask");
+    assert!(
+        dump.matches(": mov_imm ").count() >= 8
+            && dump.matches(": iadd ").count() >= 8
+            && dump.matches(": icmp ").count() >= 8,
+        "get.active.lane.mask should lower through profile mov_imm/iadd/icmp actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_get_active_lane_mask");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized get.active.lane.mask IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_get_active_lane_mask"));
+    assert!(ir.contains("handler.iadd"));
+    assert!(ir.contains("handler.icmp"));
+    assert!(!ir.contains("call <4 x i1> @llvm.get.active.lane.mask"));
+    assert!(!ir.contains(".amice.vm.original.vm_get_active_lane_mask"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_get_vector_length_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_get_vector_length.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_get_vector_length'
+source_filename = "vm_virtualize_get_vector_length.ll"
+
+declare i32 @llvm.experimental.get.vector.length.i64(i64, i32 immarg, i1 immarg)
+
+define i64 @vm_get_vector_length(i64 %n, i64 %salt) #0 {
+entry:
+  %vl = call i32 @llvm.experimental.get.vector.length.i64(i64 %n, i32 16, i1 false)
+  %wide = zext i32 %vl to i64
+  %scaled = mul i64 %wide, 37
+  %mixed = xor i64 %scaled, %salt
+  ret i64 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("get.vector.length LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_get_vector_length.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_get_vector_length_baseline'
+source_filename = "vm_virtualize_get_vector_length_baseline.ll"
+
+define i64 @vm_get_vector_length(i64 %n, i64 %salt) #0 {
+entry:
+  %lt = icmp ult i64 %n, 16
+  %truncated = trunc i64 %n to i32
+  %vl = select i1 %lt, i32 %truncated, i32 16
+  %wide = zext i32 %vl to i64
+  %scaled = mul i64 %wide, 37
+  %mixed = xor i64 %scaled, %salt
+  ret i64 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("get.vector.length baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_get_vector_length_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_get_vector_length(uint64_t n, uint64_t salt);
+
+int main(void) {
+    uint64_t a = vm_get_vector_length(0, 3);
+    uint64_t b = vm_get_vector_length(7, 5);
+    uint64_t c = vm_get_vector_length(16, 11);
+    uint64_t d = vm_get_vector_length(23, 17);
+    uint64_t e = vm_get_vector_length(0x100000020ull, 19);
+    printf("%llu %llu %llu %llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)d,
+           (unsigned long long)e,
+           (unsigned long long)(a ^ b ^ c ^ d ^ e));
+    return 0;
+}
+"#,
+    )
+    .expect("get.vector.length C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_source, &harness, "vm_virtualize_get_vector_length_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_get_vector_length.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_get_vector_length");
+    for needle in [": mov_imm ", ": icmp ", ": trunc ", ": br_if ", ": mov "] {
+        assert!(
+            dump.contains(needle),
+            "get.vector.length should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_get_vector_length");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized get.vector.length IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_get_vector_length"));
+    assert!(ir.contains("handler.trunc"));
+    assert!(!ir.contains("call i32 @llvm.experimental.get.vector.length"));
+    assert!(!ir.contains(".amice.vm.original.vm_get_vector_length"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_get_vector_length_i16_avl_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_get_vector_length_i16.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_get_vector_length_i16'
+source_filename = "vm_virtualize_get_vector_length_i16.ll"
+
+declare i32 @llvm.experimental.get.vector.length.i16(i16, i32 immarg, i1 immarg)
+
+define i64 @vm_get_vector_length_i16(i16 %n, i64 %salt) #0 {
+entry:
+  %vl = call i32 @llvm.experimental.get.vector.length.i16(i16 %n, i32 12, i1 false)
+  %wide = zext i32 %vl to i64
+  %scaled = mul i64 %wide, 41
+  %mixed = xor i64 %scaled, %salt
+  ret i64 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("get.vector.length i16 LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_get_vector_length_i16.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_get_vector_length_i16_baseline'
+source_filename = "vm_virtualize_get_vector_length_i16_baseline.ll"
+
+define i64 @vm_get_vector_length_i16(i16 %n, i64 %salt) #0 {
+entry:
+  %n32 = zext i16 %n to i32
+  %lt = icmp ult i32 %n32, 12
+  %vl = select i1 %lt, i32 %n32, i32 12
+  %wide = zext i32 %vl to i64
+  %scaled = mul i64 %wide, 41
+  %mixed = xor i64 %scaled, %salt
+  ret i64 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("get.vector.length i16 baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_get_vector_length_i16_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_get_vector_length_i16(uint16_t n, uint64_t salt);
+
+int main(void) {
+    uint64_t a = vm_get_vector_length_i16(0, 3);
+    uint64_t b = vm_get_vector_length_i16(7, 5);
+    uint64_t c = vm_get_vector_length_i16(12, 11);
+    uint64_t d = vm_get_vector_length_i16(23, 17);
+    uint64_t e = vm_get_vector_length_i16(65535u, 19);
+    printf("%llu %llu %llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)d,
+           (unsigned long long)e);
+    return 0;
+}
+"#,
+    )
+    .expect("get.vector.length i16 C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_get_vector_length_i16_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_get_vector_length_i16.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_get_vector_length_i16");
+    for needle in [
+        ": zext ",
+        ": mov_imm ",
+        ": icmp ",
+        ": trunc ",
+        ": br_if ",
+        ": mov ",
+        ": br ",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "i16 get.vector.length should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_get_vector_length_i16");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized i16 get.vector.length IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_get_vector_length_i16"));
+    assert!(ir.contains("handler.zext"));
+    assert!(!ir.contains("call i32 @llvm.experimental.get.vector.length"));
+    assert!(!ir.contains(".amice.vm.original.vm_get_vector_length_i16"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_cttz_elts_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_cttz_elts.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_cttz_elts'
+source_filename = "vm_virtualize_cttz_elts.ll"
+
+declare i32 @llvm.experimental.cttz.elts.i32.v4i1(<4 x i1>, i1)
+
+define i32 @vm_cttz_elts(i32 %a, i32 %b, i32 %c, i32 %d, i32 %salt) #0 {
+entry:
+  %m0 = icmp ne i32 %a, 0
+  %m1 = icmp ne i32 %b, 0
+  %m2 = icmp ne i32 %c, 0
+  %m3 = icmp ne i32 %d, 0
+  %v0 = insertelement <4 x i1> poison, i1 %m0, i32 0
+  %v1 = insertelement <4 x i1> %v0, i1 %m1, i32 1
+  %v2 = insertelement <4 x i1> %v1, i1 %m2, i32 2
+  %v3 = insertelement <4 x i1> %v2, i1 %m3, i32 3
+  %count = call i32 @llvm.experimental.cttz.elts.i32.v4i1(<4 x i1> %v3, i1 false)
+  %scaled = mul i32 %count, 17
+  %mixed = xor i32 %scaled, %salt
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("cttz.elts LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_cttz_elts.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_cttz_elts_baseline'
+source_filename = "vm_virtualize_cttz_elts_baseline.ll"
+
+define i32 @vm_cttz_elts(i32 %a, i32 %b, i32 %c, i32 %d, i32 %salt) #0 {
+entry:
+  %m0 = icmp ne i32 %a, 0
+  %m1 = icmp ne i32 %b, 0
+  %m2 = icmp ne i32 %c, 0
+  %m3 = icmp ne i32 %d, 0
+  %c3 = select i1 %m3, i32 3, i32 4
+  %c2 = select i1 %m2, i32 2, i32 %c3
+  %c1 = select i1 %m1, i32 1, i32 %c2
+  %count = select i1 %m0, i32 0, i32 %c1
+  %scaled = mul i32 %count, 17
+  %mixed = xor i32 %scaled, %salt
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("cttz.elts baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_cttz_elts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_cttz_elts(int32_t a, int32_t b, int32_t c, int32_t d, int32_t salt);
+
+int main(void) {
+    int32_t a = vm_cttz_elts(0, 0, 1, 1, 7);
+    int32_t b = vm_cttz_elts(1, 0, 0, 0, 11);
+    int32_t c = vm_cttz_elts(0, 0, 0, 0, 13);
+    int32_t d = vm_cttz_elts(0, 1, 1, 0, 17);
+    printf("%d %d %d %d %d\n", a, b, c, d, a ^ b ^ c ^ d);
+    return 0;
+}
+"#,
+    )
+    .expect("cttz.elts C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_source, &harness, "vm_virtualize_cttz_elts_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_cttz_elts.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_cttz_elts");
+    assert!(
+        dump.matches(": br_if ").count() >= 4
+            && dump.matches(": mov_imm ").count() >= 5
+            && dump.matches(": mov ").count() >= 4,
+        "cttz.elts should lower through profile mov_imm/br_if/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_cttz_elts");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized cttz.elts IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_cttz_elts"));
+    assert!(ir.contains("handler.br_if"));
+    assert!(!ir.contains("call i32 @llvm.experimental.cttz.elts"));
+    assert!(!ir.contains(".amice.vm.original.vm_cttz_elts"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_cttz_elts_zero_is_poison_true_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_cttz_elts_poison_true.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_cttz_elts_poison_true'
+source_filename = "vm_virtualize_cttz_elts_poison_true.ll"
+
+declare i32 @llvm.experimental.cttz.elts.i32.v4i1(<4 x i1>, i1)
+
+define i32 @vm_cttz_elts_poison_true(i32 %a, i32 %b, i32 %c, i32 %d, i32 %salt) #0 {
+entry:
+  %m0 = icmp ne i32 %a, 0
+  %m1 = icmp ne i32 %b, 0
+  %m2 = icmp ne i32 %c, 0
+  %m3 = icmp ne i32 %d, 0
+  %v0 = insertelement <4 x i1> poison, i1 %m0, i32 0
+  %v1 = insertelement <4 x i1> %v0, i1 %m1, i32 1
+  %v2 = insertelement <4 x i1> %v1, i1 %m2, i32 2
+  %v3 = insertelement <4 x i1> %v2, i1 %m3, i32 3
+  %count = call i32 @llvm.experimental.cttz.elts.i32.v4i1(<4 x i1> %v3, i1 true)
+  %scaled = mul i32 %count, 23
+  %mixed = xor i32 %scaled, %salt
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("cttz.elts zero_is_poison=true LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_cttz_elts_poison_true.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_cttz_elts_poison_true_baseline'
+source_filename = "vm_virtualize_cttz_elts_poison_true_baseline.ll"
+
+define i32 @vm_cttz_elts_poison_true(i32 %a, i32 %b, i32 %c, i32 %d, i32 %salt) #0 {
+entry:
+  %m0 = icmp ne i32 %a, 0
+  %m1 = icmp ne i32 %b, 0
+  %m2 = icmp ne i32 %c, 0
+  %m3 = icmp ne i32 %d, 0
+  %c3 = select i1 %m3, i32 3, i32 4
+  %c2 = select i1 %m2, i32 2, i32 %c3
+  %c1 = select i1 %m1, i32 1, i32 %c2
+  %count = select i1 %m0, i32 0, i32 %c1
+  %scaled = mul i32 %count, 23
+  %mixed = xor i32 %scaled, %salt
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("cttz.elts zero_is_poison=true baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_cttz_elts_poison_true_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_cttz_elts_poison_true(int32_t a, int32_t b, int32_t c, int32_t d, int32_t salt);
+
+int main(void) {
+    int32_t a = vm_cttz_elts_poison_true(0, 0, 1, 1, 7);
+    int32_t b = vm_cttz_elts_poison_true(1, 0, 0, 0, 11);
+    int32_t c = vm_cttz_elts_poison_true(0, 1, 0, 0, 13);
+    int32_t d = vm_cttz_elts_poison_true(0, 0, 0, 1, 17);
+    printf("%d %d %d %d %d\n", a, b, c, d, a ^ b ^ c ^ d);
+    return 0;
+}
+"#,
+    )
+    .expect("cttz.elts zero_is_poison=true C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_cttz_elts_poison_true_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_cttz_elts_poison_true.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_cttz_elts_poison_true");
+    assert!(
+        dump.matches(": br_if ").count() >= 4
+            && dump.matches(": mov_imm ").count() >= 5
+            && dump.matches(": mov ").count() >= 4,
+        "zero_is_poison=true cttz.elts should lower through profile mov_imm/br_if/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_cttz_elts_poison_true");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized zero_is_poison=true cttz.elts IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_cttz_elts_poison_true"));
+    assert!(ir.contains("handler.br_if"));
+    assert!(!ir.contains("call i32 @llvm.experimental.cttz.elts"));
+    assert!(!ir.contains(".amice.vm.original.vm_cttz_elts_poison_true"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_cttz_elts_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_cttz_elts.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_cttz_elts'
+source_filename = "vm_virtualize_vp_cttz_elts.ll"
+
+declare i32 @llvm.vp.cttz.elts.i32.v4i1(<4 x i1>, i1, <4 x i1>, i32)
+
+define i32 @vm_vp_cttz_elts(i32 %a, i32 %b, i32 %c, i32 %d, i32 %salt) #0 {
+entry:
+  %m0 = icmp ne i32 %a, 0
+  %m1 = icmp ne i32 %b, 0
+  %m2 = icmp ne i32 %c, 0
+  %m3 = icmp ne i32 %d, 0
+  %v0 = insertelement <4 x i1> poison, i1 %m0, i32 0
+  %v1 = insertelement <4 x i1> %v0, i1 %m1, i32 1
+  %v2 = insertelement <4 x i1> %v1, i1 %m2, i32 2
+  %v3 = insertelement <4 x i1> %v2, i1 %m3, i32 3
+  %count = call i32 @llvm.vp.cttz.elts.i32.v4i1(<4 x i1> %v3, i1 false, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, i32 3)
+  %scaled = mul i32 %count, 19
+  %mixed = xor i32 %scaled, %salt
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP cttz.elts LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_vp_cttz_elts.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_vp_cttz_elts_baseline'
+source_filename = "vm_virtualize_vp_cttz_elts_baseline.ll"
+
+define i32 @vm_vp_cttz_elts(i32 %a, i32 %b, i32 %c, i32 %d, i32 %salt) #0 {
+entry:
+  %m0 = icmp ne i32 %a, 0
+  %m2 = icmp ne i32 %c, 0
+  %c2 = select i1 %m2, i32 2, i32 3
+  %count = select i1 %m0, i32 0, i32 %c2
+  %scaled = mul i32 %count, 19
+  %mixed = xor i32 %scaled, %salt
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP cttz.elts baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_cttz_elts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_vp_cttz_elts(int32_t a, int32_t b, int32_t c, int32_t d, int32_t salt);
+
+int main(void) {
+    int32_t a = vm_vp_cttz_elts(0, 7, 1, 0, 5);
+    int32_t b = vm_vp_cttz_elts(1, 0, 0, 1, 11);
+    int32_t c = vm_vp_cttz_elts(0, 1, 0, 1, 13);
+    int32_t d = vm_vp_cttz_elts(0, 0, 1, 1, 17);
+    printf("%d %d %d %d %d\n", a, b, c, d, a ^ b ^ c ^ d);
+    return 0;
+}
+"#,
+    )
+    .expect("VP cttz.elts C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_source, &harness, "vm_virtualize_vp_cttz_elts_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_vp_cttz_elts.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_cttz_elts");
+    assert!(
+        dump.matches(": br_if ").count() >= 2
+            && dump.matches(": mov_imm ").count() >= 3
+            && dump.matches(": mov ").count() >= 2,
+        "VP cttz.elts should lower active lanes through profile mov_imm/br_if/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_cttz_elts");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP cttz.elts IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_cttz_elts"));
+    assert!(ir.contains("handler.br_if"));
+    assert!(!ir.contains("call i32 @llvm.vp.cttz.elts"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_cttz_elts"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_cttz_elts_zero_is_poison_true_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_cttz_elts_poison_true.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_cttz_elts_poison_true'
+source_filename = "vm_virtualize_vp_cttz_elts_poison_true.ll"
+
+declare i32 @llvm.vp.cttz.elts.i32.v4i1(<4 x i1>, i1, <4 x i1>, i32)
+
+define i32 @vm_vp_cttz_elts_poison_true(i32 %a, i32 %b, i32 %c, i32 %d, i32 %salt) #0 {
+entry:
+  %m0 = icmp ne i32 %a, 0
+  %m1 = icmp ne i32 %b, 0
+  %m2 = icmp ne i32 %c, 0
+  %m3 = icmp ne i32 %d, 0
+  %v0 = insertelement <4 x i1> poison, i1 %m0, i32 0
+  %v1 = insertelement <4 x i1> %v0, i1 %m1, i32 1
+  %v2 = insertelement <4 x i1> %v1, i1 %m2, i32 2
+  %v3 = insertelement <4 x i1> %v2, i1 %m3, i32 3
+  %count = call i32 @llvm.vp.cttz.elts.i32.v4i1(<4 x i1> %v3, i1 true, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, i32 3)
+  %scaled = mul i32 %count, 29
+  %mixed = xor i32 %scaled, %salt
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP cttz.elts zero_is_poison=true LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_vp_cttz_elts_poison_true.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_vp_cttz_elts_poison_true_baseline'
+source_filename = "vm_virtualize_vp_cttz_elts_poison_true_baseline.ll"
+
+define i32 @vm_vp_cttz_elts_poison_true(i32 %a, i32 %b, i32 %c, i32 %d, i32 %salt) #0 {
+entry:
+  %m0 = icmp ne i32 %a, 0
+  %m2 = icmp ne i32 %c, 0
+  %c2 = select i1 %m2, i32 2, i32 3
+  %count = select i1 %m0, i32 0, i32 %c2
+  %scaled = mul i32 %count, 29
+  %mixed = xor i32 %scaled, %salt
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP cttz.elts zero_is_poison=true baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_cttz_elts_poison_true_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_vp_cttz_elts_poison_true(int32_t a, int32_t b, int32_t c, int32_t d, int32_t salt);
+
+int main(void) {
+    int32_t a = vm_vp_cttz_elts_poison_true(0, 7, 1, 0, 5);
+    int32_t b = vm_vp_cttz_elts_poison_true(1, 0, 0, 1, 11);
+    int32_t c = vm_vp_cttz_elts_poison_true(0, 1, 1, 1, 13);
+    int32_t d = vm_vp_cttz_elts_poison_true(1, 0, 1, 0, 17);
+    printf("%d %d %d %d %d\n", a, b, c, d, a ^ b ^ c ^ d);
+    return 0;
+}
+"#,
+    )
+    .expect("VP cttz.elts zero_is_poison=true C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_vp_cttz_elts_poison_true_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_vp_cttz_elts_poison_true.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_cttz_elts_poison_true");
+    assert!(
+        dump.matches(": br_if ").count() >= 2
+            && dump.matches(": mov_imm ").count() >= 3
+            && dump.matches(": mov ").count() >= 2,
+        "zero_is_poison=true VP cttz.elts should lower active lanes through profile mov_imm/br_if/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_cttz_elts_poison_true");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized zero_is_poison=true VP cttz.elts IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_cttz_elts_poison_true"));
+    assert!(ir.contains("handler.br_if"));
+    assert!(!ir.contains("call i32 @llvm.vp.cttz.elts"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_cttz_elts_poison_true"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_integer_reductions_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_integer_reductions.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_integer_reductions'
+source_filename = "vm_virtualize_vector_integer_reductions.ll"
+
+declare i32 @llvm.vector.reduce.add.v2i32(<2 x i32>)
+declare i32 @llvm.vector.reduce.mul.v2i32(<2 x i32>)
+declare i32 @llvm.vector.reduce.and.v2i32(<2 x i32>)
+declare i32 @llvm.vector.reduce.or.v2i32(<2 x i32>)
+declare i32 @llvm.vector.reduce.xor.v2i32(<2 x i32>)
+declare i32 @llvm.vector.reduce.smax.v2i32(<2 x i32>)
+declare i32 @llvm.vector.reduce.smin.v2i32(<2 x i32>)
+declare i32 @llvm.vector.reduce.umax.v2i32(<2 x i32>)
+declare i32 @llvm.vector.reduce.umin.v2i32(<2 x i32>)
+
+define i64 @vm_vector_integer_reductions(i32 %a, i32 %b) {
+entry:
+  %v0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <2 x i32> %v0, i32 %b, i32 1
+  %add = call i32 @llvm.vector.reduce.add.v2i32(<2 x i32> %v1)
+  %mul = call i32 @llvm.vector.reduce.mul.v2i32(<2 x i32> %v1)
+  %and = call i32 @llvm.vector.reduce.and.v2i32(<2 x i32> %v1)
+  %or = call i32 @llvm.vector.reduce.or.v2i32(<2 x i32> %v1)
+  %xor = call i32 @llvm.vector.reduce.xor.v2i32(<2 x i32> %v1)
+  %smax = call i32 @llvm.vector.reduce.smax.v2i32(<2 x i32> %v1)
+  %smin = call i32 @llvm.vector.reduce.smin.v2i32(<2 x i32> %v1)
+  %umax = call i32 @llvm.vector.reduce.umax.v2i32(<2 x i32> %v1)
+  %umin = call i32 @llvm.vector.reduce.umin.v2i32(<2 x i32> %v1)
+  %zadd = zext i32 %add to i64
+  %zmul = zext i32 %mul to i64
+  %zand = zext i32 %and to i64
+  %zor = zext i32 %or to i64
+  %zxor = zext i32 %xor to i64
+  %zsmax = zext i32 %smax to i64
+  %zsmin = zext i32 %smin to i64
+  %zumax = zext i32 %umax to i64
+  %zumin = zext i32 %umin to i64
+  %m0 = xor i64 %zadd, %zmul
+  %m1 = add i64 %m0, %zand
+  %m2 = xor i64 %m1, %zor
+  %m3 = add i64 %m2, %zxor
+  %m4 = xor i64 %m3, %zsmax
+  %m5 = add i64 %m4, %zsmin
+  %m6 = xor i64 %m5, %zumax
+  %result = add i64 %m6, %zumin
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector integer reduction LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_integer_reductions_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_integer_reductions(uint32_t a, uint32_t b);
+int main(void) {
+    uint64_t a = vm_vector_integer_reductions(7u, 11u);
+    uint64_t b = vm_vector_integer_reductions(0x80000010u, 0x7ffffff0u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector integer reduction C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_integer_reductions_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_integer_reductions.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_integer_reductions");
+    for needle in [
+        ": iadd ", ": imul ", ": iand ", ": ior ", ": ixor ", ": ismax ", ": ismin ", ": iumax ", ": iumin ",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "fixed integer vector reduction should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_integer_reductions");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized vector integer reduction LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_integer_reductions"));
+    assert!(!ir.contains("call i32 @llvm.vector.reduce"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_integer_reductions"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_float_reductions_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_float_reductions.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_float_reductions'
+source_filename = "vm_virtualize_vector_float_reductions.ll"
+
+declare float @llvm.vector.reduce.fadd.v2f32(float, <2 x float>)
+declare float @llvm.vector.reduce.fmul.v2f32(float, <2 x float>)
+declare float @llvm.vector.reduce.fmin.v2f32(<2 x float>)
+declare float @llvm.vector.reduce.fmax.v2f32(<2 x float>)
+declare float @llvm.vector.reduce.fminimum.v2f32(<2 x float>)
+declare float @llvm.vector.reduce.fmaximum.v2f32(<2 x float>)
+
+define i64 @vm_vector_float_reductions(float %a, float %b, float %start_add, float %start_mul) {
+entry:
+  %v0 = insertelement <2 x float> poison, float %a, i32 0
+  %v1 = insertelement <2 x float> %v0, float %b, i32 1
+  %sum = call float @llvm.vector.reduce.fadd.v2f32(float %start_add, <2 x float> %v1)
+  %product = call float @llvm.vector.reduce.fmul.v2f32(float %start_mul, <2 x float> %v1)
+  %sum_bits = bitcast float %sum to i32
+  %product_bits = bitcast float %product to i32
+  %zsum = zext i32 %sum_bits to i64
+  %zproduct = zext i32 %product_bits to i64
+  %hi = shl i64 %zsum, 32
+  %result = or i64 %hi, %zproduct
+  ret i64 %result
+}
+
+define i64 @vm_vector_float_minmax_reductions(float %a, float %b) {
+entry:
+  %v0 = insertelement <2 x float> poison, float %a, i32 0
+  %v1 = insertelement <2 x float> %v0, float %b, i32 1
+  %min = call float @llvm.vector.reduce.fmin.v2f32(<2 x float> %v1)
+  %max = call float @llvm.vector.reduce.fmax.v2f32(<2 x float> %v1)
+  %minimum = call float @llvm.vector.reduce.fminimum.v2f32(<2 x float> %v1)
+  %maximum = call float @llvm.vector.reduce.fmaximum.v2f32(<2 x float> %v1)
+  %min_bits = bitcast float %min to i32
+  %max_bits = bitcast float %max to i32
+  %minimum_bits = bitcast float %minimum to i32
+  %maximum_bits = bitcast float %maximum to i32
+  %zmin = zext i32 %min_bits to i64
+  %zmax = zext i32 %max_bits to i64
+  %zminimum = zext i32 %minimum_bits to i64
+  %zmaximum = zext i32 %maximum_bits to i64
+  %max_hi = shl i64 %zmax, 32
+  %pair0 = or i64 %max_hi, %zmin
+  %minimum_mix = shl i64 %zminimum, 7
+  %pair1 = xor i64 %pair0, %minimum_mix
+  %maximum_mix = shl i64 %zmaximum, 17
+  %result = xor i64 %pair1, %maximum_mix
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector float reduction LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_float_reductions_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_float_reductions(float a, float b, float start_add, float start_mul);
+uint64_t vm_vector_float_minmax_reductions(float a, float b);
+int main(void) {
+    uint64_t a = vm_vector_float_reductions(1.0f, 2.0f, 4.0f, 3.0f);
+    uint64_t b = vm_vector_float_reductions(-0.5f, 4.0f, -1.0f, 2.0f);
+    uint64_t c = vm_vector_float_minmax_reductions(-2.0f, 5.0f);
+    uint64_t d = vm_vector_float_minmax_reductions(9.5f, -4.25f);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)d);
+    return 0;
+}
+"#,
+    )
+    .expect("vector float reduction C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_float_reductions_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_float_reductions.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_float_reductions");
+    for needle in [": fadd ", ": fmul "] {
+        assert!(
+            dump.contains(needle),
+            "fixed float vector reduction should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+    let minmax_dump = bytecode_dump_for_function(&stderr, "vm_vector_float_minmax_reductions");
+    for needle in [": fminnum ", ": fmaxnum ", ": fminimum ", ": fmaximum "] {
+        assert!(
+            minmax_dump.contains(needle),
+            "fixed float min/max vector reduction should lower through profile handler {needle}:\n{minmax_dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_float_reductions");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector float reduction LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_reductions"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_minmax_reductions"));
+    assert!(!ir.contains("call float @llvm.vector.reduce.f"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_reductions"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_minmax_reductions"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_integer_reductions_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_integer_reductions.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_integer_reductions'
+source_filename = "vm_virtualize_vp_integer_reductions.ll"
+
+declare i32 @llvm.vp.reduce.add.v4i32(i32, <4 x i32>, <4 x i1>, i32)
+declare i32 @llvm.vp.reduce.mul.v4i32(i32, <4 x i32>, <4 x i1>, i32)
+declare i32 @llvm.vp.reduce.and.v4i32(i32, <4 x i32>, <4 x i1>, i32)
+declare i32 @llvm.vp.reduce.or.v4i32(i32, <4 x i32>, <4 x i1>, i32)
+declare i32 @llvm.vp.reduce.xor.v4i32(i32, <4 x i32>, <4 x i1>, i32)
+declare i32 @llvm.vp.reduce.smax.v4i32(i32, <4 x i32>, <4 x i1>, i32)
+declare i32 @llvm.vp.reduce.smin.v4i32(i32, <4 x i32>, <4 x i1>, i32)
+declare i32 @llvm.vp.reduce.umax.v4i32(i32, <4 x i32>, <4 x i1>, i32)
+declare i32 @llvm.vp.reduce.umin.v4i32(i32, <4 x i32>, <4 x i1>, i32)
+
+define i64 @vm_vp_integer_reductions(i32 %a, i32 %b, i32 %c, i32 %d, i32 %start) {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %add = call i32 @llvm.vp.reduce.add.v4i32(i32 %start, <4 x i32> %v3, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, i32 3)
+  %mul = call i32 @llvm.vp.reduce.mul.v4i32(i32 %start, <4 x i32> %v3, <4 x i1> <i1 true, i1 true, i1 false, i1 false>, i32 4)
+  %and = call i32 @llvm.vp.reduce.and.v4i32(i32 %start, <4 x i32> %v3, <4 x i1> <i1 false, i1 true, i1 true, i1 false>, i32 4)
+  %or = call i32 @llvm.vp.reduce.or.v4i32(i32 %start, <4 x i32> %v3, <4 x i1> <i1 true, i1 false, i1 false, i1 true>, i32 4)
+  %xor = call i32 @llvm.vp.reduce.xor.v4i32(i32 %start, <4 x i32> %v3, <4 x i1> <i1 true, i1 true, i1 true, i1 false>, i32 2)
+  %smax = call i32 @llvm.vp.reduce.smax.v4i32(i32 %start, <4 x i32> %v3, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 4)
+  %smin = call i32 @llvm.vp.reduce.smin.v4i32(i32 %start, <4 x i32> %v3, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, i32 4)
+  %umax = call i32 @llvm.vp.reduce.umax.v4i32(i32 %start, <4 x i32> %v3, <4 x i1> <i1 false, i1 true, i1 true, i1 true>, i32 3)
+  %umin = call i32 @llvm.vp.reduce.umin.v4i32(i32 %start, <4 x i32> %v3, <4 x i1> <i1 false, i1 false, i1 false, i1 false>, i32 4)
+  %zadd = zext i32 %add to i64
+  %zmul = zext i32 %mul to i64
+  %zand = zext i32 %and to i64
+  %zor = zext i32 %or to i64
+  %zxor = zext i32 %xor to i64
+  %zsmax = zext i32 %smax to i64
+  %zsmin = zext i32 %smin to i64
+  %zumax = zext i32 %umax to i64
+  %zumin = zext i32 %umin to i64
+  %m0 = xor i64 %zadd, %zmul
+  %m1 = add i64 %m0, %zand
+  %m2 = xor i64 %m1, %zor
+  %m3 = add i64 %m2, %zxor
+  %m4 = xor i64 %m3, %zsmax
+  %m5 = add i64 %m4, %zsmin
+  %m6 = xor i64 %m5, %zumax
+  %result = add i64 %m6, %zumin
+  ret i64 %result
+}
+"#,
+    )
+    .expect("VP integer reduction LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_integer_reductions_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_integer_reductions(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t start);
+int main(void) {
+    uint64_t a = vm_vp_integer_reductions(7u, 11u, 13u, 17u, 3u);
+    uint64_t b = vm_vp_integer_reductions(0x80000010u, 0x7ffffff0u, 31u, 5u, 19u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("VP integer reduction C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_integer_reductions_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_integer_reductions.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_integer_reductions");
+    for needle in [
+        ": iadd ", ": imul ", ": iand ", ": ior ", ": ixor ", ": ismax ", ": ismin ", ": iumax ",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "VP integer reduction should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+    assert!(
+        !dump.contains(": iumin "),
+        "all-inactive VP umin reduction should keep the start value without dispatch:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_integer_reductions");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized VP integer reduction LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_integer_reductions"));
+    assert!(!ir.contains("call i32 @llvm.vp.reduce."));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_integer_reductions"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_float_reductions_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_float_reductions.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_float_reductions'
+source_filename = "vm_virtualize_vp_float_reductions.ll"
+
+declare float @llvm.vp.reduce.fadd.v4f32(float, <4 x float>, <4 x i1>, i32)
+declare float @llvm.vp.reduce.fmul.v4f32(float, <4 x float>, <4 x i1>, i32)
+declare float @llvm.vp.reduce.fmin.v4f32(float, <4 x float>, <4 x i1>, i32)
+declare float @llvm.vp.reduce.fmax.v4f32(float, <4 x float>, <4 x i1>, i32)
+declare float @llvm.vp.reduce.fminimum.v4f32(float, <4 x float>, <4 x i1>, i32)
+declare float @llvm.vp.reduce.fmaximum.v4f32(float, <4 x float>, <4 x i1>, i32)
+
+define i64 @vm_vp_float_reductions(float %a, float %b, float %c, float %d, float %start) {
+entry:
+  %v0 = insertelement <4 x float> poison, float %a, i32 0
+  %v1 = insertelement <4 x float> %v0, float %b, i32 1
+  %v2 = insertelement <4 x float> %v1, float %c, i32 2
+  %v3 = insertelement <4 x float> %v2, float %d, i32 3
+  %sum = call float @llvm.vp.reduce.fadd.v4f32(float %start, <4 x float> %v3, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, i32 3)
+  %product = call float @llvm.vp.reduce.fmul.v4f32(float %start, <4 x float> %v3, <4 x i1> <i1 true, i1 true, i1 false, i1 false>, i32 4)
+  %min = call float @llvm.vp.reduce.fmin.v4f32(float %start, <4 x float> %v3, <4 x i1> <i1 false, i1 true, i1 true, i1 false>, i32 4)
+  %max = call float @llvm.vp.reduce.fmax.v4f32(float %start, <4 x float> %v3, <4 x i1> <i1 true, i1 false, i1 false, i1 true>, i32 4)
+  %minimum = call float @llvm.vp.reduce.fminimum.v4f32(float %start, <4 x float> %v3, <4 x i1> <i1 true, i1 true, i1 true, i1 false>, i32 2)
+  %maximum = call float @llvm.vp.reduce.fmaximum.v4f32(float %start, <4 x float> %v3, <4 x i1> <i1 false, i1 false, i1 false, i1 false>, i32 4)
+  %sum_bits = bitcast float %sum to i32
+  %product_bits = bitcast float %product to i32
+  %min_bits = bitcast float %min to i32
+  %max_bits = bitcast float %max to i32
+  %minimum_bits = bitcast float %minimum to i32
+  %maximum_bits = bitcast float %maximum to i32
+  %zsum = zext i32 %sum_bits to i64
+  %zproduct = zext i32 %product_bits to i64
+  %zmin = zext i32 %min_bits to i64
+  %zmax = zext i32 %max_bits to i64
+  %zminimum = zext i32 %minimum_bits to i64
+  %zmaximum = zext i32 %maximum_bits to i64
+  %m0 = shl i64 %zsum, 32
+  %m1 = xor i64 %m0, %zproduct
+  %m2 = add i64 %m1, %zmin
+  %m3 = xor i64 %m2, %zmax
+  %m4 = add i64 %m3, %zminimum
+  %result = xor i64 %m4, %zmaximum
+  ret i64 %result
+}
+"#,
+    )
+    .expect("VP float reduction LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_float_reductions_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_float_reductions(float a, float b, float c, float d, float start);
+int main(void) {
+    uint64_t a = vm_vp_float_reductions(1.0f, 2.0f, 4.0f, 8.0f, 3.0f);
+    uint64_t b = vm_vp_float_reductions(-0.5f, 4.0f, -2.25f, 9.0f, 1.5f);
+    printf("%016llx %016llx\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("VP float reduction C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_float_reductions_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_float_reductions.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_float_reductions");
+    for needle in [": fadd ", ": fmul ", ": fminnum ", ": fmaxnum ", ": fminimum "] {
+        assert!(
+            dump.contains(needle),
+            "VP float reduction should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+    assert!(
+        !dump.contains(": fmaximum "),
+        "all-inactive VP fmaximum reduction should keep the start value without dispatch:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_float_reductions");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized VP float reduction LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_float_reductions"));
+    assert!(!ir.contains("call float @llvm.vp.reduce."));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_float_reductions"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_integer_unary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_integer_unary_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_integer_unary_intrinsics'
+source_filename = "vm_virtualize_vector_integer_unary_intrinsics.ll"
+
+declare <2 x i32> @llvm.ctpop.v2i32(<2 x i32>)
+declare <2 x i32> @llvm.ctlz.v2i32(<2 x i32>, i1 immarg)
+declare <2 x i32> @llvm.cttz.v2i32(<2 x i32>, i1 immarg)
+declare <2 x i32> @llvm.abs.v2i32(<2 x i32>, i1 immarg)
+declare <2 x i32> @llvm.bswap.v2i32(<2 x i32>)
+declare <2 x i32> @llvm.bitreverse.v2i32(<2 x i32>)
+
+define i64 @vm_vector_integer_unary_intrinsics(i32 %a, i32 %b) {
+entry:
+  %az = or i32 %a, 1
+  %bz = or i32 %b, 1
+  %v0 = insertelement <2 x i32> poison, i32 %az, i32 0
+  %v1 = insertelement <2 x i32> %v0, i32 %bz, i32 1
+  %na = sub i32 0, %az
+  %nb = sub i32 0, %bz
+  %n0 = insertelement <2 x i32> poison, i32 %na, i32 0
+  %n1 = insertelement <2 x i32> %n0, i32 %nb, i32 1
+
+  %pop = call <2 x i32> @llvm.ctpop.v2i32(<2 x i32> %v1)
+  %lz = call <2 x i32> @llvm.ctlz.v2i32(<2 x i32> %v1, i1 false)
+  %tz = call <2 x i32> @llvm.cttz.v2i32(<2 x i32> %v1, i1 false)
+  %abs = call <2 x i32> @llvm.abs.v2i32(<2 x i32> %n1, i1 false)
+  %swap = call <2 x i32> @llvm.bswap.v2i32(<2 x i32> %v1)
+  %rev = call <2 x i32> @llvm.bitreverse.v2i32(<2 x i32> %v1)
+
+  %pop0 = extractelement <2 x i32> %pop, i32 0
+  %pop1 = extractelement <2 x i32> %pop, i32 1
+  %lz0 = extractelement <2 x i32> %lz, i32 0
+  %lz1 = extractelement <2 x i32> %lz, i32 1
+  %tz0 = extractelement <2 x i32> %tz, i32 0
+  %tz1 = extractelement <2 x i32> %tz, i32 1
+  %abs0 = extractelement <2 x i32> %abs, i32 0
+  %abs1 = extractelement <2 x i32> %abs, i32 1
+  %swap0 = extractelement <2 x i32> %swap, i32 0
+  %swap1 = extractelement <2 x i32> %swap, i32 1
+  %rev0 = extractelement <2 x i32> %rev, i32 0
+  %rev1 = extractelement <2 x i32> %rev, i32 1
+
+  %z0 = zext i32 %pop0 to i64
+  %z1 = zext i32 %pop1 to i64
+  %z2 = zext i32 %lz0 to i64
+  %z3 = zext i32 %lz1 to i64
+  %z4 = zext i32 %tz0 to i64
+  %z5 = zext i32 %tz1 to i64
+  %z6 = zext i32 %abs0 to i64
+  %z7 = zext i32 %abs1 to i64
+  %z8 = zext i32 %swap0 to i64
+  %z9 = zext i32 %swap1 to i64
+  %z10 = zext i32 %rev0 to i64
+  %z11 = zext i32 %rev1 to i64
+  %m0 = xor i64 %z0, %z1
+  %m1 = add i64 %m0, %z2
+  %m2 = xor i64 %m1, %z3
+  %m3 = add i64 %m2, %z4
+  %m4 = xor i64 %m3, %z5
+  %m5 = add i64 %m4, %z6
+  %m6 = xor i64 %m5, %z7
+  %m7 = add i64 %m6, %z8
+  %m8 = xor i64 %m7, %z9
+  %m9 = add i64 %m8, %z10
+  %result = xor i64 %m9, %z11
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector integer unary intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_integer_unary_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_integer_unary_intrinsics(int32_t a, int32_t b);
+int main(void) {
+    uint64_t a = vm_vector_integer_unary_intrinsics(0x12345678, 0x09abcdef);
+    uint64_t b = vm_vector_integer_unary_intrinsics(-17, 0x40000001);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("vector integer unary intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_integer_unary_intrinsics_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_integer_unary_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_integer_unary_intrinsics");
+    for handler in ["ctpop", "ctlz", "cttz", "iabs", "bswap", "bitreverse"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "fixed integer vector unary intrinsic should lower each lane through {handler} handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_integer_unary_intrinsics",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized vector integer unary intrinsic LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_integer_unary_intrinsics"));
+    assert!(ir.contains("handler.ctpop"));
+    assert!(ir.contains("handler.ctlz"));
+    assert!(ir.contains("handler.cttz"));
+    assert!(ir.contains("handler.iabs"));
+    assert!(ir.contains("handler.bswap"));
+    assert!(ir.contains("handler.bitreverse"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_integer_unary_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_integer_binary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_integer_binary_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_integer_binary_intrinsics'
+source_filename = "vm_virtualize_vector_integer_binary_intrinsics.ll"
+
+declare <2 x i32> @llvm.smax.v2i32(<2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.smin.v2i32(<2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.umax.v2i32(<2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.umin.v2i32(<2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.uadd.sat.v2i32(<2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.usub.sat.v2i32(<2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.sadd.sat.v2i32(<2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.ssub.sat.v2i32(<2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.ushl.sat.v2i32(<2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.sshl.sat.v2i32(<2 x i32>, <2 x i32>)
+
+define i64 @vm_vector_integer_binary_intrinsics(i32 %a, i32 %b) {
+entry:
+  %v0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <2 x i32> %v0, i32 %b, i32 1
+  %signed0 = insertelement <2 x i32> poison, i32 2147483600, i32 0
+  %signed1 = insertelement <2 x i32> %signed0, i32 -2147483600, i32 1
+  %unsigned0 = insertelement <2 x i32> poison, i32 -16, i32 0
+  %unsigned1 = insertelement <2 x i32> %unsigned0, i32 32, i32 1
+  %shift0 = insertelement <2 x i32> poison, i32 4, i32 0
+  %shift1 = insertelement <2 x i32> %shift0, i32 3, i32 1
+
+  %smax = call <2 x i32> @llvm.smax.v2i32(<2 x i32> %v1, <2 x i32> %signed1)
+  %smin = call <2 x i32> @llvm.smin.v2i32(<2 x i32> %v1, <2 x i32> %signed1)
+  %umax = call <2 x i32> @llvm.umax.v2i32(<2 x i32> %v1, <2 x i32> %unsigned1)
+  %umin = call <2 x i32> @llvm.umin.v2i32(<2 x i32> %v1, <2 x i32> %unsigned1)
+  %uadd = call <2 x i32> @llvm.uadd.sat.v2i32(<2 x i32> %v1, <2 x i32> %unsigned1)
+  %usub = call <2 x i32> @llvm.usub.sat.v2i32(<2 x i32> %v1, <2 x i32> %unsigned1)
+  %sadd = call <2 x i32> @llvm.sadd.sat.v2i32(<2 x i32> %v1, <2 x i32> %signed1)
+  %ssub = call <2 x i32> @llvm.ssub.sat.v2i32(<2 x i32> %v1, <2 x i32> %signed1)
+  %ushl = call <2 x i32> @llvm.ushl.sat.v2i32(<2 x i32> %v1, <2 x i32> %shift1)
+  %sshl = call <2 x i32> @llvm.sshl.sat.v2i32(<2 x i32> %v1, <2 x i32> %shift1)
+
+  %smax0 = extractelement <2 x i32> %smax, i32 0
+  %smax1 = extractelement <2 x i32> %smax, i32 1
+  %smin0 = extractelement <2 x i32> %smin, i32 0
+  %smin1 = extractelement <2 x i32> %smin, i32 1
+  %umax0 = extractelement <2 x i32> %umax, i32 0
+  %umax1 = extractelement <2 x i32> %umax, i32 1
+  %umin0 = extractelement <2 x i32> %umin, i32 0
+  %umin1 = extractelement <2 x i32> %umin, i32 1
+  %uadd0 = extractelement <2 x i32> %uadd, i32 0
+  %uadd1 = extractelement <2 x i32> %uadd, i32 1
+  %usub0 = extractelement <2 x i32> %usub, i32 0
+  %usub1 = extractelement <2 x i32> %usub, i32 1
+  %sadd0 = extractelement <2 x i32> %sadd, i32 0
+  %sadd1 = extractelement <2 x i32> %sadd, i32 1
+  %ssub0 = extractelement <2 x i32> %ssub, i32 0
+  %ssub1 = extractelement <2 x i32> %ssub, i32 1
+  %ushl0 = extractelement <2 x i32> %ushl, i32 0
+  %ushl1 = extractelement <2 x i32> %ushl, i32 1
+  %sshl0 = extractelement <2 x i32> %sshl, i32 0
+  %sshl1 = extractelement <2 x i32> %sshl, i32 1
+
+  %z0 = zext i32 %smax0 to i64
+  %z1 = zext i32 %smax1 to i64
+  %z2 = zext i32 %smin0 to i64
+  %z3 = zext i32 %smin1 to i64
+  %z4 = zext i32 %umax0 to i64
+  %z5 = zext i32 %umax1 to i64
+  %z6 = zext i32 %umin0 to i64
+  %z7 = zext i32 %umin1 to i64
+  %z8 = zext i32 %uadd0 to i64
+  %z9 = zext i32 %uadd1 to i64
+  %z10 = zext i32 %usub0 to i64
+  %z11 = zext i32 %usub1 to i64
+  %z12 = zext i32 %sadd0 to i64
+  %z13 = zext i32 %sadd1 to i64
+  %z14 = zext i32 %ssub0 to i64
+  %z15 = zext i32 %ssub1 to i64
+  %z16 = zext i32 %ushl0 to i64
+  %z17 = zext i32 %ushl1 to i64
+  %z18 = zext i32 %sshl0 to i64
+  %z19 = zext i32 %sshl1 to i64
+  %m0 = xor i64 %z0, %z1
+  %m1 = add i64 %m0, %z2
+  %m2 = xor i64 %m1, %z3
+  %m3 = add i64 %m2, %z4
+  %m4 = xor i64 %m3, %z5
+  %m5 = add i64 %m4, %z6
+  %m6 = xor i64 %m5, %z7
+  %m7 = add i64 %m6, %z8
+  %m8 = xor i64 %m7, %z9
+  %m9 = add i64 %m8, %z10
+  %m10 = xor i64 %m9, %z11
+  %m11 = add i64 %m10, %z12
+  %m12 = xor i64 %m11, %z13
+  %m13 = add i64 %m12, %z14
+  %m14 = xor i64 %m13, %z15
+  %m15 = add i64 %m14, %z16
+  %m16 = xor i64 %m15, %z17
+  %m17 = add i64 %m16, %z18
+  %result = xor i64 %m17, %z19
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector integer binary intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_integer_binary_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_integer_binary_intrinsics(uint32_t a, uint32_t b);
+int main(void) {
+    uint64_t a = vm_vector_integer_binary_intrinsics(100u, 0xffffff38u);
+    uint64_t b = vm_vector_integer_binary_intrinsics(0x70000000u, 0x80000010u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("vector integer binary intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_integer_binary_intrinsics_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_integer_binary_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_integer_binary_intrinsics");
+    for handler in [
+        "ismax",
+        "ismin",
+        "iumax",
+        "iumin",
+        "iuadd_sat",
+        "iusub_sat",
+        "isadd_sat",
+        "issub_sat",
+        "iushl_sat",
+        "isshl_sat",
+    ] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "fixed integer vector binary intrinsic should lower each lane through {handler} handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_integer_binary_intrinsics",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized vector integer binary intrinsic LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_integer_binary_intrinsics"));
+    assert!(ir.contains("handler.ismax"));
+    assert!(ir.contains("handler.iumax"));
+    assert!(ir.contains("handler.iuadd_sat"));
+    assert!(ir.contains("handler.isshl_sat"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_integer_binary_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_integer_overflow_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_integer_overflow_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_integer_overflow_intrinsics'
+source_filename = "vm_virtualize_vector_integer_overflow_intrinsics.ll"
+
+declare { <2 x i32>, <2 x i1> } @llvm.uadd.with.overflow.v2i32(<2 x i32>, <2 x i32>)
+declare { <2 x i32>, <2 x i1> } @llvm.sadd.with.overflow.v2i32(<2 x i32>, <2 x i32>)
+declare { <2 x i32>, <2 x i1> } @llvm.usub.with.overflow.v2i32(<2 x i32>, <2 x i32>)
+declare { <2 x i32>, <2 x i1> } @llvm.ssub.with.overflow.v2i32(<2 x i32>, <2 x i32>)
+declare { <2 x i32>, <2 x i1> } @llvm.umul.with.overflow.v2i32(<2 x i32>, <2 x i32>)
+declare { <2 x i32>, <2 x i1> } @llvm.smul.with.overflow.v2i32(<2 x i32>, <2 x i32>)
+
+define i64 @vm_vector_integer_overflow_intrinsics(i32 %a, i32 %b) {
+entry:
+  %lhs0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %lhs1 = insertelement <2 x i32> %lhs0, i32 2147483647, i32 1
+  %rhs0 = insertelement <2 x i32> poison, i32 %b, i32 0
+  %rhs1 = insertelement <2 x i32> %rhs0, i32 1, i32 1
+  %uadd = call { <2 x i32>, <2 x i1> } @llvm.uadd.with.overflow.v2i32(<2 x i32> %lhs1, <2 x i32> %rhs1)
+  %uadd_values = extractvalue { <2 x i32>, <2 x i1> } %uadd, 0
+  %uadd_flags = extractvalue { <2 x i32>, <2 x i1> } %uadd, 1
+  %uadd_v0 = extractelement <2 x i32> %uadd_values, i32 0
+  %uadd_f1 = extractelement <2 x i1> %uadd_flags, i32 1
+  %uadd_v0x = zext i32 %uadd_v0 to i64
+  %uadd_f1x = zext i1 %uadd_f1 to i64
+  %r0 = xor i64 %uadd_v0x, %uadd_f1x
+  %sadd = call { <2 x i32>, <2 x i1> } @llvm.sadd.with.overflow.v2i32(<2 x i32> %lhs1, <2 x i32> %rhs1)
+  %sadd_values = extractvalue { <2 x i32>, <2 x i1> } %sadd, 0
+  %sadd_flags = extractvalue { <2 x i32>, <2 x i1> } %sadd, 1
+  %sadd_v1 = extractelement <2 x i32> %sadd_values, i32 1
+  %sadd_f1 = extractelement <2 x i1> %sadd_flags, i32 1
+  %sadd_v1x = zext i32 %sadd_v1 to i64
+  %sadd_f1x = zext i1 %sadd_f1 to i64
+  %r1 = add i64 %r0, %sadd_v1x
+  %r2 = xor i64 %r1, %sadd_f1x
+  %usub = call { <2 x i32>, <2 x i1> } @llvm.usub.with.overflow.v2i32(<2 x i32> %rhs1, <2 x i32> %lhs1)
+  %usub_values = extractvalue { <2 x i32>, <2 x i1> } %usub, 0
+  %usub_flags = extractvalue { <2 x i32>, <2 x i1> } %usub, 1
+  %usub_v0 = extractelement <2 x i32> %usub_values, i32 0
+  %usub_f1 = extractelement <2 x i1> %usub_flags, i32 1
+  %usub_v0x = zext i32 %usub_v0 to i64
+  %usub_f1x = zext i1 %usub_f1 to i64
+  %r3 = add i64 %r2, %usub_v0x
+  %r4 = xor i64 %r3, %usub_f1x
+  %ssub = call { <2 x i32>, <2 x i1> } @llvm.ssub.with.overflow.v2i32(<2 x i32> %rhs1, <2 x i32> %lhs1)
+  %ssub_values = extractvalue { <2 x i32>, <2 x i1> } %ssub, 0
+  %ssub_flags = extractvalue { <2 x i32>, <2 x i1> } %ssub, 1
+  %ssub_v1 = extractelement <2 x i32> %ssub_values, i32 1
+  %ssub_f1 = extractelement <2 x i1> %ssub_flags, i32 1
+  %ssub_v1x = zext i32 %ssub_v1 to i64
+  %ssub_f1x = zext i1 %ssub_f1 to i64
+  %r5 = add i64 %r4, %ssub_v1x
+  %r6 = xor i64 %r5, %ssub_f1x
+  %umul = call { <2 x i32>, <2 x i1> } @llvm.umul.with.overflow.v2i32(<2 x i32> %lhs1, <2 x i32> %rhs1)
+  %umul_values = extractvalue { <2 x i32>, <2 x i1> } %umul, 0
+  %umul_flags = extractvalue { <2 x i32>, <2 x i1> } %umul, 1
+  %umul_v0 = extractelement <2 x i32> %umul_values, i32 0
+  %umul_f0 = extractelement <2 x i1> %umul_flags, i32 0
+  %umul_v0x = zext i32 %umul_v0 to i64
+  %umul_f0x = zext i1 %umul_f0 to i64
+  %r7 = add i64 %r6, %umul_v0x
+  %r8 = xor i64 %r7, %umul_f0x
+  %smul = call { <2 x i32>, <2 x i1> } @llvm.smul.with.overflow.v2i32(<2 x i32> %lhs1, <2 x i32> %rhs1)
+  %smul_values = extractvalue { <2 x i32>, <2 x i1> } %smul, 0
+  %smul_flags = extractvalue { <2 x i32>, <2 x i1> } %smul, 1
+  %smul_v1 = extractelement <2 x i32> %smul_values, i32 1
+  %smul_f1 = extractelement <2 x i1> %smul_flags, i32 1
+  %smul_v1x = zext i32 %smul_v1 to i64
+  %smul_f1x = zext i1 %smul_f1 to i64
+  %r9 = add i64 %r8, %smul_v1x
+  %r10 = xor i64 %r9, %smul_f1x
+  ret i64 %r10
+}
+"#,
+    )
+    .expect("vector integer overflow intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_integer_overflow_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_vector_integer_overflow_intrinsics(uint32_t a, uint32_t b);
+
+int main(void) {
+    uint64_t a = vm_vector_integer_overflow_intrinsics(0xfffffff0u, 0x20u);
+    uint64_t b = vm_vector_integer_overflow_intrinsics(0x70000000u, 0x80000010u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("vector integer overflow intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_integer_overflow_intrinsics_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(
+        &ir_source,
+        "vm_virtualize_vector_integer_overflow_intrinsics.ll",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_integer_overflow_intrinsics");
+    for needle in [
+        ": iuadd_overflow ",
+        ": isadd_overflow ",
+        ": iusub_overflow ",
+        ": issub_overflow ",
+        ": iumul_overflow ",
+        ": ismul_overflow ",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "vector overflow intrinsic should emit {needle} per-lane handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_integer_overflow_intrinsics",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector integer overflow IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_integer_overflow_intrinsics"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_integer_overflow_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_integer_ternary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_integer_ternary_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_integer_ternary_intrinsics'
+source_filename = "vm_virtualize_vector_integer_ternary_intrinsics.ll"
+
+declare <2 x i32> @llvm.fshl.v2i32(<2 x i32>, <2 x i32>, <2 x i32>)
+declare <2 x i32> @llvm.fshr.v2i32(<2 x i32>, <2 x i32>, <2 x i32>)
+
+define i64 @vm_vector_integer_ternary_intrinsics(i32 %a, i32 %b) {
+entry:
+  %va0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %va1 = insertelement <2 x i32> %va0, i32 %b, i32 1
+  %vb0 = insertelement <2 x i32> poison, i32 305419896, i32 0
+  %vb1 = insertelement <2 x i32> %vb0, i32 -889275714, i32 1
+  %vs0 = insertelement <2 x i32> poison, i32 5, i32 0
+  %vs1 = insertelement <2 x i32> %vs0, i32 37, i32 1
+  %left = call <2 x i32> @llvm.fshl.v2i32(<2 x i32> %va1, <2 x i32> %vb1, <2 x i32> %vs1)
+  %right = call <2 x i32> @llvm.fshr.v2i32(<2 x i32> %vb1, <2 x i32> %va1, <2 x i32> %vs1)
+  %left0 = extractelement <2 x i32> %left, i32 0
+  %left1 = extractelement <2 x i32> %left, i32 1
+  %right0 = extractelement <2 x i32> %right, i32 0
+  %right1 = extractelement <2 x i32> %right, i32 1
+  %z0 = zext i32 %left0 to i64
+  %z1 = zext i32 %left1 to i64
+  %z2 = zext i32 %right0 to i64
+  %z3 = zext i32 %right1 to i64
+  %m0 = xor i64 %z0, %z1
+  %m1 = add i64 %m0, %z2
+  %m2 = xor i64 %m1, %z3
+  ret i64 %m2
+}
+"#,
+    )
+    .expect("vector integer ternary intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_integer_ternary_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_integer_ternary_intrinsics(uint32_t a, uint32_t b);
+int main(void) {
+    uint64_t a = vm_vector_integer_ternary_intrinsics(0x10203040u, 0x55667788u);
+    uint64_t b = vm_vector_integer_ternary_intrinsics(0xfedcba98u, 0x76543210u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("vector integer ternary intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_integer_ternary_intrinsics_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_integer_ternary_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_integer_ternary_intrinsics");
+    for handler in ["fshl", "fshr"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "fixed integer vector ternary intrinsic should lower each lane through {handler} handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_integer_ternary_intrinsics",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized vector integer ternary intrinsic LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_integer_ternary_intrinsics"));
+    assert!(ir.contains("handler.fshl"));
+    assert!(ir.contains("handler.fshr"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_integer_ternary_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_integer_ternary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_ternary_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_integer_ternary_intrinsics'
+source_filename = "vm_virtualize_vp_vector_integer_ternary_intrinsics.ll"
+
+declare <4 x i32> @llvm.vp.fshl.v4i32(<4 x i32>, <4 x i32>, <4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.fshr.v4i32(<4 x i32>, <4 x i32>, <4 x i32>, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_integer_ternary_intrinsics(i32 %a, i32 %b) #0 {
+entry:
+  %a0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %a1 = insertelement <4 x i32> %a0, i32 %b, i32 1
+  %a2seed = xor i32 %a, 305419896
+  %a2 = insertelement <4 x i32> %a1, i32 %a2seed, i32 2
+  %a3seed = add i32 %b, 4951
+  %lhs = insertelement <4 x i32> %a2, i32 %a3seed, i32 3
+  %b0 = insertelement <4 x i32> poison, i32 -889275714, i32 0
+  %b1 = insertelement <4 x i32> %b0, i32 %a, i32 1
+  %b2 = insertelement <4 x i32> %b1, i32 %b, i32 2
+  %b3seed = xor i32 %a, %b
+  %rhs = insertelement <4 x i32> %b2, i32 %b3seed, i32 3
+  %s0 = insertelement <4 x i32> poison, i32 5, i32 0
+  %s1 = insertelement <4 x i32> %s0, i32 11, i32 1
+  %s2 = insertelement <4 x i32> %s1, i32 19, i32 2
+  %shift = insertelement <4 x i32> %s2, i32 27, i32 3
+  %left = call <4 x i32> @llvm.vp.fshl.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, <4 x i32> %shift, <4 x i1> <i1 true, i1 false, i1 true, i1 false>, i32 3)
+  %right = call <4 x i32> @llvm.vp.fshr.v4i32(<4 x i32> %rhs, <4 x i32> %lhs, <4 x i32> %shift, <4 x i1> <i1 false, i1 true, i1 false, i1 true>, i32 4)
+  %left0 = extractelement <4 x i32> %left, i32 0
+  %left2 = extractelement <4 x i32> %left, i32 2
+  %right1 = extractelement <4 x i32> %right, i32 1
+  %right3 = extractelement <4 x i32> %right, i32 3
+  %z0 = zext i32 %left0 to i64
+  %z1 = zext i32 %left2 to i64
+  %z2 = zext i32 %right1 to i64
+  %z3 = zext i32 %right3 to i64
+  %m0 = xor i64 %z0, %z1
+  %m1 = add i64 %m0, %z2
+  %m2 = xor i64 %m1, %z3
+  ret i64 %m2
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector integer ternary intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_integer_ternary_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_integer_ternary_intrinsics(uint32_t a, uint32_t b);
+int main(void) {
+    uint64_t a = vm_vp_vector_integer_ternary_intrinsics(0x10203040u, 0x55667788u);
+    uint64_t b = vm_vp_vector_integer_ternary_intrinsics(0xfedcba98u, 0x76543210u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector integer ternary intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vp_vector_integer_ternary_intrinsics_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_integer_ternary_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_integer_ternary_intrinsics");
+    for handler in ["fshl", "fshr"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "VP fixed integer vector ternary intrinsic should lower active lanes through {handler} handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vp_vector_integer_ternary_intrinsics",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized VP vector integer ternary intrinsic LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_integer_ternary_intrinsics"));
+    assert!(ir.contains("handler.fshl"));
+    assert!(ir.contains("handler.fshr"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.fshl."));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.fshr."));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_integer_ternary_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_float_binops_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_float_binops.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_float_binops'
+source_filename = "vm_virtualize_vector_float_binops.ll"
+
+define i64 @vm_vector_float_binops(float %a, float %b, double %d, double %e) {
+entry:
+  %fv0 = insertelement <2 x float> poison, float %a, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %b, i32 1
+  %fw0 = insertelement <2 x float> poison, float 1.250000e+00, i32 0
+  %fw1 = insertelement <2 x float> %fw0, float 2.500000e+00, i32 1
+  %fadd = fadd <2 x float> %fv1, %fw1
+  %fe0 = extractelement <2 x float> %fadd, i32 0
+  %fsub = fsub <2 x float> %fadd, %fw1
+  %fe1 = extractelement <2 x float> %fsub, i32 1
+  %fmul = fmul <2 x float> %fsub, %fw1
+  %fe2 = extractelement <2 x float> %fmul, i32 0
+  %fdiv = fdiv <2 x float> %fmul, %fw1
+  %fe3 = extractelement <2 x float> %fdiv, i32 1
+  %frem = frem <2 x float> %fmul, %fw1
+  %fe4 = extractelement <2 x float> %frem, i32 0
+  %fb0 = bitcast float %fe0 to i32
+  %fb1 = bitcast float %fe1 to i32
+  %fb2 = bitcast float %fe2 to i32
+  %fb3 = bitcast float %fe3 to i32
+  %fb4 = bitcast float %fe4 to i32
+  %fz0 = zext i32 %fb0 to i64
+  %fz1 = zext i32 %fb1 to i64
+  %fz2 = zext i32 %fb2 to i64
+  %fz3 = zext i32 %fb3 to i64
+  %fz4 = zext i32 %fb4 to i64
+  %fm0 = xor i64 %fz0, %fz1
+  %fm1 = add i64 %fm0, %fz2
+  %fm2 = xor i64 %fm1, %fz3
+  %fmix = add i64 %fm2, %fz4
+
+  %dv0 = insertelement <2 x double> poison, double %d, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double %e, i32 1
+  %dw0 = insertelement <2 x double> poison, double 1.500000e+00, i32 0
+  %dw1 = insertelement <2 x double> %dw0, double 2.000000e+00, i32 1
+  %dadd = fadd <2 x double> %dv1, %dw1
+  %de0 = extractelement <2 x double> %dadd, i32 0
+  %dsub = fsub <2 x double> %dadd, %dw1
+  %de1 = extractelement <2 x double> %dsub, i32 1
+  %dmul = fmul <2 x double> %dsub, %dw1
+  %de2 = extractelement <2 x double> %dmul, i32 0
+  %ddiv = fdiv <2 x double> %dmul, %dw1
+  %de3 = extractelement <2 x double> %ddiv, i32 1
+  %drem = frem <2 x double> %dmul, %dw1
+  %de4 = extractelement <2 x double> %drem, i32 0
+  %db0 = bitcast double %de0 to i64
+  %db1 = bitcast double %de1 to i64
+  %db2 = bitcast double %de2 to i64
+  %db3 = bitcast double %de3 to i64
+  %db4 = bitcast double %de4 to i64
+  %dm0 = xor i64 %db0, %db1
+  %dm1 = add i64 %dm0, %db2
+  %dm2 = xor i64 %dm1, %db3
+  %dmix = add i64 %dm2, %db4
+  %result = xor i64 %fmix, %dmix
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector float binop LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_float_binops_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_float_binops(float a, float b, double d, double e);
+int main(void) {
+    uint64_t a = vm_vector_float_binops(7.5f, -2.25f, 3.5, -9.75);
+    uint64_t b = vm_vector_float_binops(0.125f, 11.75f, -123.5, 0.5);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector float binop C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_float_binops_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_float_binops.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_float_binops");
+    for needle in [": fadd ", ": fsub ", ": fmul ", ": fdiv ", ": frem "] {
+        assert!(
+            dump.contains(needle),
+            "fixed floating vector binop should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized =
+        compile_ir_with_c_harness_and_args(&virtualized_ir, &harness, "vm_virtualize_vector_float_binops", &["-lm"]);
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector float binop LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_binops"));
+    assert!(ir.contains("handler.fadd"));
+    assert!(ir.contains("handler.frem"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_binops"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_icmp_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_icmp.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_icmp'
+source_filename = "vm_virtualize_vector_icmp.ll"
+
+define i64 @vm_vector_icmp(i32 %a, i32 %b, i32 %c) {
+entry:
+  %ab = xor i32 %a, %b
+  %ca = add i32 %c, %a
+  %v0 = insertelement <2 x i32> poison, i32 %ab, i32 0
+  %v1 = insertelement <2 x i32> %v0, i32 %ca, i32 1
+  %w0 = insertelement <2 x i32> poison, i32 17, i32 0
+  %w1 = insertelement <2 x i32> %w0, i32 -7, i32 1
+  %eq = icmp eq <2 x i32> %v1, %w1
+  %eq0 = extractelement <2 x i1> %eq, i32 0
+  %eq1 = extractelement <2 x i1> %eq, i32 1
+  %ne = icmp ne <2 x i32> %v1, %w1
+  %ne0 = extractelement <2 x i1> %ne, i32 0
+  %ne1 = extractelement <2 x i1> %ne, i32 1
+  %ugt = icmp ugt <2 x i32> %v1, %w1
+  %ugt0 = extractelement <2 x i1> %ugt, i32 0
+  %ugt1 = extractelement <2 x i1> %ugt, i32 1
+  %slt = icmp slt <2 x i32> %v1, %w1
+  %slt0 = extractelement <2 x i1> %slt, i32 0
+  %slt1 = extractelement <2 x i1> %slt, i32 1
+  %ule = icmp ule <2 x i32> %v1, %w1
+  %ule0 = extractelement <2 x i1> %ule, i32 0
+  %ule1 = extractelement <2 x i1> %ule, i32 1
+  %z0 = zext i1 %eq0 to i64
+  %z1 = zext i1 %eq1 to i64
+  %z2 = zext i1 %ne0 to i64
+  %z3 = zext i1 %ne1 to i64
+  %z4 = zext i1 %ugt0 to i64
+  %z5 = zext i1 %ugt1 to i64
+  %z6 = zext i1 %slt0 to i64
+  %z7 = zext i1 %slt1 to i64
+  %z8 = zext i1 %ule0 to i64
+  %z9 = zext i1 %ule1 to i64
+  %s1 = shl i64 %z1, 1
+  %m1 = or i64 %z0, %s1
+  %s2 = shl i64 %z2, 2
+  %m2 = or i64 %m1, %s2
+  %s3 = shl i64 %z3, 3
+  %m3 = or i64 %m2, %s3
+  %s4 = shl i64 %z4, 4
+  %m4 = or i64 %m3, %s4
+  %s5 = shl i64 %z5, 5
+  %m5 = or i64 %m4, %s5
+  %s6 = shl i64 %z6, 6
+  %m6 = or i64 %m5, %s6
+  %s7 = shl i64 %z7, 7
+  %m7 = or i64 %m6, %s7
+  %s8 = shl i64 %z8, 8
+  %m8 = or i64 %m7, %s8
+  %s9 = shl i64 %z9, 9
+  %result = or i64 %m8, %s9
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector icmp LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_icmp_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_icmp(uint32_t a, uint32_t b, uint32_t c);
+int main(void) {
+    uint64_t a = vm_vector_icmp(7u, 11u, 13u);
+    uint64_t b = vm_vector_icmp(0xfffffff0u, 0x13579bdfu, 21u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector icmp C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_icmp_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_icmp.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_icmp");
+    let icmp_count = dump.matches(": icmp ").count();
+    assert!(
+        icmp_count >= 10,
+        "fixed integer vector icmp should lower each lane through profile icmp handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_icmp");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector icmp LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_icmp"));
+    assert!(ir.contains("handler.icmp"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_icmp"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_pointer_icmp_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_pointer_icmp.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_pointer_icmp'
+source_filename = "vm_virtualize_vector_pointer_icmp.ll"
+
+define i64 @vm_vector_pointer_icmp(ptr %base, i64 %idx) {
+entry:
+  %p0 = getelementptr i32, ptr %base, i64 0
+  %p1 = getelementptr i32, ptr %base, i64 %idx
+  %p2 = getelementptr i32, ptr %base, i64 3
+  %p3 = getelementptr i32, ptr %base, i64 6
+  %q0 = getelementptr i32, ptr %base, i64 0
+  %q1 = getelementptr i32, ptr %base, i64 2
+  %q2 = getelementptr i32, ptr %base, i64 %idx
+  %q3 = getelementptr i32, ptr %base, i64 4
+  %v0 = insertelement <4 x ptr> poison, ptr %p0, i32 0
+  %v1 = insertelement <4 x ptr> %v0, ptr %p1, i32 1
+  %v2 = insertelement <4 x ptr> %v1, ptr %p2, i32 2
+  %v3 = insertelement <4 x ptr> %v2, ptr %p3, i32 3
+  %w0 = insertelement <4 x ptr> poison, ptr %q0, i32 0
+  %w1 = insertelement <4 x ptr> %w0, ptr %q1, i32 1
+  %w2 = insertelement <4 x ptr> %w1, ptr %q2, i32 2
+  %w3 = insertelement <4 x ptr> %w2, ptr %q3, i32 3
+  %eq = icmp eq <4 x ptr> %v3, %w3
+  %ne = icmp ne <4 x ptr> %v3, %w3
+  %ugt = icmp ugt <4 x ptr> %v3, %w3
+  %ule = icmp ule <4 x ptr> %v3, %w3
+  %eq0 = extractelement <4 x i1> %eq, i32 0
+  %eq1 = extractelement <4 x i1> %eq, i32 1
+  %eq2 = extractelement <4 x i1> %eq, i32 2
+  %eq3 = extractelement <4 x i1> %eq, i32 3
+  %ne0 = extractelement <4 x i1> %ne, i32 0
+  %ne1 = extractelement <4 x i1> %ne, i32 1
+  %ne2 = extractelement <4 x i1> %ne, i32 2
+  %ne3 = extractelement <4 x i1> %ne, i32 3
+  %ugt0 = extractelement <4 x i1> %ugt, i32 0
+  %ugt1 = extractelement <4 x i1> %ugt, i32 1
+  %ugt2 = extractelement <4 x i1> %ugt, i32 2
+  %ugt3 = extractelement <4 x i1> %ugt, i32 3
+  %ule0 = extractelement <4 x i1> %ule, i32 0
+  %ule1 = extractelement <4 x i1> %ule, i32 1
+  %ule2 = extractelement <4 x i1> %ule, i32 2
+  %ule3 = extractelement <4 x i1> %ule, i32 3
+  %z0 = zext i1 %eq0 to i64
+  %z1 = zext i1 %eq1 to i64
+  %z2 = zext i1 %eq2 to i64
+  %z3 = zext i1 %eq3 to i64
+  %z4 = zext i1 %ne0 to i64
+  %z5 = zext i1 %ne1 to i64
+  %z6 = zext i1 %ne2 to i64
+  %z7 = zext i1 %ne3 to i64
+  %z8 = zext i1 %ugt0 to i64
+  %z9 = zext i1 %ugt1 to i64
+  %z10 = zext i1 %ugt2 to i64
+  %z11 = zext i1 %ugt3 to i64
+  %z12 = zext i1 %ule0 to i64
+  %z13 = zext i1 %ule1 to i64
+  %z14 = zext i1 %ule2 to i64
+  %z15 = zext i1 %ule3 to i64
+  %s1 = shl i64 %z1, 1
+  %m1 = or i64 %z0, %s1
+  %s2 = shl i64 %z2, 2
+  %m2 = or i64 %m1, %s2
+  %s3 = shl i64 %z3, 3
+  %m3 = or i64 %m2, %s3
+  %s4 = shl i64 %z4, 4
+  %m4 = or i64 %m3, %s4
+  %s5 = shl i64 %z5, 5
+  %m5 = or i64 %m4, %s5
+  %s6 = shl i64 %z6, 6
+  %m6 = or i64 %m5, %s6
+  %s7 = shl i64 %z7, 7
+  %m7 = or i64 %m6, %s7
+  %s8 = shl i64 %z8, 8
+  %m8 = or i64 %m7, %s8
+  %s9 = shl i64 %z9, 9
+  %m9 = or i64 %m8, %s9
+  %s10 = shl i64 %z10, 10
+  %m10 = or i64 %m9, %s10
+  %s11 = shl i64 %z11, 11
+  %m11 = or i64 %m10, %s11
+  %s12 = shl i64 %z12, 12
+  %m12 = or i64 %m11, %s12
+  %s13 = shl i64 %z13, 13
+  %m13 = or i64 %m12, %s13
+  %s14 = shl i64 %z14, 14
+  %m14 = or i64 %m13, %s14
+  %s15 = shl i64 %z15, 15
+  %result = or i64 %m14, %s15
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector pointer icmp LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_pointer_icmp_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_pointer_icmp(int32_t *base, uint64_t idx);
+int main(void) {
+    int32_t values[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+    uint64_t a = vm_vector_pointer_icmp(values, 1);
+    uint64_t b = vm_vector_pointer_icmp(values, 5);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector pointer icmp C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_pointer_icmp_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_pointer_icmp.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_pointer_icmp");
+    let icmp_count = dump.matches(": icmp ").count();
+    assert!(
+        icmp_count >= 16,
+        "fixed pointer vector icmp should lower each lane through profile icmp handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_pointer_icmp");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector pointer icmp LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_pointer_icmp"));
+    assert!(ir.contains("handler.icmp"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_pointer_icmp"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_fcmp_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_fcmp.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_fcmp'
+source_filename = "vm_virtualize_vector_fcmp.ll"
+
+define i64 @vm_vector_fcmp(float %a, float %b, double %c, double %d) {
+entry:
+  %fv0 = insertelement <2 x float> poison, float %a, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %b, i32 1
+  %fw0 = insertelement <2 x float> poison, float 1.250000e+00, i32 0
+  %fw1 = insertelement <2 x float> %fw0, float -2.500000e+00, i32 1
+  %foeq = fcmp oeq <2 x float> %fv1, %fw1
+  %foeq0 = extractelement <2 x i1> %foeq, i32 0
+  %foeq1 = extractelement <2 x i1> %foeq, i32 1
+  %fune = fcmp une <2 x float> %fv1, %fw1
+  %fune0 = extractelement <2 x i1> %fune, i32 0
+  %fune1 = extractelement <2 x i1> %fune, i32 1
+  %fogt = fcmp ogt <2 x float> %fv1, %fw1
+  %fogt0 = extractelement <2 x i1> %fogt, i32 0
+  %fogt1 = extractelement <2 x i1> %fogt, i32 1
+  %folt = fcmp olt <2 x float> %fv1, %fw1
+  %folt0 = extractelement <2 x i1> %folt, i32 0
+  %folt1 = extractelement <2 x i1> %folt, i32 1
+
+  %dv0 = insertelement <2 x double> poison, double %c, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double %d, i32 1
+  %dw0 = insertelement <2 x double> poison, double 3.500000e+00, i32 0
+  %dw1 = insertelement <2 x double> %dw0, double -7.250000e+00, i32 1
+  %duge = fcmp uge <2 x double> %dv1, %dw1
+  %duge0 = extractelement <2 x i1> %duge, i32 0
+  %duge1 = extractelement <2 x i1> %duge, i32 1
+
+  %z0 = zext i1 %foeq0 to i64
+  %z1 = zext i1 %foeq1 to i64
+  %z2 = zext i1 %fune0 to i64
+  %z3 = zext i1 %fune1 to i64
+  %z4 = zext i1 %fogt0 to i64
+  %z5 = zext i1 %fogt1 to i64
+  %z6 = zext i1 %folt0 to i64
+  %z7 = zext i1 %folt1 to i64
+  %z8 = zext i1 %duge0 to i64
+  %z9 = zext i1 %duge1 to i64
+  %s1 = shl i64 %z1, 1
+  %m1 = or i64 %z0, %s1
+  %s2 = shl i64 %z2, 2
+  %m2 = or i64 %m1, %s2
+  %s3 = shl i64 %z3, 3
+  %m3 = or i64 %m2, %s3
+  %s4 = shl i64 %z4, 4
+  %m4 = or i64 %m3, %s4
+  %s5 = shl i64 %z5, 5
+  %m5 = or i64 %m4, %s5
+  %s6 = shl i64 %z6, 6
+  %m6 = or i64 %m5, %s6
+  %s7 = shl i64 %z7, 7
+  %m7 = or i64 %m6, %s7
+  %s8 = shl i64 %z8, 8
+  %m8 = or i64 %m7, %s8
+  %s9 = shl i64 %z9, 9
+  %result = or i64 %m8, %s9
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector fcmp LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_fcmp_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_fcmp(float a, float b, double c, double d);
+int main(void) {
+    uint64_t a = vm_vector_fcmp(1.25f, -2.5f, 3.5, -7.25);
+    uint64_t b = vm_vector_fcmp(0.125f, 11.75f, -123.5, 0.5);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector fcmp C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_fcmp_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_fcmp.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_fcmp");
+    let fcmp_count = dump.matches(": fcmp ").count();
+    assert!(
+        fcmp_count >= 10,
+        "fixed floating vector fcmp should lower each lane through profile fcmp handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_fcmp");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector fcmp LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_fcmp"));
+    assert!(ir.contains("handler.fcmp"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_fcmp"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_fneg_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_fneg.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_fneg'
+source_filename = "vm_virtualize_vector_fneg.ll"
+
+define i64 @vm_vector_fneg(float %a, float %b, double %c, double %d) {
+entry:
+  %fv0 = insertelement <2 x float> poison, float %a, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %b, i32 1
+  %fneg = fneg <2 x float> %fv1
+  %fe0 = extractelement <2 x float> %fneg, i32 0
+  %fe1 = extractelement <2 x float> %fneg, i32 1
+  %fb0 = bitcast float %fe0 to i32
+  %fb1 = bitcast float %fe1 to i32
+  %fz0 = zext i32 %fb0 to i64
+  %fz1 = zext i32 %fb1 to i64
+
+  %dv0 = insertelement <2 x double> poison, double %c, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double %d, i32 1
+  %dneg = fneg <2 x double> %dv1
+  %de0 = extractelement <2 x double> %dneg, i32 0
+  %de1 = extractelement <2 x double> %dneg, i32 1
+  %db0 = bitcast double %de0 to i64
+  %db1 = bitcast double %de1 to i64
+
+  %s1 = shl i64 %fz1, 7
+  %m1 = xor i64 %fz0, %s1
+  %m2 = xor i64 %m1, %db0
+  %s2 = shl i64 %db1, 13
+  %result = xor i64 %m2, %s2
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector fneg LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_fneg_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_fneg(float a, float b, double c, double d);
+int main(void) {
+    uint64_t a = vm_vector_fneg(1.25f, -2.5f, 3.5, -7.25);
+    uint64_t b = vm_vector_fneg(0.125f, 11.75f, -123.5, 0.5);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector fneg C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_fneg_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_fneg.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_fneg");
+    let fneg_count = dump.matches(": fneg ").count();
+    assert!(
+        fneg_count >= 4,
+        "fixed floating vector fneg should lower each lane through profile fneg handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_fneg");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector fneg LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_fneg"));
+    assert!(ir.contains("handler.fneg"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_fneg"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_float_casts_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_float_casts.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_float_casts'
+source_filename = "vm_virtualize_vector_float_casts.ll"
+
+define i64 @vm_vector_float_casts(float %a, float %b, double %c, double %d) {
+entry:
+  %fv0 = insertelement <2 x float> poison, float %a, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %b, i32 1
+  %ext = fpext <2 x float> %fv1 to <2 x double>
+  %e0 = extractelement <2 x double> %ext, i32 0
+  %e1 = extractelement <2 x double> %ext, i32 1
+  %eb0 = bitcast double %e0 to i64
+  %eb1 = bitcast double %e1 to i64
+
+  %dv0 = insertelement <2 x double> poison, double %c, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double %d, i32 1
+  %tr = fptrunc <2 x double> %dv1 to <2 x float>
+  %t0 = extractelement <2 x float> %tr, i32 0
+  %t1 = extractelement <2 x float> %tr, i32 1
+  %tb0 = bitcast float %t0 to i32
+  %tb1 = bitcast float %t1 to i32
+  %tw0 = zext i32 %tb0 to i64
+  %tw1 = zext i32 %tb1 to i64
+
+  %m0 = xor i64 %eb0, %eb1
+  %s0 = shl i64 %tw0, 11
+  %m1 = xor i64 %m0, %s0
+  %s1 = shl i64 %tw1, 37
+  %result = xor i64 %m1, %s1
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector float casts LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_float_casts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_float_casts(float a, float b, double c, double d);
+int main(void) {
+    uint64_t a = vm_vector_float_casts(1.25f, -2.5f, 3.5, -7.25);
+    uint64_t b = vm_vector_float_casts(0.125f, 11.75f, -123.5, 0.5);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector float casts C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_float_casts_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_float_casts.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_float_casts");
+    assert!(
+        dump.matches(": fptrunc ").count() >= 2,
+        "fixed floating vector fptrunc should lower each lane through profile fptrunc handlers:\n{dump}"
+    );
+    assert!(
+        dump.matches(": fpext ").count() >= 2,
+        "fixed floating vector fpext should lower each lane through profile fpext handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_float_casts");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector float casts LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_casts"));
+    assert!(ir.contains("handler.fptrunc"));
+    assert!(ir.contains("handler.fpext"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_casts"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_float_unary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_float_unary_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_float_unary_intrinsics'
+source_filename = "vm_virtualize_vector_float_unary_intrinsics.ll"
+
+declare <2 x double> @llvm.fabs.v2f64(<2 x double>)
+declare <2 x double> @llvm.sqrt.v2f64(<2 x double>)
+declare <2 x double> @llvm.canonicalize.v2f64(<2 x double>)
+declare <2 x double> @llvm.floor.v2f64(<2 x double>)
+declare <2 x double> @llvm.ceil.v2f64(<2 x double>)
+declare <2 x double> @llvm.trunc.v2f64(<2 x double>)
+declare <2 x double> @llvm.rint.v2f64(<2 x double>)
+declare <2 x double> @llvm.nearbyint.v2f64(<2 x double>)
+declare <2 x double> @llvm.round.v2f64(<2 x double>)
+declare <2 x double> @llvm.roundeven.v2f64(<2 x double>)
+
+define i64 @vm_vector_float_unary_intrinsics(double %a, double %b) {
+entry:
+  %v0 = insertelement <2 x double> poison, double %a, i32 0
+  %v1 = insertelement <2 x double> %v0, double %b, i32 1
+  %abs = call <2 x double> @llvm.fabs.v2f64(<2 x double> %v1)
+  %sqrt = call <2 x double> @llvm.sqrt.v2f64(<2 x double> %abs)
+  %canon = call <2 x double> @llvm.canonicalize.v2f64(<2 x double> %sqrt)
+  %floor = call <2 x double> @llvm.floor.v2f64(<2 x double> %v1)
+  %ceil = call <2 x double> @llvm.ceil.v2f64(<2 x double> %v1)
+  %trunc = call <2 x double> @llvm.trunc.v2f64(<2 x double> %v1)
+  %rint = call <2 x double> @llvm.rint.v2f64(<2 x double> %v1)
+  %nearby = call <2 x double> @llvm.nearbyint.v2f64(<2 x double> %v1)
+  %round = call <2 x double> @llvm.round.v2f64(<2 x double> %v1)
+  %roundeven = call <2 x double> @llvm.roundeven.v2f64(<2 x double> %v1)
+
+  %abs0 = extractelement <2 x double> %abs, i32 0
+  %abs1 = extractelement <2 x double> %abs, i32 1
+  %abs0_bits = bitcast double %abs0 to i64
+  %abs1_bits = bitcast double %abs1 to i64
+  %sqrt0 = extractelement <2 x double> %sqrt, i32 0
+  %sqrt1 = extractelement <2 x double> %sqrt, i32 1
+  %sqrt0_bits = bitcast double %sqrt0 to i64
+  %sqrt1_bits = bitcast double %sqrt1 to i64
+  %canon0 = extractelement <2 x double> %canon, i32 0
+  %canon1 = extractelement <2 x double> %canon, i32 1
+  %canon0_bits = bitcast double %canon0 to i64
+  %canon1_bits = bitcast double %canon1 to i64
+  %floor0 = extractelement <2 x double> %floor, i32 0
+  %floor1 = extractelement <2 x double> %floor, i32 1
+  %floor0_bits = bitcast double %floor0 to i64
+  %floor1_bits = bitcast double %floor1 to i64
+  %ceil0 = extractelement <2 x double> %ceil, i32 0
+  %ceil1 = extractelement <2 x double> %ceil, i32 1
+  %ceil0_bits = bitcast double %ceil0 to i64
+  %ceil1_bits = bitcast double %ceil1 to i64
+  %trunc0 = extractelement <2 x double> %trunc, i32 0
+  %trunc1 = extractelement <2 x double> %trunc, i32 1
+  %trunc0_bits = bitcast double %trunc0 to i64
+  %trunc1_bits = bitcast double %trunc1 to i64
+  %rint0 = extractelement <2 x double> %rint, i32 0
+  %rint1 = extractelement <2 x double> %rint, i32 1
+  %rint0_bits = bitcast double %rint0 to i64
+  %rint1_bits = bitcast double %rint1 to i64
+  %nearby0 = extractelement <2 x double> %nearby, i32 0
+  %nearby1 = extractelement <2 x double> %nearby, i32 1
+  %nearby0_bits = bitcast double %nearby0 to i64
+  %nearby1_bits = bitcast double %nearby1 to i64
+  %round0 = extractelement <2 x double> %round, i32 0
+  %round1 = extractelement <2 x double> %round, i32 1
+  %round0_bits = bitcast double %round0 to i64
+  %round1_bits = bitcast double %round1 to i64
+  %roundeven0 = extractelement <2 x double> %roundeven, i32 0
+  %roundeven1 = extractelement <2 x double> %roundeven, i32 1
+  %roundeven0_bits = bitcast double %roundeven0 to i64
+  %roundeven1_bits = bitcast double %roundeven1 to i64
+
+  %m0 = xor i64 %abs0_bits, %abs1_bits
+  %m1 = xor i64 %m0, %sqrt0_bits
+  %m2 = xor i64 %m1, %sqrt1_bits
+  %m3 = xor i64 %m2, %canon0_bits
+  %m4 = xor i64 %m3, %canon1_bits
+  %m5 = xor i64 %m4, %floor0_bits
+  %m6 = xor i64 %m5, %floor1_bits
+  %m7 = xor i64 %m6, %ceil0_bits
+  %m8 = xor i64 %m7, %ceil1_bits
+  %m9 = xor i64 %m8, %trunc0_bits
+  %m10 = xor i64 %m9, %trunc1_bits
+  %m11 = xor i64 %m10, %rint0_bits
+  %m12 = xor i64 %m11, %rint1_bits
+  %m13 = xor i64 %m12, %nearby0_bits
+  %m14 = xor i64 %m13, %nearby1_bits
+  %m15 = xor i64 %m14, %round0_bits
+  %m16 = xor i64 %m15, %round1_bits
+  %m17 = xor i64 %m16, %roundeven0_bits
+  %result = xor i64 %m17, %roundeven1_bits
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector float unary intrinsics LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_float_unary_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_float_unary_intrinsics(double a, double b);
+int main(void) {
+    uint64_t a = vm_vector_float_unary_intrinsics(-3.75, 16.25);
+    uint64_t b = vm_vector_float_unary_intrinsics(2.5, -9.5);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector float unary intrinsics C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_float_unary_intrinsics_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_float_unary_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_float_unary_intrinsics");
+    for handler in [
+        "fabs",
+        "fsqrt",
+        "fcanonicalize",
+        "ffloor",
+        "fceil",
+        "ftrunc",
+        "frint",
+        "fnearbyint",
+        "fround",
+        "froundeven",
+    ] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "fixed vector unary intrinsic should lower each lane through profile {handler} handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_float_unary_intrinsics",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized vector float unary intrinsics LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_unary_intrinsics"));
+    assert!(ir.contains("handler.fabs"));
+    assert!(ir.contains("handler.fsqrt"));
+    assert!(ir.contains("handler.fcanonicalize"));
+    assert!(ir.contains("handler.ffloor"));
+    assert!(ir.contains("handler.fceil"));
+    assert!(ir.contains("handler.ftrunc"));
+    assert!(ir.contains("handler.frint"));
+    assert!(ir.contains("handler.fnearbyint"));
+    assert!(ir.contains("handler.fround"));
+    assert!(ir.contains("handler.froundeven"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_unary_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_float_transcendental_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_float_transcendental_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_float_transcendental_intrinsics'
+source_filename = "vm_virtualize_vector_float_transcendental_intrinsics.ll"
+
+declare <2 x double> @llvm.sin.v2f64(<2 x double>)
+declare <2 x double> @llvm.cos.v2f64(<2 x double>)
+declare <2 x double> @llvm.exp.v2f64(<2 x double>)
+declare <2 x double> @llvm.exp2.v2f64(<2 x double>)
+declare <2 x double> @llvm.log.v2f64(<2 x double>)
+declare <2 x double> @llvm.log10.v2f64(<2 x double>)
+declare <2 x double> @llvm.log2.v2f64(<2 x double>)
+
+define i64 @vm_vector_float_transcendental_intrinsics(double %a, double %b) {
+entry:
+  %v0 = insertelement <2 x double> poison, double %a, i32 0
+  %v1 = insertelement <2 x double> %v0, double %b, i32 1
+  %sin = call <2 x double> @llvm.sin.v2f64(<2 x double> %v1)
+  %cos = call <2 x double> @llvm.cos.v2f64(<2 x double> %v1)
+  %exp = call <2 x double> @llvm.exp.v2f64(<2 x double> %v1)
+  %exp2 = call <2 x double> @llvm.exp2.v2f64(<2 x double> %v1)
+  %log = call <2 x double> @llvm.log.v2f64(<2 x double> %v1)
+  %log10 = call <2 x double> @llvm.log10.v2f64(<2 x double> %v1)
+  %log2 = call <2 x double> @llvm.log2.v2f64(<2 x double> %v1)
+
+  %sin0 = extractelement <2 x double> %sin, i32 0
+  %sin1 = extractelement <2 x double> %sin, i32 1
+  %sin0_bits = bitcast double %sin0 to i64
+  %sin1_bits = bitcast double %sin1 to i64
+  %cos0 = extractelement <2 x double> %cos, i32 0
+  %cos1 = extractelement <2 x double> %cos, i32 1
+  %cos0_bits = bitcast double %cos0 to i64
+  %cos1_bits = bitcast double %cos1 to i64
+  %exp0 = extractelement <2 x double> %exp, i32 0
+  %exp1 = extractelement <2 x double> %exp, i32 1
+  %exp0_bits = bitcast double %exp0 to i64
+  %exp1_bits = bitcast double %exp1 to i64
+  %exp20 = extractelement <2 x double> %exp2, i32 0
+  %exp21 = extractelement <2 x double> %exp2, i32 1
+  %exp20_bits = bitcast double %exp20 to i64
+  %exp21_bits = bitcast double %exp21 to i64
+  %log0 = extractelement <2 x double> %log, i32 0
+  %log1 = extractelement <2 x double> %log, i32 1
+  %log0_bits = bitcast double %log0 to i64
+  %log1_bits = bitcast double %log1 to i64
+  %log100 = extractelement <2 x double> %log10, i32 0
+  %log101 = extractelement <2 x double> %log10, i32 1
+  %log100_bits = bitcast double %log100 to i64
+  %log101_bits = bitcast double %log101 to i64
+  %log20 = extractelement <2 x double> %log2, i32 0
+  %log21 = extractelement <2 x double> %log2, i32 1
+  %log20_bits = bitcast double %log20 to i64
+  %log21_bits = bitcast double %log21 to i64
+
+  %m0 = xor i64 %sin0_bits, %sin1_bits
+  %m1 = xor i64 %m0, %cos0_bits
+  %m2 = xor i64 %m1, %cos1_bits
+  %m3 = xor i64 %m2, %exp0_bits
+  %m4 = xor i64 %m3, %exp1_bits
+  %m5 = xor i64 %m4, %exp20_bits
+  %m6 = xor i64 %m5, %exp21_bits
+  %m7 = xor i64 %m6, %log0_bits
+  %m8 = xor i64 %m7, %log1_bits
+  %m9 = xor i64 %m8, %log100_bits
+  %m10 = xor i64 %m9, %log101_bits
+  %m11 = xor i64 %m10, %log20_bits
+  %result = xor i64 %m11, %log21_bits
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector float transcendental intrinsics LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_float_transcendental_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_float_transcendental_intrinsics(double a, double b);
+int main(void) {
+    uint64_t a = vm_vector_float_transcendental_intrinsics(0.75, 2.5);
+    uint64_t b = vm_vector_float_transcendental_intrinsics(1.0, 8.0);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector float transcendental intrinsics C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_float_transcendental_intrinsics_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_float_transcendental_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_float_transcendental_intrinsics");
+    for handler in ["fsin", "fcos", "fexp", "fexp2", "flog", "flog10", "flog2"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "fixed vector transcendental intrinsic should lower each lane through profile {handler} handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_float_transcendental_intrinsics",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized vector float transcendental intrinsics LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_transcendental_intrinsics"));
+    assert!(ir.contains("handler.fsin"));
+    assert!(ir.contains("handler.fcos"));
+    assert!(ir.contains("handler.fexp"));
+    assert!(ir.contains("handler.fexp2"));
+    assert!(ir.contains("handler.flog"));
+    assert!(ir.contains("handler.flog10"));
+    assert!(ir.contains("handler.flog2"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_transcendental_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_float_binary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_float_binary_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_float_binary_intrinsics'
+source_filename = "vm_virtualize_vector_float_binary_intrinsics.ll"
+
+declare <2 x double> @llvm.copysign.v2f64(<2 x double>, <2 x double>)
+declare <2 x double> @llvm.minnum.v2f64(<2 x double>, <2 x double>)
+declare <2 x double> @llvm.maxnum.v2f64(<2 x double>, <2 x double>)
+declare <2 x double> @llvm.minimum.v2f64(<2 x double>, <2 x double>)
+declare <2 x double> @llvm.maximum.v2f64(<2 x double>, <2 x double>)
+
+define i64 @vm_vector_float_binary_intrinsics(double %a, double %b, double %c, double %d) {
+entry:
+  %av0 = insertelement <2 x double> poison, double %a, i32 0
+  %av1 = insertelement <2 x double> %av0, double %b, i32 1
+  %bv0 = insertelement <2 x double> poison, double %c, i32 0
+  %bv1 = insertelement <2 x double> %bv0, double %d, i32 1
+  %copy = call <2 x double> @llvm.copysign.v2f64(<2 x double> %av1, <2 x double> %bv1)
+  %minnum = call <2 x double> @llvm.minnum.v2f64(<2 x double> %av1, <2 x double> %bv1)
+  %maxnum = call <2 x double> @llvm.maxnum.v2f64(<2 x double> %av1, <2 x double> %bv1)
+  %minimum = call <2 x double> @llvm.minimum.v2f64(<2 x double> %av1, <2 x double> %bv1)
+  %maximum = call <2 x double> @llvm.maximum.v2f64(<2 x double> %av1, <2 x double> %bv1)
+
+  %copy0 = extractelement <2 x double> %copy, i32 0
+  %copy1 = extractelement <2 x double> %copy, i32 1
+  %copy0_bits = bitcast double %copy0 to i64
+  %copy1_bits = bitcast double %copy1 to i64
+  %minnum0 = extractelement <2 x double> %minnum, i32 0
+  %minnum1 = extractelement <2 x double> %minnum, i32 1
+  %minnum0_bits = bitcast double %minnum0 to i64
+  %minnum1_bits = bitcast double %minnum1 to i64
+  %maxnum0 = extractelement <2 x double> %maxnum, i32 0
+  %maxnum1 = extractelement <2 x double> %maxnum, i32 1
+  %maxnum0_bits = bitcast double %maxnum0 to i64
+  %maxnum1_bits = bitcast double %maxnum1 to i64
+  %minimum0 = extractelement <2 x double> %minimum, i32 0
+  %minimum1 = extractelement <2 x double> %minimum, i32 1
+  %minimum0_bits = bitcast double %minimum0 to i64
+  %minimum1_bits = bitcast double %minimum1 to i64
+  %maximum0 = extractelement <2 x double> %maximum, i32 0
+  %maximum1 = extractelement <2 x double> %maximum, i32 1
+  %maximum0_bits = bitcast double %maximum0 to i64
+  %maximum1_bits = bitcast double %maximum1 to i64
+
+  %m0 = xor i64 %copy0_bits, %copy1_bits
+  %m1 = xor i64 %m0, %minnum0_bits
+  %m2 = xor i64 %m1, %minnum1_bits
+  %m3 = xor i64 %m2, %maxnum0_bits
+  %m4 = xor i64 %m3, %maxnum1_bits
+  %m5 = xor i64 %m4, %minimum0_bits
+  %m6 = xor i64 %m5, %minimum1_bits
+  %m7 = xor i64 %m6, %maximum0_bits
+  %result = xor i64 %m7, %maximum1_bits
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector float binary intrinsics LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_float_binary_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_float_binary_intrinsics(double a, double b, double c, double d);
+int main(void) {
+    uint64_t a = vm_vector_float_binary_intrinsics(-3.75, 16.25, 8.5, -2.0);
+    uint64_t b = vm_vector_float_binary_intrinsics(2.5, -9.5, -7.25, 11.0);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector float binary intrinsics C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_float_binary_intrinsics_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_float_binary_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_float_binary_intrinsics");
+    for handler in ["fcopysign", "fminnum", "fmaxnum", "fminimum", "fmaximum"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "fixed vector binary intrinsic should lower each lane through profile {handler} handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_float_binary_intrinsics",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized vector float binary intrinsics LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_binary_intrinsics"));
+    assert!(ir.contains("handler.fcopysign"));
+    assert!(ir.contains("handler.fminnum"));
+    assert!(ir.contains("handler.fmaxnum"));
+    assert!(ir.contains("handler.fminimum"));
+    assert!(ir.contains("handler.fmaximum"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_binary_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_float_pow_intrinsic_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_float_pow_intrinsic.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_float_pow_intrinsic'
+source_filename = "vm_virtualize_vector_float_pow_intrinsic.ll"
+
+declare <2 x double> @llvm.pow.v2f64(<2 x double>, <2 x double>)
+
+define i64 @vm_vector_float_pow_intrinsic(double %a, double %b, double %c, double %d) {
+entry:
+  %av0 = insertelement <2 x double> poison, double %a, i32 0
+  %av1 = insertelement <2 x double> %av0, double %b, i32 1
+  %bv0 = insertelement <2 x double> poison, double %c, i32 0
+  %bv1 = insertelement <2 x double> %bv0, double %d, i32 1
+  %pow = call <2 x double> @llvm.pow.v2f64(<2 x double> %av1, <2 x double> %bv1)
+
+  %pow0 = extractelement <2 x double> %pow, i32 0
+  %pow1 = extractelement <2 x double> %pow, i32 1
+  %pow0_bits = bitcast double %pow0 to i64
+  %pow1_bits = bitcast double %pow1 to i64
+  %result = xor i64 %pow0_bits, %pow1_bits
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector float pow intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_float_pow_intrinsic_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_float_pow_intrinsic(double a, double b, double c, double d);
+int main(void) {
+    uint64_t a = vm_vector_float_pow_intrinsic(2.0, 9.0, 3.0, 0.5);
+    uint64_t b = vm_vector_float_pow_intrinsic(1.25, 4.0, 5.0, 2.0);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector float pow intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_float_pow_intrinsic_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_float_pow_intrinsic.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_float_pow_intrinsic");
+    assert!(
+        dump.matches(": fpow ").count() >= 2,
+        "fixed vector pow intrinsic should lower each lane through profile fpow handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_float_pow_intrinsic",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector pow intrinsic LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_pow_intrinsic"));
+    assert!(ir.contains("handler.fpow"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_pow_intrinsic"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_float_powi_intrinsic_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_float_powi_intrinsic.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_float_powi_intrinsic'
+source_filename = "vm_virtualize_vector_float_powi_intrinsic.ll"
+
+declare <2 x double> @llvm.powi.v2f64.i32(<2 x double>, i32)
+
+define i64 @vm_vector_float_powi_intrinsic(double %a, double %b, i32 %e) {
+entry:
+  %v0 = insertelement <2 x double> poison, double %a, i32 0
+  %v1 = insertelement <2 x double> %v0, double %b, i32 1
+  %pow = call <2 x double> @llvm.powi.v2f64.i32(<2 x double> %v1, i32 %e)
+
+  %pow0 = extractelement <2 x double> %pow, i32 0
+  %pow1 = extractelement <2 x double> %pow, i32 1
+  %pow0_bits = bitcast double %pow0 to i64
+  %pow1_bits = bitcast double %pow1 to i64
+  %result = xor i64 %pow0_bits, %pow1_bits
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector float powi intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_float_powi_intrinsic_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_float_powi_intrinsic(double a, double b, int32_t e);
+int main(void) {
+    uint64_t a = vm_vector_float_powi_intrinsic(2.0, 3.0, 5);
+    uint64_t b = vm_vector_float_powi_intrinsic(4.0, 0.5, -3);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector float powi intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_float_powi_intrinsic_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_float_powi_intrinsic.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_float_powi_intrinsic");
+    assert!(
+        dump.matches(": fpowi ").count() >= 2,
+        "fixed vector powi intrinsic should lower each lane through profile fpowi handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_float_powi_intrinsic",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector powi intrinsic LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_powi_intrinsic"));
+    assert!(ir.contains("handler.fpowi"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_powi_intrinsic"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_float_ternary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_float_ternary_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_float_ternary_intrinsics'
+source_filename = "vm_virtualize_vector_float_ternary_intrinsics.ll"
+
+declare <2 x double> @llvm.fma.v2f64(<2 x double>, <2 x double>, <2 x double>)
+declare <2 x double> @llvm.fmuladd.v2f64(<2 x double>, <2 x double>, <2 x double>)
+
+define i64 @vm_vector_float_ternary_intrinsics(double %a, double %b, double %c, double %d, double %e, double %f) {
+entry:
+  %av0 = insertelement <2 x double> poison, double %a, i32 0
+  %av1 = insertelement <2 x double> %av0, double %b, i32 1
+  %bv0 = insertelement <2 x double> poison, double %c, i32 0
+  %bv1 = insertelement <2 x double> %bv0, double %d, i32 1
+  %cv0 = insertelement <2 x double> poison, double %e, i32 0
+  %cv1 = insertelement <2 x double> %cv0, double %f, i32 1
+  %fma = call <2 x double> @llvm.fma.v2f64(<2 x double> %av1, <2 x double> %bv1, <2 x double> %cv1)
+  %fmuladd = call <2 x double> @llvm.fmuladd.v2f64(<2 x double> %av1, <2 x double> %bv1, <2 x double> %cv1)
+
+  %fma0 = extractelement <2 x double> %fma, i32 0
+  %fma1 = extractelement <2 x double> %fma, i32 1
+  %fma0_bits = bitcast double %fma0 to i64
+  %fma1_bits = bitcast double %fma1 to i64
+  %fmuladd0 = extractelement <2 x double> %fmuladd, i32 0
+  %fmuladd1 = extractelement <2 x double> %fmuladd, i32 1
+  %fmuladd0_bits = bitcast double %fmuladd0 to i64
+  %fmuladd1_bits = bitcast double %fmuladd1 to i64
+
+  %m0 = xor i64 %fma0_bits, %fma1_bits
+  %m1 = xor i64 %m0, %fmuladd0_bits
+  %result = xor i64 %m1, %fmuladd1_bits
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector float ternary intrinsics LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_float_ternary_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_float_ternary_intrinsics(double a, double b, double c, double d, double e, double f);
+int main(void) {
+    uint64_t a = vm_vector_float_ternary_intrinsics(1.5, -2.0, 3.25, 4.5, -7.0, 8.125);
+    uint64_t b = vm_vector_float_ternary_intrinsics(-9.0, 0.5, -3.75, 2.0, 11.0, -13.25);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector float ternary intrinsics C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_float_ternary_intrinsics_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_float_ternary_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_float_ternary_intrinsics");
+    for handler in ["ffma", "ffmuladd"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "fixed vector ternary intrinsic should lower each lane through profile {handler} handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_float_ternary_intrinsics",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized vector float ternary intrinsics LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_ternary_intrinsics"));
+    assert!(ir.contains("handler.ffma"));
+    assert!(ir.contains("handler.ffmuladd"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_ternary_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_float_int_casts_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_float_int_casts.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_float_int_casts'
+source_filename = "vm_virtualize_vector_float_int_casts.ll"
+
+define i64 @vm_vector_float_int_casts(i32 %a, i32 %b, i64 %c, i64 %d, float %e, float %f, double %g, double %h) {
+entry:
+  %iv0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %iv1 = insertelement <2 x i32> %iv0, i32 %b, i32 1
+  %sf = sitofp <2 x i32> %iv1 to <2 x float>
+  %sf0 = extractelement <2 x float> %sf, i32 0
+  %sf1 = extractelement <2 x float> %sf, i32 1
+  %sf0_bits = bitcast float %sf0 to i32
+  %sf1_bits = bitcast float %sf1 to i32
+  %sf0_w = zext i32 %sf0_bits to i64
+  %sf1_w = zext i32 %sf1_bits to i64
+
+  %uv0 = insertelement <2 x i64> poison, i64 %c, i32 0
+  %uv1 = insertelement <2 x i64> %uv0, i64 %d, i32 1
+  %uf = uitofp <2 x i64> %uv1 to <2 x double>
+  %uf0 = extractelement <2 x double> %uf, i32 0
+  %uf1 = extractelement <2 x double> %uf, i32 1
+  %uf0_bits = bitcast double %uf0 to i64
+  %uf1_bits = bitcast double %uf1 to i64
+
+  %fv0 = insertelement <2 x float> poison, float %e, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %f, i32 1
+  %si = fptosi <2 x float> %fv1 to <2 x i32>
+  %si0 = extractelement <2 x i32> %si, i32 0
+  %si1 = extractelement <2 x i32> %si, i32 1
+  %si0_w = sext i32 %si0 to i64
+  %si1_w = sext i32 %si1 to i64
+
+  %dv0 = insertelement <2 x double> poison, double %g, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double %h, i32 1
+  %ui = fptoui <2 x double> %dv1 to <2 x i64>
+  %ui0 = extractelement <2 x i64> %ui, i32 0
+  %ui1 = extractelement <2 x i64> %ui, i32 1
+
+  %m0 = xor i64 %sf0_w, %sf1_w
+  %m1 = xor i64 %m0, %uf0_bits
+  %m2 = xor i64 %m1, %uf1_bits
+  %m3 = xor i64 %m2, %si0_w
+  %m4 = xor i64 %m3, %si1_w
+  %m5 = xor i64 %m4, %ui0
+  %result = xor i64 %m5, %ui1
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector float/integer casts LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_float_int_casts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_float_int_casts(int32_t a, int32_t b, uint64_t c, uint64_t d, float e, float f, double g, double h);
+int main(void) {
+    uint64_t a = vm_vector_float_int_casts(-17, 2049, 42ULL, 65535ULL, 13.75f, -9.25f, 123.75, 4096.5);
+    uint64_t b = vm_vector_float_int_casts(0, -4096, 7ULL, 900719ULL, -1.5f, 255.875f, 0.0, 8191.25);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector float/integer casts C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_float_int_casts_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_float_int_casts.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_float_int_casts");
+    assert!(
+        dump.matches(": sitofp ").count() >= 2,
+        "fixed vector sitofp should lower each lane through profile sitofp handlers:\n{dump}"
+    );
+    assert!(
+        dump.matches(": uitofp ").count() >= 2,
+        "fixed vector uitofp should lower each lane through profile uitofp handlers:\n{dump}"
+    );
+    assert!(
+        dump.matches(": fptosi ").count() >= 2,
+        "fixed vector fptosi should lower each lane through profile fptosi handlers:\n{dump}"
+    );
+    assert!(
+        dump.matches(": fptoui ").count() >= 2,
+        "fixed vector fptoui should lower each lane through profile fptoui handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_float_int_casts");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized vector float/integer casts LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_float_int_casts"));
+    assert!(ir.contains("handler.sitofp"));
+    assert!(ir.contains("handler.uitofp"));
+    assert!(ir.contains("handler.fptosi"));
+    assert!(ir.contains("handler.fptoui"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_float_int_casts"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_integer_casts_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_integer_casts.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_integer_casts'
+source_filename = "vm_virtualize_vector_integer_casts.ll"
+
+define i64 @vm_vector_integer_casts(i8 %a, i8 %b, i16 %c, i16 %d, i64 %e, i64 %f) {
+entry:
+  %v8_0 = insertelement <2 x i8> poison, i8 %a, i32 0
+  %v8_1 = insertelement <2 x i8> %v8_0, i8 %b, i32 1
+  %zv = zext <2 x i8> %v8_1 to <2 x i32>
+  %z0 = extractelement <2 x i32> %zv, i32 0
+  %z1 = extractelement <2 x i32> %zv, i32 1
+  %z0w = zext i32 %z0 to i64
+  %z1w = zext i32 %z1 to i64
+
+  %v16_0 = insertelement <2 x i16> poison, i16 %c, i32 0
+  %v16_1 = insertelement <2 x i16> %v16_0, i16 %d, i32 1
+  %sv = sext <2 x i16> %v16_1 to <2 x i64>
+  %s0 = extractelement <2 x i64> %sv, i32 0
+  %s1 = extractelement <2 x i64> %sv, i32 1
+
+  %v64_0 = insertelement <2 x i64> poison, i64 %e, i32 0
+  %v64_1 = insertelement <2 x i64> %v64_0, i64 %f, i32 1
+  %tv = trunc <2 x i64> %v64_1 to <2 x i8>
+  %t0 = extractelement <2 x i8> %tv, i32 0
+  %t1 = extractelement <2 x i8> %tv, i32 1
+  %t0w = zext i8 %t0 to i64
+  %t1w = zext i8 %t1 to i64
+
+  %s_z1 = shl i64 %z1w, 8
+  %m0 = xor i64 %z0w, %s_z1
+  %s_t0 = shl i64 %t0w, 16
+  %m1 = xor i64 %m0, %s_t0
+  %s_t1 = shl i64 %t1w, 24
+  %m2 = xor i64 %m1, %s_t1
+  %m3 = xor i64 %m2, %s0
+  %result = xor i64 %m3, %s1
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector integer casts LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_integer_casts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_integer_casts(uint8_t a, uint8_t b, uint16_t c, uint16_t d, uint64_t e, uint64_t f);
+int main(void) {
+    uint64_t a = vm_vector_integer_casts(0x80u, 0x7fu, 0xff80u, 0x007fu, 0x1122334455667788ULL, 0xffeeddccbbaa9901ULL);
+    uint64_t b = vm_vector_integer_casts(0x01u, 0xffu, 0x8001u, 0x7fffu, 0x0102030405060708ULL, 0x8877665544332211ULL);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector integer casts C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_integer_casts_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_integer_casts.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_integer_casts");
+    assert!(
+        dump.matches(": zext ").count() >= 2,
+        "fixed integer vector zext should lower each lane through profile zext handlers:\n{dump}"
+    );
+    assert!(
+        dump.matches(": sext ").count() >= 2,
+        "fixed integer vector sext should lower each lane through profile sext handlers:\n{dump}"
+    );
+    assert!(
+        dump.matches(": trunc ").count() >= 2,
+        "fixed integer vector trunc should lower each lane through profile trunc handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_integer_casts");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector integer casts LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_integer_casts"));
+    assert!(ir.contains("handler.zext"));
+    assert!(ir.contains("handler.sext"));
+    assert!(ir.contains("handler.trunc"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_integer_casts"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_pointer_casts_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_pointer_casts.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_pointer_casts'
+source_filename = "vm_virtualize_vector_pointer_casts.ll"
+
+define i64 @vm_vector_pointer_casts(i64 %a, i64 %b, i32 %c, i32 %d) {
+entry:
+  %v64_0 = insertelement <2 x i64> poison, i64 %a, i32 0
+  %v64_1 = insertelement <2 x i64> %v64_0, i64 %b, i32 1
+  %ptr64 = inttoptr <2 x i64> %v64_1 to <2 x ptr>
+  %as1 = addrspacecast <2 x ptr> %ptr64 to <2 x ptr addrspace(1)>
+  %as0 = addrspacecast <2 x ptr addrspace(1)> %as1 to <2 x ptr>
+  %round64 = ptrtoint <2 x ptr> %as0 to <2 x i64>
+  %r64_0 = extractelement <2 x i64> %round64, i32 0
+  %r64_1 = extractelement <2 x i64> %round64, i32 1
+
+  %v32_0 = insertelement <2 x i32> poison, i32 %c, i32 0
+  %v32_1 = insertelement <2 x i32> %v32_0, i32 %d, i32 1
+  %ptr32 = inttoptr <2 x i32> %v32_1 to <2 x ptr>
+  %wide32 = ptrtoint <2 x ptr> %ptr32 to <2 x i64>
+  %narrow32 = ptrtoint <2 x ptr> %ptr32 to <2 x i32>
+  %w32_0 = extractelement <2 x i64> %wide32, i32 0
+  %w32_1 = extractelement <2 x i64> %wide32, i32 1
+  %n32_0 = extractelement <2 x i32> %narrow32, i32 0
+  %n32_1 = extractelement <2 x i32> %narrow32, i32 1
+  %n64_0 = zext i32 %n32_0 to i64
+  %n64_1 = zext i32 %n32_1 to i64
+
+  %s0 = shl i64 %r64_1, 11
+  %m0 = xor i64 %r64_0, %s0
+  %s1 = shl i64 %w32_0, 23
+  %m1 = xor i64 %m0, %s1
+  %s2 = shl i64 %w32_1, 31
+  %m2 = xor i64 %m1, %s2
+  %s3 = shl i64 %n64_0, 7
+  %m3 = xor i64 %m2, %s3
+  %s4 = shl i64 %n64_1, 37
+  %result = xor i64 %m3, %s4
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector pointer casts LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_pointer_casts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_pointer_casts(uint64_t a, uint64_t b, uint32_t c, uint32_t d);
+int main(void) {
+    uint64_t a = vm_vector_pointer_casts(0x0000000012345678ULL, 0x00000000abcdef01ULL, 0x13572468u, 0x24681357u);
+    uint64_t b = vm_vector_pointer_casts(0x00000000fedcba98ULL, 0x0000000001020304ULL, 0x89abcdefu, 0x76543210u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector pointer casts C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_pointer_casts_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_pointer_casts.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_pointer_casts");
+    assert!(
+        dump.matches(": zext ").count() >= 2,
+        "fixed vector inttoptr from i32 should lower each lane through profile zext handlers:\n{dump}"
+    );
+    assert!(
+        dump.matches(": trunc ").count() >= 2,
+        "fixed vector ptrtoint to i32 should lower each lane through profile trunc handlers:\n{dump}"
+    );
+    assert!(
+        dump.matches(": bitcast ").count() >= 8,
+        "fixed vector pointer same-width casts should lower each lane through profile bitcast handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_pointer_casts");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector pointer casts LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_pointer_casts"));
+    assert!(ir.contains("handler.zext"));
+    assert!(ir.contains("handler.trunc"));
+    assert!(ir.contains("handler.bitcast"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_pointer_casts"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_bitcast_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_bitcast.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_bitcast'
+source_filename = "vm_virtualize_vector_bitcast.ll"
+
+define i64 @vm_vector_bitcast(float %a, float %b, i32 %bits0, i32 %bits1) {
+entry:
+  %fv0 = insertelement <2 x float> poison, float %a, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %b, i32 1
+  %as_i = bitcast <2 x float> %fv1 to <2 x i32>
+  %i0 = extractelement <2 x i32> %as_i, i32 0
+  %i1 = extractelement <2 x i32> %as_i, i32 1
+
+  %iv0 = insertelement <2 x i32> poison, i32 %bits0, i32 0
+  %iv1 = insertelement <2 x i32> %iv0, i32 %bits1, i32 1
+  %as_f = bitcast <2 x i32> %iv1 to <2 x float>
+  %f0 = extractelement <2 x float> %as_f, i32 0
+  %f1 = extractelement <2 x float> %as_f, i32 1
+  %back0 = bitcast float %f0 to i32
+  %back1 = bitcast float %f1 to i32
+
+  %z0 = zext i32 %i0 to i64
+  %z1 = zext i32 %i1 to i64
+  %z2 = zext i32 %back0 to i64
+  %z3 = zext i32 %back1 to i64
+  %s1 = shl i64 %z1, 7
+  %m1 = xor i64 %z0, %s1
+  %s2 = shl i64 %z2, 17
+  %m2 = xor i64 %m1, %s2
+  %s3 = shl i64 %z3, 29
+  %result = xor i64 %m2, %s3
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector bitcast LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_bitcast_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_bitcast(float a, float b, uint32_t bits0, uint32_t bits1);
+int main(void) {
+    uint64_t a = vm_vector_bitcast(1.25f, -2.5f, 0x3f800000u, 0xc0200000u);
+    uint64_t b = vm_vector_bitcast(0.125f, 11.75f, 0x40400000u, 0xbf000000u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector bitcast C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_bitcast_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_bitcast.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_bitcast");
+    let bitcast_count = dump.matches(": bitcast ").count();
+    assert!(
+        bitcast_count >= 6,
+        "fixed vector bitcast should lower each lane through profile bitcast handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_bitcast");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector bitcast LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_bitcast"));
+    assert!(ir.contains("handler.bitcast"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_bitcast"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_shuffle_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_shuffle.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_shuffle'
+source_filename = "vm_virtualize_vector_shuffle.ll"
+
+define i64 @vm_vector_shuffle(i32 %a, i32 %b, i32 %c, double %d) {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 286331153, i32 3
+  %w0 = insertelement <4 x i32> poison, i32 572662306, i32 0
+  %w1 = insertelement <4 x i32> %w0, i32 858993459, i32 1
+  %s = shufflevector <4 x i32> %v3, <4 x i32> %w1, <4 x i32> <i32 4, i32 2, i32 1, i32 0>
+  %e0 = extractelement <4 x i32> %s, i32 0
+  %e1 = extractelement <4 x i32> %s, i32 1
+  %e2 = extractelement <4 x i32> %s, i32 2
+  %e3 = extractelement <4 x i32> %s, i32 3
+  %m0 = xor i32 %e0, %e1
+  %m1 = add i32 %e2, %e3
+  %mix = xor i32 %m0, %m1
+  %mix64 = zext i32 %mix to i64
+  %dv0 = insertelement <2 x double> poison, double %d, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double 1.250000e+00, i32 1
+  %ds = shufflevector <2 x double> %dv1, <2 x double> poison, <2 x i32> <i32 1, i32 0>
+  %de = extractelement <2 x double> %ds, i32 0
+  %dbits = bitcast double %de to i64
+  %result = xor i64 %dbits, %mix64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector shuffle LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_shuffle_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_shuffle(uint32_t a, uint32_t b, uint32_t c, double d);
+int main(void) {
+    uint64_t a = vm_vector_shuffle(7u, 11u, 13u, 3.5);
+    uint64_t b = vm_vector_shuffle(0x12345678u, 0x9abcdef0u, 0x13579bdfu, -2.25);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector shuffle C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_shuffle_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_shuffle.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_shuffle");
+    assert!(
+        dump.matches(": mov ").count() >= 14,
+        "fixed vector shufflevector lanes should lower through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_shuffle");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector shuffle LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_shuffle"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_shuffle"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_reverse_splice_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_reverse_splice.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_reverse_splice'
+source_filename = "vm_virtualize_vector_reverse_splice.ll"
+
+declare <4 x i32> @llvm.vector.reverse.v4i32(<4 x i32>)
+declare <4 x i32> @llvm.vector.splice.v4i32(<4 x i32>, <4 x i32>, i32 immarg)
+
+define i64 @vm_vector_reverse_splice(i32 %a, i32 %b, i32 %c, i32 %d) {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %w0 = insertelement <4 x i32> poison, i32 286331153, i32 0
+  %w1 = insertelement <4 x i32> %w0, i32 572662306, i32 1
+  %w2 = insertelement <4 x i32> %w1, i32 858993459, i32 2
+  %w3 = insertelement <4 x i32> %w2, i32 1145324612, i32 3
+  %rev = call <4 x i32> @llvm.vector.reverse.v4i32(<4 x i32> %v3)
+  %sp_pos = call <4 x i32> @llvm.vector.splice.v4i32(<4 x i32> %v3, <4 x i32> %w3, i32 2)
+  %sp_neg = call <4 x i32> @llvm.vector.splice.v4i32(<4 x i32> %v3, <4 x i32> %w3, i32 -1)
+  %r0 = extractelement <4 x i32> %rev, i32 0
+  %r1 = extractelement <4 x i32> %rev, i32 3
+  %p0 = extractelement <4 x i32> %sp_pos, i32 0
+  %p3 = extractelement <4 x i32> %sp_pos, i32 3
+  %n0 = extractelement <4 x i32> %sp_neg, i32 0
+  %n3 = extractelement <4 x i32> %sp_neg, i32 3
+  %m0 = xor i32 %r0, %r1
+  %m1 = add i32 %p0, %p3
+  %m2 = xor i32 %n0, %n3
+  %m3 = add i32 %m0, %m1
+  %mix = xor i32 %m3, %m2
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector reverse/splice LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_reverse_splice_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_reverse_splice(uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+int main(void) {
+    uint64_t a = vm_vector_reverse_splice(7u, 11u, 13u, 17u);
+    uint64_t b = vm_vector_reverse_splice(0x12345678u, 0x9abcdef0u, 0x13579bdfu, 0x2468ace0u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector reverse/splice C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_reverse_splice_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_reverse_splice.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_reverse_splice");
+    assert!(
+        dump.matches(": mov ").count() >= 24,
+        "vector reverse/splice lanes should lower through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_reverse_splice");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector reverse/splice LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_reverse_splice"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vector.reverse"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vector.splice"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_reverse_splice"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_subvector_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_subvector.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_subvector'
+source_filename = "vm_virtualize_vector_subvector.ll"
+
+declare <4 x i32> @llvm.vector.insert.v4i32.v2i32(<4 x i32>, <2 x i32>, i64 immarg)
+declare <2 x i32> @llvm.vector.extract.v2i32.v4i32(<4 x i32>, i64 immarg)
+
+define i64 @vm_vector_subvector(i32 %a, i32 %b, i32 %c, i32 %d) {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %s0 = insertelement <2 x i32> poison, i32 286331153, i32 0
+  %s1 = insertelement <2 x i32> %s0, i32 572662306, i32 1
+  %ins = call <4 x i32> @llvm.vector.insert.v4i32.v2i32(<4 x i32> %v3, <2 x i32> %s1, i64 2)
+  %ext = call <2 x i32> @llvm.vector.extract.v2i32.v4i32(<4 x i32> %v3, i64 2)
+  %i0 = extractelement <4 x i32> %ins, i32 0
+  %i1 = extractelement <4 x i32> %ins, i32 1
+  %i2 = extractelement <4 x i32> %ins, i32 2
+  %i3 = extractelement <4 x i32> %ins, i32 3
+  %e0 = extractelement <2 x i32> %ext, i32 0
+  %e1 = extractelement <2 x i32> %ext, i32 1
+  %m0 = xor i32 %i0, %i1
+  %m1 = add i32 %i2, %i3
+  %m2 = xor i32 %e0, %e1
+  %m3 = add i32 %m0, %m1
+  %mix = xor i32 %m3, %m2
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector subvector intrinsic LLVM IR fixture should be writable");
+
+    let baseline_ir = output_dir().join("vm_virtualize_vector_subvector.baseline.ll");
+    std::fs::write(
+        &baseline_ir,
+        r#"; ModuleID = 'vm_virtualize_vector_subvector_baseline'
+source_filename = "vm_virtualize_vector_subvector_baseline.ll"
+
+define i64 @vm_vector_subvector(i32 %a, i32 %b, i32 %c, i32 %d) {
+entry:
+  %m0 = xor i32 %a, %b
+  %m1 = add i32 286331153, 572662306
+  %m2 = xor i32 %c, %d
+  %m3 = add i32 %m0, %m1
+  %mix = xor i32 %m3, %m2
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector subvector baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_subvector_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_subvector(uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+int main(void) {
+    uint64_t a = vm_vector_subvector(7u, 11u, 13u, 17u);
+    uint64_t b = vm_vector_subvector(0x12345678u, 0x9abcdef0u, 0x13579bdfu, 0x2468ace0u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector subvector C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_ir, &harness, "vm_virtualize_vector_subvector_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_subvector.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_subvector");
+    assert!(
+        dump.matches(": mov ").count() >= 12,
+        "vector insert/extract subvector lanes should lower through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_subvector");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector subvector LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_subvector"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vector.insert"));
+    assert!(!ir.contains("call <2 x i32> @llvm.vector.extract"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_subvector"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_interleave_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_interleave.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_interleave'
+source_filename = "vm_virtualize_vector_interleave.ll"
+
+declare <4 x i32> @llvm.vector.interleave2.v4i32(<2 x i32>, <2 x i32>)
+declare <6 x i32> @llvm.vector.interleave3.v6i32(<2 x i32>, <2 x i32>, <2 x i32>)
+
+define i64 @vm_vector_interleave(i32 %a, i32 %b, i32 %c, i32 %d, i32 %e, i32 %f) {
+entry:
+  %a0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %a1 = insertelement <2 x i32> %a0, i32 %b, i32 1
+  %b0 = insertelement <2 x i32> poison, i32 %c, i32 0
+  %b1 = insertelement <2 x i32> %b0, i32 %d, i32 1
+  %c0 = insertelement <2 x i32> poison, i32 %e, i32 0
+  %c1 = insertelement <2 x i32> %c0, i32 %f, i32 1
+  %i2 = call <4 x i32> @llvm.vector.interleave2.v4i32(<2 x i32> %a1, <2 x i32> %b1)
+  %i3 = call <6 x i32> @llvm.vector.interleave3.v6i32(<2 x i32> %a1, <2 x i32> %b1, <2 x i32> %c1)
+  %x0 = extractelement <4 x i32> %i2, i32 0
+  %x1 = extractelement <4 x i32> %i2, i32 1
+  %x2 = extractelement <4 x i32> %i2, i32 2
+  %x3 = extractelement <4 x i32> %i2, i32 3
+  %y0 = extractelement <6 x i32> %i3, i32 0
+  %y1 = extractelement <6 x i32> %i3, i32 1
+  %y2 = extractelement <6 x i32> %i3, i32 2
+  %y3 = extractelement <6 x i32> %i3, i32 3
+  %y4 = extractelement <6 x i32> %i3, i32 4
+  %y5 = extractelement <6 x i32> %i3, i32 5
+  %m0 = xor i32 %x0, %x1
+  %m1 = add i32 %x2, %x3
+  %m2 = xor i32 %y0, %y2
+  %m3 = add i32 %y1, %y5
+  %m4 = xor i32 %y3, %y4
+  %m5 = add i32 %m0, %m1
+  %m6 = xor i32 %m2, %m3
+  %m7 = add i32 %m5, %m6
+  %mix = xor i32 %m7, %m4
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector interleave intrinsic LLVM IR fixture should be writable");
+
+    let baseline_ir = output_dir().join("vm_virtualize_vector_interleave.baseline.ll");
+    std::fs::write(
+        &baseline_ir,
+        r#"; ModuleID = 'vm_virtualize_vector_interleave_baseline'
+source_filename = "vm_virtualize_vector_interleave_baseline.ll"
+
+define i64 @vm_vector_interleave(i32 %a, i32 %b, i32 %c, i32 %d, i32 %e, i32 %f) {
+entry:
+  %m0 = xor i32 %a, %c
+  %m1 = add i32 %b, %d
+  %m2 = xor i32 %a, %e
+  %m3 = add i32 %c, %f
+  %m4 = xor i32 %b, %d
+  %m5 = add i32 %m0, %m1
+  %m6 = xor i32 %m2, %m3
+  %m7 = add i32 %m5, %m6
+  %mix = xor i32 %m7, %m4
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector interleave baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_interleave_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_interleave(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f);
+int main(void) {
+    uint64_t a = vm_vector_interleave(7u, 11u, 13u, 17u, 19u, 23u);
+    uint64_t b = vm_vector_interleave(0x12345678u, 0x9abcdef0u, 0x13579bdfu, 0x2468ace0u, 0x0badc0deu, 0xfeedfaceu);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector interleave C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_ir, &harness, "vm_virtualize_vector_interleave_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_interleave.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_interleave");
+    assert!(
+        dump.matches(": mov ").count() >= 20,
+        "vector interleave lanes should lower through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_interleave");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector interleave LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_interleave"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vector.interleave2"));
+    assert!(!ir.contains("call <6 x i32> @llvm.vector.interleave3"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_interleave"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_deinterleave_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_deinterleave.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_deinterleave'
+source_filename = "vm_virtualize_vector_deinterleave.ll"
+
+declare { <2 x i32>, <2 x i32> } @llvm.vector.deinterleave2.v4i32(<4 x i32>)
+declare { <2 x i32>, <2 x i32>, <2 x i32> } @llvm.vector.deinterleave3.v6i32(<6 x i32>)
+
+define i64 @vm_vector_deinterleave(i32 %a, i32 %b, i32 %c, i32 %d, i32 %e, i32 %f) {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %c, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %b, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %w0 = insertelement <6 x i32> poison, i32 %a, i32 0
+  %w1 = insertelement <6 x i32> %w0, i32 %c, i32 1
+  %w2 = insertelement <6 x i32> %w1, i32 %e, i32 2
+  %w3 = insertelement <6 x i32> %w2, i32 %b, i32 3
+  %w4 = insertelement <6 x i32> %w3, i32 %d, i32 4
+  %w5 = insertelement <6 x i32> %w4, i32 %f, i32 5
+  %d2 = call { <2 x i32>, <2 x i32> } @llvm.vector.deinterleave2.v4i32(<4 x i32> %v3)
+  %d3 = call { <2 x i32>, <2 x i32>, <2 x i32> } @llvm.vector.deinterleave3.v6i32(<6 x i32> %w5)
+  %xv0 = extractvalue { <2 x i32>, <2 x i32> } %d2, 0
+  %xv1 = extractvalue { <2 x i32>, <2 x i32> } %d2, 1
+  %yv0 = extractvalue { <2 x i32>, <2 x i32>, <2 x i32> } %d3, 0
+  %yv1 = extractvalue { <2 x i32>, <2 x i32>, <2 x i32> } %d3, 1
+  %yv2 = extractvalue { <2 x i32>, <2 x i32>, <2 x i32> } %d3, 2
+  %x0 = extractelement <2 x i32> %xv0, i32 0
+  %x1 = extractelement <2 x i32> %xv1, i32 0
+  %x2 = extractelement <2 x i32> %xv0, i32 1
+  %x3 = extractelement <2 x i32> %xv1, i32 1
+  %y0 = extractelement <2 x i32> %yv0, i32 0
+  %y1 = extractelement <2 x i32> %yv1, i32 0
+  %y2 = extractelement <2 x i32> %yv2, i32 0
+  %y3 = extractelement <2 x i32> %yv0, i32 1
+  %y4 = extractelement <2 x i32> %yv1, i32 1
+  %y5 = extractelement <2 x i32> %yv2, i32 1
+  %m0 = xor i32 %x0, %x1
+  %m1 = add i32 %x2, %x3
+  %m2 = xor i32 %y0, %y2
+  %m3 = add i32 %y1, %y5
+  %m4 = xor i32 %y3, %y4
+  %m5 = add i32 %m0, %m1
+  %m6 = xor i32 %m2, %m3
+  %m7 = add i32 %m5, %m6
+  %mix = xor i32 %m7, %m4
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector deinterleave intrinsic LLVM IR fixture should be writable");
+
+    let baseline_ir = output_dir().join("vm_virtualize_vector_deinterleave.baseline.ll");
+    std::fs::write(
+        &baseline_ir,
+        r#"; ModuleID = 'vm_virtualize_vector_deinterleave_baseline'
+source_filename = "vm_virtualize_vector_deinterleave_baseline.ll"
+
+define i64 @vm_vector_deinterleave(i32 %a, i32 %b, i32 %c, i32 %d, i32 %e, i32 %f) {
+entry:
+  %m0 = xor i32 %a, %c
+  %m1 = add i32 %b, %d
+  %m2 = xor i32 %a, %e
+  %m3 = add i32 %c, %f
+  %m4 = xor i32 %b, %d
+  %m5 = add i32 %m0, %m1
+  %m6 = xor i32 %m2, %m3
+  %m7 = add i32 %m5, %m6
+  %mix = xor i32 %m7, %m4
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector deinterleave baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_deinterleave_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_deinterleave(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f);
+int main(void) {
+    uint64_t a = vm_vector_deinterleave(7u, 11u, 13u, 17u, 19u, 23u);
+    uint64_t b = vm_vector_deinterleave(0x12345678u, 0x9abcdef0u, 0x13579bdfu, 0x2468ace0u, 0x0badc0deu, 0xfeedfaceu);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector deinterleave C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_ir, &harness, "vm_virtualize_vector_deinterleave_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_deinterleave.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_deinterleave");
+    assert!(
+        dump.matches(": mov ").count() >= 20,
+        "vector deinterleave lanes should lower through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_deinterleave");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector deinterleave LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_deinterleave"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call { <2 x i32>, <2 x i32> } @llvm.vector.deinterleave2"));
+    assert!(!ir.contains("call { <2 x i32>, <2 x i32>, <2 x i32> } @llvm.vector.deinterleave3"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_deinterleave"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_compress_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_compress.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_compress'
+source_filename = "vm_virtualize_vector_compress.ll"
+
+declare <4 x i32> @llvm.experimental.vector.compress.v4i32(<4 x i32>, <4 x i1>, <4 x i32>)
+
+define i64 @vm_vector_compress(i32 %a, i32 %b, i32 %c, i32 %d, i32 %e, i32 %f, i32 %g, i32 %h) {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %p0 = insertelement <4 x i32> poison, i32 %e, i32 0
+  %p1 = insertelement <4 x i32> %p0, i32 %f, i32 1
+  %p2 = insertelement <4 x i32> %p1, i32 %g, i32 2
+  %p3 = insertelement <4 x i32> %p2, i32 %h, i32 3
+  %c0 = call <4 x i32> @llvm.experimental.vector.compress.v4i32(<4 x i32> %v3, <4 x i1> <i1 true, i1 false, i1 true, i1 false>, <4 x i32> %p3)
+  %c1 = call <4 x i32> @llvm.experimental.vector.compress.v4i32(<4 x i32> %v3, <4 x i1> <i1 false, i1 true, i1 true, i1 false>, <4 x i32> %p3)
+  %x0 = extractelement <4 x i32> %c0, i32 0
+  %x1 = extractelement <4 x i32> %c0, i32 1
+  %x2 = extractelement <4 x i32> %c0, i32 2
+  %x3 = extractelement <4 x i32> %c0, i32 3
+  %y0 = extractelement <4 x i32> %c1, i32 0
+  %y1 = extractelement <4 x i32> %c1, i32 1
+  %y2 = extractelement <4 x i32> %c1, i32 2
+  %y3 = extractelement <4 x i32> %c1, i32 3
+  %m0 = xor i32 %x0, %x1
+  %m1 = add i32 %x2, %x3
+  %m2 = xor i32 %y0, %y1
+  %m3 = add i32 %y2, %y3
+  %m4 = add i32 %m0, %m1
+  %m5 = add i32 %m2, %m3
+  %mix = xor i32 %m4, %m5
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector compress intrinsic LLVM IR fixture should be writable");
+
+    let baseline_ir = output_dir().join("vm_virtualize_vector_compress.baseline.ll");
+    std::fs::write(
+        &baseline_ir,
+        r#"; ModuleID = 'vm_virtualize_vector_compress_baseline'
+source_filename = "vm_virtualize_vector_compress_baseline.ll"
+
+define i64 @vm_vector_compress(i32 %a, i32 %b, i32 %c, i32 %d, i32 %e, i32 %f, i32 %g, i32 %h) {
+entry:
+  %m0 = xor i32 %a, %c
+  %m1 = add i32 %g, %h
+  %m2 = xor i32 %b, %c
+  %m3 = add i32 %g, %h
+  %m4 = add i32 %m0, %m1
+  %m5 = add i32 %m2, %m3
+  %mix = xor i32 %m4, %m5
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector compress baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_compress_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_compress(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f, uint32_t g, uint32_t h);
+int main(void) {
+    uint64_t a = vm_vector_compress(7u, 11u, 13u, 17u, 19u, 23u, 29u, 31u);
+    uint64_t b = vm_vector_compress(0x12345678u, 0x9abcdef0u, 0x13579bdfu, 0x2468ace0u, 0x0badc0deu, 0xfeedfaceu, 0x01020304u, 0xa5a5a5a5u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector compress C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_ir, &harness, "vm_virtualize_vector_compress_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_compress.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_compress");
+    assert!(
+        dump.matches(": mov ").count() >= 16,
+        "vector compress lanes should lower through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_compress");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector compress LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_compress"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.experimental.vector.compress"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_compress"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_select_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_select.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_select'
+source_filename = "vm_virtualize_vector_select.ll"
+
+define i64 @vm_vector_select(i32 %a, i32 %b, i32 %c, double %d) {
+entry:
+  %cond = icmp ult i32 %a, %b
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 286331153, i32 3
+  %w0 = insertelement <4 x i32> poison, i32 572662306, i32 0
+  %w1 = insertelement <4 x i32> %w0, i32 858993459, i32 1
+  %w2 = insertelement <4 x i32> %w1, i32 1145324612, i32 2
+  %w3 = insertelement <4 x i32> %w2, i32 1431655765, i32 3
+  %s = select i1 %cond, <4 x i32> %v3, <4 x i32> %w3
+  %e0 = extractelement <4 x i32> %s, i32 0
+  %e1 = extractelement <4 x i32> %s, i32 1
+  %e2 = extractelement <4 x i32> %s, i32 2
+  %e3 = extractelement <4 x i32> %s, i32 3
+  %m0 = xor i32 %e0, %e1
+  %m1 = add i32 %e2, %e3
+  %mix = xor i32 %m0, %m1
+  %mix64 = zext i32 %mix to i64
+  %dv0 = insertelement <2 x double> poison, double %d, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double 1.250000e+00, i32 1
+  %dw0 = insertelement <2 x double> poison, double -7.500000e-01, i32 0
+  %dw1 = insertelement <2 x double> %dw0, double 2.500000e+00, i32 1
+  %ds = select i1 %cond, <2 x double> %dv1, <2 x double> %dw1
+  %de = extractelement <2 x double> %ds, i32 0
+  %dbits = bitcast double %de to i64
+  %result = xor i64 %dbits, %mix64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector select LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_select_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_select(uint32_t a, uint32_t b, uint32_t c, double d);
+int main(void) {
+    uint64_t a = vm_vector_select(7u, 11u, 13u, 3.5);
+    uint64_t b = vm_vector_select(0x9abcdef0u, 0x12345678u, 0x13579bdfu, -2.25);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector select C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_select_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_select.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_select");
+    assert!(
+        dump.matches(": br_if ").count() >= 2 && dump.matches(": mov ").count() >= 24,
+        "fixed vector select should lower through profile branch and mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_select");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector select LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_select"));
+    assert!(ir.contains("handler.br_if"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_select"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_condition_select_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_condition_select.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_condition_select'
+source_filename = "vm_virtualize_vector_condition_select.ll"
+
+define i64 @vm_vector_condition_select(i32 %a, i32 %b, i32 %c, i32 %d) {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %w0 = insertelement <4 x i32> poison, i32 10, i32 0
+  %w1 = insertelement <4 x i32> %w0, i32 20, i32 1
+  %w2 = insertelement <4 x i32> %w1, i32 30, i32 2
+  %w3 = insertelement <4 x i32> %w2, i32 40, i32 3
+  %cmp = icmp ugt <4 x i32> %v3, %w3
+  %s = select <4 x i1> %cmp, <4 x i32> %v3, <4 x i32> %w3
+  %e0 = extractelement <4 x i32> %s, i32 0
+  %e1 = extractelement <4 x i32> %s, i32 1
+  %e2 = extractelement <4 x i32> %s, i32 2
+  %e3 = extractelement <4 x i32> %s, i32 3
+  %m0 = xor i32 %e0, %e1
+  %m1 = add i32 %e2, %e3
+  %m2 = xor i32 %m0, %m1
+  %result = zext i32 %m2 to i64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector condition select LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_condition_select_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_condition_select(uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+int main(void) {
+    uint64_t a = vm_vector_condition_select(3u, 25u, 31u, 9u);
+    uint64_t b = vm_vector_condition_select(100u, 2u, 33u, 41u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector condition select C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_condition_select_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_condition_select.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_condition_select");
+    assert!(
+        dump.matches(": br_if ").count() >= 4 && dump.matches(": mov ").count() >= 20,
+        "fixed vector condition select should lower each lane through profile branch and mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_condition_select");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized vector condition select IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_condition_select"));
+    assert!(ir.contains("handler.br_if"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_condition_select"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_select_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_select.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_select'
+source_filename = "vm_virtualize_vp_select.ll"
+
+declare <4 x i32> @llvm.vp.select.v4i32(<4 x i1>, <4 x i32>, <4 x i32>, i32)
+
+define i64 @vm_vp_select(i32 %a, i32 %b, i32 %c, i32 %d) #0 {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %w0 = insertelement <4 x i32> poison, i32 9, i32 0
+  %w1 = insertelement <4 x i32> %w0, i32 17, i32 1
+  %w2 = insertelement <4 x i32> %w1, i32 33, i32 2
+  %w3 = insertelement <4 x i32> %w2, i32 65, i32 3
+  %cond = icmp ult <4 x i32> %v3, %w3
+  %selected = call <4 x i32> @llvm.vp.select.v4i32(<4 x i1> %cond, <4 x i32> %v3, <4 x i32> %w3, i32 3)
+  %e0 = extractelement <4 x i32> %selected, i32 0
+  %e1 = extractelement <4 x i32> %selected, i32 1
+  %e2 = extractelement <4 x i32> %selected, i32 2
+  %m0 = xor i32 %e0, %e1
+  %m1 = add i32 %m0, %e2
+  %result = zext i32 %m1 to i64
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP select LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_select_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_select(uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+int main(void) {
+    uint64_t a = vm_vp_select(3u, 25u, 31u, 77u);
+    uint64_t b = vm_vp_select(100u, 2u, 40u, 1u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP select C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_select_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vp_select.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_select");
+    assert!(
+        dump.matches(": br_if ").count() >= 3 && dump.contains(": mov "),
+        "VP select should lower active lanes through profile branch and mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_select");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP select LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_select"));
+    assert!(ir.contains("handler.br_if"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.select"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_select"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_merge_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_merge.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_merge'
+source_filename = "vm_virtualize_vp_merge.ll"
+
+declare <4 x i32> @llvm.vp.merge.v4i32(<4 x i1>, <4 x i32>, <4 x i32>, i32)
+
+define i64 @vm_vp_merge(i32 %a, i32 %b, i32 %c, i32 %d, i32 %pivot) #0 {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %w0 = insertelement <4 x i32> poison, i32 9, i32 0
+  %w1 = insertelement <4 x i32> %w0, i32 17, i32 1
+  %w2 = insertelement <4 x i32> %w1, i32 33, i32 2
+  %w3 = insertelement <4 x i32> %w2, i32 65, i32 3
+  %cond = icmp ult <4 x i32> %v3, %w3
+  %merged = call <4 x i32> @llvm.vp.merge.v4i32(<4 x i1> %cond, <4 x i32> %v3, <4 x i32> %w3, i32 %pivot)
+  %e0 = extractelement <4 x i32> %merged, i32 0
+  %e1 = extractelement <4 x i32> %merged, i32 1
+  %e2 = extractelement <4 x i32> %merged, i32 2
+  %e3 = extractelement <4 x i32> %merged, i32 3
+  %m0 = xor i32 %e0, %e1
+  %m1 = add i32 %m0, %e2
+  %m2 = xor i32 %m1, %e3
+  %result = zext i32 %m2 to i64
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP merge LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_vp_merge.baseline.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_merge_baseline'
+source_filename = "vm_virtualize_vp_merge_baseline.ll"
+
+define i64 @vm_vp_merge(i32 %a, i32 %b, i32 %c, i32 %d, i32 %pivot) #0 {
+entry:
+  %c0 = icmp ult i32 %a, 9
+  %c1 = icmp ult i32 %b, 17
+  %c2 = icmp ult i32 %c, 33
+  %c3 = icmp ult i32 %d, 65
+  %p0 = icmp ult i32 0, %pivot
+  %p1 = icmp ult i32 1, %pivot
+  %p2 = icmp ult i32 2, %pivot
+  %p3 = icmp ult i32 3, %pivot
+  %m0 = and i1 %c0, %p0
+  %m1 = and i1 %c1, %p1
+  %m2 = and i1 %c2, %p2
+  %m3 = and i1 %c3, %p3
+  %e0 = select i1 %m0, i32 %a, i32 9
+  %e1 = select i1 %m1, i32 %b, i32 17
+  %e2 = select i1 %m2, i32 %c, i32 33
+  %e3 = select i1 %m3, i32 %d, i32 65
+  %x0 = xor i32 %e0, %e1
+  %x1 = add i32 %x0, %e2
+  %x2 = xor i32 %x1, %e3
+  %result = zext i32 %x2 to i64
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP merge scalar baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_merge_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_merge(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t pivot);
+int main(void) {
+    uint64_t a = vm_vp_merge(3u, 25u, 31u, 77u, 0u);
+    uint64_t b = vm_vp_merge(3u, 25u, 31u, 77u, 2u);
+    uint64_t c = vm_vp_merge(100u, 2u, 40u, 1u, 4u);
+    printf("%llu %llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("VP merge C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&baseline_ir_source, &harness, "vm_virtualize_vp_merge_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vp_merge.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_merge");
+    assert!(
+        dump.matches(": icmp ").count() >= 4 && dump.matches(": br_if ").count() >= 8,
+        "VP merge should lower every lane through profile pivot checks and branch actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_merge");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP merge LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_merge"));
+    assert!(ir.contains("handler.icmp"));
+    assert!(ir.contains("handler.br_if"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.merge"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_merge"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_experimental_vp_reverse_splat_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_experimental_vp_reverse_splat.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_experimental_vp_reverse_splat'
+source_filename = "vm_virtualize_experimental_vp_reverse_splat.ll"
+
+declare <4 x i32> @llvm.experimental.vp.reverse.v4i32(<4 x i32>, <4 x i1>, i32)
+declare <4 x i32> @llvm.experimental.vp.splat.v4i32.i32(i32, <4 x i1>, i32)
+
+define i64 @vm_vp_reverse_splat(i32 %a, i32 %b, i32 %c, i32 %d, i32 %seed) #0 {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %rev = call <4 x i32> @llvm.experimental.vp.reverse.v4i32(<4 x i32> %v3, <4 x i1> <i1 true, i1 true, i1 true, i1 false>, i32 3)
+  %spl = call <4 x i32> @llvm.experimental.vp.splat.v4i32.i32(i32 %seed, <4 x i1> <i1 true, i1 true, i1 true, i1 false>, i32 3)
+  %r0 = extractelement <4 x i32> %rev, i32 0
+  %r1 = extractelement <4 x i32> %rev, i32 1
+  %r2 = extractelement <4 x i32> %rev, i32 2
+  %s0 = extractelement <4 x i32> %spl, i32 0
+  %s2 = extractelement <4 x i32> %spl, i32 2
+  %m0 = xor i32 %r0, %s0
+  %m1 = add i32 %m0, %r1
+  %m2 = xor i32 %m1, %r2
+  %m3 = add i32 %m2, %s2
+  %result = zext i32 %m3 to i64
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("experimental VP reverse/splat LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_experimental_vp_reverse_splat.baseline.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_experimental_vp_reverse_splat_baseline'
+source_filename = "vm_virtualize_experimental_vp_reverse_splat_baseline.ll"
+
+define i64 @vm_vp_reverse_splat(i32 %a, i32 %b, i32 %c, i32 %d, i32 %seed) #0 {
+entry:
+  %m0 = xor i32 %d, %seed
+  %m1 = add i32 %m0, %c
+  %m2 = xor i32 %m1, %b
+  %m3 = add i32 %m2, %seed
+  %result = zext i32 %m3 to i64
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("experimental VP reverse/splat scalar baseline IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_experimental_vp_reverse_splat_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_reverse_splat(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t seed);
+int main(void) {
+    uint64_t a = vm_vp_reverse_splat(3u, 11u, 27u, 44u, 0x55u);
+    uint64_t b = vm_vp_reverse_splat(100u, 2u, 40u, 1u, 0x1234u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("experimental VP reverse/splat C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_ir_source,
+        &harness,
+        "vm_virtualize_experimental_vp_reverse_splat_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_experimental_vp_reverse_splat.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_reverse_splat");
+    assert!(
+        dump.matches(": mov ").count() >= 6,
+        "experimental VP reverse/splat should lower active lanes through profile mov actions:\n{dump}"
+    );
+
+    let virtualized =
+        compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_experimental_vp_reverse_splat");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized experimental VP reverse/splat LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_reverse_splat"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.experimental.vp.reverse"));
+    assert!(!ir.contains("call <4 x i32> @llvm.experimental.vp.splat"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_reverse_splat"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_experimental_vp_splice_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_experimental_vp_splice.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_experimental_vp_splice'
+source_filename = "vm_virtualize_experimental_vp_splice.ll"
+
+declare <4 x i32> @llvm.experimental.vp.splice.v4i32(<4 x i32>, <4 x i32>, i32 immarg, <4 x i1>, i32, i32)
+
+define i64 @vm_vp_splice(i32 %a, i32 %b, i32 %c, i32 %d) #0 {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 %b, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 %c, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 %d, i32 3
+  %w0 = insertelement <4 x i32> poison, i32 286331153, i32 0
+  %w1 = insertelement <4 x i32> %w0, i32 572662306, i32 1
+  %w2 = insertelement <4 x i32> %w1, i32 858993459, i32 2
+  %w3 = insertelement <4 x i32> %w2, i32 1145324612, i32 3
+  %pos = call <4 x i32> @llvm.experimental.vp.splice.v4i32(<4 x i32> %v3, <4 x i32> %w3, i32 1, <4 x i1> <i1 true, i1 true, i1 true, i1 false>, i32 2, i32 3)
+  %neg = call <4 x i32> @llvm.experimental.vp.splice.v4i32(<4 x i32> %v3, <4 x i32> %w3, i32 -2, <4 x i1> <i1 true, i1 true, i1 false, i1 false>, i32 3, i32 2)
+  %p0 = extractelement <4 x i32> %pos, i32 0
+  %p1 = extractelement <4 x i32> %pos, i32 1
+  %p2 = extractelement <4 x i32> %pos, i32 2
+  %n0 = extractelement <4 x i32> %neg, i32 0
+  %n1 = extractelement <4 x i32> %neg, i32 1
+  %m0 = xor i32 %p0, %p1
+  %m1 = add i32 %m0, %p2
+  %m2 = xor i32 %n0, %n1
+  %mix = add i32 %m1, %m2
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("experimental VP splice LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_experimental_vp_splice.baseline.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_experimental_vp_splice_baseline'
+source_filename = "vm_virtualize_experimental_vp_splice_baseline.ll"
+
+define i64 @vm_vp_splice(i32 %a, i32 %b, i32 %c, i32 %d) #0 {
+entry:
+  %m0 = xor i32 %b, 286331153
+  %m1 = add i32 %m0, 572662306
+  %m2 = xor i32 %b, %c
+  %mix = add i32 %m1, %m2
+  %result = zext i32 %mix to i64
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("experimental VP splice scalar baseline IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_experimental_vp_splice_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_splice(uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+int main(void) {
+    uint64_t a = vm_vp_splice(7u, 11u, 13u, 17u);
+    uint64_t b = vm_vp_splice(0x12345678u, 0x9abcdef0u, 0x13579bdfu, 0x2468ace0u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("experimental VP splice C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_ir_source,
+        &harness,
+        "vm_virtualize_experimental_vp_splice_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_experimental_vp_splice.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_splice");
+    assert!(
+        dump.matches(": mov ").count() >= 5,
+        "experimental VP splice should lower active lanes through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_experimental_vp_splice");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized experimental VP splice IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_splice"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.experimental.vp.splice"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_splice"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_pointer_casts_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_pointer_casts.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_pointer_casts'
+source_filename = "vm_virtualize_vp_pointer_casts.ll"
+
+declare <4 x i64> @llvm.vp.ptrtoint.v4i64.v4p0(<4 x ptr>, <4 x i1>, i32)
+declare <4 x ptr> @llvm.vp.inttoptr.v4p0.v4i64(<4 x i64>, <4 x i1>, i32)
+
+define i64 @vm_vp_pointer_casts(ptr %base, i32 %seed) #0 {
+entry:
+  %p0 = getelementptr inbounds i32, ptr %base, i64 0
+  %p1 = getelementptr inbounds i32, ptr %base, i64 1
+  %p2 = getelementptr inbounds i32, ptr %base, i64 2
+  %p3 = getelementptr inbounds i32, ptr %base, i64 3
+  %v0 = insertelement <4 x ptr> poison, ptr %p0, i32 0
+  %v1 = insertelement <4 x ptr> %v0, ptr %p1, i32 1
+  %v2 = insertelement <4 x ptr> %v1, ptr %p2, i32 2
+  %v3 = insertelement <4 x ptr> %v2, ptr %p3, i32 3
+  %ints = call <4 x i64> @llvm.vp.ptrtoint.v4i64.v4p0(<4 x ptr> %v3, <4 x i1> <i1 true, i1 true, i1 true, i1 false>, i32 3)
+  %roundtrip = call <4 x ptr> @llvm.vp.inttoptr.v4p0.v4i64(<4 x i64> %ints, <4 x i1> <i1 true, i1 true, i1 true, i1 false>, i32 3)
+  %q0 = extractelement <4 x ptr> %roundtrip, i32 0
+  %q1 = extractelement <4 x ptr> %roundtrip, i32 1
+  %q2 = extractelement <4 x ptr> %roundtrip, i32 2
+  %l0 = load i32, ptr %q0, align 4
+  %l1 = load i32, ptr %q1, align 4
+  %l2 = load i32, ptr %q2, align 4
+  %w0 = zext i32 %l0 to i64
+  %w1 = zext i32 %l1 to i64
+  %w2 = zext i32 %l2 to i64
+  %seed64 = zext i32 %seed to i64
+  %s1 = shl i64 %w1, 17
+  %m0 = xor i64 %w0, %s1
+  %m1 = add i64 %m0, %seed64
+  %s2 = shl i64 %w2, 33
+  %result = xor i64 %m1, %s2
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP pointer casts LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_pointer_casts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_pointer_casts(uint32_t *base, uint32_t seed);
+int main(void) {
+    uint32_t values_a[8] = {0x10203040u, 0x11223344u, 0x55667788u, 0x99aabbccu,
+                            0x13572468u, 0x24681357u, 0xdeadbeefu, 0x01020304u};
+    uint32_t values_b[8] = {0xfedcba98u, 0x76543210u, 0x89abcdefu, 0x0badf00du,
+                            0xc001d00du, 0x31415926u, 0x27182818u, 0x42424242u};
+    uint64_t a = vm_vp_pointer_casts(values_a, 0xabcdef01u);
+    uint64_t b = vm_vp_pointer_casts(values_b + 2, 0x13579bdfu);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP pointer casts C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_pointer_casts_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vp_pointer_casts.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_pointer_casts");
+    assert!(
+        dump.matches(": bitcast ").count() >= 6,
+        "VP ptrtoint/inttoptr should lower active lanes through profile bitcast handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_pointer_casts");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP pointer casts IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_pointer_casts"));
+    assert!(ir.contains("handler.bitcast"));
+    assert!(!ir.contains("call <4 x i64> @llvm.vp.ptrtoint"));
+    assert!(!ir.contains("call <4 x ptr> @llvm.vp.inttoptr"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_pointer_casts"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_integer_casts_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_casts.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_integer_casts'
+source_filename = "vm_virtualize_vp_vector_integer_casts.ll"
+
+declare <4 x i32> @llvm.vp.zext.v4i32.v4i8(<4 x i8>, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.sext.v4i32.v4i16(<4 x i16>, <4 x i1>, i32)
+declare <4 x i8> @llvm.vp.trunc.v4i8.v4i32(<4 x i32>, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_integer_casts(i8 %a, i8 %b, i16 %c, i16 %d, i32 %e, i32 %f) #0 {
+entry:
+  %a0 = xor i8 %a, 90
+  %a1 = add i8 %b, 17
+  %a2 = sub i8 %a, 3
+  %a3 = xor i8 %b, -91
+  %v80 = insertelement <4 x i8> poison, i8 %a0, i32 0
+  %v81 = insertelement <4 x i8> %v80, i8 %a1, i32 1
+  %v82 = insertelement <4 x i8> %v81, i8 %a2, i32 2
+  %v8 = insertelement <4 x i8> %v82, i8 %a3, i32 3
+
+  %c0 = xor i16 %c, 4660
+  %c1 = add i16 %d, -123
+  %c2 = sub i16 %c, 77
+  %c3 = xor i16 %d, -16657
+  %v160 = insertelement <4 x i16> poison, i16 %c0, i32 0
+  %v161 = insertelement <4 x i16> %v160, i16 %c1, i32 1
+  %v162 = insertelement <4 x i16> %v161, i16 %c2, i32 2
+  %v16 = insertelement <4 x i16> %v162, i16 %c3, i32 3
+
+  %e0 = xor i32 %e, 305419896
+  %e1 = add i32 %f, 4097
+  %e2 = sub i32 %e, 8191
+  %e3 = xor i32 %f, -2023406815
+  %v320 = insertelement <4 x i32> poison, i32 %e0, i32 0
+  %v321 = insertelement <4 x i32> %v320, i32 %e1, i32 1
+  %v322 = insertelement <4 x i32> %v321, i32 %e2, i32 2
+  %v32 = insertelement <4 x i32> %v322, i32 %e3, i32 3
+
+  %zext = call <4 x i32> @llvm.vp.zext.v4i32.v4i8(<4 x i8> %v8, <4 x i1> <i1 true, i1 true, i1 false, i1 false>, i32 2)
+  %z0 = extractelement <4 x i32> %zext, i32 0
+  %z1 = extractelement <4 x i32> %zext, i32 1
+  %sext = call <4 x i32> @llvm.vp.sext.v4i32.v4i16(<4 x i16> %v16, <4 x i1> <i1 false, i1 true, i1 false, i1 true>, i32 4)
+  %s1 = extractelement <4 x i32> %sext, i32 1
+  %s3 = extractelement <4 x i32> %sext, i32 3
+  %trunc = call <4 x i8> @llvm.vp.trunc.v4i8.v4i32(<4 x i32> %v32, <4 x i1> <i1 true, i1 false, i1 true, i1 false>, i32 3)
+  %t0 = extractelement <4 x i8> %trunc, i32 0
+  %t2 = extractelement <4 x i8> %trunc, i32 2
+
+  %z064 = zext i32 %z0 to i64
+  %z164 = zext i32 %z1 to i64
+  %s164 = sext i32 %s1 to i64
+  %s364 = sext i32 %s3 to i64
+  %t064 = zext i8 %t0 to i64
+  %t264 = zext i8 %t2 to i64
+  %m0 = xor i64 %z064, %z164
+  %m1 = add i64 %m0, %s164
+  %m2 = xor i64 %m1, %s364
+  %m3 = add i64 %m2, %t064
+  %result = xor i64 %m3, %t264
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector integer casts LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_integer_casts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_integer_casts(uint8_t a, uint8_t b, int16_t c, int16_t d, uint32_t e, uint32_t f);
+int main(void) {
+    uint64_t a = vm_vp_vector_integer_casts(0x80u, 0x7fu, (int16_t)0xff80u, 0x007f, 0x11223344u, 0x55667788u);
+    uint64_t b = vm_vp_vector_integer_casts(0x01u, 0xffu, (int16_t)0x8001u, 0x7fff, 0x89abcdefu, 0x76543210u);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector integer casts C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_vector_integer_casts_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_integer_casts.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_integer_casts");
+    for needle in [": zext ", ": sext ", ": trunc "] {
+        assert!(
+            dump.contains(needle),
+            "VP fixed integer vector cast should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_vector_integer_casts");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized VP vector integer casts IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_integer_casts"));
+    assert!(ir.contains("handler.zext"));
+    assert!(ir.contains("handler.sext"));
+    assert!(ir.contains("handler.trunc"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.zext"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.sext"));
+    assert!(!ir.contains("call <4 x i8> @llvm.vp.trunc"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_integer_casts"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_float_casts_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_float_casts.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_float_casts'
+source_filename = "vm_virtualize_vp_vector_float_casts.ll"
+
+declare <2 x float> @llvm.vp.sitofp.v2f32.v2i32(<2 x i32>, <2 x i1>, i32)
+declare <2 x double> @llvm.vp.uitofp.v2f64.v2i64(<2 x i64>, <2 x i1>, i32)
+declare <2 x i32> @llvm.vp.fptosi.v2i32.v2f32(<2 x float>, <2 x i1>, i32)
+declare <2 x i64> @llvm.vp.fptoui.v2i64.v2f64(<2 x double>, <2 x i1>, i32)
+declare <2 x float> @llvm.vp.fptrunc.v2f32.v2f64(<2 x double>, <2 x i1>, i32)
+declare <2 x double> @llvm.vp.fpext.v2f64.v2f32(<2 x float>, <2 x i1>, i32)
+
+define i64 @vm_vp_vector_float_casts(i32 %a, i64 %b, float %c, float %d, double %e, double %f) #0 {
+entry:
+  %i0 = add i32 %a, -17
+  %i1 = sub i32 %a, 23
+  %iv0 = insertelement <2 x i32> poison, i32 %i0, i32 0
+  %iv = insertelement <2 x i32> %iv0, i32 %i1, i32 1
+  %u0 = and i64 %b, 1048575
+  %u1 = lshr i64 %b, 3
+  %uv0 = insertelement <2 x i64> poison, i64 %u0, i32 0
+  %uv = insertelement <2 x i64> %uv0, i64 %u1, i32 1
+  %fv0 = insertelement <2 x float> poison, float %c, i32 0
+  %fv = insertelement <2 x float> %fv0, float %d, i32 1
+  %dv0 = insertelement <2 x double> poison, double %e, i32 0
+  %dv = insertelement <2 x double> %dv0, double %f, i32 1
+
+  %sf = call <2 x float> @llvm.vp.sitofp.v2f32.v2i32(<2 x i32> %iv, <2 x i1> <i1 true, i1 true>, i32 2)
+  %sf0 = extractelement <2 x float> %sf, i32 0
+  %sf1 = extractelement <2 x float> %sf, i32 1
+  %ui = call <2 x double> @llvm.vp.uitofp.v2f64.v2i64(<2 x i64> %uv, <2 x i1> <i1 true, i1 false>, i32 2)
+  %ui0 = extractelement <2 x double> %ui, i32 0
+  %si = call <2 x i32> @llvm.vp.fptosi.v2i32.v2f32(<2 x float> %fv, <2 x i1> <i1 true, i1 false>, i32 2)
+  %si0 = extractelement <2 x i32> %si, i32 0
+  %fu = call <2 x i64> @llvm.vp.fptoui.v2i64.v2f64(<2 x double> %dv, <2 x i1> <i1 false, i1 true>, i32 2)
+  %fu1 = extractelement <2 x i64> %fu, i32 1
+  %ft = call <2 x float> @llvm.vp.fptrunc.v2f32.v2f64(<2 x double> %dv, <2 x i1> <i1 true, i1 false>, i32 2)
+  %ft0 = extractelement <2 x float> %ft, i32 0
+  %fe = call <2 x double> @llvm.vp.fpext.v2f64.v2f32(<2 x float> %fv, <2 x i1> <i1 false, i1 true>, i32 2)
+  %fe1 = extractelement <2 x double> %fe, i32 1
+
+  %sf0i = fptosi float %sf0 to i64
+  %sf1i = fptosi float %sf1 to i64
+  %ui0i = fptoui double %ui0 to i64
+  %si064 = sext i32 %si0 to i64
+  %ft0i = fptosi float %ft0 to i64
+  %fe1i = fptosi double %fe1 to i64
+  %m0 = xor i64 %sf0i, %sf1i
+  %m1 = add i64 %m0, %ui0i
+  %m2 = xor i64 %m1, %si064
+  %m3 = add i64 %m2, %fu1
+  %m4 = xor i64 %m3, %ft0i
+  %result = add i64 %m4, %fe1i
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector float casts LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_float_casts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_float_casts(int32_t a, uint64_t b, float c, float d, double e, double f);
+int main(void) {
+    uint64_t a = vm_vp_vector_float_casts(-40, 0x12345u, 13.75f, -9.25f, 123.75, 4096.5);
+    uint64_t b = vm_vp_vector_float_casts(2048, 0x98765u, -1.5f, 255.875f, 19.25, 1234.5);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector float casts C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_vector_float_casts_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_float_casts.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_float_casts");
+    for needle in [
+        ": sitofp ",
+        ": uitofp ",
+        ": fptosi ",
+        ": fptoui ",
+        ": fptrunc ",
+        ": fpext ",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "VP fixed vector float cast should lower through profile handler {needle}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_vector_float_casts");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP vector float casts IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_float_casts"));
+    assert!(ir.contains("handler.sitofp"));
+    assert!(ir.contains("handler.uitofp"));
+    assert!(ir.contains("handler.fptosi"));
+    assert!(ir.contains("handler.fptoui"));
+    assert!(ir.contains("handler.fptrunc"));
+    assert!(ir.contains("handler.fpext"));
+    assert!(!ir.contains("call <2 x float> @llvm.vp.sitofp"));
+    assert!(!ir.contains("call <2 x double> @llvm.vp.uitofp"));
+    assert!(!ir.contains("call <2 x i32> @llvm.vp.fptosi"));
+    assert!(!ir.contains("call <2 x i64> @llvm.vp.fptoui"));
+    assert!(!ir.contains("call <2 x float> @llvm.vp.fptrunc"));
+    assert!(!ir.contains("call <2 x double> @llvm.vp.fpext"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_float_casts"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_float_binops_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_float_binops.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_float_binops'
+source_filename = "vm_virtualize_vp_vector_float_binops.ll"
+
+declare <4 x float> @llvm.vp.fadd.v4f32(<4 x float>, <4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.fsub.v4f32(<4 x float>, <4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.fmul.v4f32(<4 x float>, <4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.fdiv.v4f32(<4 x float>, <4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.frem.v4f32(<4 x float>, <4 x float>, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_float_binops(float %a, float %b, float %c, float %d) #0 {
+entry:
+  %lhs0 = insertelement <4 x float> poison, float %a, i32 0
+  %lhs1 = insertelement <4 x float> %lhs0, float %b, i32 1
+  %lhs2 = insertelement <4 x float> %lhs1, float %c, i32 2
+  %lhs = insertelement <4 x float> %lhs2, float %d, i32 3
+  %rhs0 = insertelement <4 x float> poison, float 1.250000e+00, i32 0
+  %rhs1 = insertelement <4 x float> %rhs0, float -2.500000e+00, i32 1
+  %rhs2 = insertelement <4 x float> %rhs1, float 3.750000e+00, i32 2
+  %rhs = insertelement <4 x float> %rhs2, float 4.000000e+00, i32 3
+  %add = call <4 x float> @llvm.vp.fadd.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x i1> <i1 true, i1 true, i1 false, i1 false>, i32 2)
+  %add0 = extractelement <4 x float> %add, i32 0
+  %add1 = extractelement <4 x float> %add, i32 1
+  %sub = call <4 x float> @llvm.vp.fsub.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x i1> <i1 false, i1 true, i1 false, i1 false>, i32 4)
+  %sub1 = extractelement <4 x float> %sub, i32 1
+  %mul = call <4 x float> @llvm.vp.fmul.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x i1> <i1 false, i1 false, i1 true, i1 false>, i32 4)
+  %mul2 = extractelement <4 x float> %mul, i32 2
+  %div = call <4 x float> @llvm.vp.fdiv.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x i1> <i1 false, i1 false, i1 false, i1 true>, i32 4)
+  %div3 = extractelement <4 x float> %div, i32 3
+  %rem = call <4 x float> @llvm.vp.frem.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 4)
+  %rem0 = extractelement <4 x float> %rem, i32 0
+  %add0_bits = bitcast float %add0 to i32
+  %add1_bits = bitcast float %add1 to i32
+  %sub1_bits = bitcast float %sub1 to i32
+  %mul2_bits = bitcast float %mul2 to i32
+  %div3_bits = bitcast float %div3 to i32
+  %rem0_bits = bitcast float %rem0 to i32
+  %a0 = zext i32 %add0_bits to i64
+  %a1 = zext i32 %add1_bits to i64
+  %s1 = shl i64 %a1, 7
+  %m0 = xor i64 %a0, %s1
+  %s0 = zext i32 %sub1_bits to i64
+  %s0s = shl i64 %s0, 17
+  %m1 = xor i64 %m0, %s0s
+  %m2b = zext i32 %mul2_bits to i64
+  %m2s = shl i64 %m2b, 29
+  %m2 = xor i64 %m1, %m2s
+  %d3 = zext i32 %div3_bits to i64
+  %d3s = shl i64 %d3, 41
+  %m3 = xor i64 %m2, %d3s
+  %r0 = zext i32 %rem0_bits to i64
+  %r0s = shl i64 %r0, 53
+  %result = xor i64 %m3, %r0s
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector float binops LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_float_binops_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_float_binops(float a, float b, float c, float d);
+int main(void) {
+    uint64_t a = vm_vp_vector_float_binops(7.5f, -13.25f, 2.0f, 19.0f);
+    uint64_t b = vm_vp_vector_float_binops(-3.75f, 8.5f, -6.0f, 11.5f);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector float binops C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vp_vector_float_binops_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_float_binops.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_float_binops");
+    for expected in ["fadd", "fsub", "fmul", "fdiv", "frem"] {
+        assert!(
+            dump.contains(&format!(": {expected} ")),
+            "VP float binop should lower through profile handler {expected}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vp_vector_float_binops",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP vector float binops IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_float_binops"));
+    for handler in [
+        "handler.fadd",
+        "handler.fsub",
+        "handler.fmul",
+        "handler.fdiv",
+        "handler.frem",
+    ] {
+        assert!(ir.contains(handler));
+    }
+    assert!(!ir.contains("call <4 x float> @llvm.vp.fadd"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.fsub"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.fmul"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.fdiv"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.frem"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_float_binops"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_float_minmax_copysign_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_float_minmax_copysign.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_float_minmax_copysign'
+source_filename = "vm_virtualize_vp_vector_float_minmax_copysign.ll"
+
+declare <4 x float> @llvm.vp.minnum.v4f32(<4 x float>, <4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.maxnum.v4f32(<4 x float>, <4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.minimum.v4f32(<4 x float>, <4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.maximum.v4f32(<4 x float>, <4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.copysign.v4f32(<4 x float>, <4 x float>, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_float_minmax_copysign(float %a, float %b, float %c, float %d) #0 {
+entry:
+  %lhs0 = insertelement <4 x float> poison, float %a, i32 0
+  %lhs1 = insertelement <4 x float> %lhs0, float %b, i32 1
+  %lhs2 = insertelement <4 x float> %lhs1, float %c, i32 2
+  %lhs = insertelement <4 x float> %lhs2, float %d, i32 3
+  %rhs0 = insertelement <4 x float> poison, float -2.000000e+00, i32 0
+  %rhs1 = insertelement <4 x float> %rhs0, float 6.500000e+00, i32 1
+  %rhs2 = insertelement <4 x float> %rhs1, float -0.000000e+00, i32 2
+  %rhs = insertelement <4 x float> %rhs2, float 9.250000e+00, i32 3
+  %minnum = call <4 x float> @llvm.vp.minnum.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 4)
+  %minnum0 = extractelement <4 x float> %minnum, i32 0
+  %maxnum = call <4 x float> @llvm.vp.maxnum.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x i1> <i1 false, i1 true, i1 false, i1 false>, i32 4)
+  %maxnum1 = extractelement <4 x float> %maxnum, i32 1
+  %minimum = call <4 x float> @llvm.vp.minimum.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x i1> <i1 false, i1 false, i1 true, i1 false>, i32 4)
+  %minimum2 = extractelement <4 x float> %minimum, i32 2
+  %maximum = call <4 x float> @llvm.vp.maximum.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x i1> <i1 false, i1 false, i1 false, i1 true>, i32 4)
+  %maximum3 = extractelement <4 x float> %maximum, i32 3
+  %copysign = call <4 x float> @llvm.vp.copysign.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x i1> <i1 true, i1 false, i1 true, i1 false>, i32 3)
+  %copysign0 = extractelement <4 x float> %copysign, i32 0
+  %copysign2 = extractelement <4 x float> %copysign, i32 2
+  %minnum_bits = bitcast float %minnum0 to i32
+  %maxnum_bits = bitcast float %maxnum1 to i32
+  %minimum_bits = bitcast float %minimum2 to i32
+  %maximum_bits = bitcast float %maximum3 to i32
+  %copysign0_bits = bitcast float %copysign0 to i32
+  %copysign2_bits = bitcast float %copysign2 to i32
+  %a0 = zext i32 %minnum_bits to i64
+  %a1 = zext i32 %maxnum_bits to i64
+  %a1s = shl i64 %a1, 7
+  %m0 = xor i64 %a0, %a1s
+  %a2 = zext i32 %minimum_bits to i64
+  %a2s = shl i64 %a2, 17
+  %m1 = xor i64 %m0, %a2s
+  %a3 = zext i32 %maximum_bits to i64
+  %a3s = shl i64 %a3, 29
+  %m2 = xor i64 %m1, %a3s
+  %a4 = zext i32 %copysign0_bits to i64
+  %a4s = shl i64 %a4, 41
+  %m3 = xor i64 %m2, %a4s
+  %a5 = zext i32 %copysign2_bits to i64
+  %a5s = shl i64 %a5, 53
+  %result = xor i64 %m3, %a5s
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector float minmax/copysign LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_vp_vector_float_minmax_copysign.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_float_minmax_copysign_baseline'
+source_filename = "vm_virtualize_vp_vector_float_minmax_copysign_baseline.ll"
+
+declare float @llvm.minnum.f32(float, float)
+declare float @llvm.maxnum.f32(float, float)
+declare float @llvm.minimum.f32(float, float)
+declare float @llvm.maximum.f32(float, float)
+declare float @llvm.copysign.f32(float, float)
+
+define i64 @vm_vp_vector_float_minmax_copysign(float %a, float %b, float %c, float %d) {
+entry:
+  %minnum0 = call float @llvm.minnum.f32(float %a, float -2.000000e+00)
+  %maxnum1 = call float @llvm.maxnum.f32(float %b, float 6.500000e+00)
+  %minimum2 = call float @llvm.minimum.f32(float %c, float -0.000000e+00)
+  %maximum3 = call float @llvm.maximum.f32(float %d, float 9.250000e+00)
+  %copysign0 = call float @llvm.copysign.f32(float %a, float -2.000000e+00)
+  %copysign2 = call float @llvm.copysign.f32(float %c, float -0.000000e+00)
+  %minnum_bits = bitcast float %minnum0 to i32
+  %maxnum_bits = bitcast float %maxnum1 to i32
+  %minimum_bits = bitcast float %minimum2 to i32
+  %maximum_bits = bitcast float %maximum3 to i32
+  %copysign0_bits = bitcast float %copysign0 to i32
+  %copysign2_bits = bitcast float %copysign2 to i32
+  %a0 = zext i32 %minnum_bits to i64
+  %a1 = zext i32 %maxnum_bits to i64
+  %a1s = shl i64 %a1, 7
+  %m0 = xor i64 %a0, %a1s
+  %a2 = zext i32 %minimum_bits to i64
+  %a2s = shl i64 %a2, 17
+  %m1 = xor i64 %m0, %a2s
+  %a3 = zext i32 %maximum_bits to i64
+  %a3s = shl i64 %a3, 29
+  %m2 = xor i64 %m1, %a3s
+  %a4 = zext i32 %copysign0_bits to i64
+  %a4s = shl i64 %a4, 41
+  %m3 = xor i64 %m2, %a4s
+  %a5 = zext i32 %copysign2_bits to i64
+  %a5s = shl i64 %a5, 53
+  %result = xor i64 %m3, %a5s
+  ret i64 %result
+}
+"#,
+    )
+    .expect("VP vector float minmax/copysign baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_float_minmax_copysign_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_vp_vector_float_minmax_copysign(float a, float b, float c, float d);
+
+int main(void) {
+    uint64_t a = vm_vp_vector_float_minmax_copysign(7.5f, -13.25f, 2.0f, 19.0f);
+    uint64_t b = vm_vp_vector_float_minmax_copysign(-3.75f, 8.5f, -6.0f, 11.5f);
+    uint64_t c = vm_vp_vector_float_minmax_copysign(0.0f, -0.0f, 4.25f, -9.75f);
+    printf("%llu %llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector float minmax/copysign C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_vp_vector_float_minmax_copysign_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_float_minmax_copysign.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_float_minmax_copysign");
+    for expected in ["fminnum", "fmaxnum", "fminimum", "fmaximum", "fcopysign"] {
+        assert!(
+            dump.contains(&format!(": {expected} ")),
+            "VP float minmax/copysign should lower through profile handler {expected}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vp_vector_float_minmax_copysign",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized VP vector float minmax/copysign IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_float_minmax_copysign"));
+    for handler in [
+        "handler.fminnum",
+        "handler.fmaxnum",
+        "handler.fminimum",
+        "handler.fmaximum",
+        "handler.fcopysign",
+    ] {
+        assert!(ir.contains(handler));
+    }
+    assert!(!ir.contains("call <4 x float> @llvm.vp.minnum"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.maxnum"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.minimum"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.maximum"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.copysign"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_float_minmax_copysign"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_float_unary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_float_unary.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_float_unary'
+source_filename = "vm_virtualize_vp_vector_float_unary.ll"
+
+declare <4 x float> @llvm.vp.fneg.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.fabs.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.sqrt.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.canonicalize.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.floor.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.ceil.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.rint.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.nearbyint.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.round.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.roundeven.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.sin.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.cos.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.exp.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.exp2.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.log.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.log10.v4f32(<4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.log2.v4f32(<4 x float>, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_float_unary(float %a, float %b, float %c, float %d) #0 {
+entry:
+  %v0 = insertelement <4 x float> poison, float %a, i32 0
+  %v1 = insertelement <4 x float> %v0, float %b, i32 1
+  %v2 = insertelement <4 x float> %v1, float %c, i32 2
+  %v = insertelement <4 x float> %v2, float %d, i32 3
+  %round0 = insertelement <4 x float> poison, float -2.750000e+00, i32 0
+  %round1 = insertelement <4 x float> %round0, float 3.500000e+00, i32 1
+  %round2 = insertelement <4 x float> %round1, float -4.500000e+00, i32 2
+  %roundv = insertelement <4 x float> %round2, float 5.250000e+00, i32 3
+  %pos0 = insertelement <4 x float> poison, float 1.250000e+00, i32 0
+  %pos1 = insertelement <4 x float> %pos0, float 2.500000e+00, i32 1
+  %pos2 = insertelement <4 x float> %pos1, float 4.000000e+00, i32 2
+  %posv = insertelement <4 x float> %pos2, float 8.000000e+00, i32 3
+  %small0 = insertelement <4 x float> poison, float 3.125000e-01, i32 0
+  %small1 = insertelement <4 x float> %small0, float -5.000000e-01, i32 1
+  %small2 = insertelement <4 x float> %small1, float 7.500000e-01, i32 2
+  %smallv = insertelement <4 x float> %small2, float 1.000000e+00, i32 3
+  %neg = call <4 x float> @llvm.vp.fneg.v4f32(<4 x float> %v, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %abs = call <4 x float> @llvm.vp.fabs.v4f32(<4 x float> %v, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %sqrt = call <4 x float> @llvm.vp.sqrt.v4f32(<4 x float> %posv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %canonicalize = call <4 x float> @llvm.vp.canonicalize.v4f32(<4 x float> %v, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %floor = call <4 x float> @llvm.vp.floor.v4f32(<4 x float> %roundv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %ceil = call <4 x float> @llvm.vp.ceil.v4f32(<4 x float> %roundv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %rint = call <4 x float> @llvm.vp.rint.v4f32(<4 x float> %roundv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %nearbyint = call <4 x float> @llvm.vp.nearbyint.v4f32(<4 x float> %roundv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %round = call <4 x float> @llvm.vp.round.v4f32(<4 x float> %roundv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %roundeven = call <4 x float> @llvm.vp.roundeven.v4f32(<4 x float> %roundv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %sin = call <4 x float> @llvm.vp.sin.v4f32(<4 x float> %smallv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %cos = call <4 x float> @llvm.vp.cos.v4f32(<4 x float> %smallv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %exp = call <4 x float> @llvm.vp.exp.v4f32(<4 x float> %smallv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %exp2 = call <4 x float> @llvm.vp.exp2.v4f32(<4 x float> %smallv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %log = call <4 x float> @llvm.vp.log.v4f32(<4 x float> %posv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %log10 = call <4 x float> @llvm.vp.log10.v4f32(<4 x float> %posv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %log2 = call <4 x float> @llvm.vp.log2.v4f32(<4 x float> %posv, <4 x i1> <i1 true, i1 false, i1 false, i1 false>, i32 1)
+  %neg0 = extractelement <4 x float> %neg, i32 0
+  %abs0 = extractelement <4 x float> %abs, i32 0
+  %sqrt0 = extractelement <4 x float> %sqrt, i32 0
+  %canonicalize0 = extractelement <4 x float> %canonicalize, i32 0
+  %floor0 = extractelement <4 x float> %floor, i32 0
+  %ceil0 = extractelement <4 x float> %ceil, i32 0
+  %rint0 = extractelement <4 x float> %rint, i32 0
+  %nearbyint0 = extractelement <4 x float> %nearbyint, i32 0
+  %round0e = extractelement <4 x float> %round, i32 0
+  %roundeven0 = extractelement <4 x float> %roundeven, i32 0
+  %sin0 = extractelement <4 x float> %sin, i32 0
+  %cos0 = extractelement <4 x float> %cos, i32 0
+  %exp0 = extractelement <4 x float> %exp, i32 0
+  %exp20 = extractelement <4 x float> %exp2, i32 0
+  %log0 = extractelement <4 x float> %log, i32 0
+  %log100 = extractelement <4 x float> %log10, i32 0
+  %log20 = extractelement <4 x float> %log2, i32 0
+  %neg_bits = bitcast float %neg0 to i32
+  %abs_bits = bitcast float %abs0 to i32
+  %sqrt_bits = bitcast float %sqrt0 to i32
+  %canonicalize_bits = bitcast float %canonicalize0 to i32
+  %floor_bits = bitcast float %floor0 to i32
+  %ceil_bits = bitcast float %ceil0 to i32
+  %rint_bits = bitcast float %rint0 to i32
+  %nearbyint_bits = bitcast float %nearbyint0 to i32
+  %round_bits = bitcast float %round0e to i32
+  %roundeven_bits = bitcast float %roundeven0 to i32
+  %sin_bits = bitcast float %sin0 to i32
+  %cos_bits = bitcast float %cos0 to i32
+  %exp_bits = bitcast float %exp0 to i32
+  %exp2_bits = bitcast float %exp20 to i32
+  %log_bits = bitcast float %log0 to i32
+  %log10_bits = bitcast float %log100 to i32
+  %log2_bits = bitcast float %log20 to i32
+  %z0 = zext i32 %neg_bits to i64
+  %z1 = zext i32 %abs_bits to i64
+  %s1 = shl i64 %z1, 7
+  %m1 = xor i64 %z0, %s1
+  %z2 = zext i32 %sqrt_bits to i64
+  %s2 = shl i64 %z2, 13
+  %m2 = xor i64 %m1, %s2
+  %z3 = zext i32 %canonicalize_bits to i64
+  %s3 = shl i64 %z3, 19
+  %m3 = xor i64 %m2, %s3
+  %z4 = zext i32 %floor_bits to i64
+  %s4 = shl i64 %z4, 25
+  %m4 = xor i64 %m3, %s4
+  %z5 = zext i32 %ceil_bits to i64
+  %s5 = shl i64 %z5, 31
+  %m5 = xor i64 %m4, %s5
+  %z6 = zext i32 %rint_bits to i64
+  %s6 = shl i64 %z6, 37
+  %m6 = xor i64 %m5, %s6
+  %z7 = zext i32 %nearbyint_bits to i64
+  %s7 = shl i64 %z7, 43
+  %m7 = xor i64 %m6, %s7
+  %z8 = zext i32 %round_bits to i64
+  %s8 = shl i64 %z8, 49
+  %m8 = xor i64 %m7, %s8
+  %z9 = zext i32 %roundeven_bits to i64
+  %s9 = shl i64 %z9, 55
+  %m9 = xor i64 %m8, %s9
+  %z10 = zext i32 %sin_bits to i64
+  %s10 = shl i64 %z10, 3
+  %m10 = xor i64 %m9, %s10
+  %z11 = zext i32 %cos_bits to i64
+  %s11 = shl i64 %z11, 11
+  %m11 = xor i64 %m10, %s11
+  %z12 = zext i32 %exp_bits to i64
+  %s12 = shl i64 %z12, 17
+  %m12 = xor i64 %m11, %s12
+  %z13 = zext i32 %exp2_bits to i64
+  %s13 = shl i64 %z13, 29
+  %m13 = xor i64 %m12, %s13
+  %z14 = zext i32 %log_bits to i64
+  %s14 = shl i64 %z14, 41
+  %m14 = xor i64 %m13, %s14
+  %z15 = zext i32 %log10_bits to i64
+  %s15 = shl i64 %z15, 53
+  %m15 = xor i64 %m14, %s15
+  %z16 = zext i32 %log2_bits to i64
+  %s16 = shl i64 %z16, 5
+  %result = xor i64 %m15, %s16
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector float unary LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_vp_vector_float_unary_baseline.input.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_float_unary_baseline'
+source_filename = "vm_virtualize_vp_vector_float_unary_baseline.ll"
+
+declare float @llvm.fabs.f32(float)
+declare float @llvm.sqrt.f32(float)
+declare float @llvm.canonicalize.f32(float)
+declare float @llvm.floor.f32(float)
+declare float @llvm.ceil.f32(float)
+declare float @llvm.rint.f32(float)
+declare float @llvm.nearbyint.f32(float)
+declare float @llvm.round.f32(float)
+declare float @llvm.roundeven.f32(float)
+declare float @llvm.sin.f32(float)
+declare float @llvm.cos.f32(float)
+declare float @llvm.exp.f32(float)
+declare float @llvm.exp2.f32(float)
+declare float @llvm.log.f32(float)
+declare float @llvm.log10.f32(float)
+declare float @llvm.log2.f32(float)
+
+define i64 @vm_vp_vector_float_unary(float %a, float %b, float %c, float %d) #0 {
+entry:
+  %neg0 = fneg float %a
+  %abs0 = call float @llvm.fabs.f32(float %a)
+  %sqrt0 = call float @llvm.sqrt.f32(float 1.250000e+00)
+  %canonicalize0 = call float @llvm.canonicalize.f32(float %a)
+  %floor0 = call float @llvm.floor.f32(float -2.750000e+00)
+  %ceil0 = call float @llvm.ceil.f32(float -2.750000e+00)
+  %rint0 = call float @llvm.rint.f32(float -2.750000e+00)
+  %nearbyint0 = call float @llvm.nearbyint.f32(float -2.750000e+00)
+  %round0e = call float @llvm.round.f32(float -2.750000e+00)
+  %roundeven0 = call float @llvm.roundeven.f32(float -2.750000e+00)
+  %sin0 = call float @llvm.sin.f32(float 3.125000e-01)
+  %cos0 = call float @llvm.cos.f32(float 3.125000e-01)
+  %exp0 = call float @llvm.exp.f32(float 3.125000e-01)
+  %exp20 = call float @llvm.exp2.f32(float 3.125000e-01)
+  %log0 = call float @llvm.log.f32(float 1.250000e+00)
+  %log100 = call float @llvm.log10.f32(float 1.250000e+00)
+  %log20 = call float @llvm.log2.f32(float 1.250000e+00)
+  %neg_bits = bitcast float %neg0 to i32
+  %abs_bits = bitcast float %abs0 to i32
+  %sqrt_bits = bitcast float %sqrt0 to i32
+  %canonicalize_bits = bitcast float %canonicalize0 to i32
+  %floor_bits = bitcast float %floor0 to i32
+  %ceil_bits = bitcast float %ceil0 to i32
+  %rint_bits = bitcast float %rint0 to i32
+  %nearbyint_bits = bitcast float %nearbyint0 to i32
+  %round_bits = bitcast float %round0e to i32
+  %roundeven_bits = bitcast float %roundeven0 to i32
+  %sin_bits = bitcast float %sin0 to i32
+  %cos_bits = bitcast float %cos0 to i32
+  %exp_bits = bitcast float %exp0 to i32
+  %exp2_bits = bitcast float %exp20 to i32
+  %log_bits = bitcast float %log0 to i32
+  %log10_bits = bitcast float %log100 to i32
+  %log2_bits = bitcast float %log20 to i32
+  %z0 = zext i32 %neg_bits to i64
+  %z1 = zext i32 %abs_bits to i64
+  %s1 = shl i64 %z1, 7
+  %m1 = xor i64 %z0, %s1
+  %z2 = zext i32 %sqrt_bits to i64
+  %s2 = shl i64 %z2, 13
+  %m2 = xor i64 %m1, %s2
+  %z3 = zext i32 %canonicalize_bits to i64
+  %s3 = shl i64 %z3, 19
+  %m3 = xor i64 %m2, %s3
+  %z4 = zext i32 %floor_bits to i64
+  %s4 = shl i64 %z4, 25
+  %m4 = xor i64 %m3, %s4
+  %z5 = zext i32 %ceil_bits to i64
+  %s5 = shl i64 %z5, 31
+  %m5 = xor i64 %m4, %s5
+  %z6 = zext i32 %rint_bits to i64
+  %s6 = shl i64 %z6, 37
+  %m6 = xor i64 %m5, %s6
+  %z7 = zext i32 %nearbyint_bits to i64
+  %s7 = shl i64 %z7, 43
+  %m7 = xor i64 %m6, %s7
+  %z8 = zext i32 %round_bits to i64
+  %s8 = shl i64 %z8, 49
+  %m8 = xor i64 %m7, %s8
+  %z9 = zext i32 %roundeven_bits to i64
+  %s9 = shl i64 %z9, 55
+  %m9 = xor i64 %m8, %s9
+  %z10 = zext i32 %sin_bits to i64
+  %s10 = shl i64 %z10, 3
+  %m10 = xor i64 %m9, %s10
+  %z11 = zext i32 %cos_bits to i64
+  %s11 = shl i64 %z11, 11
+  %m11 = xor i64 %m10, %s11
+  %z12 = zext i32 %exp_bits to i64
+  %s12 = shl i64 %z12, 17
+  %m12 = xor i64 %m11, %s12
+  %z13 = zext i32 %exp2_bits to i64
+  %s13 = shl i64 %z13, 29
+  %m13 = xor i64 %m12, %s13
+  %z14 = zext i32 %log_bits to i64
+  %s14 = shl i64 %z14, 41
+  %m14 = xor i64 %m13, %s14
+  %z15 = zext i32 %log10_bits to i64
+  %s15 = shl i64 %z15, 53
+  %m15 = xor i64 %m14, %s15
+  %z16 = zext i32 %log2_bits to i64
+  %s16 = shl i64 %z16, 5
+  %result = xor i64 %m15, %s16
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector float unary scalar baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_float_unary_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_float_unary(float a, float b, float c, float d);
+int main(void) {
+    uint64_t a = vm_vp_vector_float_unary(-7.5f, 13.25f, -2.0f, 19.0f);
+    uint64_t b = vm_vp_vector_float_unary(3.75f, -8.5f, 6.0f, -11.5f);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector float unary C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &baseline_ir_source,
+        &harness,
+        "vm_virtualize_vp_vector_float_unary_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_float_unary.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_float_unary");
+    for expected in [
+        "fneg",
+        "fabs",
+        "fsqrt",
+        "fcanonicalize",
+        "ffloor",
+        "fceil",
+        "frint",
+        "fnearbyint",
+        "fround",
+        "froundeven",
+        "fsin",
+        "fcos",
+        "fexp",
+        "fexp2",
+        "flog",
+        "flog10",
+        "flog2",
+    ] {
+        assert!(
+            dump.contains(&format!(": {expected} ")),
+            "VP float unary should lower through profile handler {expected}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vp_vector_float_unary",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP vector float unary IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_float_unary"));
+    for handler in [
+        "handler.fneg",
+        "handler.fabs",
+        "handler.fsqrt",
+        "handler.fcanonicalize",
+        "handler.ffloor",
+        "handler.fceil",
+        "handler.frint",
+        "handler.fnearbyint",
+        "handler.fround",
+        "handler.froundeven",
+        "handler.fsin",
+        "handler.fcos",
+        "handler.fexp",
+        "handler.fexp2",
+        "handler.flog",
+        "handler.flog10",
+        "handler.flog2",
+    ] {
+        assert!(ir.contains(handler));
+    }
+    for intrinsic in [
+        "fneg",
+        "fabs",
+        "sqrt",
+        "canonicalize",
+        "floor",
+        "ceil",
+        "rint",
+        "nearbyint",
+        "round",
+        "roundeven",
+        "sin",
+        "cos",
+        "exp",
+        "exp2",
+        "log",
+        "log10",
+        "log2",
+    ] {
+        assert!(!ir.contains(&format!("call <4 x float> @llvm.vp.{intrinsic}")));
+    }
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_float_unary"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_roundtozero_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_roundtozero.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_roundtozero'
+source_filename = "vm_virtualize_vp_vector_roundtozero.ll"
+
+declare <4 x float> @llvm.vp.roundtozero.v4f32(<4 x float>, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_roundtozero(float %a, float %b, float %c, float %d) #0 {
+entry:
+  %v0 = insertelement <4 x float> poison, float %a, i32 0
+  %v1 = insertelement <4 x float> %v0, float %b, i32 1
+  %v2 = insertelement <4 x float> %v1, float %c, i32 2
+  %v = insertelement <4 x float> %v2, float %d, i32 3
+  %rounded = call <4 x float> @llvm.vp.roundtozero.v4f32(<4 x float> %v, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, i32 3)
+  %r0 = extractelement <4 x float> %rounded, i32 0
+  %r2 = extractelement <4 x float> %rounded, i32 2
+  %r0_bits = bitcast float %r0 to i32
+  %r2_bits = bitcast float %r2 to i32
+  %z0 = zext i32 %r0_bits to i64
+  %z2 = zext i32 %r2_bits to i64
+  %s2 = shl i64 %z2, 29
+  %result = xor i64 %z0, %s2
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector roundtozero LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_vp_vector_roundtozero_baseline.input.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_roundtozero_baseline'
+source_filename = "vm_virtualize_vp_vector_roundtozero_baseline.ll"
+
+define i64 @vm_vp_vector_roundtozero(float %a, float %b, float %c, float %d) #0 {
+entry:
+  %a_i = fptosi float %a to i32
+  %c_i = fptosi float %c to i32
+  %r0 = sitofp i32 %a_i to float
+  %r2 = sitofp i32 %c_i to float
+  %r0_bits = bitcast float %r0 to i32
+  %r2_bits = bitcast float %r2 to i32
+  %z0 = zext i32 %r0_bits to i64
+  %z2 = zext i32 %r2_bits to i64
+  %s2 = shl i64 %z2, 29
+  %result = xor i64 %z0, %s2
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector roundtozero scalar baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_roundtozero_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_roundtozero(float a, float b, float c, float d);
+int main(void) {
+    uint64_t a = vm_vp_vector_roundtozero(-7.75f, 13.25f, 2.875f, -19.5f);
+    uint64_t b = vm_vp_vector_roundtozero(3.999f, -8.5f, -6.125f, 11.5f);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector roundtozero C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &baseline_ir_source,
+        &harness,
+        "vm_virtualize_vp_vector_roundtozero_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_roundtozero.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_roundtozero");
+    assert!(
+        dump.contains(": ftrunc "),
+        "VP roundtozero should lower through profile handler ftrunc:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vp_vector_roundtozero",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP vector roundtozero IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_roundtozero"));
+    assert!(ir.contains("handler.ftrunc"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.roundtozero"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_roundtozero"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_float_ternary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_float_ternary.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_float_ternary'
+source_filename = "vm_virtualize_vp_vector_float_ternary.ll"
+
+declare <4 x float> @llvm.vp.fma.v4f32(<4 x float>, <4 x float>, <4 x float>, <4 x i1>, i32)
+declare <4 x float> @llvm.vp.fmuladd.v4f32(<4 x float>, <4 x float>, <4 x float>, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_float_ternary(float %a, float %b, float %c, float %d) #0 {
+entry:
+  %lhs0 = insertelement <4 x float> poison, float %a, i32 0
+  %lhs1 = insertelement <4 x float> %lhs0, float %b, i32 1
+  %lhs2 = insertelement <4 x float> %lhs1, float %c, i32 2
+  %lhs = insertelement <4 x float> %lhs2, float %d, i32 3
+  %rhs0 = insertelement <4 x float> poison, float 1.250000e+00, i32 0
+  %rhs1 = insertelement <4 x float> %rhs0, float -2.000000e+00, i32 1
+  %rhs2 = insertelement <4 x float> %rhs1, float 3.500000e+00, i32 2
+  %rhs = insertelement <4 x float> %rhs2, float 4.750000e+00, i32 3
+  %add0 = insertelement <4 x float> poison, float -5.000000e-01, i32 0
+  %add1 = insertelement <4 x float> %add0, float 6.250000e+00, i32 1
+  %add2 = insertelement <4 x float> %add1, float -7.500000e+00, i32 2
+  %add = insertelement <4 x float> %add2, float 8.875000e+00, i32 3
+  %fma = call <4 x float> @llvm.vp.fma.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x float> %add, <4 x i1> <i1 true, i1 false, i1 true, i1 false>, i32 3)
+  %fma0 = extractelement <4 x float> %fma, i32 0
+  %fma2 = extractelement <4 x float> %fma, i32 2
+  %fmuladd = call <4 x float> @llvm.vp.fmuladd.v4f32(<4 x float> %lhs, <4 x float> %rhs, <4 x float> %add, <4 x i1> <i1 false, i1 true, i1 false, i1 true>, i32 4)
+  %fmuladd1 = extractelement <4 x float> %fmuladd, i32 1
+  %fmuladd3 = extractelement <4 x float> %fmuladd, i32 3
+  %fma0_bits = bitcast float %fma0 to i32
+  %fma2_bits = bitcast float %fma2 to i32
+  %fmuladd1_bits = bitcast float %fmuladd1 to i32
+  %fmuladd3_bits = bitcast float %fmuladd3 to i32
+  %a0 = zext i32 %fma0_bits to i64
+  %a2 = zext i32 %fma2_bits to i64
+  %a2s = shl i64 %a2, 11
+  %m0 = xor i64 %a0, %a2s
+  %m1v = zext i32 %fmuladd1_bits to i64
+  %m1s = shl i64 %m1v, 29
+  %m1 = xor i64 %m0, %m1s
+  %m3v = zext i32 %fmuladd3_bits to i64
+  %m3s = shl i64 %m3v, 47
+  %result = xor i64 %m1, %m3s
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector float ternary LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_float_ternary_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_float_ternary(float a, float b, float c, float d);
+int main(void) {
+    uint64_t a = vm_vp_vector_float_ternary(1.5f, -2.0f, 3.25f, 4.5f);
+    uint64_t b = vm_vp_vector_float_ternary(-7.0f, 8.125f, -9.5f, 10.75f);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector float ternary C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vp_vector_float_ternary_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_float_ternary.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_float_ternary");
+    for expected in ["ffma", "ffmuladd"] {
+        assert!(
+            dump.contains(&format!(": {expected} ")),
+            "VP float ternary should lower through profile handler {expected}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vp_vector_float_ternary",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized VP vector float ternary IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_float_ternary"));
+    assert!(ir.contains("handler.ffma"));
+    assert!(ir.contains("handler.ffmuladd"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.fma"));
+    assert!(!ir.contains("call <4 x float> @llvm.vp.fmuladd"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_float_ternary"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_fcmp_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_fcmp.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_fcmp'
+source_filename = "vm_virtualize_vp_vector_fcmp.ll"
+
+declare <4 x i1> @llvm.vp.fcmp.v4f32(<4 x float>, <4 x float>, metadata, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_fcmp(float %a, float %b, float %c, float %d) #0 {
+entry:
+  %lhs0 = insertelement <4 x float> poison, float %a, i32 0
+  %lhs1 = insertelement <4 x float> %lhs0, float %b, i32 1
+  %lhs2 = insertelement <4 x float> %lhs1, float %c, i32 2
+  %lhs = insertelement <4 x float> %lhs2, float %d, i32 3
+  %rhs0 = insertelement <4 x float> poison, float 1.000000e+00, i32 0
+  %rhs1 = insertelement <4 x float> %rhs0, float -2.000000e+00, i32 1
+  %rhs2 = insertelement <4 x float> %rhs1, float 3.000000e+00, i32 2
+  %rhs = insertelement <4 x float> %rhs2, float 4.000000e+00, i32 3
+  %gt = call <4 x i1> @llvm.vp.fcmp.v4f32(<4 x float> %lhs, <4 x float> %rhs, metadata !"ogt", <4 x i1> <i1 true, i1 false, i1 true, i1 false>, i32 3)
+  %gt0 = extractelement <4 x i1> %gt, i32 0
+  %gt2 = extractelement <4 x i1> %gt, i32 2
+  %ule = call <4 x i1> @llvm.vp.fcmp.v4f32(<4 x float> %lhs, <4 x float> %rhs, metadata !"ule", <4 x i1> <i1 false, i1 true, i1 false, i1 true>, i32 4)
+  %ule1 = extractelement <4 x i1> %ule, i32 1
+  %ule3 = extractelement <4 x i1> %ule, i32 3
+  %z0 = zext i1 %gt0 to i64
+  %z2 = zext i1 %gt2 to i64
+  %s2 = shl i64 %z2, 2
+  %m0 = or i64 %z0, %s2
+  %z1 = zext i1 %ule1 to i64
+  %s1 = shl i64 %z1, 5
+  %m1 = or i64 %m0, %s1
+  %z3 = zext i1 %ule3 to i64
+  %s3 = shl i64 %z3, 9
+  %result = or i64 %m1, %s3
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector fcmp LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_fcmp_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_fcmp(float a, float b, float c, float d);
+int main(void) {
+    uint64_t a = vm_vp_vector_fcmp(2.5f, -3.0f, 4.0f, 5.0f);
+    uint64_t b = vm_vp_vector_fcmp(-1.0f, -1.5f, 2.0f, 3.5f);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector fcmp C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_vector_fcmp_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vp_vector_fcmp.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_fcmp");
+    assert!(
+        dump.matches(": fcmp ").count() >= 4,
+        "VP vector fcmp should lower active lanes through profile fcmp handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_vector_fcmp");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP vector fcmp IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_fcmp"));
+    assert!(ir.contains("handler.fcmp"));
+    assert!(!ir.contains("call <4 x i1> @llvm.vp.fcmp"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_fcmp"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_icmp_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_icmp.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_icmp'
+source_filename = "vm_virtualize_vp_vector_icmp.ll"
+
+declare <4 x i1> @llvm.vp.icmp.v4i32(<4 x i32>, <4 x i32>, metadata, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_icmp(i32 %a, i32 %b, i32 %c, i32 %d) #0 {
+entry:
+  %lhs0 = insertelement <4 x i32> poison, i32 %a, i32 0
+  %lhs1 = insertelement <4 x i32> %lhs0, i32 %b, i32 1
+  %lhs2 = insertelement <4 x i32> %lhs1, i32 %c, i32 2
+  %lhs = insertelement <4 x i32> %lhs2, i32 %d, i32 3
+  %rhs0 = insertelement <4 x i32> poison, i32 11, i32 0
+  %rhs1 = insertelement <4 x i32> %rhs0, i32 -17, i32 1
+  %rhs2 = insertelement <4 x i32> %rhs1, i32 23, i32 2
+  %rhs = insertelement <4 x i32> %rhs2, i32 29, i32 3
+  %sgt = call <4 x i1> @llvm.vp.icmp.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, metadata !"sgt", <4 x i1> <i1 true, i1 false, i1 true, i1 false>, i32 3)
+  %sgt0 = extractelement <4 x i1> %sgt, i32 0
+  %sgt2 = extractelement <4 x i1> %sgt, i32 2
+  %ule = call <4 x i1> @llvm.vp.icmp.v4i32(<4 x i32> %lhs, <4 x i32> %rhs, metadata !"ule", <4 x i1> <i1 false, i1 true, i1 false, i1 true>, i32 4)
+  %ule1 = extractelement <4 x i1> %ule, i32 1
+  %ule3 = extractelement <4 x i1> %ule, i32 3
+  %z0 = zext i1 %sgt0 to i64
+  %z2 = zext i1 %sgt2 to i64
+  %s2 = shl i64 %z2, 3
+  %m0 = or i64 %z0, %s2
+  %z1 = zext i1 %ule1 to i64
+  %s1 = shl i64 %z1, 7
+  %m1 = or i64 %m0, %s1
+  %z3 = zext i1 %ule3 to i64
+  %s3 = shl i64 %z3, 13
+  %result = or i64 %m1, %s3
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector icmp LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_icmp_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vp_vector_icmp(int32_t a, int32_t b, int32_t c, int32_t d);
+int main(void) {
+    uint64_t a = vm_vp_vector_icmp(19, -20, 31, 27);
+    uint64_t b = vm_vp_vector_icmp(5, -18, 17, 30);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector icmp C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_vector_icmp_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vp_vector_icmp.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_icmp");
+    assert!(
+        dump.matches(": icmp ").count() >= 4,
+        "VP vector icmp should lower active lanes through profile icmp handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_vector_icmp");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP vector icmp IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_icmp"));
+    assert!(ir.contains("handler.icmp"));
+    assert!(!ir.contains("call <4 x i1> @llvm.vp.icmp"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_icmp"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_phi_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_phi.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_phi'
+source_filename = "vm_virtualize_vector_phi.ll"
+
+define i64 @vm_vector_phi(i32 %seed, i32 %limit, double %d) {
+entry:
+  %v0 = insertelement <4 x i32> poison, i32 %seed, i32 0
+  %v1 = insertelement <4 x i32> %v0, i32 1, i32 1
+  %v2 = insertelement <4 x i32> %v1, i32 2, i32 2
+  %v3 = insertelement <4 x i32> %v2, i32 3, i32 3
+  %dv0 = insertelement <2 x double> poison, double %d, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double 1.000000e+00, i32 1
+  br label %loop
+
+loop:
+  %i = phi i32 [0, %entry], [%next, %loop]
+  %v = phi <4 x i32> [%v3, %entry], [%v_next, %loop]
+  %dv = phi <2 x double> [%dv1, %entry], [%dv_next, %loop]
+  %e0 = extractelement <4 x i32> %v, i32 0
+  %e1 = extractelement <4 x i32> %v, i32 1
+  %sum = add i32 %e0, %e1
+  %next = add i32 %i, 1
+  %v4 = insertelement <4 x i32> %v, i32 %sum, i32 0
+  %v_next = insertelement <4 x i32> %v4, i32 %next, i32 1
+  %de0 = extractelement <2 x double> %dv, i32 0
+  %de_next = fadd double %de0, 1.000000e+00
+  %dv_next = insertelement <2 x double> %dv, double %de_next, i32 0
+  %cont = icmp ult i32 %next, %limit
+  br i1 %cont, label %loop, label %exit
+
+exit:
+  %out0 = extractelement <4 x i32> %v_next, i32 0
+  %out1 = extractelement <4 x i32> %v_next, i32 1
+  %out2 = extractelement <4 x i32> %v_next, i32 2
+  %mix0 = xor i32 %out0, %out1
+  %mix1 = add i32 %mix0, %out2
+  %mix64 = zext i32 %mix1 to i64
+  %dout = extractelement <2 x double> %dv_next, i32 0
+  %dbits = bitcast double %dout to i64
+  %result = xor i64 %dbits, %mix64
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector phi LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_phi_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+uint64_t vm_vector_phi(uint32_t seed, uint32_t limit, double d);
+int main(void) {
+    uint64_t a = vm_vector_phi(5u, 3u, 1.5);
+    uint64_t b = vm_vector_phi(0x1234u, 6u, -2.25);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("vector phi C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_phi_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_vector_phi.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_phi");
+    assert!(
+        dump.matches(": mov ").count() >= 24,
+        "fixed vector phi edge moves should lower through profile mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_phi");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector phi LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_phi"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_phi"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_phi_constant_incoming_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_phi_constant.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_phi_constant'
+source_filename = "vm_virtualize_vector_phi_constant.ll"
+
+define i64 @vm_vector_phi_constant(i32 %flag, i32 %salt) #0 {
+entry:
+  %cond = icmp ne i32 %flag, 0
+  br i1 %cond, label %left, label %right
+
+left:
+  br label %join
+
+right:
+  br label %join
+
+join:
+  %v = phi <4 x i32> [ <i32 7, i32 11, i32 19, i32 23>, %left ], [ <i32 29, i32 31, i32 37, i32 41>, %right ]
+  %a = extractelement <4 x i32> %v, i32 0
+  %b = extractelement <4 x i32> %v, i32 1
+  %c = extractelement <4 x i32> %v, i32 2
+  %d = extractelement <4 x i32> %v, i32 3
+  %ab = add i32 %a, %b
+  %cd = xor i32 %c, %d
+  %mix = add i32 %ab, %cd
+  %mixed = xor i32 %mix, %salt
+  %result = zext i32 %mixed to i64
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("constant vector phi LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_phi_constant_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_vector_phi_constant(int32_t flag, uint32_t salt);
+
+int main(void) {
+    uint64_t a = vm_vector_phi_constant(1, 0x10203040u);
+    uint64_t b = vm_vector_phi_constant(0, 0x55667788u);
+    uint64_t c = vm_vector_phi_constant(-7, 0x99aabbccu);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)c);
+    return 0;
+}
+"#,
+    )
+    .expect("constant vector phi C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_phi_constant_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_phi_constant.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_phi_constant");
+    assert!(
+        dump.matches(": mov ").count() >= 8,
+        "constant vector phi should copy incoming lanes through profile mov actions:\n{dump}"
+    );
+    let constant_materialize_count = dump.matches(": mov_imm ").count() + dump.matches(": const_load ").count();
+    assert!(
+        constant_materialize_count >= 8,
+        "constant vector phi should materialize constant incoming lanes:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_phi_constant");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized constant vector phi LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_phi_constant"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_phi_constant"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_invariant_group_intrinsics_match_baseline() {
     ensure_plugin_built();
 
@@ -2330,6 +13733,108 @@ int main(void) {
     assert!(ir.contains("handler.mov"));
     assert!(!ir.contains("@llvm.launder.invariant.group"));
     assert!(!ir.contains("@llvm.strip.invariant.group"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_preserve_access_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let baseline_ir = output_dir().join("vm_virtualize_preserve_access_intrinsics.baseline.ll");
+    std::fs::write(
+        &baseline_ir,
+        r#"; ModuleID = 'vm_virtualize_preserve_access_intrinsics_baseline'
+source_filename = "vm_virtualize_preserve_access_intrinsics_baseline.ll"
+
+define i32 @vm_preserve_access_intrinsics(ptr %base, i32 %index) {
+entry:
+  %idx64 = sext i32 %index to i64
+  %slot = getelementptr inbounds i32, ptr %base, i64 %idx64
+  %value = load i32, ptr %slot, align 4
+  %mix = xor i32 %value, %index
+  ret i32 %mix
+}
+"#,
+    )
+    .expect("preserve access baseline LLVM IR fixture should be writable");
+
+    let ir_source = output_dir().join("vm_virtualize_preserve_access_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_preserve_access_intrinsics'
+source_filename = "vm_virtualize_preserve_access_intrinsics.ll"
+
+declare ptr @llvm.preserve.array.access.index.p0.p0(ptr, i32 immarg, i32 immarg)
+declare ptr @llvm.preserve.union.access.index.p0.p0(ptr, i32 immarg)
+declare ptr @llvm.preserve.struct.access.index.p0.p0(ptr, i32 immarg, i32 immarg)
+declare ptr @llvm.preserve.static.offset(ptr)
+
+define i32 @vm_preserve_access_intrinsics(ptr %base, i32 %index) {
+entry:
+  %idx64 = sext i32 %index to i64
+  %slot = getelementptr inbounds i32, ptr %base, i64 %idx64
+  %array = call ptr @llvm.preserve.array.access.index.p0.p0(ptr elementtype([4 x i32]) %slot, i32 1, i32 2)
+  %union = call ptr @llvm.preserve.union.access.index.p0.p0(ptr %array, i32 3)
+  %struct = call ptr @llvm.preserve.struct.access.index.p0.p0(ptr elementtype(i32) %union, i32 4, i32 5)
+  %offset = call ptr @llvm.preserve.static.offset(ptr %struct)
+  %value = load i32, ptr %offset, align 4
+  %mix = xor i32 %value, %index
+  ret i32 %mix
+}
+"#,
+    )
+    .expect("preserve access intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_preserve_access_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_preserve_access_intrinsics(int32_t *base, int32_t index);
+
+int main(void) {
+    int32_t values[4] = {0x13572468, -37, 0x10203040, -123456};
+    int32_t a = vm_preserve_access_intrinsics(values, 0);
+    int32_t b = vm_preserve_access_intrinsics(values, 2);
+    printf("%d\n", (int)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("preserve access intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_ir,
+        &harness,
+        "vm_virtualize_preserve_access_intrinsics_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_preserve_access_intrinsics.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_preserve_access_intrinsics");
+    assert!(
+        dump.matches(": mov ").count() >= 4,
+        "preserve access intrinsics should lower through profile mov handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_preserve_access_intrinsics");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized preserve access LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_preserve_access_intrinsics"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("@llvm.preserve."));
 }
 
 #[test]
@@ -2484,8 +13989,12 @@ int main(void) {
     let dump = bytecode_dump_for_function(&stderr, "vm_metadata_nop_intrinsics");
     let fake_nops = dump.matches(": fake_nop ").count();
     assert!(
-        fake_nops >= 3,
-        "prefetch/noalias.scope.decl/donothing should lower through fake_nop:\n{dump}"
+        fake_nops >= 2,
+        "noalias.scope.decl/donothing should lower through fake_nop:\n{dump}"
+    );
+    assert!(
+        dump.contains(": prefetch "),
+        "prefetch should lower through the explicit VM prefetch handler:\n{dump}"
     );
 
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_metadata_nop_intrinsics");
@@ -2496,9 +14005,85 @@ int main(void) {
 
     let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized metadata nop LLVM IR should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_metadata_nop_intrinsics"));
-    assert!(!ir.contains("@llvm.prefetch"));
+    assert!(ir.contains("handler.prefetch"));
+    assert!(ir.contains("call void @llvm.prefetch.p0"));
     assert!(!ir.contains("@llvm.experimental.noalias.scope.decl"));
     assert!(!ir.contains("@llvm.donothing"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_fake_use_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_fake_use_intrinsic.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_fake_use_intrinsic'
+source_filename = "vm_virtualize_fake_use_intrinsic.ll"
+
+@fake_use_global = internal global i32 17, align 4
+
+declare void @llvm.fake.use(...)
+
+define i32 @vm_fake_use_intrinsic(i32 %seed, ptr %base) {
+entry:
+  %loaded = load i32, ptr %base, align 4
+  call void (...) @llvm.fake.use(i32 %seed, ptr %base, i32 %loaded)
+  %mixed = xor i32 %loaded, %seed
+  call void (...) @llvm.fake.use(i32 %mixed, ptr @fake_use_global)
+  %final = add i32 %mixed, 7
+  ret i32 %final
+}
+"#,
+    )
+    .expect("fake.use intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_fake_use_intrinsic_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_fake_use_intrinsic(int32_t seed, int32_t *base);
+
+int main(void) {
+    int32_t values[2] = {0x10203040, -9999};
+    int32_t a = vm_fake_use_intrinsic(0x13572468, values);
+    int32_t b = vm_fake_use_intrinsic(-37, values + 1);
+    printf("%d\n", (int)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("fake.use intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_fake_use_intrinsic_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_fake_use_intrinsic.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_fake_use_intrinsic");
+    assert!(
+        dump.matches(": fake_nop ").count() >= 2,
+        "llvm.fake.use should lower through the profile nop handler:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_fake_use_intrinsic");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized fake.use LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_fake_use_intrinsic"));
+    assert!(!ir.contains("@llvm.fake.use"));
 }
 
 #[test]
@@ -3104,16 +14689,80 @@ fn test_vm_virtualize_is_constant_intrinsic_matches_baseline() {
         r#"; ModuleID = 'vm_virtualize_is_constant_intrinsic'
 source_filename = "vm_virtualize_is_constant_intrinsic.ll"
 
-declare i1 @llvm.is.constant.i32(i32)
+@vm_is_constant_global = internal global i32 7, align 4
 
-define i32 @vm_is_constant_intrinsic(i32 %seed) {
+declare i1 @llvm.is.constant.i32(i32)
+declare i1 @llvm.is.constant.p0(ptr)
+declare i1 @llvm.is.constant.f16(half)
+declare i1 @llvm.is.constant.f32(float)
+declare i1 @llvm.is.constant.v4i32(<4 x i32>)
+declare i1 @llvm.is.constant.v2f32(<2 x float>)
+declare i1 @llvm.is.constant.v2p0(<2 x ptr>)
+
+define i32 @vm_is_constant_intrinsic(i32 %seed, ptr %ptr, half %hvalue, float %value) {
 entry:
+  %dyn_vec0 = insertelement <4 x i32> poison, i32 %seed, i32 0
+  %dyn_vec1 = insertelement <4 x i32> %dyn_vec0, i32 7, i32 1
+  %dyn_vec2 = insertelement <4 x i32> %dyn_vec1, i32 8, i32 2
+  %dyn_vec3 = insertelement <4 x i32> %dyn_vec2, i32 9, i32 3
+  %dyn_float_vec0 = insertelement <2 x float> poison, float %value, i32 0
+  %dyn_float_vec1 = insertelement <2 x float> %dyn_float_vec0, float 2.000000e+00, i32 1
+  %dyn_ptr_vec0 = insertelement <2 x ptr> poison, ptr %ptr, i32 0
+  %dyn_ptr_vec1 = insertelement <2 x ptr> %dyn_ptr_vec0, ptr @vm_is_constant_global, i32 1
   %known = call i1 @llvm.is.constant.i32(i32 123)
   %dynamic = call i1 @llvm.is.constant.i32(i32 %seed)
+  %known_ptr = call i1 @llvm.is.constant.p0(ptr @vm_is_constant_global)
+  %dynamic_ptr = call i1 @llvm.is.constant.p0(ptr %ptr)
+  %known_half = call i1 @llvm.is.constant.f16(half 0xH4200)
+  %dynamic_half = call i1 @llvm.is.constant.f16(half %hvalue)
+  %known_float = call i1 @llvm.is.constant.f32(float 1.500000e+00)
+  %dynamic_float = call i1 @llvm.is.constant.f32(float %value)
+  %known_vec = call i1 @llvm.is.constant.v4i32(<4 x i32> <i32 1, i32 2, i32 3, i32 4>)
+  %dynamic_vec = call i1 @llvm.is.constant.v4i32(<4 x i32> %dyn_vec3)
+  %known_float_vec = call i1 @llvm.is.constant.v2f32(<2 x float> <float 1.000000e+00, float 2.000000e+00>)
+  %dynamic_float_vec = call i1 @llvm.is.constant.v2f32(<2 x float> %dyn_float_vec1)
+  %known_ptr_vec = call i1 @llvm.is.constant.v2p0(<2 x ptr> <ptr @vm_is_constant_global, ptr null>)
+  %dynamic_ptr_vec = call i1 @llvm.is.constant.v2p0(<2 x ptr> %dyn_ptr_vec1)
   %known_i32 = zext i1 %known to i32
   %dynamic_i32 = zext i1 %dynamic to i32
+  %known_ptr_i32 = zext i1 %known_ptr to i32
+  %dynamic_ptr_i32 = zext i1 %dynamic_ptr to i32
+  %known_half_i32 = zext i1 %known_half to i32
+  %dynamic_half_i32 = zext i1 %dynamic_half to i32
+  %known_float_i32 = zext i1 %known_float to i32
+  %dynamic_float_i32 = zext i1 %dynamic_float to i32
+  %known_vec_i32 = zext i1 %known_vec to i32
+  %dynamic_vec_i32 = zext i1 %dynamic_vec to i32
+  %known_float_vec_i32 = zext i1 %known_float_vec to i32
+  %dynamic_float_vec_i32 = zext i1 %dynamic_float_vec to i32
+  %known_ptr_vec_i32 = zext i1 %known_ptr_vec to i32
+  %dynamic_ptr_vec_i32 = zext i1 %dynamic_ptr_vec to i32
   %tag = shl i32 %known_i32, 4
-  %combined = or i32 %tag, %dynamic_i32
+  %ptr_tag = shl i32 %known_ptr_i32, 5
+  %ptr_dynamic_tag = shl i32 %dynamic_ptr_i32, 6
+  %half_tag = shl i32 %known_half_i32, 7
+  %half_dynamic_tag = shl i32 %dynamic_half_i32, 8
+  %float_tag = shl i32 %known_float_i32, 9
+  %float_dynamic_tag = shl i32 %dynamic_float_i32, 10
+  %vec_tag = shl i32 %known_vec_i32, 11
+  %vec_dynamic_tag = shl i32 %dynamic_vec_i32, 12
+  %float_vec_tag = shl i32 %known_float_vec_i32, 13
+  %float_vec_dynamic_tag = shl i32 %dynamic_float_vec_i32, 14
+  %ptr_vec_tag = shl i32 %known_ptr_vec_i32, 15
+  %ptr_vec_dynamic_tag = shl i32 %dynamic_ptr_vec_i32, 16
+  %a = or i32 %tag, %dynamic_i32
+  %b = or i32 %ptr_tag, %ptr_dynamic_tag
+  %h = or i32 %half_tag, %half_dynamic_tag
+  %f = or i32 %float_tag, %float_dynamic_tag
+  %v = or i32 %vec_tag, %vec_dynamic_tag
+  %fv = or i32 %float_vec_tag, %float_vec_dynamic_tag
+  %pv = or i32 %ptr_vec_tag, %ptr_vec_dynamic_tag
+  %ab = or i32 %a, %b
+  %hf = or i32 %h, %f
+  %vp = or i32 %v, %pv
+  %vectors = or i32 %vp, %fv
+  %scalar_combined = or i32 %ab, %hf
+  %combined = or i32 %scalar_combined, %vectors
   %mixed = xor i32 %combined, %seed
   ret i32 %mixed
 }
@@ -3127,11 +14776,12 @@ entry:
         r#"#include <stdint.h>
 #include <stdio.h>
 
-int32_t vm_is_constant_intrinsic(int32_t seed);
+int32_t vm_is_constant_intrinsic(int32_t seed, int32_t *ptr, _Float16 hvalue, float value);
 
 int main(void) {
-    int32_t a = vm_is_constant_intrinsic(0x13572468);
-    int32_t b = vm_is_constant_intrinsic(-19);
+    int32_t storage = 41;
+    int32_t a = vm_is_constant_intrinsic(0x13572468, &storage, (_Float16)2.5, 3.25f);
+    int32_t b = vm_is_constant_intrinsic(-19, &storage, (_Float16)-4.0, -7.5f);
     printf("%d %d %d\n", (int)a, (int)b, (int)(a ^ b));
     return 0;
 }
@@ -3169,6 +14819,182 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_widenable_condition_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_widenable_condition.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_widenable_condition'
+source_filename = "vm_virtualize_widenable_condition.ll"
+
+declare i1 @llvm.experimental.widenable.condition()
+
+define i32 @vm_widenable_condition_intrinsic(i32 %seed) {
+entry:
+  %hint = call i1 @llvm.experimental.widenable.condition()
+  %masked = and i32 %seed, 255
+  br i1 %hint, label %hot, label %cold
+
+hot:
+  %hot_mix = xor i32 %masked, 90
+  br label %join
+
+cold:
+  %cold_mix = add i32 %masked, 17
+  br label %join
+
+join:
+  %result = phi i32 [ %hot_mix, %hot ], [ %cold_mix, %cold ]
+  ret i32 %result
+}
+"#,
+    )
+    .expect("llvm.experimental.widenable.condition LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_widenable_condition_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_widenable_condition_intrinsic(int32_t seed);
+
+int main(void) {
+    int32_t a = vm_widenable_condition_intrinsic(0x13572468);
+    int32_t b = vm_widenable_condition_intrinsic(-19);
+    printf("%d %d %d\n", (int)a, (int)b, (int)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("llvm.experimental.widenable.condition C harness should be writable");
+
+    let (baseline_ir, baseline_opt_output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_widenable_condition_baseline.ll",
+        "function(lower-widenable-condition)",
+        ObfuscationConfig::disabled(),
+    );
+    assert_success(baseline_opt_output);
+    let baseline = compile_ir_with_c_harness(&baseline_ir, &harness, "vm_virtualize_widenable_condition_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_widenable_condition.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_widenable_condition_intrinsic");
+    assert!(
+        dump.contains(": mov_imm ") || dump.contains(": const_load "),
+        "llvm.experimental.widenable.condition should materialize true through profile constants:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_widenable_condition");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized widenable condition LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_widenable_condition_intrinsic"));
+    assert!(!ir.contains("@llvm.experimental.widenable.condition"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_runtime_check_gate_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_runtime_check_gates.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_runtime_check_gates'
+source_filename = "vm_virtualize_runtime_check_gates.ll"
+
+declare i1 @llvm.allow.ubsan.check(i8 immarg)
+declare i1 @llvm.allow.runtime.check(metadata)
+
+define i32 @vm_runtime_check_gate_intrinsics(i32 %seed) {
+entry:
+  %ubsan = call i1 @llvm.allow.ubsan.check(i8 9)
+  %runtime = call i1 @llvm.allow.runtime.check(metadata !0)
+  %masked = and i32 %seed, 255
+  %ubsan_i32 = zext i1 %ubsan to i32
+  %runtime_i32 = zext i1 %runtime to i32
+  %runtime_tag = shl i32 %runtime_i32, 5
+  %tags = or i32 %ubsan_i32, %runtime_tag
+  %mixed = xor i32 %masked, %tags
+  ret i32 %mixed
+}
+
+!0 = !{!"amice.runtime.check"}
+"#,
+    )
+    .expect("runtime-check gate LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_runtime_check_gates_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_runtime_check_gate_intrinsics(int32_t seed);
+
+int main(void) {
+    int32_t a = vm_runtime_check_gate_intrinsics(0x13572468);
+    int32_t b = vm_runtime_check_gate_intrinsics(-19);
+    printf("%d %d %d\n", (int)a, (int)b, (int)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("runtime-check gate C harness should be writable");
+
+    let (baseline_ir, baseline_opt_output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_runtime_check_gates_baseline.ll",
+        "lower-allow-check",
+        ObfuscationConfig::disabled(),
+    );
+    assert_success(baseline_opt_output);
+    let baseline = compile_ir_with_c_harness(&baseline_ir, &harness, "vm_virtualize_runtime_check_gates_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_runtime_check_gates.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_runtime_check_gate_intrinsics");
+    assert!(
+        dump.contains(": mov_imm ") || dump.contains(": const_load "),
+        "runtime-check gate intrinsics should materialize true through profile constants:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_runtime_check_gates");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized runtime-check gate LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_runtime_check_gate_intrinsics"));
+    assert!(!ir.contains("@llvm.allow.ubsan.check"));
+    assert!(!ir.contains("@llvm.allow.runtime.check"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_objectsize_intrinsic_matches_baseline() {
     ensure_plugin_built();
 
@@ -3179,21 +15005,50 @@ fn test_vm_virtualize_objectsize_intrinsic_matches_baseline() {
 source_filename = "vm_virtualize_objectsize_intrinsic.ll"
 
 @vm_objectsize_global = internal global [40 x i8] zeroinitializer, align 16
+@vm_objectsize_as1_global = internal addrspace(1) global [12 x i8] zeroinitializer, align 4
+@vm_objectsize_zero_global = internal global [0 x i8] zeroinitializer, align 1
 
 declare i64 @llvm.objectsize.i64.p0(ptr, i1 immarg, i1 immarg, i1 immarg)
 
 define i64 @vm_objectsize_intrinsic(i64 %seed) {
 entry:
   %buf = alloca [24 x i8], align 16
+  %zero_count = alloca i8, i64 0, align 1
+  %zero_type = alloca [0 x i8], align 1
   %buf_tail = getelementptr inbounds [24 x i8], ptr %buf, i64 0, i64 5
+  %dyn_index = and i64 %seed, 7
+  %buf_dyn_tail = getelementptr inbounds i8, ptr %buf_tail, i64 %dyn_index
+  %buf_dyn_tail2 = getelementptr inbounds i8, ptr %buf_dyn_tail, i64 2
   %global_tail = getelementptr inbounds [40 x i8], ptr @vm_objectsize_global, i64 0, i64 9
+  %global_dyn_index = and i64 %seed, 15
+  %global_dyn_tail = getelementptr inbounds i8, ptr @vm_objectsize_global, i64 %global_dyn_index
+  %global_as1_tail = getelementptr inbounds [12 x i8], ptr addrspacecast (ptr addrspace(1) @vm_objectsize_as1_global to ptr), i64 0, i64 3
+  %zero_tail = getelementptr inbounds [0 x i8], ptr %zero_type, i64 0, i64 0
+  %buf_as1 = addrspacecast ptr %buf to ptr addrspace(1)
+  %buf_back = addrspacecast ptr addrspace(1) %buf_as1 to ptr
   %buf_size = call i64 @llvm.objectsize.i64.p0(ptr %buf, i1 false, i1 true, i1 false)
   %buf_tail_size = call i64 @llvm.objectsize.i64.p0(ptr %buf_tail, i1 false, i1 true, i1 false)
+  %buf_dyn_tail_size = call i64 @llvm.objectsize.i64.p0(ptr %buf_dyn_tail2, i1 false, i1 true, i1 true)
+  %buf_cast_size = call i64 @llvm.objectsize.i64.p0(ptr %buf_back, i1 false, i1 true, i1 false)
   %global_size = call i64 @llvm.objectsize.i64.p0(ptr @vm_objectsize_global, i1 false, i1 true, i1 false)
   %global_tail_size = call i64 @llvm.objectsize.i64.p0(ptr %global_tail, i1 false, i1 true, i1 false)
+  %global_dyn_tail_size = call i64 @llvm.objectsize.i64.p0(ptr %global_dyn_tail, i1 false, i1 true, i1 true)
+  %global_as1_tail_size = call i64 @llvm.objectsize.i64.p0(ptr %global_as1_tail, i1 false, i1 true, i1 false)
+  %zero_count_size = call i64 @llvm.objectsize.i64.p0(ptr %zero_count, i1 false, i1 true, i1 false)
+  %zero_type_size = call i64 @llvm.objectsize.i64.p0(ptr %zero_type, i1 false, i1 true, i1 false)
+  %zero_tail_size = call i64 @llvm.objectsize.i64.p0(ptr %zero_tail, i1 false, i1 true, i1 false)
+  %zero_global_size = call i64 @llvm.objectsize.i64.p0(ptr @vm_objectsize_zero_global, i1 false, i1 true, i1 false)
   %a = add i64 %buf_size, %buf_tail_size
+  %a_dyn = add i64 %a, %buf_dyn_tail_size
+  %a_cast = add i64 %a_dyn, %buf_cast_size
   %b = add i64 %global_size, %global_tail_size
-  %sum = add i64 %a, %b
+  %b_dyn = add i64 %b, %global_dyn_tail_size
+  %b_cast = add i64 %b_dyn, %global_as1_tail_size
+  %c = add i64 %zero_count_size, %zero_type_size
+  %d = add i64 %zero_tail_size, %zero_global_size
+  %nonzero = add i64 %a_cast, %b_cast
+  %zero_sum = add i64 %c, %d
+  %sum = add i64 %nonzero, %zero_sum
   %mixed = xor i64 %sum, %seed
   ret i64 %mixed
 }
@@ -3235,6 +15090,10 @@ int main(void) {
         dump.contains(": mov_imm "),
         "llvm.objectsize should materialize static sizes through profile mov_imm:\n{dump}"
     );
+    assert!(
+        dump.contains(": isub "),
+        "dynamic=true objectsize for static-object dynamic GEP should compute total_size - offset through profile isub:\n{dump}"
+    );
 
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_objectsize_intrinsic");
     virtualized.assert_success();
@@ -3249,41 +15108,199 @@ int main(void) {
 
 #[test]
 #[serial]
-fn test_vm_virtualize_unknown_objectsize_safely_skips() {
+fn test_vm_virtualize_unknown_objectsize_fallback_matches_baseline() {
     ensure_plugin_built();
 
-    let ir_source = output_dir().join("vm_virtualize_objectsize_skip.input.ll");
+    let ir_source = output_dir().join("vm_virtualize_objectsize_unknown_fallback.input.ll");
     std::fs::write(
         &ir_source,
-        r#"; ModuleID = 'vm_virtualize_objectsize_skip'
-source_filename = "vm_virtualize_objectsize_skip.ll"
+        r#"; ModuleID = 'vm_virtualize_objectsize_unknown_fallback'
+source_filename = "vm_virtualize_objectsize_unknown_fallback.ll"
 
 declare i64 @llvm.objectsize.i64.p0(ptr, i1 immarg, i1 immarg, i1 immarg)
+declare i32 @llvm.objectsize.i32.p0(ptr, i1 immarg, i1 immarg, i1 immarg)
 
-define i64 @vm_objectsize_unknown_skip(ptr %ptr, i64 %seed) {
+define i64 @vm_objectsize_unknown_fallback(ptr %ptr, i64 %seed) {
 entry:
-  %size = call i64 @llvm.objectsize.i64.p0(ptr %ptr, i1 false, i1 true, i1 false)
-  %mixed = xor i64 %size, %seed
-  ret i64 %mixed
+  %max64 = call i64 @llvm.objectsize.i64.p0(ptr %ptr, i1 false, i1 true, i1 false)
+  %min64 = call i64 @llvm.objectsize.i64.p0(ptr %ptr, i1 true, i1 true, i1 false)
+  %null_known = call i64 @llvm.objectsize.i64.p0(ptr null, i1 false, i1 false, i1 false)
+  %null_unknown_max = call i64 @llvm.objectsize.i64.p0(ptr null, i1 false, i1 true, i1 false)
+  %dyn_max64 = call i64 @llvm.objectsize.i64.p0(ptr %ptr, i1 false, i1 true, i1 true)
+  %dyn_min64 = call i64 @llvm.objectsize.i64.p0(ptr %ptr, i1 true, i1 true, i1 true)
+  %dyn_null_unknown_max = call i64 @llvm.objectsize.i64.p0(ptr null, i1 false, i1 true, i1 true)
+  %max32 = call i32 @llvm.objectsize.i32.p0(ptr %ptr, i1 false, i1 true, i1 false)
+  %min32 = call i32 @llvm.objectsize.i32.p0(ptr %ptr, i1 true, i1 true, i1 false)
+  %max32_z = zext i32 %max32 to i64
+  %min32_z = zext i32 %min32 to i64
+  %a = xor i64 %max64, %seed
+  %b = add i64 %a, %min64
+  %c = xor i64 %b, %null_known
+  %d = xor i64 %c, %null_unknown_max
+  %e = add i64 %d, %max32_z
+  %f = xor i64 %e, %min32_z
+  %g = xor i64 %f, %dyn_max64
+  %h = add i64 %g, %dyn_min64
+  %i = xor i64 %h, %dyn_null_unknown_max
+  ret i64 %i
 }
 "#,
     )
-    .expect("unsupported llvm.objectsize LLVM IR fixture should be writable");
+    .expect("unknown llvm.objectsize LLVM IR fixture should be writable");
 
-    let (output_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+    let harness = output_dir().join("vm_virtualize_objectsize_unknown_fallback_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_objectsize_unknown_fallback(void *ptr, uint64_t seed);
+
+int main(void) {
+    uint8_t bytes[7] = {1, 2, 3, 4, 5, 6, 7};
+    uint64_t a = vm_objectsize_unknown_fallback(bytes, 0x1020304050607080ULL);
+    uint64_t b = vm_objectsize_unknown_fallback(0, 0x8877665544332211ULL);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("unknown llvm.objectsize C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
         &ir_source,
-        "vm_virtualize_objectsize_skip.ll",
+        &harness,
+        "vm_virtualize_objectsize_unknown_fallback_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (output_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_objectsize_unknown_fallback.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_objectsize_unknown_fallback");
+    assert!(
+        dump.contains(": mov_imm ") || dump.contains(": const_load "),
+        "unknown llvm.objectsize fallback should materialize constants through profile constants:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_virtualize_objectsize_unknown_fallback");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("objectsize fallback output IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_objectsize_unknown_fallback"));
+    assert!(!ir.contains("@llvm.objectsize"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_dynamic_alloca_objectsize_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_dynamic_alloca_objectsize.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_dynamic_alloca_objectsize'
+source_filename = "vm_virtualize_dynamic_alloca_objectsize.ll"
+
+declare i64 @llvm.objectsize.i64.p0(ptr, i1 immarg, i1 immarg, i1 immarg)
+
+define i64 @vm_dynamic_alloca_objectsize(i64 %n, i64 %seed) {
+entry:
+  %masked = and i64 %n, 31
+  %count = add i64 %masked, 1
+  %buf = alloca i16, i64 %count, align 2
+  %buf_as1 = addrspacecast ptr %buf to ptr addrspace(1)
+  %buf_back = addrspacecast ptr addrspace(1) %buf_as1 to ptr
+  %tail_index = and i64 %n, 15
+  %tail = getelementptr inbounds i16, ptr %buf, i64 %tail_index
+  %tail2_step_raw = lshr i64 %n, 5
+  %tail2_step = and i64 %tail2_step_raw, 1
+  %tail2 = getelementptr inbounds i16, ptr %tail, i64 %tail2_step
+  %tail_as1 = addrspacecast ptr %tail to ptr addrspace(1)
+  %tail_back = addrspacecast ptr addrspace(1) %tail_as1 to ptr
+  %size = call i64 @llvm.objectsize.i64.p0(ptr %buf, i1 false, i1 true, i1 true)
+  %min_size = call i64 @llvm.objectsize.i64.p0(ptr %buf, i1 true, i1 true, i1 true)
+  %cast_size = call i64 @llvm.objectsize.i64.p0(ptr %buf_back, i1 false, i1 true, i1 true)
+  %tail_size = call i64 @llvm.objectsize.i64.p0(ptr %tail, i1 false, i1 true, i1 true)
+  %tail_cast_size = call i64 @llvm.objectsize.i64.p0(ptr %tail_back, i1 false, i1 true, i1 true)
+  %tail2_size = call i64 @llvm.objectsize.i64.p0(ptr %tail2, i1 false, i1 true, i1 true)
+  %mixed0 = xor i64 %size, %seed
+  %mixed1 = add i64 %mixed0, %min_size
+  %mixed2 = xor i64 %mixed1, %cast_size
+  %mixed3 = add i64 %mixed2, %tail_size
+  %mixed4 = xor i64 %mixed3, %tail_cast_size
+  %mixed5 = add i64 %mixed4, %tail2_size
+  ret i64 %mixed5
+}
+"#,
+    )
+    .expect("dynamic alloca objectsize LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_dynamic_alloca_objectsize_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_dynamic_alloca_objectsize(uint64_t n, uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm_dynamic_alloca_objectsize(0, 0x0123456789abcdefULL);
+    uint64_t b = vm_dynamic_alloca_objectsize(7, 0xfedcba9876543210ULL);
+    uint64_t c = vm_dynamic_alloca_objectsize(42, 0x1020304050607080ULL);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)c);
+    return 0;
+}
+"#,
+    )
+    .expect("dynamic alloca objectsize C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_dynamic_alloca_objectsize_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_dynamic_alloca_objectsize.ll",
         "default<O0>",
-        vm_virtualize_config(),
+        config,
     );
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_dynamic_alloca_objectsize");
+    assert!(
+        dump.contains(": alloca_dyn "),
+        "dynamic alloca objectsize should keep the dynamic stack allocation in bytecode:\n{dump}"
+    );
+    assert!(
+        dump.contains(": imul "),
+        "dynamic alloca objectsize should compute count * elem_size through profile imul:\n{dump}"
+    );
+    assert!(
+        dump.contains(": isub "),
+        "dynamic alloca GEP objectsize should subtract the runtime GEP offset through profile isub:\n{dump}"
+    );
 
-    let ir = std::fs::read_to_string(output_ir).expect("objectsize skip output IR should be readable");
-    assert!(!ir.contains(".amice.vm.bytecode.vm_objectsize_unknown_skip"));
-    assert!(stderr.contains("skip function"));
-    assert!(stderr.contains("vm_objectsize_unknown_skip"));
-    assert!(stderr.contains("llvm.objectsize only supports static alloca, global, and constant-offset GEP operands"));
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_dynamic_alloca_objectsize");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("dynamic alloca objectsize output IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_dynamic_alloca_objectsize"));
+    assert!(!ir.contains("call i64 @llvm.objectsize"));
 }
 
 #[test]
@@ -3297,11 +15314,16 @@ fn test_vm_virtualize_is_fpclass_intrinsic_matches_baseline() {
         r#"; ModuleID = 'vm_virtualize_is_fpclass_intrinsic'
 source_filename = "vm_virtualize_is_fpclass_intrinsic.ll"
 
+declare i1 @llvm.is.fpclass.f16(half, i32 immarg)
 declare i1 @llvm.is.fpclass.f32(float, i32 immarg)
 declare i1 @llvm.is.fpclass.f64(double, i32 immarg)
 
-define i32 @vm_is_fpclass_intrinsic(float %f, double %d) {
+define i32 @vm_is_fpclass_intrinsic(half %h, float %f, double %d) {
 entry:
+  %h_nan = call i1 @llvm.is.fpclass.f16(half %h, i32 3)
+  %h_neg_zero = call i1 @llvm.is.fpclass.f16(half %h, i32 32)
+  %h_pos_normal = call i1 @llvm.is.fpclass.f16(half %h, i32 256)
+  %h_pos_subnormal = call i1 @llvm.is.fpclass.f16(half %h, i32 128)
   %f_nan = call i1 @llvm.is.fpclass.f32(float %f, i32 3)
   %f_pos_zero = call i1 @llvm.is.fpclass.f32(float %f, i32 64)
   %f_pos_normal = call i1 @llvm.is.fpclass.f32(float %f, i32 256)
@@ -3325,6 +15347,14 @@ entry:
   %b6 = shl i32 %b6_raw, 6
   %b7_raw = zext i1 %d_neg_subnormal to i32
   %b7 = shl i32 %b7_raw, 7
+  %b8_raw = zext i1 %h_nan to i32
+  %b8 = shl i32 %b8_raw, 8
+  %b9_raw = zext i1 %h_neg_zero to i32
+  %b9 = shl i32 %b9_raw, 9
+  %b10_raw = zext i1 %h_pos_normal to i32
+  %b10 = shl i32 %b10_raw, 10
+  %b11_raw = zext i1 %h_pos_subnormal to i32
+  %b11 = shl i32 %b11_raw, 11
   %m1 = or i32 %b0, %b1
   %m2 = or i32 %m1, %b2
   %m3 = or i32 %m2, %b3
@@ -3332,7 +15362,11 @@ entry:
   %m5 = or i32 %m4, %b5
   %m6 = or i32 %m5, %b6
   %m7 = or i32 %m6, %b7
-  ret i32 %m7
+  %m8 = or i32 %m7, %b8
+  %m9 = or i32 %m8, %b9
+  %m10 = or i32 %m9, %b10
+  %m11 = or i32 %m10, %b11
+  ret i32 %m11
 }
 "#,
     )
@@ -3344,13 +15378,13 @@ entry:
         r#"#include <stdint.h>
 #include <stdio.h>
 
-int32_t vm_is_fpclass_intrinsic(float f, double d);
+int32_t vm_is_fpclass_intrinsic(_Float16 h, float f, double d);
 
 int main(void) {
-    int32_t a = vm_is_fpclass_intrinsic(__builtin_nanf(""), -__builtin_huge_val());
-    int32_t b = vm_is_fpclass_intrinsic(0.0f, -0.0);
-    int32_t c = vm_is_fpclass_intrinsic(2.5f, -3.75);
-    int32_t d = vm_is_fpclass_intrinsic(0x1p-149f, -0x1p-1074);
+    int32_t a = vm_is_fpclass_intrinsic((_Float16)__builtin_nanf(""), __builtin_nanf(""), -__builtin_huge_val());
+    int32_t b = vm_is_fpclass_intrinsic((_Float16)-0.0, 0.0f, -0.0);
+    int32_t c = vm_is_fpclass_intrinsic((_Float16)2.5, 2.5f, -3.75);
+    int32_t d = vm_is_fpclass_intrinsic((_Float16)0x1p-24, 0x1p-149f, -0x1p-1074);
     printf("%d %d %d %d %d\n", (int)a, (int)b, (int)c, (int)d, (int)(a ^ b ^ c ^ d));
     return 0;
 }
@@ -3374,6 +15408,10 @@ int main(void) {
         dump.contains(": fpclass "),
         "llvm.is.fpclass should lower to profile fpclass bytecode:\n{dump}"
     );
+    assert!(
+        dump.contains("width: 16"),
+        "llvm.is.fpclass.f16 should encode and execute through the same profile fpclass handler:\n{dump}"
+    );
 
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_is_fpclass_intrinsic");
     virtualized.assert_success();
@@ -3389,6 +15427,260 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_vector_is_fpclass_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_is_fpclass_intrinsic.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_is_fpclass_intrinsic'
+source_filename = "vm_virtualize_vector_is_fpclass_intrinsic.ll"
+
+declare <2 x i1> @llvm.is.fpclass.v2f64(<2 x double>, i32 immarg)
+
+define i32 @vm_vector_is_fpclass_intrinsic(double %a, double %b) {
+entry:
+  %v0 = insertelement <2 x double> poison, double %a, i32 0
+  %v1 = insertelement <2 x double> %v0, double %b, i32 1
+  %nan = call <2 x i1> @llvm.is.fpclass.v2f64(<2 x double> %v1, i32 3)
+  %pos_zero = call <2 x i1> @llvm.is.fpclass.v2f64(<2 x double> %v1, i32 64)
+  %neg_normal = call <2 x i1> @llvm.is.fpclass.v2f64(<2 x double> %v1, i32 8)
+
+  %nan0 = extractelement <2 x i1> %nan, i32 0
+  %nan1 = extractelement <2 x i1> %nan, i32 1
+  %pos_zero0 = extractelement <2 x i1> %pos_zero, i32 0
+  %pos_zero1 = extractelement <2 x i1> %pos_zero, i32 1
+  %neg_normal0 = extractelement <2 x i1> %neg_normal, i32 0
+  %neg_normal1 = extractelement <2 x i1> %neg_normal, i32 1
+
+  %b0 = zext i1 %nan0 to i32
+  %b1_raw = zext i1 %nan1 to i32
+  %b1 = shl i32 %b1_raw, 1
+  %b2_raw = zext i1 %pos_zero0 to i32
+  %b2 = shl i32 %b2_raw, 2
+  %b3_raw = zext i1 %pos_zero1 to i32
+  %b3 = shl i32 %b3_raw, 3
+  %b4_raw = zext i1 %neg_normal0 to i32
+  %b4 = shl i32 %b4_raw, 4
+  %b5_raw = zext i1 %neg_normal1 to i32
+  %b5 = shl i32 %b5_raw, 5
+
+  %m0 = or i32 %b0, %b1
+  %m1 = or i32 %m0, %b2
+  %m2 = or i32 %m1, %b3
+  %m3 = or i32 %m2, %b4
+  %m4 = or i32 %m3, %b5
+  ret i32 %m4
+}
+"#,
+    )
+    .expect("vector llvm.is.fpclass intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_is_fpclass_intrinsic_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint32_t vm_vector_is_fpclass_intrinsic(double a, double b);
+
+static double from_bits(uint64_t bits) {
+    union {
+        uint64_t u;
+        double d;
+    } value;
+    value.u = bits;
+    return value.d;
+}
+
+int main(void) {
+    double qnan = from_bits(0x7ff8000000000001ULL);
+    double pos_zero = from_bits(0x0000000000000000ULL);
+    double neg_normal = from_bits(0xc000000000000000ULL);
+    double neg_zero = from_bits(0x8000000000000000ULL);
+    uint32_t a = vm_vector_is_fpclass_intrinsic(qnan, pos_zero);
+    uint32_t b = vm_vector_is_fpclass_intrinsic(neg_normal, neg_zero);
+    uint32_t c = vm_vector_is_fpclass_intrinsic(1.25, qnan);
+    printf("%u %u %u %u\n", a, b, c, a ^ b ^ c);
+    return 0;
+}
+"#,
+    )
+    .expect("vector llvm.is.fpclass intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_is_fpclass_intrinsic_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_is_fpclass_intrinsic.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_is_fpclass_intrinsic");
+    assert!(
+        dump.matches(": fpclass ").count() >= 6,
+        "fixed vector llvm.is.fpclass should lower each lane through profile fpclass handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_is_fpclass_intrinsic");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector llvm.is.fpclass IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_is_fpclass_intrinsic"));
+    assert!(ir.contains("handler.fpclass"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_is_fpclass_intrinsic"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_is_fpclass_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_is_fpclass_intrinsic.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_is_fpclass_intrinsic'
+source_filename = "vm_virtualize_vp_is_fpclass_intrinsic.ll"
+
+declare <2 x i1> @llvm.vp.is.fpclass.v2f64(<2 x double>, i32 immarg, <2 x i1>, i32)
+
+define i32 @vm_vp_is_fpclass_intrinsic(double %a, double %b) #0 {
+entry:
+  %v0 = insertelement <2 x double> poison, double %a, i32 0
+  %v1 = insertelement <2 x double> %v0, double %b, i32 1
+  %nan = call <2 x i1> @llvm.vp.is.fpclass.v2f64(<2 x double> %v1, i32 3, <2 x i1> <i1 true, i1 true>, i32 2)
+  %pos_zero = call <2 x i1> @llvm.vp.is.fpclass.v2f64(<2 x double> %v1, i32 64, <2 x i1> <i1 true, i1 false>, i32 1)
+  %neg_normal = call <2 x i1> @llvm.vp.is.fpclass.v2f64(<2 x double> %v1, i32 8, <2 x i1> <i1 true, i1 true>, i32 2)
+  %nan0 = extractelement <2 x i1> %nan, i32 0
+  %nan1 = extractelement <2 x i1> %nan, i32 1
+  %zero0 = extractelement <2 x i1> %pos_zero, i32 0
+  %neg0 = extractelement <2 x i1> %neg_normal, i32 0
+  %neg1 = extractelement <2 x i1> %neg_normal, i32 1
+  %i0 = zext i1 %nan0 to i32
+  %i1 = zext i1 %nan1 to i32
+  %i2 = zext i1 %zero0 to i32
+  %i3 = zext i1 %neg0 to i32
+  %i4 = zext i1 %neg1 to i32
+  %s1 = shl i32 %i1, 1
+  %s2 = shl i32 %i2, 2
+  %s3 = shl i32 %i3, 3
+  %s4 = shl i32 %i4, 4
+  %r0 = or i32 %i0, %s1
+  %r1 = or i32 %r0, %s2
+  %r2 = or i32 %r1, %s3
+  %r3 = or i32 %r2, %s4
+  ret i32 %r3
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP is.fpclass intrinsic LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_vp_is_fpclass_intrinsic.baseline.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_is_fpclass_intrinsic_baseline'
+source_filename = "vm_virtualize_vp_is_fpclass_intrinsic_baseline.ll"
+
+declare i1 @llvm.is.fpclass.f64(double, i32 immarg)
+
+define i32 @vm_vp_is_fpclass_intrinsic(double %a, double %b) #0 {
+entry:
+  %nan0 = call i1 @llvm.is.fpclass.f64(double %a, i32 3)
+  %nan1 = call i1 @llvm.is.fpclass.f64(double %b, i32 3)
+  %zero0 = call i1 @llvm.is.fpclass.f64(double %a, i32 64)
+  %neg0 = call i1 @llvm.is.fpclass.f64(double %a, i32 8)
+  %neg1 = call i1 @llvm.is.fpclass.f64(double %b, i32 8)
+  %i0 = zext i1 %nan0 to i32
+  %i1 = zext i1 %nan1 to i32
+  %i2 = zext i1 %zero0 to i32
+  %i3 = zext i1 %neg0 to i32
+  %i4 = zext i1 %neg1 to i32
+  %s1 = shl i32 %i1, 1
+  %s2 = shl i32 %i2, 2
+  %s3 = shl i32 %i3, 3
+  %s4 = shl i32 %i4, 4
+  %r0 = or i32 %i0, %s1
+  %r1 = or i32 %r0, %s2
+  %r2 = or i32 %r1, %s3
+  %r3 = or i32 %r2, %s4
+  ret i32 %r3
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP is.fpclass scalar baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_is_fpclass_intrinsic_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+int32_t vm_vp_is_fpclass_intrinsic(double a, double b);
+int main(void) {
+    double qnan = __builtin_nan("");
+    int32_t a = vm_vp_is_fpclass_intrinsic(qnan, 0.0);
+    int32_t b = vm_vp_is_fpclass_intrinsic(-3.75, qnan);
+    int32_t c = vm_vp_is_fpclass_intrinsic(-0.0, -2.0);
+    printf("%d %d %d %d\n", a, b, c, a ^ b ^ c);
+    return 0;
+}
+"#,
+    )
+    .expect("VP is.fpclass C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_ir_source,
+        &harness,
+        "vm_virtualize_vp_is_fpclass_intrinsic_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_vp_is_fpclass_intrinsic.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_is_fpclass_intrinsic");
+    assert!(
+        dump.matches(": fpclass ").count() >= 5,
+        "llvm.vp.is.fpclass should lower active lanes through profile fpclass handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_is_fpclass_intrinsic");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP is.fpclass IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_is_fpclass_intrinsic"));
+    assert!(ir.contains("handler.fpclass"));
+    assert!(!ir.contains("@llvm.vp.is.fpclass"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_is_fpclass_intrinsic"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_fabs_intrinsic_matches_baseline() {
     ensure_plugin_built();
 
@@ -3398,18 +15690,24 @@ fn test_vm_virtualize_fabs_intrinsic_matches_baseline() {
         r#"; ModuleID = 'vm_virtualize_fabs_intrinsic'
 source_filename = "vm_virtualize_fabs_intrinsic.ll"
 
+declare half @llvm.fabs.f16(half)
 declare float @llvm.fabs.f32(float)
 declare double @llvm.fabs.f64(double)
 
-define i64 @vm_fabs_intrinsic(float %f, double %d) {
+define i64 @vm_fabs_intrinsic(half %h, float %f, double %d) {
 entry:
+  %ah = call half @llvm.fabs.f16(half %h)
   %af = call float @llvm.fabs.f32(float %f)
   %ad = call double @llvm.fabs.f64(double %d)
+  %hbits = bitcast half %ah to i16
   %fbits = bitcast float %af to i32
   %dbits = bitcast double %ad to i64
+  %hz = zext i16 %hbits to i64
   %fz = zext i32 %fbits to i64
+  %hpart = shl i64 %hz, 48
   %dlow = and i64 %dbits, 4294967295
-  %mix = xor i64 %fz, %dlow
+  %m0 = xor i64 %hpart, %fz
+  %mix = xor i64 %m0, %dlow
   ret i64 %mix
 }
 "#,
@@ -3422,12 +15720,12 @@ entry:
         r#"#include <stdint.h>
 #include <stdio.h>
 
-uint64_t vm_fabs_intrinsic(float f, double d);
+uint64_t vm_fabs_intrinsic(_Float16 h, float f, double d);
 
 int main(void) {
-    uint64_t a = vm_fabs_intrinsic(-0.0f, -0.0);
-    uint64_t b = vm_fabs_intrinsic(-3.5f, -7.25);
-    uint64_t c = vm_fabs_intrinsic(__builtin_nanf(""), -__builtin_huge_val());
+    uint64_t a = vm_fabs_intrinsic((_Float16)-0.0, -0.0f, -0.0);
+    uint64_t b = vm_fabs_intrinsic((_Float16)-3.5, -3.5f, -7.25);
+    uint64_t c = vm_fabs_intrinsic((_Float16)__builtin_nanf(""), __builtin_nanf(""), -__builtin_huge_val());
     printf("%llu %llu %llu %llu\n",
            (unsigned long long)a,
            (unsigned long long)b,
@@ -3454,6 +15752,10 @@ int main(void) {
         dump.contains(": fabs "),
         "llvm.fabs should lower to profile fabs bytecode:\n{dump}"
     );
+    assert!(
+        dump.contains("width: 16"),
+        "llvm.fabs.f16 should encode and execute through the same profile fabs handler:\n{dump}"
+    );
 
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_fabs_intrinsic");
     virtualized.assert_success();
@@ -3478,18 +15780,24 @@ fn test_vm_virtualize_copysign_intrinsic_matches_baseline() {
         r#"; ModuleID = 'vm_virtualize_copysign_intrinsic'
 source_filename = "vm_virtualize_copysign_intrinsic.ll"
 
+declare half @llvm.copysign.f16(half, half)
 declare float @llvm.copysign.f32(float, float)
 declare double @llvm.copysign.f64(double, double)
 
-define i64 @vm_copysign_intrinsic(float %magf, float %signf, double %magd, double %signd) {
+define i64 @vm_copysign_intrinsic(half %magh, half %signh, float %magf, float %signf, double %magd, double %signd) {
 entry:
+  %ch = call half @llvm.copysign.f16(half %magh, half %signh)
   %cf = call float @llvm.copysign.f32(float %magf, float %signf)
   %cd = call double @llvm.copysign.f64(double %magd, double %signd)
+  %hbits = bitcast half %ch to i16
   %fbits = bitcast float %cf to i32
   %dbits = bitcast double %cd to i64
+  %hz = zext i16 %hbits to i64
   %fz = zext i32 %fbits to i64
+  %hpart = shl i64 %hz, 48
   %dhigh = lshr i64 %dbits, 32
-  %mix = xor i64 %fz, %dhigh
+  %m0 = xor i64 %hpart, %fz
+  %mix = xor i64 %m0, %dhigh
   ret i64 %mix
 }
 "#,
@@ -3502,12 +15810,12 @@ entry:
         r#"#include <stdint.h>
 #include <stdio.h>
 
-uint64_t vm_copysign_intrinsic(float magf, float signf, double magd, double signd);
+uint64_t vm_copysign_intrinsic(_Float16 magh, _Float16 signh, float magf, float signf, double magd, double signd);
 
 int main(void) {
-    uint64_t a = vm_copysign_intrinsic(3.5f, -0.0f, 7.25, -0.0);
-    uint64_t b = vm_copysign_intrinsic(-2.0f, 1.0f, -9.5, 1.0);
-    uint64_t c = vm_copysign_intrinsic(__builtin_nanf(""), -1.0f, __builtin_huge_val(), -1.0);
+    uint64_t a = vm_copysign_intrinsic((_Float16)3.5, (_Float16)-0.0, 3.5f, -0.0f, 7.25, -0.0);
+    uint64_t b = vm_copysign_intrinsic((_Float16)-2.0, (_Float16)1.0, -2.0f, 1.0f, -9.5, 1.0);
+    uint64_t c = vm_copysign_intrinsic((_Float16)__builtin_nanf(""), (_Float16)-1.0, __builtin_nanf(""), -1.0f, __builtin_huge_val(), -1.0);
     printf("%llu %llu %llu %llu\n",
            (unsigned long long)a,
            (unsigned long long)b,
@@ -3535,6 +15843,10 @@ int main(void) {
         dump.contains(": fcopysign "),
         "llvm.copysign should lower to profile fcopysign bytecode:\n{dump}"
     );
+    assert!(
+        dump.contains("width: 16"),
+        "llvm.copysign.f16 should encode and execute through the same profile fcopysign handler:\n{dump}"
+    );
 
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_copysign_intrinsic");
     virtualized.assert_success();
@@ -3561,16 +15873,21 @@ source_filename = "vm_virtualize_sqrt_intrinsic.ll"
 
 declare float @llvm.sqrt.f32(float)
 declare double @llvm.sqrt.f64(double)
+declare half @llvm.sqrt.f16(half)
 
-define i64 @vm_sqrt_intrinsic(float %f, double %d) {
+define i64 @vm_sqrt_intrinsic(half %h, float %f, double %d) {
 entry:
+  %sh = call half @llvm.sqrt.f16(half %h)
   %sf = call float @llvm.sqrt.f32(float %f)
   %sd = call double @llvm.sqrt.f64(double %d)
+  %hbits = bitcast half %sh to i16
   %fbits = bitcast float %sf to i32
   %dbits = bitcast double %sd to i64
+  %hz = zext i16 %hbits to i64
   %fz = zext i32 %fbits to i64
   %dhigh = lshr i64 %dbits, 32
-  %mix = xor i64 %fz, %dhigh
+  %hf = xor i64 %hz, %fz
+  %mix = xor i64 %hf, %dhigh
   ret i64 %mix
 }
 "#,
@@ -3583,13 +15900,13 @@ entry:
         r#"#include <stdint.h>
 #include <stdio.h>
 
-uint64_t vm_sqrt_intrinsic(float f, double d);
+uint64_t vm_sqrt_intrinsic(_Float16 h, float f, double d);
 
 int main(void) {
-    uint64_t a = vm_sqrt_intrinsic(0.0f, 0.0);
-    uint64_t b = vm_sqrt_intrinsic(4.0f, 9.0);
-    uint64_t c = vm_sqrt_intrinsic(144.0f, 625.0);
-    uint64_t d = vm_sqrt_intrinsic(__builtin_huge_valf(), __builtin_huge_val());
+    uint64_t a = vm_sqrt_intrinsic((_Float16)0.0, 0.0f, 0.0);
+    uint64_t b = vm_sqrt_intrinsic((_Float16)4.0, 4.0f, 9.0);
+    uint64_t c = vm_sqrt_intrinsic((_Float16)144.0, 144.0f, 625.0);
+    uint64_t d = vm_sqrt_intrinsic((_Float16)__builtin_huge_valf(), __builtin_huge_valf(), __builtin_huge_val());
     printf("%llu %llu %llu %llu %llu\n",
            (unsigned long long)a,
            (unsigned long long)b,
@@ -3602,7 +15919,8 @@ int main(void) {
     )
     .expect("llvm.sqrt intrinsic C harness should be writable");
 
-    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_sqrt_intrinsic_baseline");
+    let baseline =
+        compile_ir_with_c_harness_and_args(&ir_source, &harness, "vm_virtualize_sqrt_intrinsic_baseline", &["-lm"]);
     baseline.assert_success();
     let baseline_output = baseline.run();
     baseline_output.assert_success();
@@ -3614,11 +15932,12 @@ int main(void) {
     assert_success(output);
     let dump = bytecode_dump_for_function(&stderr, "vm_sqrt_intrinsic");
     assert!(
-        dump.contains(": fsqrt "),
-        "llvm.sqrt should lower to profile fsqrt bytecode:\n{dump}"
+        dump.contains(": fsqrt ") && dump.contains("width: 16"),
+        "llvm.sqrt f16/f32/f64 should lower to profile fsqrt bytecode:\n{dump}"
     );
 
-    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_sqrt_intrinsic");
+    let virtualized =
+        compile_ir_with_c_harness_and_args(&virtualized_ir, &harness, "vm_virtualize_sqrt_intrinsic", &["-lm"]);
     virtualized.assert_success();
     let virtualized_output = virtualized.run();
     virtualized_output.assert_success();
@@ -3642,16 +15961,21 @@ source_filename = "vm_virtualize_canonicalize_intrinsic.ll"
 
 declare float @llvm.canonicalize.f32(float)
 declare double @llvm.canonicalize.f64(double)
+declare half @llvm.canonicalize.f16(half)
 
-define i64 @vm_canonicalize_intrinsic(float %f, double %d) {
+define i64 @vm_canonicalize_intrinsic(half %h, float %f, double %d) {
 entry:
+  %ch = call half @llvm.canonicalize.f16(half %h)
   %cf = call float @llvm.canonicalize.f32(float %f)
   %cd = call double @llvm.canonicalize.f64(double %d)
+  %hbits = bitcast half %ch to i16
   %fbits = bitcast float %cf to i32
   %dbits = bitcast double %cd to i64
+  %hz = zext i16 %hbits to i64
   %fz = zext i32 %fbits to i64
   %dhigh = lshr i64 %dbits, 32
-  %mix = xor i64 %fz, %dhigh
+  %hf = xor i64 %hz, %fz
+  %mix = xor i64 %hf, %dhigh
   ret i64 %mix
 }
 "#,
@@ -3664,12 +15988,12 @@ entry:
         r#"#include <stdint.h>
 #include <stdio.h>
 
-uint64_t vm_canonicalize_intrinsic(float f, double d);
+uint64_t vm_canonicalize_intrinsic(_Float16 h, float f, double d);
 
 int main(void) {
-    uint64_t a = vm_canonicalize_intrinsic(0.0f, 0.0);
-    uint64_t b = vm_canonicalize_intrinsic(-7.5f, -13.25);
-    uint64_t c = vm_canonicalize_intrinsic(__builtin_nanf(""), __builtin_nan(""));
+    uint64_t a = vm_canonicalize_intrinsic((_Float16)0.0, 0.0f, 0.0);
+    uint64_t b = vm_canonicalize_intrinsic((_Float16)-7.5, -7.5f, -13.25);
+    uint64_t c = vm_canonicalize_intrinsic((_Float16)__builtin_nanf(""), __builtin_nanf(""), __builtin_nan(""));
     printf("%llu %llu %llu %llu\n",
            (unsigned long long)a,
            (unsigned long long)b,
@@ -3694,8 +16018,8 @@ int main(void) {
     assert_success(output);
     let dump = bytecode_dump_for_function(&stderr, "vm_canonicalize_intrinsic");
     assert!(
-        dump.contains(": fcanonicalize "),
-        "llvm.canonicalize should lower to profile fcanonicalize bytecode:\n{dump}"
+        dump.contains(": fcanonicalize ") && dump.contains("width: 16"),
+        "llvm.canonicalize f16/f32/f64 should lower to profile fcanonicalize bytecode:\n{dump}"
     );
 
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_canonicalize_intrinsic");
@@ -3722,6 +16046,13 @@ fn test_vm_virtualize_float_unary_intrinsics_match_baseline() {
         ("nearbyint", "fnearbyint"),
         ("round", "fround"),
         ("roundeven", "froundeven"),
+        ("sin", "fsin"),
+        ("cos", "fcos"),
+        ("exp", "fexp"),
+        ("exp2", "fexp2"),
+        ("log", "flog"),
+        ("log10", "flog10"),
+        ("log2", "flog2"),
     ];
 
     let mut ir = String::from(
@@ -3731,6 +16062,8 @@ source_filename = "vm_virtualize_float_unary_intrinsics.ll"
 "#,
     );
     for (intrinsic, _) in cases {
+        writeln!(ir, "declare half @llvm.{intrinsic}.f16(half)")
+            .expect("float unary f16 declaration should be writable");
         writeln!(ir, "declare float @llvm.{intrinsic}.f32(float)")
             .expect("float unary f32 declaration should be writable");
         writeln!(ir, "declare double @llvm.{intrinsic}.f64(double)")
@@ -3740,15 +16073,19 @@ source_filename = "vm_virtualize_float_unary_intrinsics.ll"
         write!(
             ir,
             r#"
-define i64 @vm_{intrinsic}_intrinsic(float %f, double %d) {{
+define i64 @vm_{intrinsic}_intrinsic(half %h, float %f, double %d) {{
 entry:
+  %rh = call half @llvm.{intrinsic}.f16(half %h)
   %rf = call float @llvm.{intrinsic}.f32(float %f)
   %rd = call double @llvm.{intrinsic}.f64(double %d)
+  %hbits = bitcast half %rh to i16
   %fbits = bitcast float %rf to i32
   %dbits = bitcast double %rd to i64
+  %hz = zext i16 %hbits to i64
   %fz = zext i32 %fbits to i64
   %dhigh = lshr i64 %dbits, 32
-  %mix = xor i64 %fz, %dhigh
+  %hf = xor i64 %hz, %fz
+  %mix = xor i64 %hf, %dhigh
   ret i64 %mix
 }}
 "#
@@ -3767,8 +16104,11 @@ entry:
 "#,
     );
     for (intrinsic, _) in cases {
-        writeln!(harness_source, "uint64_t vm_{intrinsic}_intrinsic(float f, double d);")
-            .expect("float unary harness declaration should be writable");
+        writeln!(
+            harness_source,
+            "uint64_t vm_{intrinsic}_intrinsic(_Float16 h, float f, double d);"
+        )
+        .expect("float unary harness declaration should be writable");
     }
     harness_source.push_str(
         r#"
@@ -3777,18 +16117,25 @@ int main(void) {
 "#,
     );
     let inputs = [
-        ("floor", "-2.75f", "-2.75"),
-        ("ceil", "-2.75f", "-2.75"),
-        ("trunc", "-2.75f", "-2.75"),
-        ("rint", "2.5f", "2.5"),
-        ("nearbyint", "-2.5f", "-2.5"),
-        ("round", "2.5f", "-2.5"),
-        ("roundeven", "3.5f", "2.5"),
+        ("floor", "(_Float16)-2.75", "-2.75f", "-2.75"),
+        ("ceil", "(_Float16)-2.75", "-2.75f", "-2.75"),
+        ("trunc", "(_Float16)-2.75", "-2.75f", "-2.75"),
+        ("rint", "(_Float16)2.5", "2.5f", "2.5"),
+        ("nearbyint", "(_Float16)-2.5", "-2.5f", "-2.5"),
+        ("round", "(_Float16)2.5", "2.5f", "-2.5"),
+        ("roundeven", "(_Float16)3.5", "3.5f", "2.5"),
+        ("sin", "(_Float16)0.0", "0.75f", "0.75"),
+        ("cos", "(_Float16)0.0", "0.75f", "0.75"),
+        ("exp", "(_Float16)0.0", "0.5f", "0.5"),
+        ("exp2", "(_Float16)0.0", "0.5f", "0.5"),
+        ("log", "(_Float16)1.0", "2.5f", "2.5"),
+        ("log10", "(_Float16)1.0", "10.0f", "10.0"),
+        ("log2", "(_Float16)1.0", "8.0f", "8.0"),
     ];
-    for (intrinsic, float_value, double_value) in inputs {
+    for (intrinsic, half_value, float_value, double_value) in inputs {
         writeln!(
             harness_source,
-            "    uint64_t {intrinsic} = vm_{intrinsic}_intrinsic({float_value}, {double_value});"
+            "    uint64_t {intrinsic} = vm_{intrinsic}_intrinsic({half_value}, {float_value}, {double_value});"
         )
         .expect("float unary harness call should be writable");
         writeln!(harness_source, "    acc ^= {intrinsic};")
@@ -3799,7 +16146,7 @@ int main(void) {
         harness_source.push_str("%llu ");
     }
     harness_source.push_str("%llu\\n\"");
-    for (intrinsic, _, _) in inputs {
+    for (intrinsic, _, _, _) in inputs {
         writeln!(harness_source, ",\n           (unsigned long long){intrinsic}")
             .expect("float unary harness printf argument should be writable");
     }
@@ -3832,8 +16179,8 @@ int main(void) {
         let function = format!("vm_{intrinsic}_intrinsic");
         let dump = bytecode_dump_for_function(&stderr, &function);
         assert!(
-            dump.contains(&format!(": {instruction} ")),
-            "llvm.{intrinsic} should lower to profile {instruction} bytecode:\n{dump}"
+            dump.contains(&format!(": {instruction} ")) && dump.contains("width: 16"),
+            "llvm.{intrinsic} f16/f32/f64 should lower to profile {instruction} bytecode:\n{dump}"
         );
     }
 
@@ -3853,6 +16200,168 @@ int main(void) {
         assert!(ir.contains(&format!(".amice.vm.bytecode.vm_{intrinsic}_intrinsic")));
         assert!(ir.contains(&format!("handler.{instruction}")));
     }
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_pow_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_pow_intrinsic.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_pow_intrinsic'
+source_filename = "vm_virtualize_pow_intrinsic.ll"
+
+declare float @llvm.pow.f32(float, float)
+declare double @llvm.pow.f64(double, double)
+
+define i64 @vm_pow_intrinsic(float %af, float %bf, double %ad, double %bd) {
+entry:
+  %rf = call float @llvm.pow.f32(float %af, float %bf)
+  %rd = call double @llvm.pow.f64(double %ad, double %bd)
+  %fbits = bitcast float %rf to i32
+  %dbits = bitcast double %rd to i64
+  %fz = zext i32 %fbits to i64
+  %dhigh = lshr i64 %dbits, 32
+  %mix = xor i64 %fz, %dhigh
+  ret i64 %mix
+}
+"#,
+    )
+    .expect("llvm.pow intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_pow_intrinsic_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_pow_intrinsic(float af, float bf, double ad, double bd);
+
+int main(void) {
+    uint64_t a = vm_pow_intrinsic(2.0f, 3.0f, 2.0, 3.0);
+    uint64_t b = vm_pow_intrinsic(9.0f, 0.5f, 9.0, 0.5);
+    uint64_t c = vm_pow_intrinsic(1.25f, 5.0f, 1.25, 5.0);
+    printf("%llu %llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("llvm.pow intrinsic C harness should be writable");
+
+    let baseline =
+        compile_ir_with_c_harness_and_args(&ir_source, &harness, "vm_virtualize_pow_intrinsic_baseline", &["-lm"]);
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_pow_intrinsic.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_pow_intrinsic");
+    assert!(
+        dump.contains(": fpow width=16"),
+        "llvm.pow should lower to 16-byte profile fpow bytecode:\n{dump}"
+    );
+
+    let virtualized =
+        compile_ir_with_c_harness_and_args(&virtualized_ir, &harness, "vm_virtualize_pow_intrinsic", &["-lm"]);
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized llvm.pow IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_pow_intrinsic"));
+    assert!(ir.contains("handler.fpow"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_powi_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_powi_intrinsic.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_powi_intrinsic'
+source_filename = "vm_virtualize_powi_intrinsic.ll"
+
+declare float @llvm.powi.f32.i32(float, i32)
+declare double @llvm.powi.f64.i32(double, i32)
+
+define i64 @vm_powi_intrinsic(float %af, i32 %bf, double %ad, i32 %bd) {
+entry:
+  %rf = call float @llvm.powi.f32.i32(float %af, i32 %bf)
+  %rd = call double @llvm.powi.f64.i32(double %ad, i32 %bd)
+  %fbits = bitcast float %rf to i32
+  %dbits = bitcast double %rd to i64
+  %fz = zext i32 %fbits to i64
+  %dhigh = lshr i64 %dbits, 32
+  %mix = xor i64 %fz, %dhigh
+  ret i64 %mix
+}
+"#,
+    )
+    .expect("llvm.powi intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_powi_intrinsic_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_powi_intrinsic(float af, int32_t bf, double ad, int32_t bd);
+
+int main(void) {
+    uint64_t a = vm_powi_intrinsic(2.0f, 5, 2.0, 5);
+    uint64_t b = vm_powi_intrinsic(3.0f, 4, 3.0, 4);
+    uint64_t c = vm_powi_intrinsic(2.0f, -3, 2.0, -3);
+    printf("%llu %llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("llvm.powi intrinsic C harness should be writable");
+
+    let baseline =
+        compile_ir_with_c_harness_and_args(&ir_source, &harness, "vm_virtualize_powi_intrinsic_baseline", &["-lm"]);
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_powi_intrinsic.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_powi_intrinsic");
+    assert!(
+        dump.contains(": fpowi width=16"),
+        "llvm.powi should lower to 16-byte profile fpowi bytecode:\n{dump}"
+    );
+
+    let virtualized =
+        compile_ir_with_c_harness_and_args(&virtualized_ir, &harness, "vm_virtualize_powi_intrinsic", &["-lm"]);
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized llvm.powi IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_powi_intrinsic"));
+    assert!(ir.contains("handler.fpowi"));
 }
 
 #[test]
@@ -4013,6 +16522,141 @@ int main(void) {
     let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized llvm.fmuladd IR should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_fmuladd_intrinsic"));
     assert!(ir.contains("handler.ffmuladd"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_half_math_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_half_math_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_half_math_intrinsics'
+source_filename = "vm_virtualize_half_math_intrinsics.ll"
+
+declare half @llvm.pow.f16(half, half)
+declare half @llvm.powi.f16.i32(half, i32)
+declare half @llvm.fma.f16(half, half, half)
+declare half @llvm.fmuladd.f16(half, half, half)
+declare half @llvm.minnum.f16(half, half)
+declare half @llvm.maxnum.f16(half, half)
+declare half @llvm.minimum.f16(half, half)
+declare half @llvm.maximum.f16(half, half)
+
+define i64 @vm_half_math_intrinsics(half %a, half %b, half %c) {
+entry:
+  %pow = call half @llvm.pow.f16(half %a, half %b)
+  %powi = call half @llvm.powi.f16.i32(half %a, i32 3)
+  %fma = call half @llvm.fma.f16(half %a, half %b, half %c)
+  %fmuladd = call half @llvm.fmuladd.f16(half %a, half %b, half %c)
+  %minnum = call half @llvm.minnum.f16(half %a, half %b)
+  %maxnum = call half @llvm.maxnum.f16(half %a, half %b)
+  %minimum = call half @llvm.minimum.f16(half %a, half %b)
+  %maximum = call half @llvm.maximum.f16(half %a, half %b)
+  %pow_bits = bitcast half %pow to i16
+  %powi_bits = bitcast half %powi to i16
+  %fma_bits = bitcast half %fma to i16
+  %fmuladd_bits = bitcast half %fmuladd to i16
+  %minnum_bits = bitcast half %minnum to i16
+  %maxnum_bits = bitcast half %maxnum to i16
+  %minimum_bits = bitcast half %minimum to i16
+  %maximum_bits = bitcast half %maximum to i16
+  %pow64 = zext i16 %pow_bits to i64
+  %powi64 = zext i16 %powi_bits to i64
+  %fma64 = zext i16 %fma_bits to i64
+  %fmuladd64 = zext i16 %fmuladd_bits to i64
+  %minnum64 = zext i16 %minnum_bits to i64
+  %maxnum64 = zext i16 %maxnum_bits to i64
+  %minimum64 = zext i16 %minimum_bits to i64
+  %maximum64 = zext i16 %maximum_bits to i64
+  %mix0 = xor i64 %pow64, %powi64
+  %mix1 = xor i64 %fma64, %fmuladd64
+  %mix2 = xor i64 %minnum64, %maxnum64
+  %mix3 = xor i64 %minimum64, %maximum64
+  %mix4 = xor i64 %mix0, %mix1
+  %mix5 = xor i64 %mix2, %mix3
+  %mix = xor i64 %mix4, %mix5
+  ret i64 %mix
+}
+"#,
+    )
+    .expect("half math intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_half_math_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_half_math_intrinsics(_Float16 a, _Float16 b, _Float16 c);
+
+int main(void) {
+    uint64_t a = vm_half_math_intrinsics((_Float16)2.0, (_Float16)3.0, (_Float16)4.0);
+    uint64_t b = vm_half_math_intrinsics((_Float16)4.0, (_Float16)2.0, (_Float16)-8.0);
+    uint64_t c = vm_half_math_intrinsics((_Float16)1.5, (_Float16)2.0, (_Float16)0.5);
+    printf("%llu %llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("half math intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_half_math_intrinsics_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_half_math_intrinsics.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_half_math_intrinsics");
+    for instruction in [
+        "fpow", "fpowi", "ffma", "ffmuladd", "fminnum", "fmaxnum", "fminimum", "fmaximum",
+    ] {
+        assert!(
+            dump.contains(&format!(": {instruction} ")),
+            "half math intrinsic should lower to profile {instruction} bytecode:\n{dump}"
+        );
+    }
+    assert!(
+        dump.matches("width: 16").count() >= 8,
+        "half math intrinsic bytecode should carry half width operands:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_half_math_intrinsics",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized half math IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_half_math_intrinsics"));
+    assert!(ir.contains("handler.fpow"));
+    assert!(ir.contains("handler.fpowi"));
+    assert!(ir.contains("handler.ffma"));
+    assert!(ir.contains("handler.ffmuladd"));
+    assert!(ir.contains("handler.fminnum"));
+    assert!(ir.contains("handler.fmaxnum"));
+    assert!(ir.contains("handler.fminimum"));
+    assert!(ir.contains("handler.fmaximum"));
 }
 
 #[test]
@@ -4207,6 +16851,377 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_fcmp_all_predicates_match_baseline() {
+    ensure_plugin_built();
+
+    let predicates = [
+        "false", "oeq", "ogt", "oge", "olt", "ole", "one", "ord", "uno", "ueq", "ugt", "uge", "ult", "ule", "une",
+        "true",
+    ];
+    let mut ir = String::from(
+        r#"; ModuleID = 'vm_virtualize_fcmp_predicates'
+source_filename = "vm_virtualize_fcmp_predicates.ll"
+
+define i64 @vm_fcmp_predicate_matrix(float %af, float %bf, double %ad, double %bd) {
+entry:
+"#,
+    );
+    let mut previous = String::from("0");
+    for (index, predicate) in predicates.iter().enumerate() {
+        writeln!(ir, "  %f_{predicate} = fcmp {predicate} float %af, %bf")
+            .expect("fcmp float instruction should be writable");
+        writeln!(ir, "  %f_{predicate}_64 = zext i1 %f_{predicate} to i64")
+            .expect("fcmp float zext should be writable");
+        writeln!(ir, "  %f_{predicate}_shifted = shl i64 %f_{predicate}_64, {index}")
+            .expect("fcmp float shift should be writable");
+        writeln!(ir, "  %acc_f_{predicate} = or i64 {previous}, %f_{predicate}_shifted")
+            .expect("fcmp float accumulator should be writable");
+        previous = format!("%acc_f_{predicate}");
+    }
+    for (index, predicate) in predicates.iter().enumerate() {
+        let shift = index + predicates.len();
+        writeln!(ir, "  %d_{predicate} = fcmp {predicate} double %ad, %bd")
+            .expect("fcmp double instruction should be writable");
+        writeln!(ir, "  %d_{predicate}_64 = zext i1 %d_{predicate} to i64")
+            .expect("fcmp double zext should be writable");
+        writeln!(ir, "  %d_{predicate}_shifted = shl i64 %d_{predicate}_64, {shift}")
+            .expect("fcmp double shift should be writable");
+        writeln!(ir, "  %acc_d_{predicate} = or i64 {previous}, %d_{predicate}_shifted")
+            .expect("fcmp double accumulator should be writable");
+        previous = format!("%acc_d_{predicate}");
+    }
+    writeln!(ir, "  ret i64 {previous}\n}}").expect("fcmp matrix return should be writable");
+
+    let ir_source = output_dir().join("vm_virtualize_fcmp_predicates.input.ll");
+    std::fs::write(&ir_source, ir).expect("fcmp predicate LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_fcmp_predicates_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_fcmp_predicate_matrix(float af, float bf, double ad, double bd);
+
+static float f32_from_bits(uint32_t bits) {
+    union {
+        uint32_t u;
+        float f;
+    } value;
+    value.u = bits;
+    return value.f;
+}
+
+static double f64_from_bits(uint64_t bits) {
+    union {
+        uint64_t u;
+        double d;
+    } value;
+    value.u = bits;
+    return value.d;
+}
+
+int main(void) {
+    float fnan = f32_from_bits(0x7fc00000u);
+    double dnan = f64_from_bits(0x7ff8000000000000ULL);
+    uint64_t ordered = vm_fcmp_predicate_matrix(3.5f, -2.0f, 3.5, -2.0);
+    uint64_t unordered = vm_fcmp_predicate_matrix(fnan, 1.0f, dnan, 1.0);
+    uint64_t equal = vm_fcmp_predicate_matrix(-7.25f, -7.25f, 42.0, 42.0);
+    printf("%016llx %016llx %016llx\n",
+           (unsigned long long)ordered,
+           (unsigned long long)unordered,
+           (unsigned long long)equal);
+    return 0;
+}
+"#,
+    )
+    .expect("fcmp predicate C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_fcmp_predicates_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_fcmp_predicates.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_fcmp_predicate_matrix");
+    let fcmp_count = dump.matches(": fcmp ").count();
+    assert!(
+        fcmp_count >= predicates.len() * 2,
+        "all float/double fcmp predicates should lower through profile fcmp handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_fcmp_predicates");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized fcmp predicate IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_fcmp_predicate_matrix"));
+    assert!(ir.contains("handler.fcmp"));
+    assert!(ir.contains("handler.zext"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_integer_icmp_all_predicates_match_baseline() {
+    ensure_plugin_built();
+
+    let predicates = ["eq", "ne", "ugt", "uge", "ult", "ule", "sgt", "sge", "slt", "sle"];
+    let widths = [
+        ("i8", "a8", "b8"),
+        ("i16", "a16", "b16"),
+        ("i32", "a32", "b32"),
+        ("i64", "a64", "b64"),
+    ];
+    let mut ir = String::from(
+        r#"; ModuleID = 'vm_virtualize_integer_icmp_predicates'
+source_filename = "vm_virtualize_integer_icmp_predicates.ll"
+
+define i64 @vm_integer_icmp_predicate_matrix(i8 %a8, i8 %b8, i16 %a16, i16 %b16, i32 %a32, i32 %b32, i64 %a64, i64 %b64) {
+entry:
+"#,
+    );
+    let mut previous = String::from("0");
+    let mut bit_index = 0usize;
+    for (width, lhs, rhs) in widths {
+        for predicate in predicates {
+            let name = format!("{width}_{predicate}");
+            writeln!(ir, "  %cmp_{name} = icmp {predicate} {width} %{lhs}, %{rhs}")
+                .expect("integer icmp instruction should be writable");
+            writeln!(ir, "  %cmp_{name}_64 = zext i1 %cmp_{name} to i64")
+                .expect("integer icmp zext should be writable");
+            writeln!(ir, "  %cmp_{name}_shifted = shl i64 %cmp_{name}_64, {bit_index}")
+                .expect("integer icmp shift should be writable");
+            writeln!(ir, "  %acc_{name} = or i64 {previous}, %cmp_{name}_shifted")
+                .expect("integer icmp accumulator should be writable");
+            previous = format!("%acc_{name}");
+            bit_index += 1;
+        }
+    }
+    writeln!(ir, "  ret i64 {previous}\n}}").expect("integer icmp matrix return should be writable");
+
+    let ir_source = output_dir().join("vm_virtualize_integer_icmp_predicates.input.ll");
+    std::fs::write(&ir_source, ir).expect("integer icmp predicate LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_integer_icmp_predicates_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_integer_icmp_predicate_matrix(
+    int8_t a8,
+    int8_t b8,
+    int16_t a16,
+    int16_t b16,
+    int32_t a32,
+    int32_t b32,
+    int64_t a64,
+    int64_t b64);
+
+int main(void) {
+    uint64_t mixed = vm_integer_icmp_predicate_matrix(
+        (int8_t)0xff,
+        (int8_t)0x01,
+        (int16_t)0x8000,
+        (int16_t)0x7fff,
+        (int32_t)0x80000000u,
+        (int32_t)0x00000001u,
+        (int64_t)-5,
+        (int64_t)7);
+    uint64_t equal = vm_integer_icmp_predicate_matrix(
+        (int8_t)-42,
+        (int8_t)-42,
+        (int16_t)1234,
+        (int16_t)1234,
+        (int32_t)-56789,
+        (int32_t)-56789,
+        (int64_t)0x1122334455667788LL,
+        (int64_t)0x1122334455667788LL);
+    uint64_t opposite = vm_integer_icmp_predicate_matrix(
+        (int8_t)2,
+        (int8_t)-2,
+        (int16_t)32767,
+        (int16_t)-32768,
+        (int32_t)1234567,
+        (int32_t)-7654321,
+        (int64_t)0x7fffffffffffffffLL,
+        (int64_t)-1);
+    printf("%016llx %016llx %016llx\n",
+           (unsigned long long)mixed,
+           (unsigned long long)equal,
+           (unsigned long long)opposite);
+    return 0;
+}
+"#,
+    )
+    .expect("integer icmp predicate C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_integer_icmp_predicates_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_integer_icmp_predicates.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_integer_icmp_predicate_matrix");
+    let icmp_count = dump.matches(": icmp ").count();
+    assert!(
+        icmp_count >= 40,
+        "all integer icmp predicates for i8/i16/i32/i64 should lower through profile icmp handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_integer_icmp_predicates");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized integer icmp IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_icmp_predicate_matrix"));
+    assert!(ir.contains("handler.icmp"));
+    assert!(ir.contains("handler.zext"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_integer_cast_matrix_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_integer_cast_matrix.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_integer_cast_matrix'
+source_filename = "vm_virtualize_integer_cast_matrix.ll"
+
+define i64 @vm_integer_cast_matrix(i8 %a8, i16 %a16, i32 %a32, i64 %a64, float %f, double %d) {
+entry:
+  %cmp = icmp slt i8 %a8, 0
+  %cmp_z8 = zext i1 %cmp to i8
+  %cmp_s8 = sext i1 %cmp to i8
+  %a8_z16 = zext i8 %a8 to i16
+  %a8_s16 = sext i8 %a8 to i16
+  %a16_tr8 = trunc i16 %a16 to i8
+  %a16_z32 = zext i16 %a16 to i32
+  %a16_s32 = sext i16 %a16 to i32
+  %a32_tr16 = trunc i32 %a32 to i16
+  %a32_z64 = zext i32 %a32 to i64
+  %a32_s64 = sext i32 %a32 to i64
+  %a64_tr32 = trunc i64 %a64 to i32
+  %f_bits = bitcast float %f to i32
+  %d_bits = bitcast double %d to i64
+  %v0 = zext i8 %cmp_z8 to i64
+  %v1 = zext i8 %cmp_s8 to i64
+  %v2 = zext i16 %a8_z16 to i64
+  %v3 = zext i16 %a8_s16 to i64
+  %v4 = zext i8 %a16_tr8 to i64
+  %v5 = zext i32 %a16_z32 to i64
+  %v6 = zext i32 %a16_s32 to i64
+  %v7 = zext i16 %a32_tr16 to i64
+  %v8 = zext i32 %a64_tr32 to i64
+  %v9 = zext i32 %f_bits to i64
+  %m1 = shl i64 %v1, 8
+  %m2 = shl i64 %v2, 16
+  %m3 = shl i64 %v3, 24
+  %m4 = shl i64 %v4, 32
+  %m5 = shl i64 %v5, 7
+  %m6 = shl i64 %v6, 11
+  %m7 = shl i64 %v7, 19
+  %m8 = shl i64 %v8, 23
+  %m9 = shl i64 %v9, 3
+  %acc0 = xor i64 %v0, %m1
+  %acc1 = xor i64 %acc0, %m2
+  %acc2 = xor i64 %acc1, %m3
+  %acc3 = xor i64 %acc2, %m4
+  %acc4 = xor i64 %acc3, %m5
+  %acc5 = xor i64 %acc4, %m6
+  %acc6 = xor i64 %acc5, %m7
+  %acc7 = xor i64 %acc6, %a32_z64
+  %acc8 = xor i64 %acc7, %a32_s64
+  %acc9 = xor i64 %acc8, %m8
+  %acc10 = xor i64 %acc9, %m9
+  %acc11 = xor i64 %acc10, %d_bits
+  ret i64 %acc11
+}
+"#,
+    )
+    .expect("integer cast matrix LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_integer_cast_matrix_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_integer_cast_matrix(uint8_t a8, uint16_t a16, uint32_t a32, uint64_t a64, float f, double d);
+
+int main(void) {
+    uint64_t a = vm_integer_cast_matrix(0x80u, 0x7ff0u, 0x80000001u, 0x1122334455667788ULL, -13.5f, 42.25);
+    uint64_t b = vm_integer_cast_matrix(0x7fu, 0x8001u, 0x7fffffffu, 0xffeeddccbbaa9988ULL, 0.0f, -0.0);
+    uint64_t c = vm_integer_cast_matrix(0xffu, 0xffffu, 0xffffffffu, 0x0102030405060708ULL, 1.25f, -9.5);
+    printf("%016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c);
+    return 0;
+}
+"#,
+    )
+    .expect("integer cast matrix C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_integer_cast_matrix_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_integer_cast_matrix.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_integer_cast_matrix");
+    for handler in [": zext ", ": sext ", ": trunc ", ": bitcast "] {
+        assert!(
+            dump.contains(handler),
+            "integer cast matrix should lower through profile handler {handler:?}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_integer_cast_matrix");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized integer cast matrix IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_cast_matrix"));
+    assert!(ir.contains("handler.zext"));
+    assert!(ir.contains("handler.sext"));
+    assert!(ir.contains("handler.trunc"));
+    assert!(ir.contains("handler.bitcast"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_scalar_select_pointer_and_float_match_baseline() {
     ensure_plugin_built();
 
@@ -4231,6 +17246,42 @@ entry:
   %mixed = fadd double %chosen, 1.500000e+00
   ret double %mixed
 }
+
+define i64 @vm_select_scalar_matrix(i32 %flag, i8 %a8, i16 %a16, i32 %a32, i64 %a64, float %f, double %d, ptr %base) {
+entry:
+  %cond = icmp ne i32 %flag, 0
+  %b8 = xor i8 %a8, 90
+  %s8 = select i1 %cond, i8 %a8, i8 %b8
+  %b16 = xor i16 %a16, 21930
+  %s16 = select i1 %cond, i16 %a16, i16 %b16
+  %b32 = xor i32 %a32, 1515870810
+  %s32 = select i1 %cond, i32 %a32, i32 %b32
+  %b64 = xor i64 %a64, 6510615555426900570
+  %s64 = select i1 %cond, i64 %a64, i64 %b64
+  %f_alt = fadd float %f, 1.250000e+00
+  %sf = select i1 %cond, float %f, float %f_alt
+  %d_alt = fsub double %d, 2.500000e+00
+  %sd = select i1 %cond, double %d, double %d_alt
+  %ptr_alt = getelementptr i64, ptr %base, i64 1
+  %sp = select i1 %cond, ptr %base, ptr %ptr_alt
+  %loaded = load i64, ptr %sp, align 8
+  %s8_64 = zext i8 %s8 to i64
+  %s16_64 = zext i16 %s16 to i64
+  %s32_64 = zext i32 %s32 to i64
+  %sf_bits = bitcast float %sf to i32
+  %sf_64 = zext i32 %sf_bits to i64
+  %sd_bits = bitcast double %sd to i64
+  %m0 = shl i64 %s16_64, 8
+  %m1 = shl i64 %s32_64, 17
+  %m2 = shl i64 %sf_64, 3
+  %acc0 = xor i64 %s8_64, %m0
+  %acc1 = xor i64 %acc0, %m1
+  %acc2 = xor i64 %acc1, %s64
+  %acc3 = xor i64 %acc2, %m2
+  %acc4 = xor i64 %acc3, %sd_bits
+  %acc5 = xor i64 %acc4, %loaded
+  ret i64 %acc5
+}
 "#,
     )
     .expect("scalar select LLVM IR fixture should be writable");
@@ -4238,19 +17289,24 @@ entry:
     let harness = output_dir().join("vm_virtualize_scalar_select_harness.c");
     std::fs::write(
         &harness,
-        r#"#include <stdio.h>
+        r#"#include <stdint.h>
+#include <stdio.h>
 
 int vm_select_ptr_load(int flag, int *a, int *b);
 double vm_select_double(int flag, double a, double b);
+uint64_t vm_select_scalar_matrix(int32_t flag, uint8_t a8, uint16_t a16, uint32_t a32, uint64_t a64, float f, double d, uint64_t *base);
 
 int main(void) {
     int left = 41;
     int right = 99;
+    uint64_t cells[2] = {0x1122334455667788ULL, 0x8877665544332211ULL};
     int acc = 0;
     acc += vm_select_ptr_load(1, &left, &right);
     acc += vm_select_ptr_load(0, &left, &right);
     double f = vm_select_double(-1, 3.25, 7.75) + vm_select_double(4, 3.25, 7.75);
-    printf("%d %.2f\n", acc, f);
+    uint64_t m0 = vm_select_scalar_matrix(1, 0x80u, 0x7ff0u, 0x80000001u, 0x123456789abcdef0ULL, -13.5f, 42.25, cells);
+    uint64_t m1 = vm_select_scalar_matrix(0, 0x7fu, 0x8001u, 0x7fffffffu, 0xffeeddccbbaa9988ULL, 0.0f, -0.0, cells);
+    printf("%d %.2f %016llx\n", acc, f, (unsigned long long)(m0 ^ m1));
     return 0;
 }
 "#,
@@ -4262,7 +17318,22 @@ int main(void) {
     let baseline_output = baseline.run();
     baseline_output.assert_success();
 
-    let virtualized_ir = optimize_ir_with_plugin(&ir_source, "vm_virtualize_scalar_select.ll", vm_virtualize_config());
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_scalar_select.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let matrix_dump = bytecode_dump_for_function(&stderr, "vm_select_scalar_matrix");
+    assert!(
+        matrix_dump.matches(": br_if ").count() >= 7,
+        "scalar select matrix should emit one profile br_if per selected scalar shape:\n{matrix_dump}"
+    );
+    assert!(
+        matrix_dump.matches(": mov ").count() >= 14,
+        "scalar select matrix should copy then/else values through profile mov handlers:\n{matrix_dump}"
+    );
+
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_scalar_select");
     virtualized.assert_success();
     let virtualized_output = virtualized.run();
@@ -4272,6 +17343,7 @@ int main(void) {
     let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized scalar select LLVM IR should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_select_ptr_load"));
     assert!(ir.contains(".amice.vm.bytecode.vm_select_double"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_select_scalar_matrix"));
     assert!(ir.contains("handler.br_if"));
     assert!(ir.contains("handler.mov"));
 }
@@ -4290,20 +17362,44 @@ source_filename = "vm_virtualize_pointer_icmp.ll"
 define i64 @vm_pointer_icmp(ptr %a, ptr %b, ptr %limit) {
 entry:
   %eq = icmp eq ptr %a, %b
-  %ne = icmp ne ptr %b, null
+  %ne = icmp ne ptr %a, %b
+  %ugt = icmp ugt ptr %a, %b
+  %uge = icmp uge ptr %a, %b
   %ult = icmp ult ptr %a, %limit
-  %uge = icmp uge ptr %b, %a
+  %ule = icmp ule ptr %a, %limit
+  %sgt = icmp sgt ptr %a, %b
+  %sge = icmp sge ptr %a, %b
+  %slt = icmp slt ptr %a, %limit
+  %sle = icmp sle ptr %a, %limit
   %eq64 = zext i1 %eq to i64
   %ne64 = zext i1 %ne to i64
-  %ult64 = zext i1 %ult to i64
+  %ugt64 = zext i1 %ugt to i64
   %uge64 = zext i1 %uge to i64
-  %s1 = shl i64 %ne64, 8
-  %s2 = shl i64 %ult64, 16
-  %s3 = shl i64 %uge64, 24
+  %ult64 = zext i1 %ult to i64
+  %ule64 = zext i1 %ule to i64
+  %sgt64 = zext i1 %sgt to i64
+  %sge64 = zext i1 %sge to i64
+  %slt64 = zext i1 %slt to i64
+  %sle64 = zext i1 %sle to i64
+  %s1 = shl i64 %ne64, 1
+  %s2 = shl i64 %ugt64, 2
+  %s3 = shl i64 %uge64, 3
+  %s4 = shl i64 %ult64, 4
+  %s5 = shl i64 %ule64, 5
+  %s6 = shl i64 %sgt64, 6
+  %s7 = shl i64 %sge64, 7
+  %s8 = shl i64 %slt64, 8
+  %s9 = shl i64 %sle64, 9
   %m0 = or i64 %eq64, %s1
   %m1 = or i64 %m0, %s2
   %m2 = or i64 %m1, %s3
-  ret i64 %m2
+  %m3 = or i64 %m2, %s4
+  %m4 = or i64 %m3, %s5
+  %m5 = or i64 %m4, %s6
+  %m6 = or i64 %m5, %s7
+  %m7 = or i64 %m6, %s8
+  %m8 = or i64 %m7, %s9
+  ret i64 %m8
 }
 "#,
     )
@@ -4336,13 +17432,14 @@ int main(void) {
 
     let mut config = vm_virtualize_config();
     config.vm_dump_bytecode = Some(true);
-    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_pointer_icmp.ll", config);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_pointer_icmp.ll", "default<O0>", config);
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
     let dump = bytecode_dump_for_function(&stderr, "vm_pointer_icmp");
     assert!(
-        dump.contains(": icmp "),
-        "pointer icmp predicates should lower through the scalar icmp profile rule:\n{dump}"
+        dump.matches(": icmp ").count() >= 10,
+        "all pointer icmp predicates should lower through the scalar icmp profile rule:\n{dump}"
     );
 
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_pointer_icmp");
@@ -4433,7 +17530,7 @@ int main(void) {
     assert_success(output);
     let dump = bytecode_dump_for_function(&stderr, "vm_switch_phi");
     assert!(
-        dump.contains(": br_if ") && dump.contains(": mov "),
+        (dump.contains(": br_if ") || dump.contains(": icmp_br_if ")) && dump.contains(": mov "),
         "switch case dispatch and phi edge moves should both be visible in bytecode:\n{dump}"
     );
 
@@ -4445,7 +17542,7 @@ int main(void) {
 
     let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized switch phi LLVM IR should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_switch_phi"));
-    assert!(ir.contains("handler.br_if"));
+    assert!(ir.contains("handler.br_if") || ir.contains("handler.icmp_br_if"));
     assert!(ir.contains("handler.mov"));
 }
 
@@ -4585,6 +17682,106 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_aggregate_select_constant_operands_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_aggregate_select_constant.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_aggregate_select_constant'
+source_filename = "vm_virtualize_aggregate_select_constant.ll"
+
+%Agg = type { i32, i64, [2 x i16] }
+
+define i64 @vm_aggregate_select_constant(i32 %flag, i32 %salt) #0 {
+entry:
+  %cond = icmp ne i32 %flag, 0
+  %selected = select i1 %cond, %Agg { i32 17, i64 81985529216486895, [2 x i16] [i16 4951, i16 9320] }, %Agg { i32 -33, i64 -81985529216486896, [2 x i16] [i16 -21555, i16 17185] }
+  %r0 = extractvalue %Agg %selected, 0
+  %r1 = extractvalue %Agg %selected, 1
+  %r2 = extractvalue %Agg %selected, 2, 0
+  %r3 = extractvalue %Agg %selected, 2, 1
+  %r0x = sext i32 %r0 to i64
+  %r2x = sext i16 %r2 to i64
+  %r3x = sext i16 %r3 to i64
+  %saltx = zext i32 %salt to i64
+  %m0 = xor i64 %r1, %r0x
+  %m1 = add i64 %m0, %r2x
+  %m2 = xor i64 %m1, %r3x
+  %result = xor i64 %m2, %saltx
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("constant aggregate select LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_aggregate_select_constant_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_aggregate_select_constant(int32_t flag, uint32_t salt);
+
+int main(void) {
+    uint64_t a = vm_aggregate_select_constant(1, 0x10203040u);
+    uint64_t b = vm_aggregate_select_constant(0, 0x55667788u);
+    uint64_t c = vm_aggregate_select_constant(-7, 0x99aabbccu);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)c);
+    return 0;
+}
+"#,
+    )
+    .expect("constant aggregate select C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_aggregate_select_constant_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_aggregate_select_constant.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_aggregate_select_constant");
+    assert!(
+        dump.contains(": br_if ") || dump.contains(": icmp_br_if "),
+        "constant aggregate select should still use the profile select control action:\n{dump}"
+    );
+    assert!(
+        dump.matches(": mov ").count() >= 8,
+        "constant aggregate select should copy all selected leaf fields through profile mov actions:\n{dump}"
+    );
+    let constant_materialize_count = dump.matches(": mov_imm ").count() + dump.matches(": const_load ").count();
+    assert!(
+        constant_materialize_count >= 8,
+        "constant aggregate select should materialize constant aggregate leaf fields:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_aggregate_select_constant");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized constant aggregate select IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_aggregate_select_constant"));
+    assert!(ir.contains("handler.br_if") || ir.contains("handler.icmp_br_if"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_aggregate_select_constant"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_aggregate_phi_matches_baseline() {
     ensure_plugin_built();
 
@@ -4700,6 +17897,109 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_aggregate_phi_constant_incoming_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_aggregate_phi_constant.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_aggregate_phi_constant'
+source_filename = "vm_virtualize_aggregate_phi_constant.ll"
+
+%Agg = type { i32, i64, [2 x i16] }
+
+define i64 @vm_aggregate_phi_constant(i32 %flag, i32 %salt) #0 {
+entry:
+  %cond = icmp ne i32 %flag, 0
+  br i1 %cond, label %left, label %right
+
+left:
+  br label %join
+
+right:
+  br label %join
+
+join:
+  %chosen = phi %Agg [ { i32 17, i64 81985529216486895, [2 x i16] [i16 4951, i16 9320] }, %left ], [ { i32 -33, i64 -81985529216486896, [2 x i16] [i16 -21555, i16 17185] }, %right ]
+  %r0 = extractvalue %Agg %chosen, 0
+  %r1 = extractvalue %Agg %chosen, 1
+  %r2 = extractvalue %Agg %chosen, 2, 0
+  %r3 = extractvalue %Agg %chosen, 2, 1
+  %r0x = sext i32 %r0 to i64
+  %r2x = sext i16 %r2 to i64
+  %r3x = sext i16 %r3 to i64
+  %saltx = zext i32 %salt to i64
+  %m0 = xor i64 %r1, %r0x
+  %m1 = add i64 %m0, %r2x
+  %m2 = xor i64 %m1, %r3x
+  %result = xor i64 %m2, %saltx
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("constant aggregate phi LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_aggregate_phi_constant_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_aggregate_phi_constant(int32_t flag, uint32_t salt);
+
+int main(void) {
+    uint64_t a = vm_aggregate_phi_constant(1, 0x10203040u);
+    uint64_t b = vm_aggregate_phi_constant(0, 0x55667788u);
+    uint64_t c = vm_aggregate_phi_constant(-7, 0x99aabbccu);
+    printf("%llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)c);
+    return 0;
+}
+"#,
+    )
+    .expect("constant aggregate phi C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_aggregate_phi_constant_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_aggregate_phi_constant.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_aggregate_phi_constant");
+    assert!(
+        dump.matches(": mov ").count() >= 8,
+        "constant aggregate phi should copy incoming leaf fields through profile mov actions:\n{dump}"
+    );
+    let constant_materialize_count = dump.matches(": mov_imm ").count() + dump.matches(": const_load ").count();
+    assert!(
+        constant_materialize_count >= 8,
+        "constant aggregate phi should materialize constant incoming leaf fields:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_aggregate_phi_constant");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized constant aggregate phi IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_aggregate_phi_constant"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_aggregate_phi_constant"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_unfrozen_poison_safely_skips() {
     ensure_plugin_built();
 
@@ -4808,6 +18108,83 @@ int main(void) {
     let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized dynamic alloca LLVM IR should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_dynamic_alloca"));
     assert!(ir.contains("handler.alloca_dyn"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_zero_sized_alloca_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_zero_sized_alloca.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_zero_sized_alloca'
+source_filename = "vm_virtualize_zero_sized_alloca.ll"
+
+define i32 @vm_zero_sized_alloca(i32 %seed) #0 {
+entry:
+  %zero_count = alloca i8, i64 0, align 1
+  %zero_type = alloca [0 x i8], align 1
+  %zero_count_bits = ptrtoint ptr %zero_count to i64
+  %zero_type_bits = ptrtoint ptr %zero_type to i64
+  %count_live = icmp ne i64 %zero_count_bits, 0
+  %type_live = icmp ne i64 %zero_type_bits, 0
+  %count_i32 = zext i1 %count_live to i32
+  %type_i32 = zext i1 %type_live to i32
+  %both = add i32 %count_i32, %type_i32
+  %mixed = xor i32 %both, %seed
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("zero-sized alloca LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_zero_sized_alloca_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_zero_sized_alloca(int32_t seed);
+
+int main(void) {
+    int32_t a = vm_zero_sized_alloca(0x13572468);
+    int32_t b = vm_zero_sized_alloca(-17);
+    printf("%d:%d\n", a, b);
+    return 0;
+}
+"#,
+    )
+    .expect("zero-sized alloca C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_zero_sized_alloca_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_zero_sized_alloca.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_zero_sized_alloca");
+    assert!(
+        dump.matches(": alloca ").count() >= 2 && dump.contains("bytes: 0"),
+        "zero-sized alloca should lower through profile alloca handler with zero byte size:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_zero_sized_alloca");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized zero-sized alloca LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_zero_sized_alloca"));
+    assert!(ir.contains("handler.alloca"));
 }
 
 #[test]
@@ -4992,6 +18369,113 @@ int main(void) {
     assert!(ir.contains(".amice.vm.bytecode.vm_clear_cache_intrinsic"));
     assert!(ir.contains("handler.clear_cache"));
     assert!(ir.contains("@llvm.clear_cache"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_pseudoprobe_intrinsic_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_pseudoprobe_intrinsic.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_pseudoprobe_intrinsic'
+source_filename = "vm_virtualize_pseudoprobe_intrinsic.ll"
+
+declare void @llvm.pseudoprobe(i64, i64, i32, i64)
+
+define i64 @vm_pseudoprobe_intrinsic(i64 %seed) {
+entry:
+  call void @llvm.pseudoprobe(i64 101, i64 7, i32 1, i64 0)
+  %a = xor i64 %seed, 6510615555426900570
+  call void @llvm.pseudoprobe(i64 101, i64 8, i32 2, i64 3)
+  %b = add i64 %a, 17
+  ret i64 %b
+}
+"#,
+    )
+    .expect("pseudoprobe LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_pseudoprobe_intrinsic_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_pseudoprobe_intrinsic(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm_pseudoprobe_intrinsic(0x1111111111111111ULL);
+    uint64_t b = vm_pseudoprobe_intrinsic(0x2222222222222222ULL);
+    printf("%016" PRIx64 " %016" PRIx64 "\n", a, b);
+    return 0;
+}
+"#,
+    )
+    .expect("pseudoprobe C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_pseudoprobe_intrinsic_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_pseudoprobe_intrinsic.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_pseudoprobe_intrinsic");
+    assert!(
+        dump.contains(": pseudoprobe "),
+        "llvm.pseudoprobe should lower through profile pseudoprobe handler:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_pseudoprobe_intrinsic");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized pseudoprobe LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_pseudoprobe_intrinsic"));
+    assert!(ir.contains("handler.pseudoprobe"));
+    assert!(ir.contains("@llvm.pseudoprobe"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_dynamic_pseudoprobe_safely_skips() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_dynamic_pseudoprobe_skip.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_dynamic_pseudoprobe_skip'
+source_filename = "vm_virtualize_dynamic_pseudoprobe_skip.ll"
+
+declare void @llvm.pseudoprobe(i64, i64, i32, i64)
+
+define i64 @vm_dynamic_pseudoprobe_skip(i64 %seed) {
+entry:
+  %index = and i64 %seed, 7
+  call void @llvm.pseudoprobe(i64 101, i64 %index, i32 1, i64 0)
+  %r = xor i64 %seed, 85
+  ret i64 %r
+}
+"#,
+    )
+    .expect("dynamic pseudoprobe LLVM IR fixture should be writable");
+
+    let ir_path = compile_virtualized_ir(&ir_source, "vm_virtualize_dynamic_pseudoprobe_skip.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("dynamic pseudoprobe LLVM IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_dynamic_pseudoprobe_skip"));
+    assert!(!ir.contains("handler.pseudoprobe"));
 }
 
 #[test]
@@ -5764,6 +19248,345 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_multi_dynamic_struct_array_gep_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_multi_dynamic_struct_array_gep.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_multi_dynamic_struct_array_gep'
+source_filename = "vm_virtualize_multi_dynamic_struct_array_gep.ll"
+
+%Inner = type { i8, [5 x i32] }
+%Outer = type { i16, [4 x %Inner], i64 }
+
+define i32 @vm_multi_dynamic_struct_array_gep(ptr %base, i32 %outer, i64 %inner, i32 %slot) {
+entry:
+  %ptr = getelementptr inbounds %Outer, ptr %base, i32 %outer, i32 1, i64 %inner, i32 1, i32 %slot
+  %value = load i32, ptr %ptr, align 4
+  ret i32 %value
+}
+"#,
+    )
+    .expect("multi-dynamic struct-array GEP LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_multi_dynamic_struct_array_gep_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+struct Inner {
+    uint8_t tag;
+    int32_t values[5];
+};
+
+struct Outer {
+    int16_t prefix;
+    struct Inner nodes[4];
+    int64_t tail;
+};
+
+int32_t vm_multi_dynamic_struct_array_gep(struct Outer *base, int32_t outer, int64_t inner, int32_t slot);
+
+int main(void) {
+    struct Outer values[4];
+    for (int i = 0; i < 4; ++i) {
+        values[i].prefix = (int16_t)(100 + i);
+        values[i].tail = 0x100000000LL + i;
+        for (int j = 0; j < 4; ++j) {
+            values[i].nodes[j].tag = (uint8_t)(i * 17 + j);
+            for (int k = 0; k < 5; ++k) {
+                values[i].nodes[j].values[k] = (i + 1) * 10000 + j * 100 + k * 7;
+            }
+        }
+    }
+
+    int32_t acc = 0;
+    acc += vm_multi_dynamic_struct_array_gep(values + 1, 0, 2, 3);
+    acc += vm_multi_dynamic_struct_array_gep(values + 2, -1, 3, 4);
+    acc += vm_multi_dynamic_struct_array_gep(values, 3, 1, 0);
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("multi-dynamic struct-array GEP C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_multi_dynamic_struct_array_gep_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_multi_dynamic_struct_array_gep.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_multi_dynamic_struct_array_gep");
+    assert!(
+        dump.matches(": imul ").count() >= 3,
+        "multi-dynamic GEP should scale every dynamic term through profile imul bytecode:\n{dump}"
+    );
+    assert!(
+        dump.matches(": iadd ").count() >= 3,
+        "multi-dynamic GEP should accumulate every dynamic term through profile iadd bytecode:\n{dump}"
+    );
+    assert!(
+        dump.matches(": sext ").count() >= 2,
+        "i32 dynamic GEP indexes should sign-extend before scaling:\n{dump}"
+    );
+    assert!(
+        dump.contains(": gep ") || dump.contains(": gep_load "),
+        "struct field constant offset should be applied through gep or gep_load bytecode:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_multi_dynamic_struct_array_gep",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized multi-dynamic GEP IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_multi_dynamic_struct_array_gep"));
+    assert!(ir.contains("handler.sext"));
+    assert!(ir.contains("handler.imul"));
+    assert!(ir.contains("handler.iadd"));
+    assert!(ir.contains("handler.gep") || ir.contains("handler.gep_load"));
+    assert!(!ir.contains(".amice.vm.original.vm_multi_dynamic_struct_array_gep"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_signed_i32_dynamic_gep_index_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_signed_i32_gep.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_signed_i32_gep'
+source_filename = "vm_virtualize_signed_i32_gep.ll"
+
+define i32 @vm_signed_i32_gep(ptr %base, i32 %idx) {
+entry:
+  %ptr = getelementptr inbounds i32, ptr %base, i32 %idx
+  %value = load i32, ptr %ptr, align 4
+  ret i32 %value
+}
+"#,
+    )
+    .expect("signed i32 dynamic GEP LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_signed_i32_gep_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdio.h>
+
+int vm_signed_i32_gep(int *base, int idx);
+
+int main(void) {
+    int values[8];
+    for (int i = 0; i < 8; ++i) {
+        values[i] = 1000 + i * 37;
+    }
+
+    int acc = 0;
+    acc += vm_signed_i32_gep(values + 4, -3);
+    acc += vm_signed_i32_gep(values + 2, 4);
+    acc += vm_signed_i32_gep(values + 7, -1);
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("signed i32 dynamic GEP C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_signed_i32_gep_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_signed_i32_gep.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_signed_i32_gep");
+    for handler in [": sext ", ": imul ", ": iadd ", ": load "] {
+        assert!(
+            dump.contains(handler),
+            "signed i32 dynamic GEP should lower {handler} through profile bytecode:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_signed_i32_gep");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized signed i32 GEP IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_signed_i32_gep"));
+    assert!(ir.contains("handler.sext"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_zero_sized_dynamic_gep_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_zero_sized_dynamic_gep.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_zero_sized_dynamic_gep'
+source_filename = "vm_virtualize_zero_sized_dynamic_gep.ll"
+
+define i32 @vm_zero_sized_dynamic_gep(ptr %base, i64 %outer, i64 %inner, i32 %seed) #0 {
+entry:
+  %p = getelementptr [0 x i8], ptr %base, i64 %outer, i64 %inner
+  %byte = load i8, ptr %p, align 1
+  %wide = zext i8 %byte to i32
+  %mixed = xor i32 %wide, %seed
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("zero-sized dynamic GEP LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_zero_sized_dynamic_gep_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_zero_sized_dynamic_gep(uint8_t *base, int64_t outer, int64_t inner, int32_t seed);
+
+int main(void) {
+    uint8_t data[32];
+    for (int i = 0; i < 32; ++i) {
+        data[i] = (uint8_t)(i * 7 + 3);
+    }
+
+    int32_t acc = 0;
+    acc ^= vm_zero_sized_dynamic_gep(data, 0, 5, 0x13572468);
+    acc ^= vm_zero_sized_dynamic_gep(data, 17, 11, -91);
+    acc ^= vm_zero_sized_dynamic_gep(data, -23, 19, 0x24681357);
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("zero-sized dynamic GEP C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_zero_sized_dynamic_gep_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_zero_sized_dynamic_gep.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_zero_sized_dynamic_gep");
+    assert!(
+        dump.contains(": imul ") && dump.contains(": iadd ") && dump.contains(": load "),
+        "zero-sized dynamic GEP should lower through profile imul/iadd/load:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_zero_sized_dynamic_gep");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized zero-sized dynamic GEP IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_zero_sized_dynamic_gep"));
+    assert!(ir.contains("handler.imul"));
+    assert!(ir.contains("handler.iadd"));
+    assert!(ir.contains("handler.load"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_empty_aggregate_internal_noops_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_empty_aggregate_internal.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_empty_aggregate_internal'
+source_filename = "vm_virtualize_empty_aggregate_internal.ll"
+
+define i32 @vm_empty_aggregate_internal(i32 %seed) {
+entry:
+  %slot = alloca {}, align 1
+  store {} zeroinitializer, ptr %slot, align 1
+  %loaded = load {}, ptr %slot, align 1
+  %frozen = freeze {} %loaded
+  %cond = icmp sgt i32 %seed, 0
+  %picked = select i1 %cond, {} %frozen, {} zeroinitializer
+  store {} %picked, ptr %slot, align 1
+  %tag = select i1 %cond, i32 85, i32 170
+  %mixed = xor i32 %tag, %seed
+  ret i32 %mixed
+}
+"#,
+    )
+    .expect("empty aggregate LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_empty_aggregate_internal_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_empty_aggregate_internal(int32_t seed);
+
+int main(void) {
+    int32_t a = vm_empty_aggregate_internal(37);
+    int32_t b = vm_empty_aggregate_internal(-91);
+    printf("%d %d %d\n", (int)a, (int)b, (int)(a ^ b));
+    return 0;
+}
+"#,
+    )
+    .expect("empty aggregate C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_empty_aggregate_internal_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized_ir = optimize_ir_with_plugin(
+        &ir_source,
+        "vm_virtualize_empty_aggregate_internal.ll",
+        vm_virtualize_config(),
+    );
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_empty_aggregate_internal");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized empty aggregate IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_empty_aggregate_internal"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_nested_aggregate_insert_extract_matches_baseline() {
     ensure_plugin_built();
 
@@ -5938,6 +19761,100 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_aggregate_freeze_constant_operand_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_aggregate_freeze_constant.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_aggregate_freeze_constant'
+source_filename = "vm_virtualize_aggregate_freeze_constant.ll"
+
+%Agg = type { i32, { i16, i64 }, [2 x i8] }
+
+define i64 @vm_aggregate_freeze_constant(i32 %x) #0 {
+entry:
+  %fr = freeze %Agg { i32 7, { i16, i64 } { i16 poison, i64 11 }, [2 x i8] [i8 3, i8 undef] }
+  %a = extractvalue %Agg %fr, 0
+  %b = extractvalue %Agg %fr, 1, 1
+  %c = extractvalue %Agg %fr, 2, 0
+  %zero = freeze %Agg zeroinitializer
+  %z = extractvalue %Agg %zero, 0
+  %a64 = zext i32 %a to i64
+  %c32 = zext i8 %c to i32
+  %c64 = zext i32 %c32 to i64
+  %z64 = zext i32 %z to i64
+  %x64 = zext i32 %x to i64
+  %s0 = add i64 %a64, %b
+  %s1 = add i64 %s0, %c64
+  %s2 = add i64 %s1, %z64
+  %result = xor i64 %s2, %x64
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("constant aggregate freeze LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_aggregate_freeze_constant_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_aggregate_freeze_constant(uint32_t x);
+
+int main(void) {
+    uint64_t a = vm_aggregate_freeze_constant(0u);
+    uint64_t b = vm_aggregate_freeze_constant(0x87654321u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("constant aggregate freeze C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_aggregate_freeze_constant_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_aggregate_freeze_constant.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_aggregate_freeze_constant");
+    assert!(
+        dump.matches(": mov ").count() >= 10,
+        "direct constant aggregate freeze should lower each field through profile mov actions:\n{dump}"
+    );
+    assert!(
+        dump.matches(": mov_imm ").count() >= 10,
+        "direct constant aggregate freeze should materialize constants and frozen poison fields:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_aggregate_freeze_constant");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("constant aggregate freeze virtualized IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_aggregate_freeze_constant"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_aggregate_freeze_constant"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_aggregate_load_store_matches_baseline() {
     ensure_plugin_built();
 
@@ -6069,6 +19986,1582 @@ int main(void) {
     assert!(ir.contains("handler.store"));
     assert!(ir.contains("handler.gep"));
     assert!(ir.contains("handler.mov"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_aggregate_store_constant_source_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_aggregate_store_constant.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_aggregate_store_constant'
+source_filename = "vm_virtualize_aggregate_store_constant.ll"
+
+%Agg = type { i32, i64, [2 x i16] }
+
+define i64 @vm_aggregate_store_constant(ptr %dst, i32 %salt) #0 {
+entry:
+  store %Agg { i32 -33, i64 -81985529216486896, [2 x i16] [i16 -21555, i16 17185] }, ptr %dst, align 8
+  %loaded = load %Agg, ptr %dst, align 8
+  %r0 = extractvalue %Agg %loaded, 0
+  %r1 = extractvalue %Agg %loaded, 1
+  %r2 = extractvalue %Agg %loaded, 2, 0
+  %r3 = extractvalue %Agg %loaded, 2, 1
+  %r0x = sext i32 %r0 to i64
+  %r2x = sext i16 %r2 to i64
+  %r3x = sext i16 %r3 to i64
+  %saltx = zext i32 %salt to i64
+  %m0 = xor i64 %r1, %r0x
+  %m1 = add i64 %m0, %r2x
+  %m2 = xor i64 %m1, %r3x
+  %result = xor i64 %m2, %saltx
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("constant aggregate store LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_aggregate_store_constant_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+struct Agg {
+    int32_t a;
+    int64_t b;
+    int16_t c[2];
+};
+
+uint64_t vm_aggregate_store_constant(struct Agg *dst, uint32_t salt);
+
+int main(void) {
+    struct Agg out = { 0 };
+    uint64_t a = vm_aggregate_store_constant(&out, 0x10203040u);
+    printf("%" PRIu64 " %d %" PRId64 " %d %d\n", a, out.a, out.b, out.c[0], out.c[1]);
+    uint64_t b = vm_aggregate_store_constant(&out, 0x55667788u);
+    printf("%" PRIu64 " %d %" PRId64 " %d %d\n", b, out.a, out.b, out.c[0], out.c[1]);
+    return 0;
+}
+"#,
+    )
+    .expect("constant aggregate store C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_aggregate_store_constant_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_aggregate_store_constant.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_aggregate_store_constant");
+    assert!(
+        dump.matches(": store ").count() >= 4,
+        "constant aggregate store should emit one store per leaf field:\n{dump}"
+    );
+    let constant_materialize_count = dump.matches(": mov_imm ").count() + dump.matches(": const_load ").count();
+    assert!(
+        constant_materialize_count >= 4,
+        "constant aggregate store should materialize constant leaf fields:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_aggregate_store_constant");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized constant aggregate store IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_aggregate_store_constant"));
+    assert!(ir.contains("handler.store"));
+    assert!(!ir.contains(".amice.vm.original.vm_aggregate_store_constant"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_load_store_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_load_store.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_load_store'
+source_filename = "vm_virtualize_vector_load_store.ll"
+
+define i64 @vm_vector_load_store(ptr %dst_i, ptr %src_i, ptr %dst_f, ptr %src_f, i64 %seed) #0 {
+entry:
+  %vi = load <4 x i16>, ptr %src_i, align 8
+  %seed16 = trunc i64 %seed to i16
+  %s0 = insertelement <4 x i16> poison, i16 %seed16, i32 0
+  %s1 = insertelement <4 x i16> %s0, i16 %seed16, i32 1
+  %s2 = insertelement <4 x i16> %s1, i16 %seed16, i32 2
+  %s3 = insertelement <4 x i16> %s2, i16 %seed16, i32 3
+  %mixed_i = xor <4 x i16> %vi, %s3
+  store <4 x i16> %mixed_i, ptr %dst_i, align 8
+  %i0 = extractelement <4 x i16> %mixed_i, i32 0
+  %i1 = extractelement <4 x i16> %mixed_i, i32 1
+  %i2 = extractelement <4 x i16> %mixed_i, i32 2
+  %i3 = extractelement <4 x i16> %mixed_i, i32 3
+  %i0x = zext i16 %i0 to i64
+  %i1x = zext i16 %i1 to i64
+  %i2x = zext i16 %i2 to i64
+  %i3x = zext i16 %i3 to i64
+  %vf = load <2 x float>, ptr %src_f, align 8
+  %b0 = insertelement <2 x float> poison, float 1.500000e+00, i32 0
+  %b1 = insertelement <2 x float> %b0, float -2.250000e+00, i32 1
+  %mixed_f = fadd <2 x float> %vf, %b1
+  store <2 x float> %mixed_f, ptr %dst_f, align 8
+  %f0 = extractelement <2 x float> %mixed_f, i32 0
+  %f1 = extractelement <2 x float> %mixed_f, i32 1
+  %f0b = bitcast float %f0 to i32
+  %f1b = bitcast float %f1 to i32
+  %f0x = zext i32 %f0b to i64
+  %f1x = zext i32 %f1b to i64
+  %a0 = shl i64 %i1x, 16
+  %a1 = xor i64 %i0x, %a0
+  %a2 = shl i64 %i2x, 32
+  %a3 = xor i64 %a1, %a2
+  %a4 = shl i64 %i3x, 48
+  %a5 = xor i64 %a3, %a4
+  %a6 = xor i64 %a5, %f0x
+  %a7 = shl i64 %f1x, 1
+  %a8 = xor i64 %a6, %a7
+  ret i64 %a8
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("vector load/store LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_load_store_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+uint64_t vm_vector_load_store(uint16_t *dst_i, const uint16_t *src_i, float *dst_f, const float *src_f, uint64_t seed);
+
+static uint32_t float_bits(float value) {
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static void print_case(uint64_t value, const uint16_t *dst_i, const float *dst_f) {
+    printf("%llu %u %u %u %u %08x %08x\n",
+           (unsigned long long)value,
+           (unsigned)dst_i[0],
+           (unsigned)dst_i[1],
+           (unsigned)dst_i[2],
+           (unsigned)dst_i[3],
+           (unsigned)float_bits(dst_f[0]),
+           (unsigned)float_bits(dst_f[1]));
+}
+
+int main(void) {
+    uint16_t src_i_a[4] = { 0x1234u, 0x4567u, 0x89abu, 0xcdefu };
+    uint16_t src_i_b[4] = { 0x0102u, 0x0304u, 0x0506u, 0x0708u };
+    float src_f_a[2] = { 2.25f, -8.5f };
+    float src_f_b[2] = { -1.0f, 16.75f };
+    uint16_t dst_i[4] = { 0 };
+    float dst_f[2] = { 0.0f, 0.0f };
+
+    uint64_t first = vm_vector_load_store(dst_i, src_i_a, dst_f, src_f_a, 0x13572468ULL);
+    print_case(first, dst_i, dst_f);
+    uint64_t second = vm_vector_load_store(dst_i, src_i_b, dst_f, src_f_b, 0x24681357ULL);
+    print_case(second, dst_i, dst_f);
+    return 0;
+}
+"#,
+    )
+    .expect("vector load/store C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_load_store_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_vector_load_store.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_load_store");
+    let load_like_count = dump.matches(": load ").count() + dump.matches(": gep_load ").count();
+    assert!(
+        load_like_count >= 6
+            && dump.matches(": store ").count() >= 6
+            && dump.matches(": gep ").count() >= 4
+            && dump.matches(": mov ").count() >= 6,
+        "fixed vector load/store should expand through profile load/store/gep/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_load_store");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized vector load/store IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_load_store"));
+    assert!(ir.contains("handler.load"));
+    assert!(ir.contains("handler.store"));
+    assert!(ir.contains("handler.gep"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_load_store"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_store_constant_source_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_store_constant.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_store_constant'
+source_filename = "vm_virtualize_vector_store_constant.ll"
+
+define i64 @vm_vector_store_constant(ptr %dst, i32 %salt) #0 {
+entry:
+  store <4 x i32> <i32 7, i32 11, i32 19, i32 23>, ptr %dst, align 16
+  %loaded = load <4 x i32>, ptr %dst, align 16
+  %a = extractelement <4 x i32> %loaded, i32 0
+  %b = extractelement <4 x i32> %loaded, i32 1
+  %c = extractelement <4 x i32> %loaded, i32 2
+  %d = extractelement <4 x i32> %loaded, i32 3
+  %ab = add i32 %a, %b
+  %cd = xor i32 %c, %d
+  %mix = add i32 %ab, %cd
+  %mixed = xor i32 %mix, %salt
+  %result = zext i32 %mixed to i64
+  ret i64 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("constant vector store LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_store_constant_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_vector_store_constant(uint32_t *dst, uint32_t salt);
+
+int main(void) {
+    uint32_t out[4] __attribute__((aligned(16))) = { 0 };
+    uint64_t a = vm_vector_store_constant(out, 0x10203040u);
+    printf("%" PRIu64 " %u %u %u %u\n", a, out[0], out[1], out[2], out[3]);
+    uint64_t b = vm_vector_store_constant(out, 0x55667788u);
+    printf("%" PRIu64 " %u %u %u %u\n", b, out[0], out[1], out[2], out[3]);
+    return 0;
+}
+"#,
+    )
+    .expect("constant vector store C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_store_constant_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_store_constant.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_store_constant");
+    assert!(
+        dump.matches(": store ").count() >= 4,
+        "constant vector store should emit one store per lane:\n{dump}"
+    );
+    let constant_materialize_count = dump.matches(": mov_imm ").count() + dump.matches(": const_load ").count();
+    assert!(
+        constant_materialize_count >= 4,
+        "constant vector store should materialize constant lanes:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vector_store_constant");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized constant vector store IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_store_constant"));
+    assert!(ir.contains("handler.store"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_store_constant"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_volatile_vector_load_store_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_volatile_vector_load_store.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_volatile_vector_load_store'
+source_filename = "vm_virtualize_volatile_vector_load_store.ll"
+
+define i64 @vm_volatile_vector_load_store(ptr %dst, ptr %src, i64 %seed) #0 {
+entry:
+  %loaded = load volatile <4 x i16>, ptr %src, align 8
+  %seed16 = trunc i64 %seed to i16
+  %s0 = insertelement <4 x i16> poison, i16 %seed16, i32 0
+  %s1 = insertelement <4 x i16> %s0, i16 %seed16, i32 1
+  %s2 = insertelement <4 x i16> %s1, i16 %seed16, i32 2
+  %s3 = insertelement <4 x i16> %s2, i16 %seed16, i32 3
+  %mixed = xor <4 x i16> %loaded, %s3
+  store volatile <4 x i16> %mixed, ptr %dst, align 8
+  %l0 = extractelement <4 x i16> %mixed, i32 0
+  %l1 = extractelement <4 x i16> %mixed, i32 1
+  %l2 = extractelement <4 x i16> %mixed, i32 2
+  %l3 = extractelement <4 x i16> %mixed, i32 3
+  %e0 = zext i16 %l0 to i64
+  %e1 = zext i16 %l1 to i64
+  %e2 = zext i16 %l2 to i64
+  %e3 = zext i16 %l3 to i64
+  %a0 = shl i64 %e1, 16
+  %a1 = xor i64 %e0, %a0
+  %a2 = shl i64 %e2, 32
+  %a3 = xor i64 %a1, %a2
+  %a4 = shl i64 %e3, 48
+  %a5 = xor i64 %a3, %a4
+  ret i64 %a5
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("volatile vector load/store LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_volatile_vector_load_store_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_volatile_vector_load_store(volatile uint16_t *dst, volatile const uint16_t *src, uint64_t seed);
+
+static void print_case(uint64_t value, const volatile uint16_t *dst) {
+    printf("%llu %u %u %u %u\n",
+           (unsigned long long)value,
+           (unsigned)dst[0],
+           (unsigned)dst[1],
+           (unsigned)dst[2],
+           (unsigned)dst[3]);
+}
+
+int main(void) {
+    volatile uint16_t src_a[4] = { 0x1111u, 0x2222u, 0x3333u, 0x4444u };
+    volatile uint16_t src_b[4] = { 0xaaaau, 0xbbbbu, 0xccccu, 0xddddu };
+    volatile uint16_t dst[4] = { 0 };
+
+    uint64_t first = vm_volatile_vector_load_store(dst, src_a, 0x13572468ULL);
+    print_case(first, dst);
+    uint64_t second = vm_volatile_vector_load_store(dst, src_b, 0x24681357ULL);
+    print_case(second, dst);
+    return 0;
+}
+"#,
+    )
+    .expect("volatile vector load/store C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_volatile_vector_load_store_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_volatile_vector_load_store.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_volatile_vector_load_store");
+    assert!(
+        dump.matches(": volatile_load ").count() >= 4
+            && dump.matches(": volatile_store ").count() >= 4
+            && dump.matches(": gep ").count() >= 6
+            && dump.matches(": mov ").count() >= 4,
+        "volatile fixed vector load/store should expand through profile volatile_load/volatile_store/gep/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_volatile_vector_load_store");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized volatile vector load/store IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_volatile_vector_load_store"));
+    assert!(ir.contains("handler.volatile_load"));
+    assert!(ir.contains("handler.volatile_store"));
+    assert!(ir.contains("handler.gep"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".amice.vm.original.vm_volatile_vector_load_store"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_masked_vector_load_store_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_masked_vector_memory.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_masked_vector_memory'
+source_filename = "vm_virtualize_masked_vector_memory.ll"
+
+declare <4 x i32> @llvm.masked.load.v4i32.p0(ptr, i32 immarg, <4 x i1>, <4 x i32>)
+declare void @llvm.masked.store.v4i32.p0(<4 x i32>, ptr, i32 immarg, <4 x i1>)
+
+define i64 @vm_masked_vector_memory(ptr %dst, ptr %src, i32 %seed) #0 {
+entry:
+  %s1 = add i32 %seed, 17
+  %s2 = xor i32 %seed, 305419896
+  %s3 = add i32 %seed, 51
+  %p0 = insertelement <4 x i32> poison, i32 %seed, i32 0
+  %p1 = insertelement <4 x i32> %p0, i32 %s1, i32 1
+  %p2 = insertelement <4 x i32> %p1, i32 %s2, i32 2
+  %p3 = insertelement <4 x i32> %p2, i32 %s3, i32 3
+  %loaded = call <4 x i32> @llvm.masked.load.v4i32.p0(ptr %src, i32 4, <4 x i1> <i1 true, i1 false, i1 true, i1 false>, <4 x i32> %p3)
+  call void @llvm.masked.store.v4i32.p0(<4 x i32> %loaded, ptr %dst, i32 4, <4 x i1> <i1 false, i1 true, i1 true, i1 false>)
+  %l0 = extractelement <4 x i32> %loaded, i32 0
+  %l1 = extractelement <4 x i32> %loaded, i32 1
+  %l2 = extractelement <4 x i32> %loaded, i32 2
+  %l3 = extractelement <4 x i32> %loaded, i32 3
+  %l0x = zext i32 %l0 to i64
+  %l1x = zext i32 %l1 to i64
+  %l2x = zext i32 %l2 to i64
+  %l3x = zext i32 %l3 to i64
+  %a0 = shl i64 %l1x, 13
+  %a1 = xor i64 %l0x, %a0
+  %a2 = shl i64 %l2x, 27
+  %a3 = xor i64 %a1, %a2
+  %a4 = shl i64 %l3x, 41
+  %a5 = xor i64 %a3, %a4
+  ret i64 %a5
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("masked vector memory LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_masked_vector_memory_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_masked_vector_memory(uint32_t *dst, const uint32_t *src, uint32_t seed);
+
+static void print_case(uint64_t value, const uint32_t *dst) {
+    printf("%llu %08x %08x %08x %08x\n",
+           (unsigned long long)value,
+           (unsigned)dst[0],
+           (unsigned)dst[1],
+           (unsigned)dst[2],
+           (unsigned)dst[3]);
+}
+
+int main(void) {
+    uint32_t src_a[4] = { 0x10203040u, 0x50607080u, 0x90a0b0c0u, 0xd0e0f000u };
+    uint32_t src_b[4] = { 0x0badf00du, 0x12345678u, 0x89abcdefu, 0x55667788u };
+    uint32_t dst[4] = { 0xaaaaaaaau, 0xbbbbbbbbu, 0xccccccccu, 0xddddddddu };
+
+    uint64_t first = vm_masked_vector_memory(dst, src_a, 0x11111111u);
+    print_case(first, dst);
+    uint64_t second = vm_masked_vector_memory(dst, src_b, 0x22222222u);
+    print_case(second, dst);
+    return 0;
+}
+"#,
+    )
+    .expect("masked vector memory C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_masked_vector_memory_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_masked_vector_memory.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_masked_vector_memory");
+    let load_like_count = dump.matches(": load ").count() + dump.matches(": gep_load ").count();
+    let gep_like_count = dump.matches(": gep ").count() + dump.matches(": gep_load ").count();
+    assert!(
+        load_like_count >= 2
+            && dump.matches(": store ").count() >= 2
+            && gep_like_count >= 3
+            && dump.matches(": mov ").count() >= 4,
+        "masked vector memory should lower through profile load/store/gep/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_masked_vector_memory");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized masked vector IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_masked_vector_memory"));
+    assert!(ir.contains("handler.load"));
+    assert!(ir.contains("handler.store"));
+    assert!(ir.contains("handler.gep"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.masked.load"));
+    assert!(!ir.contains("call void @llvm.masked.store"));
+    assert!(!ir.contains(".amice.vm.original.vm_masked_vector_memory"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_load_store_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_memory.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_memory'
+source_filename = "vm_virtualize_vp_vector_memory.ll"
+
+declare <4 x i32> @llvm.vp.load.v4i32.p0(ptr, <4 x i1>, i32)
+declare void @llvm.vp.store.v4i32.p0(<4 x i32>, ptr, <4 x i1>, i32)
+
+define i64 @vm_vp_vector_memory(ptr %dst, ptr %src, i32 %seed) #0 {
+entry:
+  %loaded = call <4 x i32> @llvm.vp.load.v4i32.p0(ptr %src, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, i32 4)
+  call void @llvm.vp.store.v4i32.p0(<4 x i32> %loaded, ptr %dst, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, i32 4)
+  %l0 = extractelement <4 x i32> %loaded, i32 0
+  %l2 = extractelement <4 x i32> %loaded, i32 2
+  %l3 = extractelement <4 x i32> %loaded, i32 3
+  %l0x = zext i32 %l0 to i64
+  %l2x = zext i32 %l2 to i64
+  %l3x = zext i32 %l3 to i64
+  %seedx = zext i32 %seed to i64
+  %a0 = shl i64 %l2x, 19
+  %a1 = xor i64 %l0x, %a0
+  %a2 = shl i64 %l3x, 37
+  %a3 = xor i64 %a1, %a2
+  %a4 = xor i64 %a3, %seedx
+  ret i64 %a4
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP vector memory LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_memory_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_vp_vector_memory(uint32_t *dst, const uint32_t *src, uint32_t seed);
+
+static void print_case(uint64_t value, const uint32_t *dst) {
+    printf("%llu %08x %08x %08x %08x\n",
+           (unsigned long long)value,
+           (unsigned)dst[0],
+           (unsigned)dst[1],
+           (unsigned)dst[2],
+           (unsigned)dst[3]);
+}
+
+int main(void) {
+    uint32_t src_a[4] = { 0x10203040u, 0x50607080u, 0x90a0b0c0u, 0xd0e0f000u };
+    uint32_t src_b[4] = { 0x0badf00du, 0x12345678u, 0x89abcdefu, 0x55667788u };
+    uint32_t dst[4] = { 0xaaaaaaaau, 0xbbbbbbbbu, 0xccccccccu, 0xddddddddu };
+
+    uint64_t first = vm_vp_vector_memory(dst, src_a, 0x11111111u);
+    print_case(first, dst);
+    uint64_t second = vm_vp_vector_memory(dst, src_b, 0x22222222u);
+    print_case(second, dst);
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector memory C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_vector_memory_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_vp_vector_memory.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_memory");
+    let load_like_count = dump.matches(": load ").count() + dump.matches(": gep_load ").count();
+    let gep_like_count = dump.matches(": gep ").count() + dump.matches(": gep_load ").count();
+    assert!(
+        load_like_count >= 3
+            && dump.matches(": store ").count() >= 3
+            && gep_like_count >= 4
+            && dump.matches(": mov ").count() >= 3,
+        "VP vector memory should lower through profile load/store/gep/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_vector_memory");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP vector IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_memory"));
+    assert!(ir.contains("handler.load"));
+    assert!(ir.contains("handler.store"));
+    assert!(ir.contains("handler.gep"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.load"));
+    assert!(!ir.contains("call void @llvm.vp.store"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_memory"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_gather_scatter_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_gather_scatter.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_gather_scatter'
+source_filename = "vm_virtualize_vp_gather_scatter.ll"
+
+declare <4 x i32> @llvm.vp.gather.v4i32.v4p0(<4 x ptr>, <4 x i1>, i32)
+declare void @llvm.vp.scatter.v4i32.v4p0(<4 x i32>, <4 x ptr>, <4 x i1>, i32)
+
+define i64 @vm_vp_gather_scatter(ptr %dst, ptr %src, i32 %seed) #0 {
+entry:
+  %s0 = getelementptr i32, ptr %src, i64 0
+  %s1 = getelementptr i32, ptr %src, i64 1
+  %s2 = getelementptr i32, ptr %src, i64 2
+  %s3 = getelementptr i32, ptr %src, i64 3
+  %sp0 = insertelement <4 x ptr> poison, ptr %s0, i32 0
+  %sp1 = insertelement <4 x ptr> %sp0, ptr %s1, i32 1
+  %sp2 = insertelement <4 x ptr> %sp1, ptr %s2, i32 2
+  %sp3 = insertelement <4 x ptr> %sp2, ptr %s3, i32 3
+  %loaded = call <4 x i32> @llvm.vp.gather.v4i32.v4p0(<4 x ptr> %sp3, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, i32 4)
+  %d0 = getelementptr i32, ptr %dst, i64 0
+  %d1 = getelementptr i32, ptr %dst, i64 1
+  %d2 = getelementptr i32, ptr %dst, i64 2
+  %d3 = getelementptr i32, ptr %dst, i64 3
+  %dp0 = insertelement <4 x ptr> poison, ptr %d0, i32 0
+  %dp1 = insertelement <4 x ptr> %dp0, ptr %d1, i32 1
+  %dp2 = insertelement <4 x ptr> %dp1, ptr %d2, i32 2
+  %dp3 = insertelement <4 x ptr> %dp2, ptr %d3, i32 3
+  call void @llvm.vp.scatter.v4i32.v4p0(<4 x i32> %loaded, <4 x ptr> %dp3, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, i32 4)
+  %l0 = extractelement <4 x i32> %loaded, i32 0
+  %l2 = extractelement <4 x i32> %loaded, i32 2
+  %l3 = extractelement <4 x i32> %loaded, i32 3
+  %l0x = zext i32 %l0 to i64
+  %l2x = zext i32 %l2 to i64
+  %l3x = zext i32 %l3 to i64
+  %seedx = zext i32 %seed to i64
+  %a0 = shl i64 %l2x, 17
+  %a1 = xor i64 %l0x, %a0
+  %a2 = shl i64 %l3x, 39
+  %a3 = xor i64 %a1, %a2
+  %a4 = xor i64 %a3, %seedx
+  ret i64 %a4
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP gather/scatter LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_gather_scatter_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_vp_gather_scatter(uint32_t *dst, const uint32_t *src, uint32_t seed);
+
+static void print_case(uint64_t value, const uint32_t *dst) {
+    printf("%llu %08x %08x %08x %08x\n",
+           (unsigned long long)value,
+           (unsigned)dst[0],
+           (unsigned)dst[1],
+           (unsigned)dst[2],
+           (unsigned)dst[3]);
+}
+
+int main(void) {
+    uint32_t src_a[4] = { 0x10203040u, 0x50607080u, 0x90a0b0c0u, 0xd0e0f000u };
+    uint32_t src_b[4] = { 0x0badf00du, 0x12345678u, 0x89abcdefu, 0x55667788u };
+    uint32_t dst[4] = { 0xaaaaaaaau, 0xbbbbbbbbu, 0xccccccccu, 0xddddddddu };
+
+    uint64_t first = vm_vp_gather_scatter(dst, src_a, 0x11111111u);
+    print_case(first, dst);
+    uint64_t second = vm_vp_gather_scatter(dst, src_b, 0x22222222u);
+    print_case(second, dst);
+    return 0;
+}
+"#,
+    )
+    .expect("VP gather/scatter C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_gather_scatter_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_vp_gather_scatter.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_gather_scatter");
+    assert!(
+        dump.matches(": load ").count() >= 3
+            && dump.matches(": store ").count() >= 3
+            && dump.matches(": mov ").count() >= 3,
+        "VP gather/scatter should lower through profile load/store/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_gather_scatter");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP gather/scatter IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_gather_scatter"));
+    assert!(ir.contains("handler.load"));
+    assert!(ir.contains("handler.store"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.gather"));
+    assert!(!ir.contains("call void @llvm.vp.scatter"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_gather_scatter"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_memory_short_evl_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_memory_short_evl.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_memory_short_evl'
+source_filename = "vm_virtualize_vp_memory_short_evl.ll"
+
+declare <4 x i32> @llvm.vp.load.v4i32.p0(ptr, <4 x i1>, i32)
+declare void @llvm.vp.store.v4i32.p0(<4 x i32>, ptr, <4 x i1>, i32)
+declare <4 x i32> @llvm.vp.gather.v4i32.v4p0(<4 x ptr>, <4 x i1>, i32)
+declare void @llvm.vp.scatter.v4i32.v4p0(<4 x i32>, <4 x ptr>, <4 x i1>, i32)
+
+define i64 @vm_vp_memory_short_evl(ptr %dst, ptr %src, i32 %seed) #0 {
+entry:
+  %loaded = call <4 x i32> @llvm.vp.load.v4i32.p0(ptr %src, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 3)
+  call void @llvm.vp.store.v4i32.p0(<4 x i32> %loaded, ptr %dst, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 3)
+  %l0 = extractelement <4 x i32> %loaded, i32 0
+  %l1 = extractelement <4 x i32> %loaded, i32 1
+  %l2 = extractelement <4 x i32> %loaded, i32 2
+  %l0x = zext i32 %l0 to i64
+  %l1x = zext i32 %l1 to i64
+  %l2x = zext i32 %l2 to i64
+  %seedx = zext i32 %seed to i64
+  %a0 = shl i64 %l1x, 17
+  %a1 = xor i64 %l0x, %a0
+  %a2 = shl i64 %l2x, 39
+  %a3 = xor i64 %a1, %a2
+  %a4 = xor i64 %a3, %seedx
+  ret i64 %a4
+}
+
+define i64 @vm_vp_gather_short_evl(ptr %dst, ptr %src, i32 %seed) #0 {
+entry:
+  %s0 = getelementptr i32, ptr %src, i64 0
+  %s1 = getelementptr i32, ptr %src, i64 1
+  %s2 = getelementptr i32, ptr %src, i64 2
+  %s3 = getelementptr i32, ptr %src, i64 3
+  %sp0 = insertelement <4 x ptr> poison, ptr %s0, i32 0
+  %sp1 = insertelement <4 x ptr> %sp0, ptr %s1, i32 1
+  %sp2 = insertelement <4 x ptr> %sp1, ptr %s2, i32 2
+  %sp3 = insertelement <4 x ptr> %sp2, ptr %s3, i32 3
+  %loaded = call <4 x i32> @llvm.vp.gather.v4i32.v4p0(<4 x ptr> %sp3, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 2)
+  %d0 = getelementptr i32, ptr %dst, i64 0
+  %d1 = getelementptr i32, ptr %dst, i64 1
+  %d2 = getelementptr i32, ptr %dst, i64 2
+  %d3 = getelementptr i32, ptr %dst, i64 3
+  %dp0 = insertelement <4 x ptr> poison, ptr %d0, i32 0
+  %dp1 = insertelement <4 x ptr> %dp0, ptr %d1, i32 1
+  %dp2 = insertelement <4 x ptr> %dp1, ptr %d2, i32 2
+  %dp3 = insertelement <4 x ptr> %dp2, ptr %d3, i32 3
+  call void @llvm.vp.scatter.v4i32.v4p0(<4 x i32> %loaded, <4 x ptr> %dp3, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 2)
+  %l0 = extractelement <4 x i32> %loaded, i32 0
+  %l1 = extractelement <4 x i32> %loaded, i32 1
+  %l0x = zext i32 %l0 to i64
+  %l1x = zext i32 %l1 to i64
+  %seedx = zext i32 %seed to i64
+  %a0 = shl i64 %l1x, 23
+  %a1 = xor i64 %l0x, %a0
+  %a2 = xor i64 %a1, %seedx
+  ret i64 %a2
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP memory short-EVL LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_memory_short_evl_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_vp_memory_short_evl(uint32_t *dst, const uint32_t *src, uint32_t seed);
+uint64_t vm_vp_gather_short_evl(uint32_t *dst, const uint32_t *src, uint32_t seed);
+
+static void print_case(uint64_t value, const uint32_t *dst) {
+    printf("%llu %08x %08x %08x %08x\n",
+           (unsigned long long)value,
+           (unsigned)dst[0],
+           (unsigned)dst[1],
+           (unsigned)dst[2],
+           (unsigned)dst[3]);
+}
+
+int main(void) {
+    uint32_t src_a[4] = { 0x10203040u, 0x50607080u, 0x90a0b0c0u, 0xd0e0f000u };
+    uint32_t src_b[4] = { 0x0badf00du, 0x12345678u, 0x89abcdefu, 0x55667788u };
+    uint32_t dst_a[4] = { 0xaaaaaaaau, 0xbbbbbbbbu, 0xccccccccu, 0xddddddddu };
+    uint32_t dst_b[4] = { 0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u };
+
+    uint64_t first = vm_vp_memory_short_evl(dst_a, src_a, 0x13579bdfu);
+    print_case(first, dst_a);
+    uint64_t second = vm_vp_gather_short_evl(dst_b, src_b, 0x2468ace0u);
+    print_case(second, dst_b);
+    return 0;
+}
+"#,
+    )
+    .expect("VP memory short-EVL C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vp_memory_short_evl_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_vp_memory_short_evl.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let memory_dump = bytecode_dump_for_function(&stderr, "vm_vp_memory_short_evl");
+    let memory_load_like_count = memory_dump.matches(": load ").count() + memory_dump.matches(": gep_load ").count();
+    let memory_gep_like_count = memory_dump.matches(": gep ").count() + memory_dump.matches(": gep_load ").count();
+    assert!(
+        memory_load_like_count >= 3
+            && memory_dump.matches(": store ").count() >= 3
+            && memory_gep_like_count >= 4
+            && memory_dump.matches(": mov ").count() >= 3,
+        "short-EVL vp.load/store should lower only active lanes through profile memory actions:\n{memory_dump}"
+    );
+
+    let gather_dump = bytecode_dump_for_function(&stderr, "vm_vp_gather_short_evl");
+    assert!(
+        gather_dump.matches(": load ").count() >= 2
+            && gather_dump.matches(": store ").count() >= 2
+            && gather_dump.matches(": mov ").count() >= 2,
+        "short-EVL vp.gather/scatter should lower only active lanes through profile memory actions:\n{gather_dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_memory_short_evl");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized short-EVL VP memory IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_memory_short_evl"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_gather_short_evl"));
+    assert!(ir.contains("handler.load"));
+    assert!(ir.contains("handler.store"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.load"));
+    assert!(!ir.contains("call void @llvm.vp.store"));
+    assert!(!ir.contains("call <4 x i32> @llvm.vp.gather"));
+    assert!(!ir.contains("call void @llvm.vp.scatter"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_memory_short_evl"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_gather_short_evl"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_strided_memory_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_strided_memory.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_strided_memory'
+source_filename = "vm_virtualize_vp_strided_memory.ll"
+
+declare <4 x i32> @llvm.experimental.vp.strided.load.v4i32.p0.i64(ptr, i64, <4 x i1>, i32)
+declare void @llvm.experimental.vp.strided.store.v4i32.p0.i64(<4 x i32>, ptr, i64, <4 x i1>, i32)
+
+define i64 @vm_vp_strided_memory(ptr %dst, ptr %src, i64 %stride, i32 %seed) #0 {
+entry:
+  %loaded = call <4 x i32> @llvm.experimental.vp.strided.load.v4i32.p0.i64(ptr %src, i64 %stride, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 3)
+  call void @llvm.experimental.vp.strided.store.v4i32.p0.i64(<4 x i32> %loaded, ptr %dst, i64 %stride, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 3)
+  %l0 = extractelement <4 x i32> %loaded, i32 0
+  %l1 = extractelement <4 x i32> %loaded, i32 1
+  %l2 = extractelement <4 x i32> %loaded, i32 2
+  %l0x = zext i32 %l0 to i64
+  %l1x = zext i32 %l1 to i64
+  %l2x = zext i32 %l2 to i64
+  %seedx = zext i32 %seed to i64
+  %a0 = shl i64 %l1x, 21
+  %a1 = xor i64 %l0x, %a0
+  %a2 = shl i64 %l2x, 42
+  %a3 = xor i64 %a1, %a2
+  %a4 = xor i64 %a3, %seedx
+  ret i64 %a4
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP strided memory LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_vp_strided_memory.baseline.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_strided_memory_baseline'
+source_filename = "vm_virtualize_vp_strided_memory_baseline.ll"
+
+define i64 @vm_vp_strided_memory(ptr %dst, ptr %src, i64 %stride, i32 %seed) #0 {
+entry:
+  %stride2 = shl i64 %stride, 1
+  %src1 = getelementptr i8, ptr %src, i64 %stride
+  %src2 = getelementptr i8, ptr %src, i64 %stride2
+  %dst1 = getelementptr i8, ptr %dst, i64 %stride
+  %dst2 = getelementptr i8, ptr %dst, i64 %stride2
+  %l0 = load i32, ptr %src, align 4
+  %l1 = load i32, ptr %src1, align 4
+  %l2 = load i32, ptr %src2, align 4
+  store i32 %l0, ptr %dst, align 4
+  store i32 %l1, ptr %dst1, align 4
+  store i32 %l2, ptr %dst2, align 4
+  %l0x = zext i32 %l0 to i64
+  %l1x = zext i32 %l1 to i64
+  %l2x = zext i32 %l2 to i64
+  %seedx = zext i32 %seed to i64
+  %a0 = shl i64 %l1x, 21
+  %a1 = xor i64 %l0x, %a0
+  %a2 = shl i64 %l2x, 42
+  %a3 = xor i64 %a1, %a2
+  %a4 = xor i64 %a3, %seedx
+  ret i64 %a4
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP strided scalar baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_strided_memory_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_vp_strided_memory(uint32_t *dst, const uint32_t *src, uint64_t stride, uint32_t seed);
+
+static void print_case(uint64_t value, const uint32_t *dst) {
+    printf("%llu %08x %08x %08x %08x %08x %08x %08x %08x\n",
+           (unsigned long long)value,
+           (unsigned)dst[0],
+           (unsigned)dst[1],
+           (unsigned)dst[2],
+           (unsigned)dst[3],
+           (unsigned)dst[4],
+           (unsigned)dst[5],
+           (unsigned)dst[6],
+           (unsigned)dst[7]);
+}
+
+int main(void) {
+    uint32_t src_a[8] = {
+        0x10203040u, 0x11111111u, 0x50607080u, 0x22222222u,
+        0x90a0b0c0u, 0x33333333u, 0xd0e0f000u, 0x44444444u
+    };
+    uint32_t src_b[8] = {
+        0x0badf00du, 0x55555555u, 0x12345678u, 0x66666666u,
+        0x89abcdefu, 0x77777777u, 0x55667788u, 0x88888888u
+    };
+    uint32_t dst_a[8] = {
+        0xaaaaaaaau, 0xbbbbbbbbu, 0xccccccccu, 0xddddddddu,
+        0xeeeeeeeeu, 0xffffffffu, 0x12121212u, 0x34343434u
+    };
+    uint32_t dst_b[8] = {
+        0x01010101u, 0x02020202u, 0x03030303u, 0x04040404u,
+        0x05050505u, 0x06060606u, 0x07070707u, 0x08080808u
+    };
+
+    uint64_t first = vm_vp_strided_memory(dst_a, src_a, 8u, 0x13579bdfu);
+    print_case(first, dst_a);
+    uint64_t second = vm_vp_strided_memory(dst_b, src_b, 8u, 0x2468ace0u);
+    print_case(second, dst_b);
+    return 0;
+}
+"#,
+    )
+    .expect("VP strided memory C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_ir_source,
+        &harness,
+        "vm_virtualize_vp_strided_memory_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_vp_strided_memory.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_strided_memory");
+    assert!(
+        dump.matches(": imul ").count() >= 4
+            && dump.matches(": iadd ").count() >= 4
+            && dump.matches(": load ").count() >= 3
+            && dump.matches(": store ").count() >= 3
+            && dump.matches(": mov ").count() >= 3,
+        "VP strided load/store should lower active lanes through profile imul/iadd/load/store/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_strided_memory");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP strided memory IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_strided_memory"));
+    assert!(ir.contains("handler.imul"));
+    assert!(ir.contains("handler.iadd"));
+    assert!(ir.contains("handler.load"));
+    assert!(ir.contains("handler.store"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.experimental.vp.strided.load"));
+    assert!(!ir.contains("call void @llvm.experimental.vp.strided.store"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_strided_memory"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_strided_i32_stride_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_strided_i32_stride.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_strided_i32_stride'
+source_filename = "vm_virtualize_vp_strided_i32_stride.ll"
+
+declare <4 x i32> @llvm.experimental.vp.strided.load.v4i32.p0.i32(ptr, i32, <4 x i1>, i32)
+declare void @llvm.experimental.vp.strided.store.v4i32.p0.i32(<4 x i32>, ptr, i32, <4 x i1>, i32)
+
+define i64 @vm_vp_strided_i32_stride(ptr %dst, ptr %src, i32 %stride, i32 %seed) #0 {
+entry:
+  %loaded = call <4 x i32> @llvm.experimental.vp.strided.load.v4i32.p0.i32(ptr %src, i32 %stride, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 3)
+  call void @llvm.experimental.vp.strided.store.v4i32.p0.i32(<4 x i32> %loaded, ptr %dst, i32 %stride, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 3)
+  %l0 = extractelement <4 x i32> %loaded, i32 0
+  %l1 = extractelement <4 x i32> %loaded, i32 1
+  %l2 = extractelement <4 x i32> %loaded, i32 2
+  %l0x = zext i32 %l0 to i64
+  %l1x = zext i32 %l1 to i64
+  %l2x = zext i32 %l2 to i64
+  %seedx = zext i32 %seed to i64
+  %a0 = shl i64 %l0x, 7
+  %a1 = xor i64 %a0, %l1x
+  %a2 = shl i64 %l2x, 33
+  %a3 = xor i64 %a1, %a2
+  %a4 = xor i64 %a3, %seedx
+  ret i64 %a4
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP strided i32 stride LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_vp_strided_i32_stride.baseline.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_strided_i32_stride_baseline'
+source_filename = "vm_virtualize_vp_strided_i32_stride_baseline.ll"
+
+define i64 @vm_vp_strided_i32_stride(ptr %dst, ptr %src, i32 %stride, i32 %seed) #0 {
+entry:
+  %stride64 = sext i32 %stride to i64
+  %stride2 = shl i32 %stride, 1
+  %stride2_64 = sext i32 %stride2 to i64
+  %src1 = getelementptr i8, ptr %src, i64 %stride64
+  %src2 = getelementptr i8, ptr %src, i64 %stride2_64
+  %dst1 = getelementptr i8, ptr %dst, i64 %stride64
+  %dst2 = getelementptr i8, ptr %dst, i64 %stride2_64
+  %l0 = load i32, ptr %src, align 4
+  %l1 = load i32, ptr %src1, align 4
+  %l2 = load i32, ptr %src2, align 4
+  store i32 %l0, ptr %dst, align 4
+  store i32 %l1, ptr %dst1, align 4
+  store i32 %l2, ptr %dst2, align 4
+  %l0x = zext i32 %l0 to i64
+  %l1x = zext i32 %l1 to i64
+  %l2x = zext i32 %l2 to i64
+  %seedx = zext i32 %seed to i64
+  %a0 = shl i64 %l0x, 7
+  %a1 = xor i64 %a0, %l1x
+  %a2 = shl i64 %l2x, 33
+  %a3 = xor i64 %a1, %a2
+  %a4 = xor i64 %a3, %seedx
+  ret i64 %a4
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("VP strided i32 stride scalar baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_strided_i32_stride_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_vp_strided_i32_stride(uint32_t *dst, const uint32_t *src, int32_t stride, uint32_t seed);
+
+static void print_case(uint64_t value, const uint32_t *dst) {
+    printf("%llu %08x %08x %08x %08x %08x %08x %08x %08x\n",
+           (unsigned long long)value,
+           (unsigned)dst[0],
+           (unsigned)dst[1],
+           (unsigned)dst[2],
+           (unsigned)dst[3],
+           (unsigned)dst[4],
+           (unsigned)dst[5],
+           (unsigned)dst[6],
+           (unsigned)dst[7]);
+}
+
+int main(void) {
+    uint32_t src_a[8] = {
+        0x10203040u, 0x11111111u, 0x50607080u, 0x22222222u,
+        0x90a0b0c0u, 0x33333333u, 0xd0e0f000u, 0x44444444u
+    };
+    uint32_t src_b[8] = {
+        0x0badf00du, 0x55555555u, 0x12345678u, 0x66666666u,
+        0x89abcdefu, 0x77777777u, 0x55667788u, 0x88888888u
+    };
+    uint32_t dst_a[8] = {
+        0xaaaaaaaau, 0xbbbbbbbbu, 0xccccccccu, 0xddddddddu,
+        0xeeeeeeeeu, 0xffffffffu, 0x12121212u, 0x34343434u
+    };
+    uint32_t dst_b[8] = {
+        0x01010101u, 0x02020202u, 0x03030303u, 0x04040404u,
+        0x05050505u, 0x06060606u, 0x07070707u, 0x08080808u
+    };
+
+    uint64_t first = vm_vp_strided_i32_stride(dst_a + 6, src_a + 4, -8, 0x13579bdfu);
+    print_case(first, dst_a);
+    uint64_t second = vm_vp_strided_i32_stride(dst_b + 6, src_b + 4, -8, 0x2468ace0u);
+    print_case(second, dst_b);
+    return 0;
+}
+"#,
+    )
+    .expect("VP strided i32 stride C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_ir_source,
+        &harness,
+        "vm_virtualize_vp_strided_i32_stride_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_vp_strided_i32_stride.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_strided_i32_stride");
+    assert!(
+        dump.matches(": sext ").count() >= 2
+            && dump.matches(": imul ").count() >= 4
+            && dump.matches(": iadd ").count() >= 4
+            && dump.matches(": load ").count() >= 3
+            && dump.matches(": store ").count() >= 3,
+        "i32 VP strided load/store should sign-extend stride then use profile memory actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_vp_strided_i32_stride");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized VP strided i32 stride IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_strided_i32_stride"));
+    assert!(ir.contains("handler.sext"));
+    assert!(ir.contains("handler.imul"));
+    assert!(ir.contains("handler.iadd"));
+    assert!(ir.contains("handler.load"));
+    assert!(ir.contains("handler.store"));
+    assert!(!ir.contains("call <4 x i32> @llvm.experimental.vp.strided.load"));
+    assert!(!ir.contains("call void @llvm.experimental.vp.strided.store"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_strided_i32_stride"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_masked_expandload_compressstore_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_masked_expand_compress.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_masked_expand_compress'
+source_filename = "vm_virtualize_masked_expand_compress.ll"
+
+declare <4 x i32> @llvm.masked.expandload.v4i32.p0(ptr, <4 x i1>, <4 x i32>)
+declare void @llvm.masked.compressstore.v4i32.p0(<4 x i32>, ptr, <4 x i1>)
+
+define i64 @vm_masked_expand_compress(ptr %dst, ptr %src, i32 %seed) #0 {
+entry:
+  %s1 = add i32 %seed, 17
+  %s2 = xor i32 %seed, 305419896
+  %s3 = add i32 %seed, 51
+  %p0 = insertelement <4 x i32> poison, i32 %seed, i32 0
+  %p1 = insertelement <4 x i32> %p0, i32 %s1, i32 1
+  %p2 = insertelement <4 x i32> %p1, i32 %s2, i32 2
+  %p3 = insertelement <4 x i32> %p2, i32 %s3, i32 3
+  %loaded = call <4 x i32> @llvm.masked.expandload.v4i32.p0(ptr %src, <4 x i1> <i1 true, i1 false, i1 true, i1 true>, <4 x i32> %p3)
+  call void @llvm.masked.compressstore.v4i32.p0(<4 x i32> %loaded, ptr %dst, <4 x i1> <i1 false, i1 true, i1 true, i1 true>)
+  %l0 = extractelement <4 x i32> %loaded, i32 0
+  %l1 = extractelement <4 x i32> %loaded, i32 1
+  %l2 = extractelement <4 x i32> %loaded, i32 2
+  %l3 = extractelement <4 x i32> %loaded, i32 3
+  %l0x = zext i32 %l0 to i64
+  %l1x = zext i32 %l1 to i64
+  %l2x = zext i32 %l2 to i64
+  %l3x = zext i32 %l3 to i64
+  %a0 = shl i64 %l1x, 9
+  %a1 = xor i64 %l0x, %a0
+  %a2 = shl i64 %l2x, 31
+  %a3 = xor i64 %a1, %a2
+  %a4 = shl i64 %l3x, 43
+  %a5 = xor i64 %a3, %a4
+  ret i64 %a5
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("masked expandload/compressstore LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_masked_expand_compress.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_masked_expand_compress_baseline'
+source_filename = "vm_virtualize_masked_expand_compress_baseline.ll"
+
+define i64 @vm_masked_expand_compress(ptr %dst, ptr %src, i32 %seed) #0 {
+entry:
+  %s1 = add i32 %seed, 17
+  %src0 = load i32, ptr %src, align 4
+  %src1p = getelementptr i32, ptr %src, i64 1
+  %src1 = load i32, ptr %src1p, align 4
+  %src2p = getelementptr i32, ptr %src, i64 2
+  %src2 = load i32, ptr %src2p, align 4
+  store i32 %s1, ptr %dst, align 4
+  %dst1 = getelementptr i32, ptr %dst, i64 1
+  store i32 %src1, ptr %dst1, align 4
+  %dst2 = getelementptr i32, ptr %dst, i64 2
+  store i32 %src2, ptr %dst2, align 4
+  %l0x = zext i32 %src0 to i64
+  %l1x = zext i32 %s1 to i64
+  %l2x = zext i32 %src1 to i64
+  %l3x = zext i32 %src2 to i64
+  %a0 = shl i64 %l1x, 9
+  %a1 = xor i64 %l0x, %a0
+  %a2 = shl i64 %l2x, 31
+  %a3 = xor i64 %a1, %a2
+  %a4 = shl i64 %l3x, 43
+  %a5 = xor i64 %a3, %a4
+  ret i64 %a5
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("masked expandload/compressstore baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_masked_expand_compress_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_masked_expand_compress(uint32_t *dst, const uint32_t *src, uint32_t seed);
+
+static void print_case(uint64_t value, const uint32_t *dst) {
+    printf("%llu %08x %08x %08x %08x\n",
+           (unsigned long long)value,
+           (unsigned)dst[0],
+           (unsigned)dst[1],
+           (unsigned)dst[2],
+           (unsigned)dst[3]);
+}
+
+int main(void) {
+    uint32_t src_a[4] = { 0x10203040u, 0x50607080u, 0x90a0b0c0u, 0xd0e0f000u };
+    uint32_t src_b[4] = { 0x0badf00du, 0x12345678u, 0x89abcdefu, 0x55667788u };
+    uint32_t dst[4] = { 0xaaaaaaaau, 0xbbbbbbbbu, 0xccccccccu, 0xddddddddu };
+
+    uint64_t first = vm_masked_expand_compress(dst, src_a, 0x11111111u);
+    print_case(first, dst);
+    uint64_t second = vm_masked_expand_compress(dst, src_b, 0x22222222u);
+    print_case(second, dst);
+    return 0;
+}
+"#,
+    )
+    .expect("masked expandload/compressstore C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_masked_expand_compress_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_masked_expand_compress.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_masked_expand_compress");
+    let load_like_count = dump.matches(": load ").count() + dump.matches(": gep_load ").count();
+    let gep_like_count = dump.matches(": gep ").count() + dump.matches(": gep_load ").count();
+    assert!(
+        load_like_count >= 3
+            && dump.matches(": store ").count() >= 3
+            && gep_like_count >= 4
+            && dump.matches(": mov ").count() >= 4,
+        "masked expandload/compressstore should lower through profile load/store/gep/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_masked_expand_compress");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized masked expandload/compressstore IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_masked_expand_compress"));
+    assert!(ir.contains("handler.load"));
+    assert!(ir.contains("handler.store"));
+    assert!(ir.contains("handler.gep"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.masked.expandload"));
+    assert!(!ir.contains("call void @llvm.masked.compressstore"));
+    assert!(!ir.contains(".amice.vm.original.vm_masked_expand_compress"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_masked_gather_scatter_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_masked_gather_scatter.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_masked_gather_scatter'
+source_filename = "vm_virtualize_masked_gather_scatter.ll"
+
+declare <4 x i32> @llvm.masked.gather.v4i32.v4p0(<4 x ptr>, i32 immarg, <4 x i1>, <4 x i32>)
+declare void @llvm.masked.scatter.v4i32.v4p0(<4 x i32>, <4 x ptr>, i32 immarg, <4 x i1>)
+
+define i64 @vm_masked_gather_scatter(ptr %dst, ptr %src, i32 %seed) #0 {
+entry:
+  %src0 = getelementptr i32, ptr %src, i64 0
+  %src1 = getelementptr i32, ptr %src, i64 3
+  %src2 = getelementptr i32, ptr %src, i64 1
+  %src3 = getelementptr i32, ptr %src, i64 2
+  %pv0 = insertelement <4 x ptr> poison, ptr %src0, i32 0
+  %pv1 = insertelement <4 x ptr> %pv0, ptr %src1, i32 1
+  %pv2 = insertelement <4 x ptr> %pv1, ptr %src2, i32 2
+  %pv3 = insertelement <4 x ptr> %pv2, ptr %src3, i32 3
+  %p1 = add i32 %seed, 257
+  %p2 = xor i32 %seed, 610839776
+  %p3 = add i32 %seed, 771
+  %pass0 = insertelement <4 x i32> poison, i32 %seed, i32 0
+  %pass1 = insertelement <4 x i32> %pass0, i32 %p1, i32 1
+  %pass2 = insertelement <4 x i32> %pass1, i32 %p2, i32 2
+  %pass3 = insertelement <4 x i32> %pass2, i32 %p3, i32 3
+  %gathered = call <4 x i32> @llvm.masked.gather.v4i32.v4p0(<4 x ptr> %pv3, i32 4, <4 x i1> <i1 true, i1 false, i1 true, i1 false>, <4 x i32> %pass3)
+  %dst0 = getelementptr i32, ptr %dst, i64 3
+  %dst1 = getelementptr i32, ptr %dst, i64 1
+  %dst2 = getelementptr i32, ptr %dst, i64 0
+  %dst3 = getelementptr i32, ptr %dst, i64 2
+  %dv0 = insertelement <4 x ptr> poison, ptr %dst0, i32 0
+  %dv1 = insertelement <4 x ptr> %dv0, ptr %dst1, i32 1
+  %dv2 = insertelement <4 x ptr> %dv1, ptr %dst2, i32 2
+  %dv3 = insertelement <4 x ptr> %dv2, ptr %dst3, i32 3
+  call void @llvm.masked.scatter.v4i32.v4p0(<4 x i32> %gathered, <4 x ptr> %dv3, i32 4, <4 x i1> <i1 false, i1 true, i1 true, i1 false>)
+  %g0 = extractelement <4 x i32> %gathered, i32 0
+  %g1 = extractelement <4 x i32> %gathered, i32 1
+  %g2 = extractelement <4 x i32> %gathered, i32 2
+  %g3 = extractelement <4 x i32> %gathered, i32 3
+  %g0x = zext i32 %g0 to i64
+  %g1x = zext i32 %g1 to i64
+  %g2x = zext i32 %g2 to i64
+  %g3x = zext i32 %g3 to i64
+  %a0 = shl i64 %g1x, 11
+  %a1 = xor i64 %g0x, %a0
+  %a2 = shl i64 %g2x, 29
+  %a3 = xor i64 %a1, %a2
+  %a4 = shl i64 %g3x, 43
+  %a5 = xor i64 %a3, %a4
+  ret i64 %a5
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("masked gather/scatter LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_masked_gather_scatter_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_masked_gather_scatter(uint32_t *dst, const uint32_t *src, uint32_t seed);
+
+static void print_case(uint64_t value, const uint32_t *dst) {
+    printf("%llu %08x %08x %08x %08x\n",
+           (unsigned long long)value,
+           (unsigned)dst[0],
+           (unsigned)dst[1],
+           (unsigned)dst[2],
+           (unsigned)dst[3]);
+}
+
+int main(void) {
+    uint32_t src_a[4] = { 0x01020304u, 0x11121314u, 0x21222324u, 0x31323334u };
+    uint32_t src_b[4] = { 0xa0b0c0d0u, 0xb1c1d1e1u, 0xc2d2e2f2u, 0xd3e3f303u };
+    uint32_t dst[4] = { 0xaaaaaaaa, 0xbbbbbbbb, 0xcccccccc, 0xdddddddd };
+
+    uint64_t first = vm_masked_gather_scatter(dst, src_a, 0x13572468u);
+    print_case(first, dst);
+    uint64_t second = vm_masked_gather_scatter(dst, src_b, 0x24681357u);
+    print_case(second, dst);
+    return 0;
+}
+"#,
+    )
+    .expect("masked gather/scatter C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_masked_gather_scatter_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_masked_gather_scatter.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_masked_gather_scatter");
+    assert!(
+        dump.matches(": load ").count() >= 2
+            && dump.matches(": store ").count() >= 2
+            && dump.matches(": mov ").count() >= 4,
+        "masked gather/scatter should lower through profile load/store/mov actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_masked_gather_scatter");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized masked gather/scatter IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_masked_gather_scatter"));
+    assert!(ir.contains("handler.load"));
+    assert!(ir.contains("handler.store"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains("call <4 x i32> @llvm.masked.gather"));
+    assert!(!ir.contains("call void @llvm.masked.scatter"));
+    assert!(!ir.contains(".amice.vm.original.vm_masked_gather_scatter"));
 }
 
 #[test]
@@ -6213,6 +21706,83 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_volatile_empty_aggregate_load_store_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_volatile_empty_aggregate.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_volatile_empty_aggregate'
+source_filename = "vm_virtualize_volatile_empty_aggregate.ll"
+
+%Empty = type {}
+
+define i32 @vm_volatile_empty_aggregate(i32 %seed) #0 {
+entry:
+  %slot = alloca %Empty, align 1
+  %loaded = load volatile %Empty, ptr %slot, align 1
+  store volatile %Empty zeroinitializer, ptr %slot, align 1
+  %cond = icmp slt i32 %seed, 0
+  %tag = select i1 %cond, i32 610839776, i32 324508639
+  %mixed = xor i32 %seed, %tag
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("volatile empty aggregate LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_volatile_empty_aggregate_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_volatile_empty_aggregate(int32_t seed);
+
+int main(void) {
+    int32_t first = vm_volatile_empty_aggregate(37);
+    int32_t second = vm_volatile_empty_aggregate(-91);
+    printf("%d %d %d\n", (int)first, (int)second, (int)(first ^ second));
+    return 0;
+}
+"#,
+    )
+    .expect("volatile empty aggregate C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_volatile_empty_aggregate_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_volatile_empty_aggregate.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_volatile_empty_aggregate");
+    assert!(
+        dump.contains(": sideeffect "),
+        "volatile empty aggregate load/store should lower through profile sideeffect actions:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_volatile_empty_aggregate");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized volatile empty aggregate IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_volatile_empty_aggregate"));
+    assert!(ir.contains("handler.sideeffect"));
+    assert!(!ir.contains(".amice.vm.original.vm_volatile_empty_aggregate"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_direct_aggregate_parameter_matches_baseline() {
     ensure_plugin_built();
 
@@ -6315,6 +21885,210 @@ attributes #0 = { noinline optnone }
     assert!(ir.contains(".amice.vm.bytecode.vm_aggregate_param"));
     assert!(ir.contains("handler.mov"));
     assert!(ir.contains("handler.fptosi"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_empty_aggregate_parameters_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_empty_aggregate_params.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_empty_aggregate_params'
+source_filename = "vm_virtualize_empty_aggregate_params.ll"
+
+%Empty = type {}
+
+declare i32 @native_empty_aggregate(%Empty, i32)
+
+define internal i32 @vm_empty_aggregate_param_inner(%Empty %empty, i32 %seed) #0 {
+entry:
+  %frozen = freeze %Empty %empty
+  %cond = icmp sgt i32 %seed, 0
+  %picked = select i1 %cond, %Empty %frozen, %Empty zeroinitializer
+  %tag = select i1 %cond, i32 51, i32 102
+  %mixed = xor i32 %tag, %seed
+  ret i32 %mixed
+}
+
+define i32 @vm_empty_aggregate_param_and_calls(ptr %callee, i32 %seed) #0 {
+entry:
+  %local = call i32 @vm_empty_aggregate_param_inner(%Empty zeroinitializer, i32 %seed)
+  %direct = call i32 @native_empty_aggregate(%Empty zeroinitializer, i32 %local)
+  %indirect = call i32 %callee(%Empty zeroinitializer, i32 %direct)
+  %mixed = xor i32 %indirect, %seed
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("empty aggregate parameter LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_empty_aggregate_params_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+struct Empty {};
+
+int32_t native_empty_aggregate(struct Empty empty, int32_t value);
+int32_t native_empty_aggregate_indirect(struct Empty empty, int32_t value);
+int32_t vm_empty_aggregate_param_and_calls(int32_t (*callee)(struct Empty, int32_t), int32_t seed);
+
+int32_t native_empty_aggregate(struct Empty empty, int32_t value) {
+    (void)empty;
+    return (value * 5) ^ 0x13572468;
+}
+
+int32_t native_empty_aggregate_indirect(struct Empty empty, int32_t value) {
+    (void)empty;
+    return (value + 0x2468) ^ (value << 3);
+}
+
+int main(void) {
+    int32_t acc = 0;
+    acc ^= vm_empty_aggregate_param_and_calls(native_empty_aggregate_indirect, 37);
+    acc ^= vm_empty_aggregate_param_and_calls(native_empty_aggregate_indirect, -91);
+    printf("%d\n", (int)acc);
+    return 0;
+}
+"#,
+    )
+    .expect("empty aggregate parameter C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_empty_aggregate_params_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_empty_aggregate_params.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_empty_aggregate_param_and_calls");
+    assert!(
+        dump.contains(": call_native "),
+        "empty aggregate native calls should lower through call_native with zero-slot aggregate args:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_empty_aggregate_params");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized empty aggregate param IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_empty_aggregate_param_inner"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_empty_aggregate_param_and_calls"));
+    assert!(ir.contains(".amice.vm.indirect_adapter.vm_empty_aggregate_param_and_calls"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_empty_aggregate_returns_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_empty_aggregate_returns.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_empty_aggregate_returns'
+source_filename = "vm_virtualize_empty_aggregate_returns.ll"
+
+%Empty = type {}
+
+declare %Empty @native_empty_return(i32, ptr)
+
+define internal %Empty @vm_empty_aggregate_return_inner(i32 %seed, ptr %slot) #0 {
+entry:
+  %scaled = mul i32 %seed, 3
+  %old = load i32, ptr %slot, align 4
+  %next = xor i32 %old, %scaled
+  store i32 %next, ptr %slot, align 4
+  ret %Empty zeroinitializer
+}
+
+define i32 @vm_empty_aggregate_return_and_calls(ptr %callee, i32 %seed) #0 {
+entry:
+  %slot = alloca i32, align 4
+  store i32 %seed, ptr %slot, align 4
+  %local = call %Empty @vm_empty_aggregate_return_inner(i32 %seed, ptr %slot)
+  %direct = call %Empty @native_empty_return(i32 %seed, ptr %slot)
+  %indirect = call %Empty %callee(i32 %seed, ptr %slot)
+  %loaded = load i32, ptr %slot, align 4
+  %mixed = xor i32 %loaded, %seed
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("empty aggregate return LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_empty_aggregate_returns_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+struct Empty {};
+
+struct Empty native_empty_return(int32_t value, int32_t *slot);
+struct Empty native_empty_return_indirect(int32_t value, int32_t *slot);
+int32_t vm_empty_aggregate_return_and_calls(struct Empty (*callee)(int32_t, int32_t *), int32_t seed);
+
+struct Empty native_empty_return(int32_t value, int32_t *slot) {
+    *slot = (*slot + 0x1357) ^ (value << 1);
+    return (struct Empty){};
+}
+
+struct Empty native_empty_return_indirect(int32_t value, int32_t *slot) {
+    *slot = (*slot * 7) ^ (value + 0x2468);
+    return (struct Empty){};
+}
+
+int main(void) {
+    int32_t acc = 0;
+    acc ^= vm_empty_aggregate_return_and_calls(native_empty_return_indirect, 29);
+    acc ^= vm_empty_aggregate_return_and_calls(native_empty_return_indirect, -73);
+    printf("%d\n", (int)acc);
+    return 0;
+}
+"#,
+    )
+    .expect("empty aggregate return C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_empty_aggregate_returns_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_empty_aggregate_returns.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_empty_aggregate_return_and_calls");
+    assert!(
+        dump.contains(": call_native ") && dump.contains(": ret "),
+        "empty aggregate native returns should lower through VM call/ret paths:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_empty_aggregate_returns");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized empty aggregate return IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_empty_aggregate_return_inner"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_empty_aggregate_return_and_calls"));
+    assert!(ir.contains(".amice.vm.indirect_adapter.vm_empty_aggregate_return_and_calls"));
 }
 
 #[test]
@@ -6424,6 +22198,112 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_subaggregate_insert_constant_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_subaggregate_insert_constant.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_subaggregate_insert_constant'
+source_filename = "vm_virtualize_subaggregate_insert_constant.ll"
+
+%Inner = type { i32, i64 }
+%Pair = type { i16, i16 }
+%Outer = type { i8, %Inner, [2 x i16], %Pair }
+
+define i64 @vm_subaggregate_insert_constant(i32 %salt) #0 {
+entry:
+  %o0 = insertvalue %Outer undef, i8 9, 0
+  %o1 = insertvalue %Outer %o0, %Inner { i32 305419896, i64 81985529216486895 }, 1
+  %o2 = insertvalue %Outer %o1, [2 x i16] [i16 4951, i16 9320], 2
+  %o3 = insertvalue %Outer %o2, %Pair { i16 -21555, i16 17185 }, 3
+  %tag = extractvalue %Outer %o3, 0
+  %got_inner = extractvalue %Outer %o3, 1
+  %got_arr = extractvalue %Outer %o3, 2
+  %got_pair = extractvalue %Outer %o3, 3
+  %x = extractvalue %Inner %got_inner, 0
+  %y = extractvalue %Inner %got_inner, 1
+  %r = extractvalue [2 x i16] %got_arr, 0
+  %s = extractvalue [2 x i16] %got_arr, 1
+  %u = extractvalue %Pair %got_pair, 0
+  %v = extractvalue %Pair %got_pair, 1
+  %tag64 = zext i8 %tag to i64
+  %salt64 = zext i32 %salt to i64
+  %xx = zext i32 %x to i64
+  %rx = zext i16 %r to i64
+  %sx = zext i16 %s to i64
+  %ux = zext i16 %u to i64
+  %vx = zext i16 %v to i64
+  %m0 = xor i64 %salt64, %xx
+  %m1 = add i64 %m0, %y
+  %m2 = xor i64 %m1, %rx
+  %m3 = add i64 %m2, %sx
+  %m4 = xor i64 %m3, %ux
+  %m5 = add i64 %m4, %vx
+  %m6 = xor i64 %m5, %tag64
+  ret i64 %m6
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("constant subaggregate insert LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_subaggregate_insert_constant_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_subaggregate_insert_constant(uint32_t salt);
+
+int main(void) {
+    uint64_t a = vm_subaggregate_insert_constant(0x10203040u);
+    uint64_t b = vm_subaggregate_insert_constant(0x55667788u);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("constant subaggregate insert C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_subaggregate_insert_constant_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_subaggregate_insert_constant.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_subaggregate_insert_constant");
+    assert!(
+        dump.contains(": mov ") && dump.matches(": mov_imm ").count() + dump.matches(": const_load ").count() >= 6,
+        "constant subaggregate insert should materialize constant leaves and move them through the profile rule:\n{dump}"
+    );
+
+    let virtualized =
+        compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_subaggregate_insert_constant");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized constant subaggregate insert IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_subaggregate_insert_constant"));
+    assert!(ir.contains("handler.mov"));
+    assert!(!ir.contains(".original"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_nested_aggregate_return_matches_baseline() {
     ensure_plugin_built();
 
@@ -6507,6 +22387,107 @@ int main(void) {
         std::fs::read_to_string(virtualized_ir).expect("virtualized nested aggregate return IR should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_nested_aggregate_return"));
     assert!(ir.contains("amice.vm.ret.field"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_aggregate_return_constant_source_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_aggregate_return_constant.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_aggregate_return_constant'
+source_filename = "vm_virtualize_aggregate_return_constant.ll"
+
+%Inner = type { i16, i16 }
+%Outer = type { i32, %Inner }
+
+define %Outer @vm_aggregate_return_constant(i32 %salt) #0 {
+entry:
+  ret %Outer { i32 305419896, %Inner { i16 4951, i16 9320 } }
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("constant aggregate return LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_aggregate_return_constant_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+struct Inner {
+    uint16_t lo;
+    uint16_t hi;
+};
+
+struct Outer {
+    uint32_t tag;
+    struct Inner inner;
+};
+
+struct Outer vm_aggregate_return_constant(uint32_t salt);
+
+int main(void) {
+    struct Outer a = vm_aggregate_return_constant(0x10203040u);
+    struct Outer b = vm_aggregate_return_constant(0x55667788u);
+    uint64_t acc = a.tag ^ b.tag;
+    acc ^= ((uint64_t)a.inner.lo << 16) | a.inner.hi;
+    acc ^= ((uint64_t)b.inner.lo << 32) | b.inner.hi;
+    printf("%llu %u %u %u %u %u %u\n",
+           (unsigned long long)acc,
+           a.tag,
+           a.inner.lo,
+           a.inner.hi,
+           b.tag,
+           b.inner.lo,
+           b.inner.hi);
+    return 0;
+}
+"#,
+    )
+    .expect("constant aggregate return C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_aggregate_return_constant_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_aggregate_return_constant.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_aggregate_return_constant");
+    let constant_materialize_count = dump.matches(": mov_imm ").count() + dump.matches(": const_load ").count();
+    assert!(
+        constant_materialize_count >= 3,
+        "constant aggregate return should materialize constant leaf fields:\n{dump}"
+    );
+    assert!(
+        dump.contains(": ret "),
+        "constant aggregate return should still lower through profile ret action:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_aggregate_return_constant");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized constant aggregate return IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_aggregate_return_constant"));
+    assert!(ir.contains("amice.vm.ret.field"));
+    assert!(!ir.contains(".amice.vm.original.vm_aggregate_return_constant"));
 }
 
 #[test]
@@ -6753,6 +22734,115 @@ int main(void) {
     assert!(ir.contains(".amice.vm.bytecode.vm_call_native_aggregate_param"));
     assert!(ir.contains(".amice.vm.native_thunk.vm_call_native_aggregate_param"));
     assert!(ir.contains("amice.vm.native.arg.field"));
+    assert!(ir.contains("handler.call_native"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_native_call_constant_aggregate_parameter_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_native_constant_aggregate_param.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_native_constant_aggregate_param'
+source_filename = "vm_virtualize_native_constant_aggregate_param.ll"
+
+%Arg = type { i8, [2 x i16], i32 }
+
+@.amice.vm.ann = private unnamed_addr constant [15 x i8] c"+vm_virtualize\00", section "llvm.metadata"
+@.amice.vm.file = private unnamed_addr constant [23 x i8] c"vm-native-const-arg.ll\00", section "llvm.metadata"
+@llvm.global.annotations = appending global [1 x { ptr, ptr, ptr, i32, ptr }] [
+  { ptr, ptr, ptr, i32, ptr } { ptr @vm_call_native_constant_aggregate, ptr @.amice.vm.ann, ptr @.amice.vm.file, i32 5, ptr null }
+], section "llvm.metadata"
+
+define i64 @native_mix_constant_aggregate(%Arg %arg, i64 %salt) #0 {
+entry:
+  %tag = extractvalue %Arg %arg, 0
+  %lo = extractvalue %Arg %arg, 1, 0
+  %hi = extractvalue %Arg %arg, 1, 1
+  %word = extractvalue %Arg %arg, 2
+  %tag64 = zext i8 %tag to i64
+  %lo64 = zext i16 %lo to i64
+  %hi64 = zext i16 %hi to i64
+  %word64 = zext i32 %word to i64
+  %lo_shift = shl i64 %lo64, 8
+  %hi_shift = shl i64 %hi64, 24
+  %word_shift = shl i64 %word64, 32
+  %m0 = xor i64 %tag64, %lo_shift
+  %m1 = xor i64 %m0, %hi_shift
+  %m2 = add i64 %m1, %word_shift
+  %m3 = xor i64 %m2, %salt
+  ret i64 %m3
+}
+
+define i64 @vm_call_native_constant_aggregate(i64 %salt) #0 {
+entry:
+  %native = call i64 @native_mix_constant_aggregate(%Arg { i8 7, [2 x i16] [i16 4660, i16 -21555], i32 -889275714 }, i64 %salt)
+  %ret = xor i64 %native, %salt
+  ret i64 %ret
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("native constant aggregate parameter LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_native_constant_aggregate_param_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_call_native_constant_aggregate(uint64_t salt);
+
+int main(void) {
+    uint64_t a = vm_call_native_constant_aggregate(0x1020304050607080ULL);
+    uint64_t b = vm_call_native_constant_aggregate(0xfedcba9876543210ULL);
+    printf("%llu %llu\n", (unsigned long long)a, (unsigned long long)b);
+    return 0;
+}
+"#,
+    )
+    .expect("native constant aggregate parameter C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_native_constant_aggregate_param_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = ObfuscationConfig::disabled();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_native_constant_aggregate_param.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_call_native_constant_aggregate");
+    assert!(
+        dump.contains(": call_native ")
+            && dump.matches(": mov_imm ").count() + dump.matches(": const_load ").count() >= 4,
+        "native constant aggregate parameter should materialize leaf constants before call_native:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_native_constant_aggregate_param",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("virtualized native constant aggregate parameter IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_call_native_constant_aggregate"));
+    assert!(ir.contains(".amice.vm.native_thunk.vm_call_native_constant_aggregate"));
+    assert!(ir.contains("@native_mix_constant_aggregate"));
     assert!(ir.contains("handler.call_native"));
 }
 
@@ -7542,6 +23632,28 @@ entry:
   %c = add i32 %b, %cur
   ret i32 %c
 }
+
+define i32 @vm_pointer_atomicrmw_xchg(ptr %slot, ptr %desired) {
+entry:
+  %old = atomicrmw xchg ptr %slot, ptr %desired seq_cst, align 8
+  %current = load atomic ptr, ptr %slot monotonic, align 8
+  %old_value = load i32, ptr %old, align 4
+  %current_value = load i32, ptr %current, align 4
+  %current_shift = shl i32 %current_value, 4
+  %out = add i32 %old_value, %current_shift
+  ret i32 %out
+}
+
+define i32 @vm_volatile_pointer_atomicrmw_xchg(ptr %slot, ptr %desired) {
+entry:
+  %old = atomicrmw volatile xchg ptr %slot, ptr %desired acq_rel, align 8
+  %current = load atomic volatile ptr, ptr %slot acquire, align 8
+  %old_value = load i32, ptr %old, align 4
+  %current_value = load i32, ptr %current, align 4
+  %current_shift = shl i32 %current_value, 5
+  %out = add i32 %old_value, %current_shift
+  ret i32 %out
+}
 "#,
     )
     .expect("atomicrmw LLVM IR fixture should be writable");
@@ -7554,13 +23666,33 @@ entry:
 
 int32_t vm_atomicrmw_mix(int32_t *p, int32_t x);
 int32_t vm_volatile_atomicrmw_mix(int32_t *p, int32_t x);
+int32_t vm_pointer_atomicrmw_xchg(void **slot, int32_t *desired);
+int32_t vm_volatile_pointer_atomicrmw_xchg(void **slot, int32_t *desired);
 
 int main(void) {
     int32_t value = 0x1234;
     int32_t result = vm_atomicrmw_mix(&value, 0x22);
     int32_t volatile_value = 0x2345;
     int32_t volatile_result = vm_volatile_atomicrmw_mix(&volatile_value, 0x44);
-    printf("%d:%d:%d:%d\n", result, value, volatile_result, volatile_value);
+    int32_t pointer_first = 13;
+    int32_t pointer_second = 37;
+    void *pointer_slot = &pointer_first;
+    int32_t pointer_result = vm_pointer_atomicrmw_xchg(&pointer_slot, &pointer_second);
+    int32_t volatile_pointer_first = 17;
+    int32_t volatile_pointer_second = 41;
+    void *volatile_pointer_slot = &volatile_pointer_first;
+    int32_t volatile_pointer_result =
+        vm_volatile_pointer_atomicrmw_xchg(&volatile_pointer_slot, &volatile_pointer_second);
+    printf(
+        "%d:%d:%d:%d:%d:%d:%d:%d\n",
+        result,
+        value,
+        volatile_result,
+        volatile_value,
+        pointer_result,
+        *(int32_t *)pointer_slot,
+        volatile_pointer_result,
+        *(int32_t *)volatile_pointer_slot);
     return 0;
 }
 "#,
@@ -7572,7 +23704,22 @@ int main(void) {
     let baseline_output = baseline.run();
     baseline_output.assert_success();
 
-    let virtualized_ir = optimize_ir_with_plugin(&ir_source, "vm_virtualize_atomic_rmw.ll", vm_virtualize_config());
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_atomic_rmw.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let pointer_dump = bytecode_dump_for_function(&stderr, "vm_pointer_atomicrmw_xchg");
+    assert!(
+        pointer_dump.contains(": atomic_rmw_xchg ") && pointer_dump.contains("width: 64"),
+        "pointer atomicrmw xchg should lower through the profile atomic_rmw_xchg handler:\n{pointer_dump}"
+    );
+    let volatile_pointer_dump = bytecode_dump_for_function(&stderr, "vm_volatile_pointer_atomicrmw_xchg");
+    assert!(
+        volatile_pointer_dump.contains(": volatile_atomic_rmw_xchg ") && volatile_pointer_dump.contains("width: 64"),
+        "volatile pointer atomicrmw xchg should lower through the profile volatile_atomic_rmw_xchg handler:\n{volatile_pointer_dump}"
+    );
+
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_atomic_rmw");
     virtualized.assert_success();
     let virtualized_output = virtualized.run();
@@ -7582,6 +23729,8 @@ int main(void) {
     let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized atomicrmw LLVM IR should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_atomicrmw_mix"));
     assert!(ir.contains(".amice.vm.bytecode.vm_volatile_atomicrmw_mix"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_pointer_atomicrmw_xchg"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_volatile_pointer_atomicrmw_xchg"));
     assert!(ir.contains("handler.atomic_rmw_xchg"));
     assert!(ir.contains("handler.atomic_rmw_add"));
     assert!(ir.contains("handler.atomic_rmw_sub"));
@@ -7613,8 +23762,15 @@ fn test_vm_virtualize_float_atomic_rmw_match_baseline() {
         r#"; ModuleID = 'vm_virtualize_float_atomic_rmw'
 source_filename = "vm_virtualize_float_atomic_rmw.ll"
 
-define i32 @vm_float_atomicrmw_mix(ptr %fp, ptr %dp) {
+define i32 @vm_float_atomicrmw_mix(ptr %hp, ptr %fp, ptr %dp) {
 entry:
+  %old_hadd = atomicrmw fadd ptr %hp, half 0xH3C00 monotonic, align 2
+  %old_hsub = atomicrmw fsub ptr %hp, half 0xH3800 acquire, align 2
+  %old_hmax = atomicrmw fmax ptr %hp, half 0xH4800 release, align 2
+  %old_hmin = atomicrmw fmin ptr %hp, half 0xH4600 acq_rel, align 2
+  %old_hmaximum = atomicrmw fmaximum ptr %hp, half 0xH4C00 seq_cst, align 2
+  %old_hminimum = atomicrmw fminimum ptr %hp, half 0xH4A40 monotonic, align 2
+  %old_hvolatile = atomicrmw volatile fadd ptr %hp, half 0xH3C00 monotonic, align 2
   %old_fadd = atomicrmw fadd ptr %fp, float 1.250000e+00 monotonic, align 4
   %old_fsub = atomicrmw fsub ptr %fp, float 5.000000e-01 acquire, align 4
   %old_fmax = atomicrmw fmax ptr %fp, float 8.000000e+00 release, align 4
@@ -7631,16 +23787,41 @@ entry:
   %db = fadd double %da, %old_dmax
   %dc = fadd double %db, %old_dmin
   %di = fptosi double %dc to i32
+  %hadd_bits = bitcast half %old_hadd to i16
+  %hsub_bits = bitcast half %old_hsub to i16
+  %hmax_bits = bitcast half %old_hmax to i16
+  %hmin_bits = bitcast half %old_hmin to i16
+  %hmaximum_bits = bitcast half %old_hmaximum to i16
+  %hminimum_bits = bitcast half %old_hminimum to i16
+  %hvolatile_bits = bitcast half %old_hvolatile to i16
+  %hadd_i32 = zext i16 %hadd_bits to i32
+  %hsub_i32 = zext i16 %hsub_bits to i32
+  %hmax_i32 = zext i16 %hmax_bits to i32
+  %hmin_i32 = zext i16 %hmin_bits to i32
+  %hmaximum_i32 = zext i16 %hmaximum_bits to i32
+  %hminimum_i32 = zext i16 %hminimum_bits to i32
+  %hvolatile_i32 = zext i16 %hvolatile_bits to i32
+  %hxor0 = xor i32 %hadd_i32, %hsub_i32
+  %hxor1 = xor i32 %hxor0, %hmax_i32
+  %hxor2 = xor i32 %hxor1, %hmin_i32
+  %hxor3 = xor i32 %hxor2, %hmaximum_i32
+  %hxor4 = xor i32 %hxor3, %hminimum_i32
+  %hxor5 = xor i32 %hxor4, %hvolatile_i32
   %final_f = load atomic float, ptr %fp monotonic, align 4
   %final_d = load atomic double, ptr %dp monotonic, align 8
+  %final_h = load atomic half, ptr %hp monotonic, align 2
+  %final_h_bits = bitcast half %final_h to i16
+  %final_hi = zext i16 %final_h_bits to i32
   %final_f_scaled = fmul float %final_f, 1.000000e+02
   %final_d_scaled = fmul double %final_d, 1.000000e+02
   %ffi = fptosi float %final_f_scaled to i32
   %fdi = fptosi double %final_d_scaled to i32
-  %sum0 = add i32 %fi, %di
-  %sum1 = add i32 %sum0, %ffi
-  %sum2 = add i32 %sum1, %fdi
-  ret i32 %sum2
+  %sum0 = add i32 %hxor5, %fi
+  %sum1 = add i32 %sum0, %di
+  %sum2 = add i32 %sum1, %final_hi
+  %sum3 = add i32 %sum2, %ffi
+  %sum4 = add i32 %sum3, %fdi
+  ret i32 %sum4
 }
 "#,
     )
@@ -7652,20 +23833,26 @@ entry:
         r#"#include <stdint.h>
 #include <stdio.h>
 
-int32_t vm_float_atomicrmw_mix(float *fp, double *dp);
+int32_t vm_float_atomicrmw_mix(_Float16 *hp, float *fp, double *dp);
 
 int main(void) {
+    _Float16 h = (_Float16)3.0;
     float f = 4.0f;
     double d = 10.0;
-    int32_t result = vm_float_atomicrmw_mix(&f, &d);
-    printf("%d:%d:%d\n", result, (int)(f * 100.0f), (int)(d * 100.0));
+    int32_t result = vm_float_atomicrmw_mix(&h, &f, &d);
+    printf("%d:%d:%d:%d\n", result, (int)((float)h * 100.0f), (int)(f * 100.0f), (int)(d * 100.0));
     return 0;
 }
 "#,
     )
     .expect("float atomicrmw C harness should be writable");
 
-    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_float_atomic_rmw_baseline");
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_float_atomic_rmw_baseline",
+        &["-lm"],
+    );
     baseline.assert_success();
     let baseline_output = baseline.run();
     baseline_output.assert_success();
@@ -7678,6 +23865,10 @@ int main(void) {
     assert_success(output);
 
     let dump = bytecode_dump_for_function(&stderr, "vm_float_atomicrmw_mix");
+    assert!(
+        dump.contains("width: 16"),
+        "half atomicrmw should lower through profile handlers with width 16:\n{dump}"
+    );
     for expected in [
         ": atomic_rmw_fadd ",
         ": atomic_rmw_fsub ",
@@ -7685,6 +23876,7 @@ int main(void) {
         ": atomic_rmw_fmin ",
         ": atomic_rmw_fmaximum ",
         ": atomic_rmw_fminimum ",
+        ": volatile_atomic_rmw_fadd ",
     ] {
         assert!(
             dump.contains(expected),
@@ -7692,7 +23884,8 @@ int main(void) {
         );
     }
 
-    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_float_atomic_rmw");
+    let virtualized =
+        compile_ir_with_c_harness_and_args(&virtualized_ir, &harness, "vm_virtualize_float_atomic_rmw", &["-lm"]);
     virtualized.assert_success();
     let virtualized_output = virtualized.run();
     virtualized_output.assert_success();
@@ -7706,6 +23899,7 @@ int main(void) {
     assert!(ir.contains("handler.atomic_rmw_fmin"));
     assert!(ir.contains("handler.atomic_rmw_fmaximum"));
     assert!(ir.contains("handler.atomic_rmw_fminimum"));
+    assert!(ir.contains("handler.volatile_atomic_rmw_fadd"));
 }
 
 #[test]
@@ -7764,6 +23958,31 @@ entry:
   %out = add i32 %sum, %flag
   ret i32 %out
 }
+
+define i32 @vm_pointer_cmpxchg_mix(ptr %slot, ptr %expected, ptr %desired) {
+entry:
+  %pair1 = cmpxchg ptr %slot, ptr %expected, ptr %desired acquire monotonic, align 8
+  %old1 = extractvalue { ptr, i1 } %pair1, 0
+  %ok1 = extractvalue { ptr, i1 } %pair1, 1
+  %pair2 = cmpxchg volatile ptr %slot, ptr %expected, ptr %old1 seq_cst acquire, align 8
+  %old2 = extractvalue { ptr, i1 } %pair2, 0
+  %ok2 = extractvalue { ptr, i1 } %pair2, 1
+  %cur = load atomic ptr, ptr %slot monotonic, align 8
+  %old1_value = load i32, ptr %old1, align 4
+  %old2_value = load i32, ptr %old2, align 4
+  %cur_value = load i32, ptr %cur, align 4
+  %ok1_i32 = zext i1 %ok1 to i32
+  %ok2_i32 = zext i1 %ok2 to i32
+  %old2_shift = shl i32 %old2_value, 1
+  %cur_shift = shl i32 %cur_value, 2
+  %sum0 = add i32 %old1_value, %old2_shift
+  %sum1 = add i32 %sum0, %cur_shift
+  %flag1 = shl i32 %ok1_i32, 8
+  %sum2 = add i32 %sum1, %flag1
+  %flag2 = shl i32 %ok2_i32, 9
+  %out = add i32 %sum2, %flag2
+  ret i32 %out
+}
 "#,
     )
     .expect("cmpxchg LLVM IR fixture should be writable");
@@ -7777,6 +23996,7 @@ entry:
 int32_t vm_cmpxchg_mix(int32_t *p, int32_t expected, int32_t desired);
 int32_t vm_weak_cmpxchg_mismatch(int32_t *p, int32_t wrong_expected, int32_t desired);
 int32_t vm_volatile_cmpxchg_mix(int32_t *p, int32_t expected, int32_t desired);
+int32_t vm_pointer_cmpxchg_mix(void **slot, int32_t *expected, int32_t *desired);
 
 int main(void) {
     int32_t value = 10;
@@ -7785,7 +24005,20 @@ int main(void) {
     int32_t weak_result = vm_weak_cmpxchg_mismatch(&weak_value, 32, 44);
     int32_t volatile_value = 70;
     int32_t volatile_result = vm_volatile_cmpxchg_mix(&volatile_value, 70, 91);
-    printf("%d:%d %d:%d %d:%d\n", result, value, weak_result, weak_value, volatile_result, volatile_value);
+    int32_t pointer_first = 11;
+    int32_t pointer_second = 29;
+    void *pointer_slot = &pointer_first;
+    int32_t pointer_result = vm_pointer_cmpxchg_mix(&pointer_slot, &pointer_first, &pointer_second);
+    printf(
+        "%d:%d %d:%d %d:%d %d:%d\n",
+        result,
+        value,
+        weak_result,
+        weak_value,
+        volatile_result,
+        volatile_value,
+        pointer_result,
+        *(int32_t *)pointer_slot);
     return 0;
 }
 "#,
@@ -7808,13 +24041,14 @@ int main(void) {
     assert!(ir.contains(".amice.vm.bytecode.vm_cmpxchg_mix"));
     assert!(ir.contains(".amice.vm.bytecode.vm_weak_cmpxchg_mismatch"));
     assert!(ir.contains(".amice.vm.bytecode.vm_volatile_cmpxchg_mix"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_pointer_cmpxchg_mix"));
     assert!(ir.contains("handler.cmpxchg"));
     assert!(ir.contains("handler.volatile_cmpxchg"));
 }
 
 #[test]
 #[serial]
-fn test_vm_virtualize_unsupported_atomic_syncscope_safely_skip() {
+fn test_vm_virtualize_singlethread_fence_and_unsupported_atomic_ops() {
     ensure_plugin_built();
 
     let ir_source = output_dir().join("vm_virtualize_atomic_ops.input.ll");
@@ -7828,21 +24062,138 @@ entry:
   fence syncscope("singlethread") seq_cst
   ret void
 }
+
+define i32 @vm_singlethread_atomic_load(ptr %p) {
+entry:
+  %value = load atomic i32, ptr %p syncscope("singlethread") acquire, align 4
+  ret i32 %value
+}
+
+define void @vm_singlethread_atomic_store(ptr %p, i32 %value) {
+entry:
+  store atomic i32 %value, ptr %p syncscope("singlethread") release, align 4
+  ret void
+}
+
+define i32 @vm_singlethread_atomicrmw(ptr %p, i32 %value) {
+entry:
+  %old = atomicrmw add ptr %p, i32 %value syncscope("singlethread") monotonic, align 4
+  ret i32 %old
+}
+
+define i32 @vm_singlethread_cmpxchg(ptr %p, i32 %expected, i32 %desired) {
+entry:
+  %pair = cmpxchg ptr %p, i32 %expected, i32 %desired syncscope("singlethread") monotonic monotonic, align 4
+  %old = extractvalue { i32, i1 } %pair, 0
+  ret i32 %old
+}
+
+define i32 @vm_custom_scope_atomic_load_skip(ptr %p) {
+entry:
+  %value = load atomic i32, ptr %p syncscope("agent") acquire, align 4
+  ret i32 %value
+}
+
+define i32 @vm_underaligned_atomic_load(ptr %p) {
+entry:
+  %value = load atomic i32, ptr %p monotonic, align 1
+  ret i32 %value
+}
+
+define i32 @vm_underaligned_atomicrmw(ptr %p) {
+entry:
+  %old = atomicrmw add ptr %p, i32 1 monotonic, align 1
+  ret i32 %old
+}
+
+define i64 @vm_i128_cmpxchg_skip(ptr %p, i128 %expected, i128 %desired) {
+entry:
+  %pair = cmpxchg ptr %p, i128 %expected, i128 %desired monotonic monotonic, align 16
+  %old = extractvalue { i128, i1 } %pair, 0
+  %ret = trunc i128 %old to i64
+  ret i64 %ret
+}
+
+define i32 @vm_cmpxchg_failure_stronger_skip(ptr %p) {
+entry:
+  %pair = cmpxchg ptr %p, i32 0, i32 1 monotonic seq_cst, align 4
+  %old = extractvalue { i32, i1 } %pair, 0
+  ret i32 %old
+}
 "#,
     )
     .expect("atomic LLVM IR fixture should be writable");
 
-    let (output_ir, output) =
-        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_atomic_ops.ll", vm_virtualize_config());
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (output_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_atomic_ops.ll", config);
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
 
     let ir = std::fs::read_to_string(output_ir).expect("atomic output IR should be readable");
-    assert!(!ir.contains(".amice.vm.bytecode.vm_scoped_fence"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_scoped_fence"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_singlethread_atomic_load"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_singlethread_atomic_store"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_singlethread_atomicrmw"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_singlethread_cmpxchg"));
+    assert!(ir.contains("handler.fence"));
+    assert!(ir.contains("handler.atomic_load"));
+    assert!(ir.contains("handler.atomic_store"));
+    assert!(ir.contains("handler.atomic_rmw_add"));
+    assert!(ir.contains("handler.cmpxchg"));
+    assert!(ir.contains("syncscope(\"singlethread\")"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_custom_scope_atomic_load_skip"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_underaligned_atomic_load"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_underaligned_atomicrmw"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_i128_cmpxchg_skip"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_cmpxchg_failure_stronger_skip"));
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_scoped_fence");
+    assert!(dump.contains(": fence "));
+    assert!(
+        dump.contains("operands=[5, 0]"),
+        "singlethread seq_cst fence should encode ordering tag 5 and syncscope 0:\n{dump}"
+    );
+
+    let load_dump = bytecode_dump_for_function(&stderr, "vm_singlethread_atomic_load");
+    assert!(load_dump.contains(": atomic_load "));
+    assert!(
+        load_dump.contains(", 2, 0]"),
+        "singlethread acquire atomic load should encode ordering tag 2 and syncscope 0:\n{load_dump}"
+    );
+
+    let store_dump = bytecode_dump_for_function(&stderr, "vm_singlethread_atomic_store");
+    assert!(store_dump.contains(": atomic_store "));
+    assert!(
+        store_dump.contains(", 3, 0]"),
+        "singlethread release atomic store should encode ordering tag 3 and syncscope 0:\n{store_dump}"
+    );
+
+    let rmw_dump = bytecode_dump_for_function(&stderr, "vm_singlethread_atomicrmw");
+    assert!(rmw_dump.contains(": atomic_rmw_add "));
+    assert!(
+        rmw_dump.contains(", 1, 0]"),
+        "singlethread monotonic atomicrmw should encode ordering tag 1 and syncscope 0:\n{rmw_dump}"
+    );
+
+    let cmpxchg_dump = bytecode_dump_for_function(&stderr, "vm_singlethread_cmpxchg");
+    assert!(cmpxchg_dump.contains(": cmpxchg "));
+    assert!(
+        cmpxchg_dump.contains(", 1, 1, 0]"),
+        "singlethread monotonic cmpxchg should encode both ordering tags and syncscope 0:\n{cmpxchg_dump}"
+    );
 
     assert!(stderr.contains("skip function"));
-    assert!(stderr.contains("vm_scoped_fence"));
-    assert!(stderr.contains("fence non-default atomic syncscope is not supported by vm_virtualize"));
+    assert!(stderr.contains("vm_custom_scope_atomic_load_skip"));
+    assert!(stderr.contains("load atomic syncscope"));
+    assert!(stderr.contains("vm_underaligned_atomic_load"));
+    assert!(stderr.contains("load atomic memory access requires natural alignment 4, got 1"));
+    assert!(stderr.contains("vm_underaligned_atomicrmw"));
+    assert!(stderr.contains("atomicrmw atomic memory access requires natural alignment 4, got 1"));
+    assert!(stderr.contains("vm_i128_cmpxchg_skip"));
+    assert!(stderr.contains("unsupported integer width: 128"));
+    assert!(stderr.contains("vm_cmpxchg_failure_stronger_skip"));
+    assert!(stderr.contains("cmpxchg failure ordering cannot be stronger than success ordering"));
 }
 
 #[test]
@@ -8004,6 +24355,39 @@ entry:
   %ret = xor i32 %loaded, 51
   ret i32 %ret
 }
+
+define i64 @vm_atomic_width_matrix(ptr %p8, ptr %p16, ptr %p64, i8 %v8, i16 %v16, i64 %v64) #0 {
+entry:
+  %m8 = xor i8 %v8, 90
+  store atomic i8 %m8, ptr %p8 release, align 1
+  %l8 = load atomic i8, ptr %p8 acquire, align 1
+  %u8 = zext i8 %l8 to i64
+  %m16 = xor i16 %v16, 4660
+  store atomic i16 %m16, ptr %p16 monotonic, align 2
+  %l16 = load atomic i16, ptr %p16 monotonic, align 2
+  %u16 = zext i16 %l16 to i64
+  %m64 = xor i64 %v64, 81985529216486895
+  store atomic i64 %m64, ptr %p64 seq_cst, align 8
+  %l64 = load atomic i64, ptr %p64 seq_cst, align 8
+  %s16 = shl i64 %u16, 8
+  %mix0 = xor i64 %u8, %s16
+  %mix1 = xor i64 %mix0, %l64
+  ret i64 %mix1
+}
+
+define i32 @vm_atomic_pointer_roundtrip(ptr %slot, ptr %first, ptr %second) #0 {
+entry:
+  store atomic ptr %second, ptr %slot release, align 8
+  %loaded = load atomic ptr, ptr %slot acquire, align 8
+  %value = load i32, ptr %loaded, align 4
+  %is_second = icmp eq ptr %loaded, %second
+  %flag = zext i1 %is_second to i32
+  %bonus = shl i32 %flag, 8
+  %ret = add i32 %value, %bonus
+  ret i32 %ret
+}
+
+attributes #0 = { noinline optnone }
 "#,
     )
     .expect("atomic memory LLVM IR fixture should be writable");
@@ -8011,11 +24395,14 @@ entry:
     let harness = output_dir().join("vm_virtualize_atomic_memory_harness.c");
     std::fs::write(
         &harness,
-        r#"#include <stdio.h>
+        r#"#include <stdint.h>
+#include <stdio.h>
 
 int vm_atomic_load(int *p);
 void vm_atomic_store(int *p, int value);
 int vm_volatile_atomic_roundtrip(int *p, int value);
+uint64_t vm_atomic_width_matrix(uint8_t *p8, uint16_t *p16, uint64_t *p64, uint8_t v8, uint16_t v16, uint64_t v64);
+int32_t vm_atomic_pointer_roundtrip(void **slot, int32_t *first, int32_t *second);
 
 int main(void) {
     int cell = 11;
@@ -8023,7 +24410,26 @@ int main(void) {
     vm_atomic_store(&cell, 123);
     int volatile_cell = 19;
     int b = vm_volatile_atomic_roundtrip(&volatile_cell, 77);
-    printf("%d %d %d %d\n", a, cell, b, volatile_cell);
+    uint8_t cell8 = 3;
+    uint16_t cell16 = 0x2222u;
+    uint64_t cell64 = 0x3333444455556666ULL;
+    uint64_t matrix = vm_atomic_width_matrix(&cell8, &cell16, &cell64, 0x5au, 0x1234u, 0x0102030405060708ULL);
+    int32_t first = 11;
+    int32_t second = 29;
+    void *slot = &first;
+    int32_t ptr_result = vm_atomic_pointer_roundtrip(&slot, &first, &second);
+    printf(
+        "%d %d %d %d %llu %u %u %llu %d %d\n",
+        a,
+        cell,
+        b,
+        volatile_cell,
+        (unsigned long long)matrix,
+        (unsigned)cell8,
+        (unsigned)cell16,
+        (unsigned long long)cell64,
+        ptr_result,
+        *(int32_t *)slot);
     return 0;
 }
 "#,
@@ -8035,7 +24441,30 @@ int main(void) {
     let baseline_output = baseline.run();
     baseline_output.assert_success();
 
-    let virtualized_ir = optimize_ir_with_plugin(&ir_source, "vm_virtualize_atomic_memory.ll", vm_virtualize_config());
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_atomic_memory.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let width_dump = bytecode_dump_for_function(&stderr, "vm_atomic_width_matrix");
+    assert!(
+        width_dump.matches(": atomic_store ").count() >= 3
+            && width_dump.matches(": atomic_load ").count() >= 3
+            && width_dump.contains("width: 8")
+            && width_dump.contains("width: 16")
+            && width_dump.contains("width: 64"),
+        "integer-width atomic load/store should lower through profile atomic handlers:\n{width_dump}"
+    );
+    let pointer_dump = bytecode_dump_for_function(&stderr, "vm_atomic_pointer_roundtrip");
+    assert!(
+        pointer_dump.contains(": atomic_store ")
+            && pointer_dump.contains(": atomic_load ")
+            && pointer_dump.contains("width: 64"),
+        "pointer atomic load/store should lower through profile atomic handlers:\n{pointer_dump}"
+    );
+
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_atomic_memory");
     virtualized.assert_success();
     let virtualized_output = virtualized.run();
@@ -8046,6 +24475,8 @@ int main(void) {
     assert!(ir.contains(".amice.vm.bytecode.vm_atomic_load"));
     assert!(ir.contains(".amice.vm.bytecode.vm_atomic_store"));
     assert!(ir.contains(".amice.vm.bytecode.vm_volatile_atomic_roundtrip"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_atomic_width_matrix"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_atomic_pointer_roundtrip"));
     assert!(ir.contains("handler.atomic_load"));
     assert!(ir.contains("handler.atomic_store"));
     assert!(ir.contains("handler.volatile_atomic_load"));
@@ -8063,18 +24494,30 @@ fn test_vm_virtualize_atomic_float_load_store_match_baseline() {
         r#"; ModuleID = 'vm_virtualize_atomic_float_memory'
 source_filename = "vm_virtualize_atomic_float_memory.ll"
 
-define i64 @vm_atomic_float_memory(ptr %pf, ptr %pd, float %fv, double %dv) #0 {
+define i64 @vm_atomic_float_memory(ptr %ph, ptr %pf, ptr %pd, half %hv, float %fv, double %dv) #0 {
 entry:
+  store atomic half %hv, ptr %ph release, align 2
+  %loaded_h = load atomic half, ptr %ph acquire, align 2
+  %neg_h = fneg half %loaded_h
+  store atomic volatile half %neg_h, ptr %ph release, align 2
+  %volatile_h = load atomic volatile half, ptr %ph acquire, align 2
   store atomic float %fv, ptr %pf release, align 4
   %loaded_f = load atomic float, ptr %pf acquire, align 4
   store atomic double %dv, ptr %pd seq_cst, align 8
   %loaded_d = load atomic double, ptr %pd seq_cst, align 8
+  %hbits = bitcast half %loaded_h to i16
+  %volatile_hbits = bitcast half %volatile_h to i16
+  %hz = zext i16 %hbits to i64
+  %vhz = zext i16 %volatile_hbits to i64
+  %hshift = shl i64 %hz, 16
+  %hmix = xor i64 %hshift, %vhz
   %mixed_f = fadd float %loaded_f, 1.250000e+00
   %mixed_d = fadd double %loaded_d, 2.500000e+00
   %fi = fptosi float %mixed_f to i32
   %di = fptosi double %mixed_d to i64
   %fx = sext i32 %fi to i64
-  %ret = xor i64 %fx, %di
+  %mix = xor i64 %fx, %di
+  %ret = xor i64 %mix, %hmix
   ret i64 %ret
 }
 
@@ -8089,15 +24532,16 @@ attributes #0 = { noinline optnone }
         r#"#include <stdint.h>
 #include <stdio.h>
 
-uint64_t vm_atomic_float_memory(float *pf, double *pd, float fv, double dv);
+uint64_t vm_atomic_float_memory(_Float16 *ph, float *pf, double *pd, _Float16 hv, float fv, double dv);
 
 int main(void) {
+    _Float16 h = 0.0;
     float f = 0.0f;
     double d = 0.0;
     uint64_t acc = 0;
-    acc ^= vm_atomic_float_memory(&f, &d, 19.75f, 1234.5);
-    acc ^= vm_atomic_float_memory(&f, &d, -8.50f, -77.25);
-    printf("%llu %.2f %.2f\n", (unsigned long long)acc, f, d);
+    acc ^= vm_atomic_float_memory(&h, &f, &d, (_Float16)7.5, 19.75f, 1234.5);
+    acc ^= vm_atomic_float_memory(&h, &f, &d, (_Float16)-3.25, -8.50f, -77.25);
+    printf("%llu %.2f %.2f %.2f\n", (unsigned long long)acc, (double)h, f, d);
     return 0;
 }
 "#,
@@ -8119,9 +24563,10 @@ int main(void) {
     assert!(
         dump.contains(": atomic_store ")
             && dump.contains(": atomic_load ")
+            && dump.contains("width: 16")
             && dump.contains("width: 32")
             && dump.contains("width: 64"),
-        "float/double atomic load/store should lower through profile atomic handlers:\n{dump}"
+        "half/float/double atomic load/store should lower through profile atomic handlers:\n{dump}"
     );
 
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_atomic_float_memory");
@@ -8134,6 +24579,8 @@ int main(void) {
     assert!(ir.contains(".amice.vm.bytecode.vm_atomic_float_memory"));
     assert!(ir.contains("handler.atomic_load"));
     assert!(ir.contains("handler.atomic_store"));
+    assert!(ir.contains("handler.volatile_atomic_load"));
+    assert!(ir.contains("handler.volatile_atomic_store"));
 }
 
 #[test]
@@ -8150,8 +24597,14 @@ source_filename = "vm_virtualize_fence.ll"
 define i32 @vm_fence_mix(ptr %p, i32 %x) {
 entry:
   store atomic i32 %x, ptr %p release, align 4
+  fence release
+  %first = load atomic i32, ptr %p acquire, align 4
+  fence acquire
+  %bumped = add i32 %first, 3
+  store atomic i32 %bumped, ptr %p release, align 4
+  fence acq_rel
+  %value = load atomic i32, ptr %p monotonic, align 4
   fence seq_cst
-  %value = load atomic i32, ptr %p acquire, align 4
   %mixed = add i32 %value, 7
   ret i32 %mixed
 }
@@ -8182,7 +24635,19 @@ int main(void) {
     let baseline_output = baseline.run();
     baseline_output.assert_success();
 
-    let virtualized_ir = optimize_ir_with_plugin(&ir_source, "vm_virtualize_fence.ll", vm_virtualize_config());
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_fence.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_fence_mix");
+    assert!(
+        dump.matches(": fence ").count() >= 4,
+        "all supported fence orderings should lower through profile fence handler:\n{dump}"
+    );
+
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_fence");
     virtualized.assert_success();
     let virtualized_output = virtualized.run();
@@ -8347,6 +24812,604 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_indirect_sret_call_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_indirect_sret.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_indirect_sret'
+source_filename = "vm_virtualize_indirect_sret.ll"
+
+%Big = type { i64, i64, i64 }
+
+define i64 @vm_indirect_sret(ptr %callee, i64 %seed) #0 {
+entry:
+  %slot = alloca %Big, align 8
+  call void %callee(ptr sret(%Big) align 8 %slot, i64 %seed)
+  %a_ptr = getelementptr inbounds %Big, ptr %slot, i32 0, i32 0
+  %b_ptr = getelementptr inbounds %Big, ptr %slot, i32 0, i32 1
+  %c_ptr = getelementptr inbounds %Big, ptr %slot, i32 0, i32 2
+  %a = load i64, ptr %a_ptr, align 8
+  %b = load i64, ptr %b_ptr, align 8
+  %c = load i64, ptr %c_ptr, align 8
+  %sum = add i64 %a, %b
+  %mixed = xor i64 %sum, %c
+  %ret = add i64 %mixed, %seed
+  ret i64 %ret
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("indirect sret LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_indirect_sret_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+typedef struct {
+    int64_t a;
+    int64_t b;
+    int64_t c;
+} Big;
+
+int64_t vm_indirect_sret(Big (*callee)(int64_t), int64_t seed);
+
+static Big make_big(int64_t seed) {
+    Big result;
+    result.a = seed + 0x1111;
+    result.b = seed * 3 - 0x2222;
+    result.c = result.a ^ (result.b + 0x3333);
+    return result;
+}
+
+static Big make_big_alt(int64_t seed) {
+    Big result;
+    result.a = seed - 0x4444;
+    result.b = seed * 5 + 0x5555;
+    result.c = (result.a + result.b) ^ 0x6666;
+    return result;
+}
+
+int main(void) {
+    int64_t acc = 0;
+    acc ^= vm_indirect_sret(make_big, 17);
+    acc ^= vm_indirect_sret(make_big, -91);
+    acc ^= vm_indirect_sret(make_big_alt, 123456);
+    printf("%lld\n", (long long)acc);
+    return 0;
+}
+"#,
+    )
+    .expect("indirect sret C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_indirect_sret_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (output_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_indirect_sret.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_indirect_sret");
+    assert!(
+        dump.contains(": call_native "),
+        "indirect sret call should lower through profile call_native bridge:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_virtualize_indirect_sret");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("indirect sret output IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_indirect_sret"));
+    assert!(ir.contains("handler.call_native"));
+    assert!(ir.contains(".amice.vm.indirect_adapter.vm_indirect_sret"));
+    assert!(
+        ir.lines()
+            .find(|line| line.starts_with("define ") && line.contains(".amice.vm.indirect_adapter.vm_indirect_sret"))
+            .is_some_and(|line| line.contains("sret(")),
+        "indirect adapter signature must preserve shifted sret parameter attribute"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call void %") && line.contains("sret(")),
+        "indirect adapter target call must preserve original sret call-site attribute"
+    );
+    assert!(
+        ir.lines().any(
+            |line| line.contains("call void @.amice.vm.indirect_adapter.vm_indirect_sret") && line.contains("sret(")
+        ),
+        "native thunk call into indirect adapter must preserve sret ABI attribute"
+    );
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_byval_native_calls_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_byval_native_calls.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_byval_native_calls'
+source_filename = "vm_virtualize_byval_native_calls.ll"
+
+%ByVal = type { i64, i64, i64 }
+
+declare i64 @native_byval(ptr byval(%ByVal) align 8, i64)
+
+define i64 @vm_byval_native_calls(ptr %callee, i64 %seed) #0 {
+entry:
+  %slot = alloca %ByVal, align 8
+  %a_ptr = getelementptr inbounds %ByVal, ptr %slot, i32 0, i32 0
+  %b_ptr = getelementptr inbounds %ByVal, ptr %slot, i32 0, i32 1
+  %c_ptr = getelementptr inbounds %ByVal, ptr %slot, i32 0, i32 2
+  %a = add i64 %seed, 17
+  %b = xor i64 %seed, 305419896
+  %c = sub i64 %seed, 91
+  store i64 %a, ptr %a_ptr, align 8
+  store i64 %b, ptr %b_ptr, align 8
+  store i64 %c, ptr %c_ptr, align 8
+  %direct = call i64 @native_byval(ptr byval(%ByVal) align 8 %slot, i64 %seed)
+  %indirect = call i64 %callee(ptr byval(%ByVal) align 8 %slot, i64 %direct)
+  %mixed = xor i64 %indirect, %direct
+  %ret = add i64 %mixed, %seed
+  ret i64 %ret
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("byval native call LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_byval_native_calls_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+typedef struct {
+    int64_t a;
+    int64_t b;
+    int64_t c;
+} ByVal;
+
+int64_t native_byval(ByVal value, int64_t seed);
+int64_t native_byval_alt(ByVal value, int64_t seed);
+int64_t vm_byval_native_calls(int64_t (*callee)(ByVal, int64_t), int64_t seed);
+
+int64_t native_byval(ByVal value, int64_t seed) {
+    return (value.a + value.b * 3 - value.c) ^ (seed + 0x1357);
+}
+
+int64_t native_byval_alt(ByVal value, int64_t seed) {
+    return (value.a * 5 + value.c * 7) ^ (value.b - seed + 0x2468);
+}
+
+int main(void) {
+    int64_t acc = 0;
+    acc ^= vm_byval_native_calls(native_byval_alt, 13);
+    acc ^= vm_byval_native_calls(native_byval_alt, -77);
+    acc ^= vm_byval_native_calls(native_byval_alt, 0x12345);
+    printf("%lld\n", (long long)acc);
+    return 0;
+}
+"#,
+    )
+    .expect("byval native call C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_byval_native_calls_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (output_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_byval_native_calls.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_byval_native_calls");
+    assert!(
+        dump.matches(": call_native ").count() >= 2,
+        "direct and indirect byval calls should lower through profile call_native bridges:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_virtualize_byval_native_calls");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("byval native call output IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_byval_native_calls"));
+    assert!(ir.contains("handler.call_native"));
+    assert!(ir.contains(".amice.vm.native_thunk.vm_byval_native_calls"));
+    assert!(ir.contains(".amice.vm.indirect_adapter.vm_byval_native_calls"));
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call i64 @native_byval(") && line.contains("byval(%ByVal)")),
+        "direct native thunk call must preserve byval ABI attribute"
+    );
+    assert!(
+        ir.lines()
+            .find(
+                |line| line.starts_with("define ") && line.contains(".amice.vm.indirect_adapter.vm_byval_native_calls")
+            )
+            .is_some_and(|line| line.contains("byval(%ByVal)")),
+        "indirect adapter signature must preserve shifted byval parameter attribute"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call i64 %") && line.contains("byval(%ByVal)")),
+        "indirect adapter target call must preserve original byval call-site attribute"
+    );
+    assert!(
+        ir.lines().any(
+            |line| line.contains("call i64 @.amice.vm.indirect_adapter.vm_byval_native_calls")
+                && line.contains("byval(%ByVal)")
+        ),
+        "native thunk call into indirect adapter must preserve byval ABI attribute"
+    );
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_ext_native_call_attributes_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_ext_native_call_attrs.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_ext_native_call_attrs'
+source_filename = "vm_virtualize_ext_native_call_attrs.ll"
+
+declare zeroext i8 @native_zeroext(i8 zeroext)
+declare signext i16 @native_signext(i16 signext)
+
+define i64 @vm_ext_native_calls(ptr %callee, i8 %x, i16 %y) #0 {
+entry:
+  %a = call zeroext i8 @native_zeroext(i8 zeroext %x)
+  %b = call signext i16 %callee(i16 signext %y)
+  %c = call signext i16 @native_signext(i16 signext %b)
+  %a64 = zext i8 %a to i64
+  %b64 = sext i16 %b to i64
+  %c64 = sext i16 %c to i64
+  %hi = shl i64 %a64, 32
+  %mix0 = xor i64 %hi, %b64
+  %mix1 = add i64 %mix0, %c64
+  ret i64 %mix1
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("ext native call attribute LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_ext_native_call_attrs_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_ext_native_calls(int16_t (*callee)(int16_t), uint8_t x, int16_t y);
+uint8_t native_zeroext(uint8_t x);
+int16_t native_signext(int16_t y);
+int16_t native_signext_alt(int16_t y);
+
+uint8_t native_zeroext(uint8_t x) {
+    return (uint8_t)(x * 3u + 17u);
+}
+
+int16_t native_signext(int16_t y) {
+    return (int16_t)(y * -5 + 1234);
+}
+
+int16_t native_signext_alt(int16_t y) {
+    return (int16_t)((y ^ 0x1357) - 77);
+}
+
+int main(void) {
+    uint64_t acc = 0;
+    acc ^= vm_ext_native_calls(native_signext_alt, 7u, 123);
+    acc ^= vm_ext_native_calls(native_signext_alt, 201u, -321);
+    acc ^= vm_ext_native_calls(native_signext_alt, 255u, 0x1234);
+    printf("%llu\n", (unsigned long long)acc);
+    return 0;
+}
+"#,
+    )
+    .expect("ext native call attribute C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_ext_native_call_attrs_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (output_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_ext_native_call_attrs.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_ext_native_calls");
+    assert!(
+        dump.matches(": call_native ").count() >= 3,
+        "zeroext/signext direct and indirect calls should lower through call_native bridges:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_virtualize_ext_native_call_attrs");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("ext native call attribute output IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_ext_native_calls"));
+    assert!(ir.contains("handler.call_native"));
+    assert!(ir.contains(".amice.vm.native_thunk.vm_ext_native_calls"));
+    assert!(ir.contains(".amice.vm.indirect_adapter.vm_ext_native_calls"));
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call zeroext i8 @native_zeroext(") && line.contains("i8 zeroext")),
+        "direct native thunk call must preserve zeroext return and parameter attributes"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call signext i16 @native_signext(") && line.contains("i16 signext")),
+        "direct native thunk call must preserve signext return and parameter attributes"
+    );
+    assert!(
+        ir.lines()
+            .find(|line| {
+                line.starts_with("define ") && line.contains(".amice.vm.indirect_adapter.vm_ext_native_calls")
+            })
+            .is_some_and(|line| line.contains("signext i16") && line.contains("i16 signext")),
+        "indirect adapter signature must preserve shifted signext return and parameter attributes"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call signext i16 %") && line.contains("i16 signext")),
+        "indirect adapter target call must preserve original signext call-site attributes"
+    );
+    assert!(
+        ir.lines().any(|line| {
+            line.contains("call signext i16 @.amice.vm.indirect_adapter.vm_ext_native_calls")
+                && line.contains("i16 signext")
+        }),
+        "native thunk call into indirect adapter must preserve signext ABI attributes"
+    );
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_fastcc_native_calls_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_fastcc_native_calls.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_fastcc_native_calls'
+source_filename = "vm_virtualize_fastcc_native_calls.ll"
+
+@fmt = private unnamed_addr constant [4 x i8] c"%d\0A\00"
+declare i32 @printf(ptr, ...)
+
+define fastcc i32 @native_fastcc_direct(i32 %x, i32 %y) {
+entry:
+  %a = mul i32 %x, 5
+  %b = sub i32 %a, %y
+  %r = xor i32 %b, 305419896
+  ret i32 %r
+}
+
+define fastcc i32 @native_fastcc_alt(i32 %x, i32 %y) {
+entry:
+  %a = add i32 %x, 77
+  %b = mul i32 %y, -3
+  %r = xor i32 %a, %b
+  ret i32 %r
+}
+
+define i32 @vm_fastcc_native_calls(ptr %callee, i32 %x, i32 %y) #0 {
+entry:
+  %direct = call fastcc i32 @native_fastcc_direct(i32 %x, i32 %y)
+  %indirect = call fastcc i32 %callee(i32 %direct, i32 %y)
+  %mix = xor i32 %direct, %indirect
+  %ret = add i32 %mix, %x
+  ret i32 %ret
+}
+
+define i32 @main() {
+entry:
+  %a = call i32 @vm_fastcc_native_calls(ptr @native_fastcc_alt, i32 7, i32 11)
+  %b = call i32 @vm_fastcc_native_calls(ptr @native_fastcc_alt, i32 -19, i32 23)
+  %c = call i32 @vm_fastcc_native_calls(ptr @native_fastcc_alt, i32 12345, i32 -678)
+  %ab = xor i32 %a, %b
+  %acc = xor i32 %ab, %c
+  %printed = call i32 (ptr, ...) @printf(ptr @fmt, i32 %acc)
+  ret i32 0
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("fastcc native call LLVM IR fixture should be writable");
+
+    let baseline = compile_ir_binary(&ir_source, "vm_virtualize_fastcc_native_calls_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (output_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_fastcc_native_calls.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_fastcc_native_calls");
+    assert!(
+        dump.matches(": call_native ").count() >= 2,
+        "direct and indirect fastcc calls should lower through profile call_native bridges:\n{dump}"
+    );
+
+    let virtualized = compile_ir_binary(&output_ir, "vm_virtualize_fastcc_native_calls");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("fastcc native call output IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_fastcc_native_calls"));
+    assert!(ir.contains("handler.call_native"));
+    assert!(ir.contains(".amice.vm.native_thunk.vm_fastcc_native_calls"));
+    assert!(ir.contains(".amice.vm.indirect_adapter.vm_fastcc_native_calls"));
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call fastcc i32 @native_fastcc_direct(")),
+        "direct native thunk call must preserve fastcc calling convention"
+    );
+    assert!(
+        ir.lines()
+            .find(|line| {
+                line.starts_with("define ") && line.contains(".amice.vm.indirect_adapter.vm_fastcc_native_calls")
+            })
+            .is_some_and(|line| line.contains("fastcc")),
+        "indirect adapter signature must preserve fastcc calling convention"
+    );
+    assert!(
+        ir.lines().any(|line| line.contains("call fastcc i32 %")),
+        "indirect adapter target call must preserve original fastcc calling convention"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call fastcc i32 @.amice.vm.indirect_adapter.vm_fastcc_native_calls")),
+        "native thunk call into indirect adapter must preserve fastcc calling convention"
+    );
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_fixed_vector_native_calls_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_fixed_vector_native_calls.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_fixed_vector_native_calls'
+source_filename = "vm_virtualize_fixed_vector_native_calls.ll"
+
+@fmt = private unnamed_addr constant [4 x i8] c"%d\0A\00"
+declare i32 @printf(ptr, ...)
+
+define <2 x i32> @native_vector_direct(<2 x i32> %lhs, <2 x i32> %rhs) {
+entry:
+  %sum = add <2 x i32> %lhs, %rhs
+  %mask0 = insertelement <2 x i32> poison, i32 305419896, i32 0
+  %mask1 = insertelement <2 x i32> %mask0, i32 -889275714, i32 1
+  %ret = xor <2 x i32> %sum, %mask1
+  ret <2 x i32> %ret
+}
+
+define <2 x i32> @native_vector_alt(<2 x i32> %lhs, <2 x i32> %rhs) {
+entry:
+  %diff = sub <2 x i32> %lhs, %rhs
+  %mul0 = insertelement <2 x i32> poison, i32 3, i32 0
+  %mul1 = insertelement <2 x i32> %mul0, i32 -5, i32 1
+  %ret = mul <2 x i32> %diff, %mul1
+  ret <2 x i32> %ret
+}
+
+define i32 @vm_vector_native_calls(ptr %callee, i32 %a, i32 %b, i32 %c, i32 %d) #0 {
+entry:
+  %lhs0 = insertelement <2 x i32> poison, i32 %a, i32 0
+  %lhs1 = insertelement <2 x i32> %lhs0, i32 %b, i32 1
+  %rhs0 = insertelement <2 x i32> poison, i32 %c, i32 0
+  %rhs1 = insertelement <2 x i32> %rhs0, i32 %d, i32 1
+  %direct = call <2 x i32> @native_vector_direct(<2 x i32> %lhs1, <2 x i32> %rhs1)
+  %indirect = call <2 x i32> %callee(<2 x i32> %direct, <2 x i32> %rhs1)
+  %d0 = extractelement <2 x i32> %direct, i32 0
+  %d1 = extractelement <2 x i32> %direct, i32 1
+  %i0 = extractelement <2 x i32> %indirect, i32 0
+  %i1 = extractelement <2 x i32> %indirect, i32 1
+  %m0 = xor i32 %d0, %d1
+  %m1 = xor i32 %m0, %i0
+  %ret = xor i32 %m1, %i1
+  ret i32 %ret
+}
+
+define i32 @main() {
+entry:
+  %a = call i32 @vm_vector_native_calls(ptr @native_vector_alt, i32 7, i32 -11, i32 1234, i32 55)
+  %b = call i32 @vm_vector_native_calls(ptr @native_vector_alt, i32 -71, i32 2048, i32 19, i32 -4096)
+  %c = call i32 @vm_vector_native_calls(ptr @native_vector_alt, i32 12345, i32 -678, i32 -90, i32 17)
+  %ab = xor i32 %a, %b
+  %acc = xor i32 %ab, %c
+  %printed = call i32 (ptr, ...) @printf(ptr @fmt, i32 %acc)
+  ret i32 0
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("fixed vector native call LLVM IR fixture should be writable");
+
+    let baseline = compile_ir_binary(&ir_source, "vm_virtualize_fixed_vector_native_calls_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (output_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_fixed_vector_native_calls.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_native_calls");
+    assert!(
+        dump.matches(": call_native ").count() >= 2,
+        "direct and indirect fixed vector native calls should lower through call_native bridges:\n{dump}"
+    );
+
+    let virtualized = compile_ir_binary(&output_ir, "vm_virtualize_fixed_vector_native_calls");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("fixed vector native call output IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_native_calls"));
+    assert!(ir.contains("handler.call_native"));
+    assert!(ir.contains(".amice.vm.native_thunk.vm_vector_native_calls"));
+    assert!(ir.contains(".amice.vm.indirect_adapter.vm_vector_native_calls"));
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call <2 x i32> @native_vector_direct(")),
+        "direct native thunk call must rebuild fixed vector arguments"
+    );
+    assert!(
+        ir.lines()
+            .find(|line| {
+                line.starts_with("define ") && line.contains(".amice.vm.indirect_adapter.vm_vector_native_calls")
+            })
+            .is_some_and(|line| line.contains("<2 x i32>")),
+        "indirect adapter signature must preserve fixed vector argument and return types"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call <2 x i32> %") && line.contains("<2 x i32>")),
+        "indirect adapter target call must preserve fixed vector call type"
+    );
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_exception_and_indirect_control_flow_safely_skip() {
     ensure_plugin_built();
 
@@ -8412,6 +25475,13 @@ entry:
   ret i32 %value
 }
 
+define i32 @vm_control_safe(i32 %x) #0 {
+entry:
+  %a = add i32 %x, 17
+  %b = xor i32 %a, 85
+  ret i32 %b
+}
+
 attributes #0 = { noinline optnone }
 "#,
     )
@@ -8422,12 +25492,15 @@ attributes #0 = { noinline optnone }
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
 
-    let ir = std::fs::read_to_string(output_ir).expect("exception/control-flow output IR should be readable");
+    let ir = std::fs::read_to_string(&output_ir).expect("exception/control-flow output IR should be readable");
     assert!(!ir.contains(".amice.vm.bytecode.vm_invoke"));
     assert!(!ir.contains(".amice.vm.bytecode.vm_resume"));
     assert!(!ir.contains(".amice.vm.bytecode.vm_callbr"));
     assert!(!ir.contains(".amice.vm.bytecode.vm_indirectbr"));
     assert!(!ir.contains(".amice.vm.bytecode.vm_va_arg"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_control_safe"));
+    assert!(ir.contains("handler.iadd"));
+    assert!(ir.contains("handler.ixor"));
     assert!(stderr.contains("skip function"));
     assert!(stderr.contains("vm_invoke"));
     assert!(stderr.contains("invoke exception edges are not supported by vm_virtualize"));
@@ -8439,6 +25512,602 @@ attributes #0 = { noinline optnone }
     assert!(stderr.contains("indirectbr is not supported by vm_virtualize"));
     assert!(stderr.contains("vm_va_arg"));
     assert!(stderr.contains("va_arg is not supported by vm_virtualize"));
+
+    let harness = output_dir().join("vm_virtualize_exception_control_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_control_safe(int32_t x);
+
+int32_t may_throw(int32_t x) {
+    return x + 7;
+}
+
+int __gxx_personality_v0(int version, int actions, uint64_t exception_class, void *exception_object, void *context) {
+    (void)version;
+    (void)actions;
+    (void)exception_class;
+    (void)exception_object;
+    (void)context;
+    return 0;
+}
+
+int main(void) {
+    int32_t a = vm_control_safe(11);
+    int32_t b = vm_control_safe(-3);
+    printf("%d\n", a ^ b);
+    return 0;
+}
+"#,
+    )
+    .expect("exception/control-flow C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_exception_control_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_virtualize_exception_control");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_inline_asm_call_safely_skips_and_runs() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_inline_asm_call.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_inline_asm_call'
+source_filename = "vm_virtualize_inline_asm_call.ll"
+
+define i32 @vm_inline_asm_call(i32 %x) #0 {
+entry:
+  call void asm sideeffect "", ""()
+  %mul = mul i32 %x, 5
+  %ret = add i32 %mul, 11
+  ret i32 %ret
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("inline asm LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_inline_asm_call_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_inline_asm_call(int32_t x);
+
+int main(void) {
+    int32_t acc = 0;
+    acc ^= vm_inline_asm_call(7);
+    acc ^= vm_inline_asm_call(-19);
+    acc ^= vm_inline_asm_call(12345);
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("inline asm C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_inline_asm_call_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let (output_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_inline_asm_call.ll", vm_virtualize_config());
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        stderr.contains("vm_inline_asm_call") && stderr.contains("inline asm calls are not supported by vm_virtualize"),
+        "inline asm call should be reported as a vm_virtualize safe skip:\n{stderr}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_virtualize_inline_asm_call");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("inline asm output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_inline_asm_call"));
+    assert!(ir.contains("asm sideeffect"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_tail_and_notail_calls_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_tail_notail_call.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_tail_notail_call'
+source_filename = "vm_virtualize_tail_notail_call.ll"
+
+declare i32 @host_tail_target(i32)
+declare i32 @host_notail_target(i32)
+
+define i32 @vm_tail_notail_calls(i32 %x, i32 %y) #0 {
+entry:
+  %a = tail call i32 @host_tail_target(i32 %x)
+  %b = notail call i32 @host_notail_target(i32 %y)
+  %mix = xor i32 %a, %b
+  %ret = add i32 %mix, %x
+  ret i32 %ret
+}
+
+attributes #0 = { noinline }
+"#,
+    )
+    .expect("tail/notail LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_tail_notail_call_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_tail_notail_calls(int32_t x, int32_t y);
+
+int32_t host_tail_target(int32_t x) {
+    return (x * 9) + 4;
+}
+
+int32_t host_notail_target(int32_t y) {
+    return (y * -7) ^ 0x13579bdf;
+}
+
+int main(void) {
+    int32_t acc = 0;
+    acc ^= vm_tail_notail_calls(7, 11);
+    acc ^= vm_tail_notail_calls(-19, 23);
+    acc ^= vm_tail_notail_calls(12345, -678);
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("tail/notail C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_tail_notail_call_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_tail_notail_call.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_tail_notail_calls");
+    assert!(
+        dump.matches(": call_native ").count() >= 2,
+        "tail and notail direct calls should lower through call_native instead of safe-skip:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_tail_notail_call");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("tail/notail output IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_tail_notail_calls"));
+    assert!(ir.contains("handler.call_native"));
+    assert!(!ir.contains(".amice.vm.original.vm_tail_notail_calls"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_musttail_call_safely_skips_and_runs() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_musttail_call.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_musttail_call'
+source_filename = "vm_virtualize_musttail_call.ll"
+
+declare i32 @host_tail_target(i32)
+
+define i32 @vm_musttail_call(i32 %x) #0 {
+entry:
+  %ret = musttail call i32 @host_tail_target(i32 %x)
+  ret i32 %ret
+}
+
+attributes #0 = { noinline }
+"#,
+    )
+    .expect("musttail LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_musttail_call_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_musttail_call(int32_t x);
+
+int32_t host_tail_target(int32_t x) {
+    return (x * 9) + 4;
+}
+
+int main(void) {
+    int32_t acc = 0;
+    acc ^= vm_musttail_call(7);
+    acc ^= vm_musttail_call(-19);
+    acc ^= vm_musttail_call(12345);
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("musttail C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_musttail_call_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let (output_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_musttail_call.ll", vm_virtualize_config());
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        stderr.contains("vm_musttail_call") && stderr.contains("musttail calls are not supported by vm_virtualize"),
+        "musttail call should be reported as a vm_virtualize safe skip:\n{stderr}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_virtualize_musttail_call");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("musttail output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_musttail_call"));
+    assert!(ir.contains("musttail call i32 @host_tail_target"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_operand_bundle_call_safely_skips_and_runs() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_operand_bundle_call.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_operand_bundle_call'
+source_filename = "vm_virtualize_operand_bundle_call.ll"
+
+declare i32 @host_bundle_target(i32)
+
+define i32 @vm_operand_bundle_call(i32 %x) #0 {
+entry:
+  %ret = call i32 @host_bundle_target(i32 %x) [ "deopt"(i32 7) ]
+  ret i32 %ret
+}
+
+attributes #0 = { noinline }
+"#,
+    )
+    .expect("operand bundle LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_operand_bundle_call_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_operand_bundle_call(int32_t x);
+
+int32_t host_bundle_target(int32_t x) {
+    return (x * 13) - 5;
+}
+
+int main(void) {
+    int32_t acc = 0;
+    acc ^= vm_operand_bundle_call(7);
+    acc ^= vm_operand_bundle_call(-19);
+    acc ^= vm_operand_bundle_call(12345);
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("operand bundle C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_operand_bundle_call_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let (output_ir, output) = optimize_ir_with_plugin_debug(
+        &ir_source,
+        "vm_virtualize_operand_bundle_call.ll",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        stderr.contains("vm_operand_bundle_call")
+            && stderr.contains("call operand bundles are not supported by vm_virtualize"),
+        "operand bundle call should be reported as a vm_virtualize safe skip:\n{stderr}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_virtualize_operand_bundle_call");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("operand bundle output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_operand_bundle_call"));
+    assert!(ir.contains(r#"[ "deopt"(i32 7) ]"#));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_assume_operand_bundle_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_assume_operand_bundle.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_assume_operand_bundle'
+source_filename = "vm_virtualize_assume_operand_bundle.ll"
+
+declare void @llvm.assume(i1)
+
+define i32 @vm_assume_operand_bundle(i32 %x, ptr %p) #0 {
+entry:
+  %cond = icmp ne ptr %p, null
+  call void @llvm.assume(i1 true) [ "nonnull"(ptr %p) ]
+  %mixed = xor i32 %x, 324508639
+  %tag = select i1 %cond, i32 85, i32 170
+  %result = add i32 %mixed, %tag
+  ret i32 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("assume operand bundle LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_assume_operand_bundle_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_assume_operand_bundle(int32_t x, void *p);
+
+int main(void) {
+    int marker = 0;
+    int32_t acc = 0;
+    acc ^= vm_assume_operand_bundle(37, &marker);
+    acc ^= vm_assume_operand_bundle(-91, &marker);
+    acc ^= vm_assume_operand_bundle(12345, &marker);
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("assume operand bundle C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_assume_operand_bundle_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_assume_operand_bundle.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_assume_operand_bundle");
+    assert!(
+        dump.contains(": fake_nop "),
+        "llvm.assume with operand bundle should lower through the profile nop handler:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_assume_operand_bundle");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("assume operand bundle output IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_assume_operand_bundle"));
+    assert!(ir.contains("handler.fake_nop"));
+    assert!(!ir.contains(".amice.vm.original.vm_assume_operand_bundle"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_function_attributes_safely_skip_and_run() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_function_attributes.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_function_attributes'
+source_filename = "vm_virtualize_function_attributes.ll"
+
+@.amice.vm.ann = private unnamed_addr constant [15 x i8] c"+vm_virtualize\00", section "llvm.metadata"
+@.amice.vm.file = private unnamed_addr constant [26 x i8] c"vm-function-attributes.ll\00", section "llvm.metadata"
+@llvm.global.annotations = appending global [2 x { ptr, ptr, ptr, i32, ptr }] [
+  { ptr, ptr, ptr, i32, ptr } { ptr @vm_strictfp_attr, ptr @.amice.vm.ann, ptr @.amice.vm.file, i32 5, ptr null },
+  { ptr, ptr, ptr, i32, ptr } { ptr @vm_returns_twice_attr, ptr @.amice.vm.ann, ptr @.amice.vm.file, i32 12, ptr null }
+], section "llvm.metadata"
+
+define i32 @vm_strictfp_attr(float %a, float %b) #0 {
+entry:
+  %sum = fadd float %a, %b
+  %bits = bitcast float %sum to i32
+  ret i32 %bits
+}
+
+define i32 @vm_returns_twice_attr(i32 %x) #1 {
+entry:
+  %mul = mul i32 %x, 17
+  %ret = sub i32 %mul, 9
+  ret i32 %ret
+}
+
+attributes #0 = { strictfp noinline }
+attributes #1 = { returns_twice noinline }
+"#,
+    )
+    .expect("function attribute LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_function_attributes_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint32_t vm_strictfp_attr(float a, float b);
+int32_t vm_returns_twice_attr(int32_t x);
+
+int main(void) {
+    uint32_t acc = 0;
+    acc ^= vm_strictfp_attr(3.5f, 2.25f);
+    acc ^= vm_strictfp_attr(-8.0f, 1.75f);
+    acc ^= (uint32_t)vm_returns_twice_attr(7);
+    acc ^= (uint32_t)vm_returns_twice_attr(-91);
+    printf("%u\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("function attribute C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_function_attributes_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let (output_ir, output) = optimize_ir_with_plugin_debug(
+        &ir_source,
+        "vm_virtualize_function_attributes.ll",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        stderr.contains("vm_strictfp_attr") && stderr.contains("strictfp functions are not supported by vm_virtualize"),
+        "strictfp function should be reported as a vm_virtualize safe skip:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("vm_returns_twice_attr")
+            && stderr.contains("returns_twice functions are not supported by vm_virtualize"),
+        "returns_twice function should be reported as a vm_virtualize safe skip:\n{stderr}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_virtualize_function_attributes");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("function attribute output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_strictfp_attr"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_returns_twice_attr"));
+    assert!(ir.contains("strictfp"));
+    assert!(ir.contains("returns_twice"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_va_arg_safely_skips_and_runs() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_va_arg_exec.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_va_arg_exec'
+source_filename = "vm_virtualize_va_arg_exec.ll"
+
+define i32 @vm_va_arg_reader(ptr %ap) #0 {
+entry:
+  %first = va_arg ptr %ap, i32
+  %second = va_arg ptr %ap, i32
+  %scaled = mul i32 %first, 31
+  %result = add i32 %scaled, %second
+  ret i32 %result
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("va_arg LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_va_arg_exec_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdarg.h>
+#include <stdio.h>
+
+int vm_va_arg_reader(va_list *ap);
+
+__attribute__((noinline)) int host_driver(int tag, ...) {
+    va_list ap;
+    va_start(ap, tag);
+    int value = vm_va_arg_reader(&ap);
+    va_end(ap);
+    return value ^ tag;
+}
+
+int main(void) {
+    int a = host_driver(7, 11, 13);
+    int b = host_driver(3, -5, 19);
+    int c = host_driver(91, 1234, -77);
+    printf("%d\n", a + b + c);
+    return 0;
+}
+"#,
+    )
+    .expect("va_arg C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_va_arg_exec_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let (output_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_va_arg_exec.ll", vm_virtualize_config());
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        stderr.contains("vm_va_arg_reader") && stderr.contains("va_arg is not supported by vm_virtualize"),
+        "va_arg should be reported as a safe skip:\n{stderr}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_virtualize_va_arg_exec");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(output_ir).expect("va_arg output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_va_arg_reader"));
+    assert!(ir.contains("va_arg ptr %ap, i32"));
 }
 
 #[test]
@@ -8890,10 +26559,14 @@ int main(void) {
 
     let ir_path = compile_virtualized_ir_with_config(&source, "vm_virtualize_ruoke.ll", config);
     let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
-    assert!(ir.contains(".amice.vm.dispatch.vm_ruoke_tiny"));
-    assert!(ir.contains(".amice.vm.read_varint.vm_ruoke_tiny"));
+    assert_runtime_helpers_are_opaque(&ir);
     assert!(ir.contains("op3e8"));
     assert_eq!(handler_opcode_count(&ir), 1000);
+    let default_only_handlers = handler_bodies_that_directly_default(&ir);
+    assert!(
+        default_only_handlers.is_empty(),
+        "ruoke opcode aliases must emit real handler bodies instead of default-only stubs: {default_only_handlers:?}"
+    );
 }
 
 #[test]
@@ -9025,10 +26698,21 @@ fn test_vm_virtualize_decoder_profile_drives_runtime_pipeline() {
     assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
 
     let ir_path = compile_virtualized_ir_with_config(&source, "vm_virtualize_decoder_profile.ll", config);
-    let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
-    assert!(ir.contains(".amice.vm.read_varint"));
+    let ir = std::fs::read_to_string(&ir_path).expect("LLVM IR output should be readable");
+    let variant_bytecode = bytecode_global_bytes(&ir, "vm_mix");
+
+    let default_ir_path = compile_virtualized_ir(&source, "vm_virtualize_decoder_profile_default.ll");
+    let default_ir =
+        std::fs::read_to_string(default_ir_path).expect("default decoder LLVM IR output should be readable");
+    let default_bytecode = bytecode_global_bytes(&default_ir, "vm_mix");
+
+    assert_runtime_helpers_are_opaque(&ir);
     assert!(ir.contains(".amice.vm.bytecode.vm_mix"));
     assert!(ir.contains("AMICE_VMP_RUNTIME_BYTECODE"));
+    assert_ne!(
+        default_bytecode, variant_bytecode,
+        "changing decoder.vm ror/rol parameters must change the protected bytecode bytes"
+    );
 }
 
 #[test]
@@ -9423,6 +27107,140 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_sret_abi_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_sret_abi.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_sret_abi'
+source_filename = "vm_virtualize_sret_abi.ll"
+
+%Big = type { i64, i64, i64 }
+
+declare void @native_sret(ptr sret(%Big) align 8, i64)
+
+define void @vm_sret_direct(ptr noalias sret(%Big) align 8 %out, i64 %x) #0 {
+entry:
+  %a = add i64 %x, 11
+  %b = mul i64 %x, 3
+  %c = xor i64 %a, %b
+  %pa = getelementptr inbounds %Big, ptr %out, i32 0, i32 0
+  %pb = getelementptr inbounds %Big, ptr %out, i32 0, i32 1
+  %pc = getelementptr inbounds %Big, ptr %out, i32 0, i32 2
+  store i64 %a, ptr %pa, align 8
+  store i64 %b, ptr %pb, align 8
+  store i64 %c, ptr %pc, align 8
+  ret void
+}
+
+define i64 @vm_sret_native(i64 %x) #0 {
+entry:
+  %tmp = alloca %Big, align 8
+  call void @native_sret(ptr sret(%Big) align 8 %tmp, i64 %x)
+  %pa = getelementptr inbounds %Big, ptr %tmp, i32 0, i32 0
+  %pb = getelementptr inbounds %Big, ptr %tmp, i32 0, i32 1
+  %pc = getelementptr inbounds %Big, ptr %tmp, i32 0, i32 2
+  %a = load i64, ptr %pa, align 8
+  %b = load i64, ptr %pb, align 8
+  %c = load i64, ptr %pc, align 8
+  %m0 = add i64 %a, %b
+  %m1 = xor i64 %m0, %c
+  ret i64 %m1
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("sret ABI LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_sret_abi_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+struct Big {
+    int64_t a;
+    int64_t b;
+    int64_t c;
+};
+
+struct Big vm_sret_direct(int64_t x);
+int64_t vm_sret_native(int64_t x);
+
+struct Big native_sret(int64_t x) {
+    struct Big out;
+    out.a = x + 7;
+    out.b = x * 5;
+    out.c = out.a ^ out.b;
+    return out;
+}
+
+static int64_t mix_direct(int64_t x) {
+    struct Big got = vm_sret_direct(x);
+    return (got.a + got.b) ^ got.c;
+}
+
+int main(void) {
+    int64_t acc = 0;
+    acc ^= mix_direct(37);
+    acc ^= mix_direct(-91);
+    acc ^= vm_sret_native(123);
+    acc ^= vm_sret_native(-456);
+    printf("%lld\n", (long long)acc);
+    return 0;
+}
+"#,
+    )
+    .expect("sret ABI C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_sret_abi_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_sret_abi.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let direct_dump = bytecode_dump_for_function(&stderr, "vm_sret_direct");
+    assert!(
+        direct_dump.contains(": store ") && direct_dump.contains(": ret "),
+        "direct sret body should lower stores to the ABI return pointer and terminate in VM:\n{direct_dump}"
+    );
+    let native_dump = bytecode_dump_for_function(&stderr, "vm_sret_native");
+    assert!(
+        native_dump.contains(": call_native ") && native_dump.contains(": load "),
+        "native sret call should lower through call_native and reload the returned aggregate fields:\n{native_dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_sret_abi");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized sret ABI IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_sret_direct"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_sret_native"));
+    assert!(
+        ir.lines()
+            .find(|line| line.starts_with("define ") && line.contains("@vm_sret_direct("))
+            .is_some_and(|line| line.contains("sret(%Big)")),
+        "direct sret wrapper must preserve the typed sret ABI attribute"
+    );
+    assert!(ir.contains(".amice.vm.native_thunk.vm_sret_native"));
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call void @native_sret(") && line.contains("sret(%Big)")),
+        "native sret thunk call must preserve the callee sret ABI attribute"
+    );
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_direct_varargs_native_call_matches_baseline() {
     ensure_plugin_built();
 
@@ -9538,6 +27356,79 @@ int main(void) {
 
 #[test]
 #[serial]
+fn test_vm_virtualize_indirect_varargs_call_safely_skips() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_indirect_varargs.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_indirect_varargs'
+source_filename = "vm_virtualize_indirect_varargs.ll"
+
+@fmt = private unnamed_addr constant [6 x i8] c"%d:%d\00"
+
+define i32 @vm_indirect_varargs(ptr %callee, ptr %buf, i32 %x) #0 {
+entry:
+  %written = call i32 (ptr, i64, ptr, ...) %callee(ptr %buf, i64 64, ptr @fmt, i32 %x, i32 99)
+  %mixed = xor i32 %written, %x
+  ret i32 %mixed
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("indirect varargs LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_indirect_varargs_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int32_t vm_indirect_varargs(int (*callee)(char *, unsigned long, const char *, ...), char *buf, int32_t x);
+
+int main(void) {
+    char first[64];
+    char second[64];
+    int32_t a = vm_indirect_varargs(snprintf, first, 37);
+    int32_t b = vm_indirect_varargs(snprintf, second, -8);
+    printf("%d:%s\n%d:%s\n", (int)a, first, (int)b, second);
+    return 0;
+}
+"#,
+    )
+    .expect("indirect varargs C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_indirect_varargs_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_indirect_varargs.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        stderr.contains("vm_indirect_varargs")
+            && stderr.contains("varargs indirect calls are not supported by vm_virtualize"),
+        "indirect varargs call should be reported as a safe skip:\n{stderr}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_indirect_varargs");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized indirect varargs IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_indirect_varargs"));
+    assert!(ir.contains("call i32 (ptr, i64, ptr, ...) %callee"));
+}
+
+#[test]
+#[serial]
 fn test_vm_virtualize_ir_contains_runtime_and_bytecode() {
     ensure_plugin_built();
 
@@ -9547,11 +27438,7 @@ fn test_vm_virtualize_ir_contains_runtime_and_bytecode() {
     );
 
     let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
-    assert!(ir.contains(".amice.vm.dispatch"));
-    assert!(ir.contains(".amice.vm.read_varint"));
-    assert!(ir.contains(".amice.vm.read_const"));
-    assert!(!ir.contains(".amice.vm.dispatch.vm_mix"));
-    assert!(!ir.contains(".amice.vm.read_varint.vm_mix"));
+    assert_runtime_helpers_are_opaque(&ir);
     assert!(ir.contains("alloca [65 x <16 x i8>]"));
     assert!(ir.contains(".amice.vm.bytecode."));
     assert!(ir.contains(".amice.vm.bytecode.vm_branch"));
@@ -9600,6 +27487,8 @@ fn test_vm_virtualize_ir_contains_runtime_and_bytecode() {
     assert!(ir.contains("handler.uitofp"));
     assert!(ir.contains("handler.fptosi"));
     assert!(ir.contains("handler.fptoui"));
+    assert!(ir.contains("handler.fptosi_sat"));
+    assert!(ir.contains("handler.fptoui_sat"));
     assert!(ir.contains("handler.fptrunc"));
     assert!(ir.contains("handler.fpext"));
     assert!(ir.contains("handler.fcmp"));
@@ -9608,6 +27497,83 @@ fn test_vm_virtualize_ir_contains_runtime_and_bytecode() {
     assert!(ir.contains("handler.vm_call"));
     assert!(ir.contains("handler.vm_ret"));
     assert!(ir.contains("AMICE_VMP_RUNTIME_BYTECODE"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_const_pool_global_is_encrypted() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_const_pool_encrypted.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP uint64_t vm_const_pool_secret(uint64_t x, uint64_t salt) {
+    uint64_t a = x ^ 0x4142434445464748ULL;
+    uint64_t b = (a + salt) ^ 0x3132333435363738ULL;
+    uint64_t c = (b << 7) | (b >> 57);
+    uint64_t d = (c + 0x0f1e2d3c4b5a6978ULL) ^ (salt | 0x1122334455667788ULL);
+    return (d - 0x0102030405060708ULL) ^ (a + 0xfedcba9876543210ULL);
+}
+
+int main(void) {
+    uint64_t first = vm_const_pool_secret(0x123456789abcdef0ULL, 0xfeedfacecafebeefULL);
+    uint64_t second = vm_const_pool_secret(0x0badf00d13579bdfULL, 0x1020304050607080ULL);
+    printf("%llu\n", (unsigned long long)(first ^ second));
+    return 0;
+}
+"#,
+    )
+    .expect("const-pool encryption fixture should be writable");
+
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_const_pool_encrypted_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_const_pool_encrypted");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir_path = compile_virtualized_ir(&source, "vm_virtualize_const_pool_encrypted.ll");
+    let ir = std::fs::read_to_string(ir_path).expect("const-pool encryption IR should be readable");
+    assert_runtime_helpers_are_opaque(&ir);
+    assert!(ir.contains(".amice.vm.bytecode.vm_const_pool_secret"));
+    assert!(ir.contains("handler.const_load"));
+
+    let package = bytecode_global_bytes(&ir, "vm_const_pool_secret");
+    let const_pool_offset = read_u32_le_for_test(&package, 32) as usize;
+    let const_pool_len = read_u32_le_for_test(&package, 36) as usize;
+    assert!(const_pool_len > 1, "fixture should emit non-empty const_pool data");
+    let encrypted_const_pool = package[const_pool_offset..const_pool_offset + const_pool_len].to_vec();
+    let (decrypted_const_pool, values) = decrypted_const_pool_from_package(&package);
+
+    assert_ne!(
+        encrypted_const_pool, decrypted_const_pool,
+        "const_pool bytes stored in LLVM IR must be encrypted"
+    );
+    for expected in [
+        0x0f1e_2d3c_4b5a_6978,
+        0x1122_3344_5566_7788,
+        0x3132_3334_3536_3738,
+        0x4142_4344_4546_4748,
+        0xfedc_ba98_7654_3210,
+        0xfefd_fcfb_faf9_f8f8,
+    ] {
+        assert!(
+            values.contains(&expected),
+            "decrypted const_pool should contain 0x{expected:016x}; got {values:x?}"
+        );
+    }
 }
 
 #[test]
@@ -9624,10 +27590,93 @@ fn test_vm_virtualize_handler_clone_profile_clones_runtime_per_function() {
     );
 
     let ir = std::fs::read_to_string(ir_path).expect("LLVM IR output should be readable");
-    assert!(ir.contains(".amice.vm.dispatch.vm_mix"));
-    assert!(ir.contains(".amice.vm.dispatch.vm_loop"));
-    assert!(ir.contains(".amice.vm.read_varint.vm_mix"));
-    assert!(ir.contains(".amice.vm.read_varint.vm_loop"));
+    assert!(ir.matches("define private i64 @.amice.vm.h.").count() >= 2);
+    assert_runtime_helpers_are_opaque(&ir);
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_handler_order_shuffle_changes_dispatch_order() {
+    ensure_plugin_built();
+
+    let source = output_dir().join("vm_virtualize_handler_order_shuffle.c");
+    std::fs::write(
+        &source,
+        r#"#include <stdio.h>
+
+#define VMP __attribute__((noinline, annotate("+vm_virtualize")))
+
+VMP int vm_order_mix(int x, int y) {
+    int a = (x + y) * 3;
+    int b = (a ^ (x << 2)) - (y | 7);
+    if ((b & 1) != 0) {
+        return (b + x) ^ 0x55;
+    }
+    return (b - y) ^ 0xaa;
+}
+
+int main(void) {
+    int acc = 0;
+    for (int i = 1; i < 9; ++i) {
+        acc = acc * 17 + vm_order_mix(i * 3, i + 5);
+    }
+    printf("%d\n", acc);
+    return 0;
+}
+"#,
+    )
+    .expect("handler-order fixture should be writable");
+
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_handler_order_shuffle_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let enabled = compile_virtualized_binary(&source, "vm_virtualize_handler_order_shuffle_enabled");
+    enabled.assert_success();
+    let enabled_output = enabled.run();
+    enabled_output.assert_success();
+    assert_eq!(baseline_output.stdout(), enabled_output.stdout());
+
+    let enabled_ir = compile_virtualized_ir(&source, "vm_virtualize_handler_order_shuffle_enabled.ll");
+    let enabled_ir = std::fs::read_to_string(enabled_ir).expect("enabled handler-order IR should be readable");
+    let enabled_order = handler_entry_labels(&enabled_ir);
+    assert!(
+        !enabled_order.is_empty(),
+        "enabled handler-order IR should contain split handler entry blocks"
+    );
+
+    let mut disabled_config = vm_virtualize_config();
+    disabled_config.vm_profile_path = Some(handler_order_no_shuffle_profile_path().to_string_lossy().into_owned());
+    let disabled = compile_virtualized_binary_with_config(
+        &source,
+        "vm_virtualize_handler_order_shuffle_disabled",
+        disabled_config.clone(),
+    );
+    disabled.assert_success();
+    let disabled_output = disabled.run();
+    disabled_output.assert_success();
+    assert_eq!(baseline_output.stdout(), disabled_output.stdout());
+
+    let disabled_ir = compile_virtualized_ir_with_config(
+        &source,
+        "vm_virtualize_handler_order_shuffle_disabled.ll",
+        disabled_config,
+    );
+    let disabled_ir = std::fs::read_to_string(disabled_ir).expect("disabled handler-order IR should be readable");
+    let disabled_order = handler_entry_labels(&disabled_ir);
+    assert_eq!(
+        enabled_order.len(),
+        disabled_order.len(),
+        "handler-order shuffle must not add or remove handler aliases"
+    );
+    assert_ne!(
+        enabled_order, disabled_order,
+        "handler_order_shuffle should change emitted handler block order while preserving behavior"
+    );
 }
 
 #[test]
@@ -9662,7 +27711,23 @@ fn test_vm_virtualize_module_bytecode_profile_uses_shared_global() {
 #[test]
 #[serial]
 fn test_vm_virtualize_unsupported_function_logs_debug_skip() {
+    ensure_plugin_built();
+
     let source = fixture_path("vm_virtualize", "basic.c", Language::C);
+    let baseline = CppCompileBuilder::new(&source, "vm_virtualize_vector_skip_baseline")
+        .optimization("O1")
+        .without_plugin()
+        .compile();
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let virtualized = compile_virtualized_binary(&source, "vm_virtualize_vector_skip");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
     let (ir_path, output) =
         compile_virtualized_ir_with_debug_log(&source, "vm_virtualize_debug_skip.ll", vm_virtualize_config());
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -9672,6 +27737,3073 @@ fn test_vm_virtualize_unsupported_function_logs_debug_skip() {
     assert!(!ir.contains(".amice.vm.bytecode.vm_vector_skip"));
     assert!(stderr.contains("skip function"));
     assert!(stderr.contains("vm_vector_skip"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_half_scalar_float_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_half_scalar.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_half_scalar'
+source_filename = "vm_virtualize_half_scalar.ll"
+
+define half @vm_half_mix(half %a, half %b, half %c) {
+entry:
+  %sum = fadd half %a, %b
+  %neg = fneg half %c
+  %product = fmul half %sum, %neg
+  %diff = fsub half %product, %a
+  %quot = fdiv half %diff, %b
+  ret half %quot
+}
+
+define i32 @vm_half_cmp(half %a, half %b) {
+entry:
+  %gt = fcmp ogt half %a, %b
+  %out = select i1 %gt, i32 17, i32 23
+  ret i32 %out
+}
+"#,
+    )
+    .expect("half scalar LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_half_scalar_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+_Float16 vm_half_mix(_Float16 a, _Float16 b, _Float16 c);
+int32_t vm_half_cmp(_Float16 a, _Float16 b);
+
+int main(void) {
+    _Float16 a = (_Float16)1.5;
+    _Float16 b = (_Float16)0.75;
+    _Float16 c = (_Float16)-2.0;
+    _Float16 r0 = vm_half_mix(a, b, c);
+    _Float16 r1 = vm_half_mix((_Float16)-3.25, (_Float16)1.5, (_Float16)0.5);
+    int32_t c0 = vm_half_cmp(r0, r1);
+    int32_t c1 = vm_half_cmp((_Float16)-1.0, (_Float16)2.0);
+    printf("%.6f %.6f %d %d\n", (double)r0, (double)r1, c0, c1);
+    return 0;
+}
+"#,
+    )
+    .expect("half scalar C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_half_scalar_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm_virtualize_half_scalar.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let mix_dump = bytecode_dump_for_function(&stderr, "vm_half_mix");
+    for needle in [": fadd ", ": fneg ", ": fmul ", ": fsub ", ": fdiv "] {
+        assert!(
+            mix_dump.contains(needle),
+            "half arithmetic should lower through profile float handlers {needle}:\n{mix_dump}"
+        );
+    }
+    let cmp_dump = bytecode_dump_for_function(&stderr, "vm_half_cmp");
+    assert!(
+        cmp_dump.contains(": fcmp "),
+        "half comparison should lower through profile fcmp handler:\n{cmp_dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_half_scalar");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("half scalar virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_half_mix"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_half_cmp"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_half_float_cast_matrix_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_half_float_cast_matrix.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_half_float_cast_matrix'
+source_filename = "vm_virtualize_half_float_cast_matrix.ll"
+
+define double @vm_half_float_cast_matrix(half %a, float %b, double %c) {
+entry:
+  %a32 = fpext half %a to float
+  %a64 = fpext half %a to double
+  %b64 = fpext float %b to double
+  %b16 = fptrunc float %b to half
+  %c32 = fptrunc double %c to float
+  %c16 = fptrunc double %c to half
+  %a32d = fpext float %a32 to double
+  %b16d = fpext half %b16 to double
+  %c32d = fpext float %c32 to double
+  %c16d = fpext half %c16 to double
+  %s0 = fadd double %a32d, %a64
+  %s1 = fadd double %s0, %b64
+  %s2 = fadd double %s1, %b16d
+  %s3 = fadd double %s2, %c32d
+  %s4 = fadd double %s3, %c16d
+  ret double %s4
+}
+"#,
+    )
+    .expect("half float cast matrix LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_half_float_cast_matrix_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+double vm_half_float_cast_matrix(_Float16 a, float b, double c);
+
+int main(void) {
+    double r0 = vm_half_float_cast_matrix((_Float16)1.375, 3.8125f, -7.625);
+    double r1 = vm_half_float_cast_matrix((_Float16)-2.5, -0.33325195f, 1024.75);
+    printf("%.9f %.9f\n", r0, r1);
+    return 0;
+}
+"#,
+    )
+    .expect("half float cast matrix C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_half_float_cast_matrix_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_half_float_cast_matrix.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_half_float_cast_matrix");
+    for needle in [
+        "FloatCast { op: FloatExt",
+        "FloatCast { op: FloatTrunc",
+        "from_width: 16, to_width: 32",
+        "from_width: 16, to_width: 64",
+        "from_width: 32, to_width: 64",
+        "from_width: 32, to_width: 16",
+        "from_width: 64, to_width: 32",
+        "from_width: 64, to_width: 16",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "half/float/double cast matrix should encode {needle} through profile fcast handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_half_float_cast_matrix");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir).expect("half float cast matrix virtualized IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_half_float_cast_matrix"));
+    assert!(ir.contains("handler.fptrunc"));
+    assert!(ir.contains("handler.fpext"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_fp16_conversion_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_fp16_conversion_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_fp16_conversion_intrinsics'
+source_filename = "vm_virtualize_fp16_conversion_intrinsics.ll"
+
+declare i16 @llvm.convert.to.fp16.f32(float)
+declare i16 @llvm.convert.to.fp16.f64(double)
+declare float @llvm.convert.from.fp16.f32(i16)
+declare double @llvm.convert.from.fp16.f64(i16)
+
+define i64 @vm_fp16_conversion_intrinsics(float %f, double %d, i16 %h) {
+entry:
+  %hf = call i16 @llvm.convert.to.fp16.f32(float %f)
+  %hd = call i16 @llvm.convert.to.fp16.f64(double %d)
+  %from_arg_f = call float @llvm.convert.from.fp16.f32(i16 %h)
+  %from_f_d = call double @llvm.convert.from.fp16.f64(i16 %hf)
+  %from_d_f = call float @llvm.convert.from.fp16.f32(i16 %hd)
+  %hf64 = zext i16 %hf to i64
+  %hd64 = zext i16 %hd to i64
+  %afi = fptosi float %from_arg_f to i64
+  %fdi = fptosi double %from_f_d to i64
+  %dfi = fptosi float %from_d_f to i64
+  %a = shl i64 %hf64, 32
+  %b = shl i64 %hd64, 16
+  %c = xor i64 %a, %b
+  %e = shl i64 %afi, 8
+  %g = xor i64 %c, %e
+  %i = shl i64 %fdi, 4
+  %j = xor i64 %g, %i
+  %r = xor i64 %j, %dfi
+  ret i64 %r
+}
+"#,
+    )
+    .expect("fp16 conversion intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_fp16_conversion_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_fp16_conversion_intrinsics(float f, double d, uint16_t h);
+
+int main(void) {
+    uint64_t a = vm_fp16_conversion_intrinsics(3.5f, -7.25, 0x4000u);
+    uint64_t b = vm_fp16_conversion_intrinsics(-2.125f, 19.75, 0xbe00u);
+    uint64_t c = vm_fp16_conversion_intrinsics(0.33325195f, 1024.5, 0x3555u);
+    printf("%llu %llu %llu %llu\n", (unsigned long long)a, (unsigned long long)b, (unsigned long long)c, (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("fp16 conversion intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &ir_source,
+        &harness,
+        "vm_virtualize_fp16_conversion_intrinsics_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_fp16_conversion_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_fp16_conversion_intrinsics");
+    for needle in [
+        "FloatCast { op: FloatTrunc",
+        "FloatCast { op: FloatExt",
+        "from_width: 32, to_width: 16",
+        "from_width: 64, to_width: 16",
+        "from_width: 16, to_width: 32",
+        "from_width: 16, to_width: 64",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "fp16 conversion intrinsics should encode {needle} through profile fcast handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_fp16_conversion_intrinsics");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("fp16 conversion intrinsic virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_fp16_conversion_intrinsics"));
+    assert!(ir.contains("handler.fptrunc"));
+    assert!(ir.contains("handler.fpext"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_round_to_int_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_round_to_int_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_round_to_int_intrinsics'
+source_filename = "vm_virtualize_round_to_int_intrinsics.ll"
+
+declare i32 @llvm.lrint.i32.f16(half)
+declare i64 @llvm.lrint.i64.f32(float)
+declare i64 @llvm.llrint.i64.f32(float)
+declare i64 @llvm.llrint.i64.f64(double)
+declare i32 @llvm.lround.i32.f32(float)
+declare i64 @llvm.lround.i64.f64(double)
+declare i64 @llvm.llround.i64.f16(half)
+declare i64 @llvm.llround.i64.f32(float)
+
+define i64 @vm_round_to_int_intrinsics(half %h, float %f, double %d) {
+entry:
+  %a = call i32 @llvm.lrint.i32.f16(half %h)
+  %b = call i64 @llvm.lrint.i64.f32(float %f)
+  %c = call i64 @llvm.llrint.i64.f32(float %f)
+  %e = call i64 @llvm.llrint.i64.f64(double %d)
+  %g = call i32 @llvm.lround.i32.f32(float %f)
+  %i = call i64 @llvm.lround.i64.f64(double %d)
+  %j = call i64 @llvm.llround.i64.f16(half %h)
+  %k = call i64 @llvm.llround.i64.f32(float %f)
+  %a64 = sext i32 %a to i64
+  %g64 = sext i32 %g to i64
+  %s0 = shl i64 %a64, 1
+  %s1 = shl i64 %b, 3
+  %x0 = xor i64 %s0, %s1
+  %s2 = shl i64 %c, 5
+  %x1 = xor i64 %x0, %s2
+  %s3 = shl i64 %e, 7
+  %x2 = xor i64 %x1, %s3
+  %s4 = shl i64 %g64, 11
+  %x3 = xor i64 %x2, %s4
+  %s5 = shl i64 %i, 13
+  %x4 = xor i64 %x3, %s5
+  %s6 = shl i64 %j, 17
+  %x5 = xor i64 %x4, %s6
+  %s7 = shl i64 %k, 19
+  %r = xor i64 %x5, %s7
+  ret i64 %r
+}
+"#,
+    )
+    .expect("round-to-int intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_round_to_int_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int64_t vm_round_to_int_intrinsics(_Float16 h, float f, double d);
+
+int main(void) {
+    int64_t a = vm_round_to_int_intrinsics((_Float16)2.25, -3.75f, 11.25);
+    int64_t b = vm_round_to_int_intrinsics((_Float16)-4.5, 8.125f, -9.875);
+    int64_t c = vm_round_to_int_intrinsics((_Float16)15.75, 0.625f, 31.25);
+    printf("%lld %lld %lld %lld\n", (long long)a, (long long)b, (long long)c, (long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("round-to-int intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_round_to_int_intrinsics_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_round_to_int_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_round_to_int_intrinsics");
+    for needle in [
+        "FloatRoundToInt { op: LRint",
+        "FloatRoundToInt { op: LLRint",
+        "FloatRoundToInt { op: LRound",
+        "FloatRoundToInt { op: LLRound",
+        "from_width: 16, to_width: 32",
+        "from_width: 32, to_width: 64",
+        "from_width: 64, to_width: 64",
+    ] {
+        assert!(
+            dump.contains(needle),
+            "round-to-int intrinsics should encode {needle} through profile handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_round_to_int_intrinsics",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("round-to-int intrinsic virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_round_to_int_intrinsics"));
+    assert!(ir.contains("handler.flrint"));
+    assert!(ir.contains("handler.fllrint"));
+    assert!(ir.contains("handler.flround"));
+    assert!(ir.contains("handler.fllround"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vector_round_to_int_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vector_round_to_int_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vector_round_to_int_intrinsics'
+source_filename = "vm_virtualize_vector_round_to_int_intrinsics.ll"
+
+declare <2 x i32> @llvm.lrint.v2i32.v2f32(<2 x float>)
+declare <2 x i64> @llvm.llrint.v2i64.v2f64(<2 x double>)
+declare <2 x i32> @llvm.lround.v2i32.v2f32(<2 x float>)
+declare <2 x i64> @llvm.llround.v2i64.v2f64(<2 x double>)
+
+define i64 @vm_vector_round_to_int_intrinsics(float %a, float %b, double %c, double %d) {
+entry:
+  %vf0 = insertelement <2 x float> poison, float %a, i32 0
+  %vf1 = insertelement <2 x float> %vf0, float %b, i32 1
+  %vd0 = insertelement <2 x double> poison, double %c, i32 0
+  %vd1 = insertelement <2 x double> %vd0, double %d, i32 1
+
+  %lr = call <2 x i32> @llvm.lrint.v2i32.v2f32(<2 x float> %vf1)
+  %llr = call <2 x i64> @llvm.llrint.v2i64.v2f64(<2 x double> %vd1)
+  %lrd = call <2 x i32> @llvm.lround.v2i32.v2f32(<2 x float> %vf1)
+  %llrd = call <2 x i64> @llvm.llround.v2i64.v2f64(<2 x double> %vd1)
+
+  %lr0 = extractelement <2 x i32> %lr, i32 0
+  %lr1 = extractelement <2 x i32> %lr, i32 1
+  %llr0 = extractelement <2 x i64> %llr, i32 0
+  %llr1 = extractelement <2 x i64> %llr, i32 1
+  %lrd0 = extractelement <2 x i32> %lrd, i32 0
+  %lrd1 = extractelement <2 x i32> %lrd, i32 1
+  %llrd0 = extractelement <2 x i64> %llrd, i32 0
+  %llrd1 = extractelement <2 x i64> %llrd, i32 1
+
+  %lr0x = sext i32 %lr0 to i64
+  %lr1x = sext i32 %lr1 to i64
+  %lrd0x = sext i32 %lrd0 to i64
+  %lrd1x = sext i32 %lrd1 to i64
+  %m0 = xor i64 %lr0x, %lr1x
+  %m1 = xor i64 %m0, %llr0
+  %m2 = xor i64 %m1, %llr1
+  %m3 = xor i64 %m2, %lrd0x
+  %m4 = xor i64 %m3, %lrd1x
+  %m5 = xor i64 %m4, %llrd0
+  %result = xor i64 %m5, %llrd1
+  ret i64 %result
+}
+"#,
+    )
+    .expect("vector round-to-int intrinsic LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vector_round_to_int_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int64_t vm_vector_round_to_int_intrinsics(float a, float b, double c, double d);
+
+int main(void) {
+    int64_t a = vm_vector_round_to_int_intrinsics(2.25f, -3.75f, 11.25, -12.75);
+    int64_t b = vm_vector_round_to_int_intrinsics(-4.5f, 8.125f, -9.875, 15.5);
+    int64_t c = vm_vector_round_to_int_intrinsics(15.75f, 0.625f, 31.25, -0.5);
+    printf("%lld %lld %lld %lld\n", (long long)a, (long long)b, (long long)c, (long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("vector round-to-int intrinsic C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_vector_round_to_int_intrinsics_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vector_round_to_int_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_round_to_int_intrinsics");
+    for (handler, semantic) in [
+        ("flrint", "FloatRoundToInt { op: LRint"),
+        ("fllrint", "FloatRoundToInt { op: LLRint"),
+        ("flround", "FloatRoundToInt { op: LRound"),
+        ("fllround", "FloatRoundToInt { op: LLRound"),
+    ] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "vector round-to-int should lower each lane through {handler} handlers:\n{dump}"
+        );
+        assert!(
+            dump.contains(semantic),
+            "vector round-to-int bytecode should preserve {semantic} semantic:\n{dump}"
+        );
+    }
+    assert!(
+        dump.contains("from_width: 32") && dump.contains("from_width: 64"),
+        "vector round-to-int bytecode should preserve source float lane widths:\n{dump}"
+    );
+    assert!(
+        dump.contains("to_width: 32") && dump.contains("to_width: 64"),
+        "vector round-to-int bytecode should preserve integer result lane widths:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vector_round_to_int_intrinsics",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("vector round-to-int intrinsic virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_round_to_int_intrinsics"));
+    assert!(ir.contains("handler.flrint"));
+    assert!(ir.contains("handler.fllrint"));
+    assert!(ir.contains("handler.flround"));
+    assert!(ir.contains("handler.fllround"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_round_to_int_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_vector_round_to_int_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_vector_round_to_int_intrinsics.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_round_to_int_intrinsics'
+source_filename = "vm_virtualize_vp_vector_round_to_int_intrinsics.ll"
+
+declare <2 x i32> @llvm.vp.lrint.v2i32.v2f32(<2 x float>, <2 x i1>, i32)
+declare <2 x i64> @llvm.vp.llrint.v2i64.v2f64(<2 x double>, <2 x i1>, i32)
+
+define i64 @vm_vp_vector_round_to_int_intrinsics(float %a, float %b, double %c, double %d) {
+entry:
+  %vf0 = insertelement <2 x float> poison, float %a, i32 0
+  %vf = insertelement <2 x float> %vf0, float %b, i32 1
+  %vd0 = insertelement <2 x double> poison, double %c, i32 0
+  %vd = insertelement <2 x double> %vd0, double %d, i32 1
+  %lr = call <2 x i32> @llvm.vp.lrint.v2i32.v2f32(<2 x float> %vf, <2 x i1> <i1 true, i1 false>, i32 2)
+  %llr = call <2 x i64> @llvm.vp.llrint.v2i64.v2f64(<2 x double> %vd, <2 x i1> <i1 false, i1 true>, i32 2)
+  %lr0 = extractelement <2 x i32> %lr, i32 0
+  %llr1 = extractelement <2 x i64> %llr, i32 1
+  %lr0x = sext i32 %lr0 to i64
+  %llr_shift = shl i64 %llr1, 9
+  %result = xor i64 %lr0x, %llr_shift
+  ret i64 %result
+}
+"#,
+    )
+    .expect("VP vector round-to-int LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_vp_vector_round_to_int_baseline.input.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_vector_round_to_int_baseline'
+source_filename = "vm_virtualize_vp_vector_round_to_int_baseline.ll"
+
+declare i32 @llvm.lrint.i32.f32(float)
+declare i64 @llvm.llrint.i64.f64(double)
+
+define i64 @vm_vp_vector_round_to_int_intrinsics(float %a, float %b, double %c, double %d) {
+entry:
+  %lr0 = call i32 @llvm.lrint.i32.f32(float %a)
+  %llr1 = call i64 @llvm.llrint.i64.f64(double %d)
+  %lr0x = sext i32 %lr0 to i64
+  %llr_shift = shl i64 %llr1, 9
+  %result = xor i64 %lr0x, %llr_shift
+  ret i64 %result
+}
+"#,
+    )
+    .expect("VP vector round-to-int scalar baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_vp_vector_round_to_int_intrinsics_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+int64_t vm_vp_vector_round_to_int_intrinsics(float a, float b, double c, double d);
+
+int main(void) {
+    int64_t a = vm_vp_vector_round_to_int_intrinsics(2.25f, -3.75f, 11.25, -12.25);
+    int64_t b = vm_vp_vector_round_to_int_intrinsics(-4.25f, 8.125f, -9.875, 15.25);
+    int64_t c = vm_vp_vector_round_to_int_intrinsics(15.75f, 0.625f, 31.25, -1.25);
+    printf("%lld %lld %lld %lld\n", (long long)a, (long long)b, (long long)c, (long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("VP vector round-to-int C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &baseline_ir_source,
+        &harness,
+        "vm_virtualize_vp_vector_round_to_int_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_vp_vector_round_to_int_intrinsics.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_vp_vector_round_to_int_intrinsics");
+    assert!(
+        dump.contains(": flrint ") && dump.contains(": fllrint "),
+        "VP round-to-int should lower through flrint/fllrint handlers:\n{dump}"
+    );
+    assert!(
+        dump.contains("FloatRoundToInt { op: LRint") && dump.contains("FloatRoundToInt { op: LLRint"),
+        "VP round-to-int bytecode should preserve lrint/llrint semantics:\n{dump}"
+    );
+    assert!(
+        dump.contains("from_width: 32")
+            && dump.contains("to_width: 32")
+            && dump.contains("from_width: 64")
+            && dump.contains("to_width: 64"),
+        "VP round-to-int bytecode should preserve lane source/result widths:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_vp_vector_round_to_int_intrinsics",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("VP vector round-to-int virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vp_vector_round_to_int_intrinsics"));
+    assert!(ir.contains("handler.flrint"));
+    assert!(ir.contains("handler.fllrint"));
+    assert!(!ir.contains("call <2 x i32> @llvm.vp.lrint"));
+    assert!(!ir.contains("call <2 x i64> @llvm.vp.llrint"));
+    assert!(!ir.contains(".amice.vm.original.vm_vp_vector_round_to_int_intrinsics"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_float_binops_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_constrained_float_binops.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_float_binops'
+source_filename = "vm_virtualize_constrained_float_binops.ll"
+
+declare double @llvm.experimental.constrained.fadd.f64(double, double, metadata, metadata)
+declare i1 @llvm.experimental.constrained.fcmp.f64(double, double, metadata, metadata)
+declare double @llvm.experimental.constrained.fsub.f64(double, double, metadata, metadata)
+declare double @llvm.experimental.constrained.fmul.f64(double, double, metadata, metadata)
+declare double @llvm.experimental.constrained.fdiv.f64(double, double, metadata, metadata)
+declare double @llvm.experimental.constrained.frem.f64(double, double, metadata, metadata)
+
+define i64 @vm_constrained_float_binops(double %a, double %b) {
+entry:
+  %add = call double @llvm.experimental.constrained.fadd.f64(double %a, double %b, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %sub = call double @llvm.experimental.constrained.fsub.f64(double %add, double %b, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %mul = call double @llvm.experimental.constrained.fmul.f64(double %sub, double 1.250000e+00, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %div = call double @llvm.experimental.constrained.fdiv.f64(double %mul, double 3.000000e+00, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %rem = call double @llvm.experimental.constrained.frem.f64(double %div, double 7.500000e-01, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %bits = bitcast double %rem to i64
+  ret i64 %bits
+}
+"#,
+    )
+    .expect("constrained floating binop LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_float_binops_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_float_binops(double a, double b);
+
+int main(void) {
+    uint64_t a = vm_constrained_float_binops(6.25, 1.75);
+    uint64_t b = vm_constrained_float_binops(-13.5, 2.0);
+    uint64_t c = vm_constrained_float_binops(31.0, -4.5);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained floating binop C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_constrained_float_binops_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_constrained_float_binops.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_float_binops");
+    for handler in ["fadd", "fsub", "fmul", "fdiv", "frem"] {
+        assert!(
+            dump.contains(&format!(": {handler} ")),
+            "constrained floating binop should lower through {handler} VM handler:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_constrained_float_binops",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained floating binop virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_float_binops"));
+    assert!(ir.contains("handler.fadd"));
+    assert!(ir.contains("handler.fsub"));
+    assert!(ir.contains("handler.fmul"));
+    assert!(ir.contains("handler.fdiv"));
+    assert!(ir.contains("handler.frem"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_vector_float_binops_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_constrained_vector_float_binops.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_binops'
+source_filename = "vm_virtualize_constrained_vector_float_binops.ll"
+
+declare <2 x double> @llvm.experimental.constrained.fadd.v2f64(<2 x double>, <2 x double>, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.fsub.v2f64(<2 x double>, <2 x double>, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.fmul.v2f64(<2 x double>, <2 x double>, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.fdiv.v2f64(<2 x double>, <2 x double>, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.frem.v2f64(<2 x double>, <2 x double>, metadata, metadata)
+
+define i64 @vm_constrained_vector_float_binops(double %a, double %b, double %c, double %d) {
+entry:
+  %va0 = insertelement <2 x double> poison, double %a, i32 0
+  %va1 = insertelement <2 x double> %va0, double %b, i32 1
+  %vb0 = insertelement <2 x double> poison, double %c, i32 0
+  %vb1 = insertelement <2 x double> %vb0, double %d, i32 1
+  %scale0 = insertelement <2 x double> poison, double 1.500000e+00, i32 0
+  %scale1 = insertelement <2 x double> %scale0, double 2.500000e+00, i32 1
+  %div0 = insertelement <2 x double> poison, double 3.000000e+00, i32 0
+  %div1 = insertelement <2 x double> %div0, double 4.000000e+00, i32 1
+  %rem0 = insertelement <2 x double> poison, double 7.500000e-01, i32 0
+  %rem1 = insertelement <2 x double> %rem0, double 1.250000e+00, i32 1
+  %add = call <2 x double> @llvm.experimental.constrained.fadd.v2f64(<2 x double> %va1, <2 x double> %vb1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %sub = call <2 x double> @llvm.experimental.constrained.fsub.v2f64(<2 x double> %add, <2 x double> %vb1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %mul = call <2 x double> @llvm.experimental.constrained.fmul.v2f64(<2 x double> %sub, <2 x double> %scale1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %div = call <2 x double> @llvm.experimental.constrained.fdiv.v2f64(<2 x double> %mul, <2 x double> %div1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %rem = call <2 x double> @llvm.experimental.constrained.frem.v2f64(<2 x double> %div, <2 x double> %rem1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %r0 = extractelement <2 x double> %rem, i32 0
+  %r1 = extractelement <2 x double> %rem, i32 1
+  %b0 = bitcast double %r0 to i64
+  %b1 = bitcast double %r1 to i64
+  %mix = xor i64 %b0, %b1
+  ret i64 %mix
+}
+"#,
+    )
+    .expect("constrained vector floating binop LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_vector_float_binops_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_vector_float_binops(double a, double b, double c, double d);
+
+int main(void) {
+    uint64_t a = vm_constrained_vector_float_binops(6.25, 1.75, 2.0, 0.5);
+    uint64_t b = vm_constrained_vector_float_binops(-13.5, 2.0, 1.25, -4.0);
+    uint64_t c = vm_constrained_vector_float_binops(31.0, -4.5, -2.25, 8.0);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained vector floating binop C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_constrained_vector_float_binops_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_constrained_vector_float_binops.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_vector_float_binops");
+    for handler in ["fadd", "fsub", "fmul", "fdiv", "frem"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "constrained fixed vector binop should lower each lane through {handler} VM handler:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_constrained_vector_float_binops",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained vector floating binop virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_vector_float_binops"));
+    assert!(ir.contains("handler.fadd"));
+    assert!(ir.contains("handler.fsub"));
+    assert!(ir.contains("handler.fmul"));
+    assert!(ir.contains("handler.fdiv"));
+    assert!(ir.contains("handler.frem"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.fadd"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.fsub"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.fmul"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.fdiv"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.frem"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_vector_float_unary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_constrained_vector_float_unary.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_unary'
+source_filename = "vm_virtualize_constrained_vector_float_unary.ll"
+
+declare <2 x double> @llvm.experimental.constrained.fabs.v2f64(<2 x double>, metadata)
+declare <2 x double> @llvm.experimental.constrained.sqrt.v2f64(<2 x double>, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.floor.v2f64(<2 x double>, metadata)
+declare <2 x double> @llvm.experimental.constrained.rint.v2f64(<2 x double>, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.roundeven.v2f64(<2 x double>, metadata)
+
+define i64 @vm_constrained_vector_float_unary(double %a, double %b) {
+entry:
+  %va0 = insertelement <2 x double> poison, double %a, i32 0
+  %va1 = insertelement <2 x double> %va0, double %b, i32 1
+  %zero = fsub double 0.000000e+00, %b
+  %vm0 = insertelement <2 x double> poison, double %zero, i32 0
+  %vm1 = insertelement <2 x double> %vm0, double %a, i32 1
+  %fabs = call <2 x double> @llvm.experimental.constrained.fabs.v2f64(<2 x double> %vm1, metadata !"fpexcept.ignore")
+  %sqrt = call <2 x double> @llvm.experimental.constrained.sqrt.v2f64(<2 x double> %va1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %floor = call <2 x double> @llvm.experimental.constrained.floor.v2f64(<2 x double> %vm1, metadata !"fpexcept.ignore")
+  %rint = call <2 x double> @llvm.experimental.constrained.rint.v2f64(<2 x double> %vm1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %roundeven = call <2 x double> @llvm.experimental.constrained.roundeven.v2f64(<2 x double> %vm1, metadata !"fpexcept.ignore")
+  %fabs0 = extractelement <2 x double> %fabs, i32 0
+  %sqrt1 = extractelement <2 x double> %sqrt, i32 1
+  %floor0 = extractelement <2 x double> %floor, i32 0
+  %rint1 = extractelement <2 x double> %rint, i32 1
+  %roundeven0 = extractelement <2 x double> %roundeven, i32 0
+  %fabs_bits = bitcast double %fabs0 to i64
+  %sqrt_bits = bitcast double %sqrt1 to i64
+  %floor_bits = bitcast double %floor0 to i64
+  %rint_bits = bitcast double %rint1 to i64
+  %roundeven_bits = bitcast double %roundeven0 to i64
+  %m0 = xor i64 %fabs_bits, %sqrt_bits
+  %m1 = xor i64 %m0, %floor_bits
+  %m2 = xor i64 %m1, %rint_bits
+  %m3 = xor i64 %m2, %roundeven_bits
+  ret i64 %m3
+}
+"#,
+    )
+    .expect("constrained vector floating unary LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_constrained_vector_float_unary_baseline.input.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_unary_baseline'
+source_filename = "vm_virtualize_constrained_vector_float_unary_baseline.ll"
+
+declare double @llvm.fabs.f64(double)
+declare double @llvm.sqrt.f64(double)
+declare double @llvm.floor.f64(double)
+declare double @llvm.rint.f64(double)
+declare double @llvm.roundeven.f64(double)
+
+define i64 @vm_constrained_vector_float_unary(double %a, double %b) {
+entry:
+  %zero = fsub double 0.000000e+00, %b
+  %fabs0 = call double @llvm.fabs.f64(double %zero)
+  %sqrt1 = call double @llvm.sqrt.f64(double %b)
+  %floor0 = call double @llvm.floor.f64(double %zero)
+  %rint1 = call double @llvm.rint.f64(double %a)
+  %roundeven0 = call double @llvm.roundeven.f64(double %zero)
+  %fabs_bits = bitcast double %fabs0 to i64
+  %sqrt_bits = bitcast double %sqrt1 to i64
+  %floor_bits = bitcast double %floor0 to i64
+  %rint_bits = bitcast double %rint1 to i64
+  %roundeven_bits = bitcast double %roundeven0 to i64
+  %m0 = xor i64 %fabs_bits, %sqrt_bits
+  %m1 = xor i64 %m0, %floor_bits
+  %m2 = xor i64 %m1, %rint_bits
+  %m3 = xor i64 %m2, %roundeven_bits
+  ret i64 %m3
+}
+"#,
+    )
+    .expect("constrained vector floating unary baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_vector_float_unary_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_vector_float_unary(double a, double b);
+
+int main(void) {
+    uint64_t a = vm_constrained_vector_float_unary(1.25, 3.75);
+    uint64_t b = vm_constrained_vector_float_unary(2.5, 4.125);
+    uint64_t c = vm_constrained_vector_float_unary(8.0, 0.625);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained vector floating unary C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &baseline_ir_source,
+        &harness,
+        "vm_virtualize_constrained_vector_float_unary_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_constrained_vector_float_unary.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_vector_float_unary");
+    for handler in ["fabs", "fsqrt", "ffloor", "frint", "froundeven"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "constrained fixed vector unary should lower each lane through {handler} VM handler:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_constrained_vector_float_unary",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained vector floating unary virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_vector_float_unary"));
+    assert!(ir.contains("handler.fabs"));
+    assert!(ir.contains("handler.fsqrt"));
+    assert!(ir.contains("handler.ffloor"));
+    assert!(ir.contains("handler.frint"));
+    assert!(ir.contains("handler.froundeven"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.fabs"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.sqrt"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.floor"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.rint"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.roundeven"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_float_compare_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_constrained_float_compare.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_float_compare'
+source_filename = "vm_virtualize_constrained_float_compare.ll"
+
+declare i1 @llvm.experimental.constrained.fcmp.f64(double, double, metadata, metadata)
+declare i1 @llvm.experimental.constrained.fcmps.f64(double, double, metadata, metadata)
+
+define i64 @vm_constrained_float_compare(double %a, double %b, double %c) {
+entry:
+  %oeq = call i1 @llvm.experimental.constrained.fcmp.f64(double %a, double %b, metadata !"oeq", metadata !"fpexcept.ignore")
+  %ogt = call i1 @llvm.experimental.constrained.fcmp.f64(double %a, double %b, metadata !"ogt", metadata !"fpexcept.ignore")
+  %uno = call i1 @llvm.experimental.constrained.fcmp.f64(double %c, double %b, metadata !"uno", metadata !"fpexcept.ignore")
+  %ole = call i1 @llvm.experimental.constrained.fcmps.f64(double %a, double %b, metadata !"ole", metadata !"fpexcept.ignore")
+  %une = call i1 @llvm.experimental.constrained.fcmps.f64(double %a, double %b, metadata !"une", metadata !"fpexcept.ignore")
+  %oeq64 = zext i1 %oeq to i64
+  %ogt64 = zext i1 %ogt to i64
+  %uno64 = zext i1 %uno to i64
+  %ole64 = zext i1 %ole to i64
+  %une64 = zext i1 %une to i64
+  %s1 = shl i64 %ogt64, 1
+  %m1 = or i64 %oeq64, %s1
+  %s2 = shl i64 %uno64, 2
+  %m2 = or i64 %m1, %s2
+  %s3 = shl i64 %ole64, 3
+  %m3 = or i64 %m2, %s3
+  %s4 = shl i64 %une64, 4
+  %r = or i64 %m3, %s4
+  ret i64 %r
+}
+"#,
+    )
+    .expect("constrained floating compare LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_float_compare_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_float_compare(double a, double b, double c);
+
+int main(void) {
+    double nan = 0.0 / 0.0;
+    uint64_t a = vm_constrained_float_compare(3.5, 1.25, nan);
+    uint64_t b = vm_constrained_float_compare(-2.0, -2.0, 9.0);
+    uint64_t c = vm_constrained_float_compare(-7.0, 4.0, nan);
+    printf("%llu %llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained floating compare C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_constrained_float_compare_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_constrained_float_compare.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_float_compare");
+    assert!(
+        dump.matches(": fcmp ").count() >= 5,
+        "constrained fcmp/fcmps should lower through profile fcmp handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_constrained_float_compare");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained floating compare virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_float_compare"));
+    assert!(ir.contains("handler.fcmp"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_vector_float_compare_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_constrained_vector_float_compare.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_compare'
+source_filename = "vm_virtualize_constrained_vector_float_compare.ll"
+
+declare <2 x i1> @llvm.experimental.constrained.fcmp.v2f64(<2 x double>, <2 x double>, metadata, metadata)
+declare <2 x i1> @llvm.experimental.constrained.fcmps.v2f64(<2 x double>, <2 x double>, metadata, metadata)
+
+define i64 @vm_constrained_vector_float_compare(double %a, double %b, double %c) {
+entry:
+  %va0 = insertelement <2 x double> poison, double %a, i32 0
+  %va1 = insertelement <2 x double> %va0, double %b, i32 1
+  %vb0 = insertelement <2 x double> poison, double %b, i32 0
+  %vb1 = insertelement <2 x double> %vb0, double %a, i32 1
+  %vc0 = insertelement <2 x double> poison, double %c, i32 0
+  %vc1 = insertelement <2 x double> %vc0, double %b, i32 1
+  %ogt = call <2 x i1> @llvm.experimental.constrained.fcmp.v2f64(<2 x double> %va1, <2 x double> %vb1, metadata !"ogt", metadata !"fpexcept.ignore")
+  %uno = call <2 x i1> @llvm.experimental.constrained.fcmp.v2f64(<2 x double> %vc1, <2 x double> %va1, metadata !"uno", metadata !"fpexcept.ignore")
+  %ole = call <2 x i1> @llvm.experimental.constrained.fcmps.v2f64(<2 x double> %va1, <2 x double> %vb1, metadata !"ole", metadata !"fpexcept.ignore")
+  %une = call <2 x i1> @llvm.experimental.constrained.fcmps.v2f64(<2 x double> %vc1, <2 x double> %vb1, metadata !"une", metadata !"fpexcept.ignore")
+  %ogt0 = extractelement <2 x i1> %ogt, i32 0
+  %ogt1 = extractelement <2 x i1> %ogt, i32 1
+  %uno0 = extractelement <2 x i1> %uno, i32 0
+  %uno1 = extractelement <2 x i1> %uno, i32 1
+  %ole0 = extractelement <2 x i1> %ole, i32 0
+  %ole1 = extractelement <2 x i1> %ole, i32 1
+  %une0 = extractelement <2 x i1> %une, i32 0
+  %une1 = extractelement <2 x i1> %une, i32 1
+  %ogt0_64 = zext i1 %ogt0 to i64
+  %ogt1_64 = zext i1 %ogt1 to i64
+  %uno0_64 = zext i1 %uno0 to i64
+  %uno1_64 = zext i1 %uno1 to i64
+  %ole0_64 = zext i1 %ole0 to i64
+  %ole1_64 = zext i1 %ole1 to i64
+  %une0_64 = zext i1 %une0 to i64
+  %une1_64 = zext i1 %une1 to i64
+  %s1 = shl i64 %ogt1_64, 1
+  %m1 = or i64 %ogt0_64, %s1
+  %s2 = shl i64 %uno0_64, 2
+  %m2 = or i64 %m1, %s2
+  %s3 = shl i64 %uno1_64, 3
+  %m3 = or i64 %m2, %s3
+  %s4 = shl i64 %ole0_64, 4
+  %m4 = or i64 %m3, %s4
+  %s5 = shl i64 %ole1_64, 5
+  %m5 = or i64 %m4, %s5
+  %s6 = shl i64 %une0_64, 6
+  %m6 = or i64 %m5, %s6
+  %s7 = shl i64 %une1_64, 7
+  %r = or i64 %m6, %s7
+  ret i64 %r
+}
+"#,
+    )
+    .expect("constrained vector floating compare LLVM IR fixture should be writable");
+
+    let baseline_ir_source = output_dir().join("vm_virtualize_constrained_vector_float_compare_baseline.input.ll");
+    std::fs::write(
+        &baseline_ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_compare_baseline'
+source_filename = "vm_virtualize_constrained_vector_float_compare_baseline.ll"
+
+define i64 @vm_constrained_vector_float_compare(double %a, double %b, double %c) {
+entry:
+  %ogt0 = fcmp ogt double %a, %b
+  %ogt1 = fcmp ogt double %b, %a
+  %uno0 = fcmp uno double %c, %a
+  %uno1 = fcmp uno double %b, %b
+  %ole0 = fcmp ole double %a, %b
+  %ole1 = fcmp ole double %b, %a
+  %une0 = fcmp une double %c, %b
+  %une1 = fcmp une double %b, %a
+  %ogt0_64 = zext i1 %ogt0 to i64
+  %ogt1_64 = zext i1 %ogt1 to i64
+  %uno0_64 = zext i1 %uno0 to i64
+  %uno1_64 = zext i1 %uno1 to i64
+  %ole0_64 = zext i1 %ole0 to i64
+  %ole1_64 = zext i1 %ole1 to i64
+  %une0_64 = zext i1 %une0 to i64
+  %une1_64 = zext i1 %une1 to i64
+  %s1 = shl i64 %ogt1_64, 1
+  %m1 = or i64 %ogt0_64, %s1
+  %s2 = shl i64 %uno0_64, 2
+  %m2 = or i64 %m1, %s2
+  %s3 = shl i64 %uno1_64, 3
+  %m3 = or i64 %m2, %s3
+  %s4 = shl i64 %ole0_64, 4
+  %m4 = or i64 %m3, %s4
+  %s5 = shl i64 %ole1_64, 5
+  %m5 = or i64 %m4, %s5
+  %s6 = shl i64 %une0_64, 6
+  %m6 = or i64 %m5, %s6
+  %s7 = shl i64 %une1_64, 7
+  %r = or i64 %m6, %s7
+  ret i64 %r
+}
+"#,
+    )
+    .expect("constrained vector floating compare baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_vector_float_compare_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_vector_float_compare(double a, double b, double c);
+
+int main(void) {
+    double nan = 0.0 / 0.0;
+    uint64_t a = vm_constrained_vector_float_compare(3.5, 1.25, nan);
+    uint64_t b = vm_constrained_vector_float_compare(-2.0, -2.0, 9.0);
+    uint64_t c = vm_constrained_vector_float_compare(-7.0, 4.0, nan);
+    printf("%llu %llu %llu %llu\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained vector floating compare C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_ir_source,
+        &harness,
+        "vm_virtualize_constrained_vector_float_compare_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_constrained_vector_float_compare.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_vector_float_compare");
+    assert!(
+        dump.matches(": fcmp ").count() >= 8,
+        "constrained fixed vector fcmp/fcmps should lower each lane through profile fcmp handlers:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_constrained_vector_float_compare",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained vector floating compare virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_vector_float_compare"));
+    assert!(ir.contains("handler.fcmp"));
+    assert!(!ir.contains("call <2 x i1> @llvm.experimental.constrained.fcmp"));
+    assert!(!ir.contains("call <2 x i1> @llvm.experimental.constrained.fcmps"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_float_casts_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_constrained_float_casts.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_float_casts'
+source_filename = "vm_virtualize_constrained_float_casts.ll"
+
+declare double @llvm.experimental.constrained.sitofp.f64.i32(i32, metadata, metadata)
+declare double @llvm.experimental.constrained.uitofp.f64.i32(i32, metadata, metadata)
+declare i32 @llvm.experimental.constrained.fptosi.i32.f64(double, metadata)
+declare i32 @llvm.experimental.constrained.fptoui.i32.f64(double, metadata)
+declare float @llvm.experimental.constrained.fptrunc.f32.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.fpext.f64.f32(float, metadata)
+
+define i64 @vm_constrained_float_casts(i32 %sx, i32 %ux, double %d, float %f) {
+entry:
+  %a = call double @llvm.experimental.constrained.sitofp.f64.i32(i32 %sx, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %b = call double @llvm.experimental.constrained.uitofp.f64.i32(i32 %ux, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %c = call i32 @llvm.experimental.constrained.fptosi.i32.f64(double %d, metadata !"fpexcept.ignore")
+  %e = call i32 @llvm.experimental.constrained.fptoui.i32.f64(double %d, metadata !"fpexcept.ignore")
+  %g = call float @llvm.experimental.constrained.fptrunc.f32.f64(double %d, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %h = call double @llvm.experimental.constrained.fpext.f64.f32(float %f, metadata !"fpexcept.ignore")
+  %abits = bitcast double %a to i64
+  %bbits = bitcast double %b to i64
+  %gbits = bitcast float %g to i32
+  %hbits = bitcast double %h to i64
+  %c64 = sext i32 %c to i64
+  %e64 = zext i32 %e to i64
+  %g64 = zext i32 %gbits to i64
+  %m0 = xor i64 %abits, %bbits
+  %m1 = xor i64 %m0, %c64
+  %m2 = xor i64 %m1, %e64
+  %m3 = xor i64 %m2, %g64
+  %m4 = xor i64 %m3, %hbits
+  ret i64 %m4
+}
+"#,
+    )
+    .expect("constrained floating cast LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_float_casts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_float_casts(int32_t sx, uint32_t ux, double d, float f);
+
+int main(void) {
+    uint64_t a = vm_constrained_float_casts(-17, 23u, 123.75, 4.5f);
+    uint64_t b = vm_constrained_float_casts(2048, 4095u, 65535.25, -2.25f);
+    uint64_t c = vm_constrained_float_casts(-3, 7u, 42.5, 0.125f);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained floating cast C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_constrained_float_casts_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_constrained_float_casts.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_float_casts");
+    for handler in ["sitofp", "uitofp", "fptosi", "fptoui", "fptrunc", "fpext"] {
+        assert!(
+            dump.contains(&format!(": {handler} ")),
+            "constrained floating cast should lower through {handler} VM handler:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_constrained_float_casts");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained floating cast virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_float_casts"));
+    assert!(ir.contains("handler.sitofp"));
+    assert!(ir.contains("handler.uitofp"));
+    assert!(ir.contains("handler.fptosi"));
+    assert!(ir.contains("handler.fptoui"));
+    assert!(ir.contains("handler.fptrunc"));
+    assert!(ir.contains("handler.fpext"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_vector_float_casts_match_baseline() {
+    ensure_plugin_built();
+
+    let virtualized_source = output_dir().join("vm_virtualize_constrained_vector_float_casts.input.ll");
+    std::fs::write(
+        &virtualized_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_casts'
+source_filename = "vm_virtualize_constrained_vector_float_casts.ll"
+
+declare <2 x double> @llvm.experimental.constrained.sitofp.v2f64.v2i32(<2 x i32>, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.uitofp.v2f64.v2i32(<2 x i32>, metadata, metadata)
+declare <2 x i32> @llvm.experimental.constrained.fptosi.v2i32.v2f64(<2 x double>, metadata)
+declare <2 x i32> @llvm.experimental.constrained.fptoui.v2i32.v2f64(<2 x double>, metadata)
+declare <2 x float> @llvm.experimental.constrained.fptrunc.v2f32.v2f64(<2 x double>, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.fpext.v2f64.v2f32(<2 x float>, metadata)
+
+define i64 @vm_constrained_vector_float_casts(i32 %sx, i32 %ux, double %d, float %f) {
+entry:
+  %sx1 = add i32 %sx, 11
+  %sv0 = insertelement <2 x i32> poison, i32 %sx, i32 0
+  %sv1 = insertelement <2 x i32> %sv0, i32 %sx1, i32 1
+  %si = call <2 x double> @llvm.experimental.constrained.sitofp.v2f64.v2i32(<2 x i32> %sv1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %si0 = extractelement <2 x double> %si, i32 0
+  %si1 = extractelement <2 x double> %si, i32 1
+  %si0b = bitcast double %si0 to i64
+  %si1b = bitcast double %si1 to i64
+
+  %ux1 = add i32 %ux, 5
+  %uv0 = insertelement <2 x i32> poison, i32 %ux, i32 0
+  %uv1 = insertelement <2 x i32> %uv0, i32 %ux1, i32 1
+  %ui = call <2 x double> @llvm.experimental.constrained.uitofp.v2f64.v2i32(<2 x i32> %uv1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %ui0 = extractelement <2 x double> %ui, i32 0
+  %ui1 = extractelement <2 x double> %ui, i32 1
+  %ui0b = bitcast double %ui0 to i64
+  %ui1b = bitcast double %ui1 to i64
+
+  %d1 = fadd double %d, 7.250000e+00
+  %dv0 = insertelement <2 x double> poison, double %d, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double %d1, i32 1
+  %fpsi = call <2 x i32> @llvm.experimental.constrained.fptosi.v2i32.v2f64(<2 x double> %dv1, metadata !"fpexcept.ignore")
+  %fpui = call <2 x i32> @llvm.experimental.constrained.fptoui.v2i32.v2f64(<2 x double> %dv1, metadata !"fpexcept.ignore")
+  %tr = call <2 x float> @llvm.experimental.constrained.fptrunc.v2f32.v2f64(<2 x double> %dv1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %fpsi0 = extractelement <2 x i32> %fpsi, i32 0
+  %fpsi1 = extractelement <2 x i32> %fpsi, i32 1
+  %fpui0 = extractelement <2 x i32> %fpui, i32 0
+  %fpui1 = extractelement <2 x i32> %fpui, i32 1
+  %tr0 = extractelement <2 x float> %tr, i32 0
+  %tr1 = extractelement <2 x float> %tr, i32 1
+  %tr0b = bitcast float %tr0 to i32
+  %tr1b = bitcast float %tr1 to i32
+
+  %f1 = fadd float %f, 5.000000e-01
+  %fv0 = insertelement <2 x float> poison, float %f, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %f1, i32 1
+  %ex = call <2 x double> @llvm.experimental.constrained.fpext.v2f64.v2f32(<2 x float> %fv1, metadata !"fpexcept.ignore")
+  %ex0 = extractelement <2 x double> %ex, i32 0
+  %ex1 = extractelement <2 x double> %ex, i32 1
+  %ex0b = bitcast double %ex0 to i64
+  %ex1b = bitcast double %ex1 to i64
+
+  %fpsi0x = sext i32 %fpsi0 to i64
+  %fpsi1x = sext i32 %fpsi1 to i64
+  %fpui0x = zext i32 %fpui0 to i64
+  %fpui1x = zext i32 %fpui1 to i64
+  %tr0x = zext i32 %tr0b to i64
+  %tr1x = zext i32 %tr1b to i64
+  %m0 = xor i64 %si0b, %si1b
+  %m1 = xor i64 %m0, %ui0b
+  %m2 = xor i64 %m1, %ui1b
+  %m3 = xor i64 %m2, %fpsi0x
+  %s0 = shl i64 %fpsi1x, 7
+  %m4 = xor i64 %m3, %s0
+  %s1 = shl i64 %fpui0x, 13
+  %m5 = xor i64 %m4, %s1
+  %s2 = shl i64 %fpui1x, 19
+  %m6 = xor i64 %m5, %s2
+  %s3 = shl i64 %tr0x, 23
+  %m7 = xor i64 %m6, %s3
+  %s4 = shl i64 %tr1x, 31
+  %m8 = xor i64 %m7, %s4
+  %m9 = xor i64 %m8, %ex0b
+  %result = xor i64 %m9, %ex1b
+  ret i64 %result
+}
+"#,
+    )
+    .expect("constrained vector floating cast LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_constrained_vector_float_casts.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_casts_baseline'
+source_filename = "vm_virtualize_constrained_vector_float_casts_baseline.ll"
+
+define i64 @vm_constrained_vector_float_casts(i32 %sx, i32 %ux, double %d, float %f) {
+entry:
+  %sx1 = add i32 %sx, 11
+  %sv0 = insertelement <2 x i32> poison, i32 %sx, i32 0
+  %sv1 = insertelement <2 x i32> %sv0, i32 %sx1, i32 1
+  %si = sitofp <2 x i32> %sv1 to <2 x double>
+  %si0 = extractelement <2 x double> %si, i32 0
+  %si1 = extractelement <2 x double> %si, i32 1
+  %si0b = bitcast double %si0 to i64
+  %si1b = bitcast double %si1 to i64
+
+  %ux1 = add i32 %ux, 5
+  %uv0 = insertelement <2 x i32> poison, i32 %ux, i32 0
+  %uv1 = insertelement <2 x i32> %uv0, i32 %ux1, i32 1
+  %ui = uitofp <2 x i32> %uv1 to <2 x double>
+  %ui0 = extractelement <2 x double> %ui, i32 0
+  %ui1 = extractelement <2 x double> %ui, i32 1
+  %ui0b = bitcast double %ui0 to i64
+  %ui1b = bitcast double %ui1 to i64
+
+  %d1 = fadd double %d, 7.250000e+00
+  %dv0 = insertelement <2 x double> poison, double %d, i32 0
+  %dv1 = insertelement <2 x double> %dv0, double %d1, i32 1
+  %fpsi = fptosi <2 x double> %dv1 to <2 x i32>
+  %fpui = fptoui <2 x double> %dv1 to <2 x i32>
+  %tr = fptrunc <2 x double> %dv1 to <2 x float>
+  %fpsi0 = extractelement <2 x i32> %fpsi, i32 0
+  %fpsi1 = extractelement <2 x i32> %fpsi, i32 1
+  %fpui0 = extractelement <2 x i32> %fpui, i32 0
+  %fpui1 = extractelement <2 x i32> %fpui, i32 1
+  %tr0 = extractelement <2 x float> %tr, i32 0
+  %tr1 = extractelement <2 x float> %tr, i32 1
+  %tr0b = bitcast float %tr0 to i32
+  %tr1b = bitcast float %tr1 to i32
+
+  %f1 = fadd float %f, 5.000000e-01
+  %fv0 = insertelement <2 x float> poison, float %f, i32 0
+  %fv1 = insertelement <2 x float> %fv0, float %f1, i32 1
+  %ex = fpext <2 x float> %fv1 to <2 x double>
+  %ex0 = extractelement <2 x double> %ex, i32 0
+  %ex1 = extractelement <2 x double> %ex, i32 1
+  %ex0b = bitcast double %ex0 to i64
+  %ex1b = bitcast double %ex1 to i64
+
+  %fpsi0x = sext i32 %fpsi0 to i64
+  %fpsi1x = sext i32 %fpsi1 to i64
+  %fpui0x = zext i32 %fpui0 to i64
+  %fpui1x = zext i32 %fpui1 to i64
+  %tr0x = zext i32 %tr0b to i64
+  %tr1x = zext i32 %tr1b to i64
+  %m0 = xor i64 %si0b, %si1b
+  %m1 = xor i64 %m0, %ui0b
+  %m2 = xor i64 %m1, %ui1b
+  %m3 = xor i64 %m2, %fpsi0x
+  %s0 = shl i64 %fpsi1x, 7
+  %m4 = xor i64 %m3, %s0
+  %s1 = shl i64 %fpui0x, 13
+  %m5 = xor i64 %m4, %s1
+  %s2 = shl i64 %fpui1x, 19
+  %m6 = xor i64 %m5, %s2
+  %s3 = shl i64 %tr0x, 23
+  %m7 = xor i64 %m6, %s3
+  %s4 = shl i64 %tr1x, 31
+  %m8 = xor i64 %m7, %s4
+  %m9 = xor i64 %m8, %ex0b
+  %result = xor i64 %m9, %ex1b
+  ret i64 %result
+}
+"#,
+    )
+    .expect("constrained vector floating cast baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_vector_float_casts_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_vector_float_casts(int32_t sx, uint32_t ux, double d, float f);
+
+int main(void) {
+    uint64_t a = vm_constrained_vector_float_casts(-17, 23u, 123.75, 4.5f);
+    uint64_t b = vm_constrained_vector_float_casts(2048, 4095u, 65535.25, 2.25f);
+    uint64_t c = vm_constrained_vector_float_casts(-3, 7u, 42.5, 0.125f);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained vector floating cast C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_constrained_vector_float_casts_baseline",
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &virtualized_source,
+        "vm_virtualize_constrained_vector_float_casts.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_vector_float_casts");
+    for handler in ["sitofp", "uitofp", "fptosi", "fptoui", "fptrunc", "fpext"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "constrained vector floating cast should lower each lane through {handler} VM handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_constrained_vector_float_casts",
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained vector floating cast virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_vector_float_casts"));
+    assert!(ir.contains("handler.sitofp"));
+    assert!(ir.contains("handler.uitofp"));
+    assert!(ir.contains("handler.fptosi"));
+    assert!(ir.contains("handler.fptoui"));
+    assert!(ir.contains("handler.fptrunc"));
+    assert!(ir.contains("handler.fpext"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.sitofp"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.uitofp"));
+    assert!(!ir.contains("call <2 x i32> @llvm.experimental.constrained.fptosi"));
+    assert!(!ir.contains("call <2 x i32> @llvm.experimental.constrained.fptoui"));
+    assert!(!ir.contains("call <2 x float> @llvm.experimental.constrained.fptrunc"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.fpext"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_float_unary_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_constrained_float_unary.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_float_unary'
+source_filename = "vm_virtualize_constrained_float_unary.ll"
+
+declare double @llvm.experimental.constrained.sqrt.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.floor.f64(double, metadata)
+declare double @llvm.experimental.constrained.ceil.f64(double, metadata)
+declare double @llvm.experimental.constrained.trunc.f64(double, metadata)
+declare double @llvm.experimental.constrained.rint.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.nearbyint.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.round.f64(double, metadata)
+declare double @llvm.experimental.constrained.roundeven.f64(double, metadata)
+declare double @llvm.experimental.constrained.sin.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.cos.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.exp.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.exp2.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.log.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.log10.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.log2.f64(double, metadata, metadata)
+
+define i64 @vm_constrained_float_unary(double %a, double %b) {
+entry:
+  %sqrt = call double @llvm.experimental.constrained.sqrt.f64(double %a, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %floor = call double @llvm.experimental.constrained.floor.f64(double %b, metadata !"fpexcept.ignore")
+  %ceil = call double @llvm.experimental.constrained.ceil.f64(double %b, metadata !"fpexcept.ignore")
+  %trunc = call double @llvm.experimental.constrained.trunc.f64(double %b, metadata !"fpexcept.ignore")
+  %rint = call double @llvm.experimental.constrained.rint.f64(double %b, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %nearby = call double @llvm.experimental.constrained.nearbyint.f64(double %b, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %round = call double @llvm.experimental.constrained.round.f64(double %b, metadata !"fpexcept.ignore")
+  %roundeven = call double @llvm.experimental.constrained.roundeven.f64(double %b, metadata !"fpexcept.ignore")
+  %sin = call double @llvm.experimental.constrained.sin.f64(double %a, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %cos = call double @llvm.experimental.constrained.cos.f64(double %a, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %exp = call double @llvm.experimental.constrained.exp.f64(double %a, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %exp2 = call double @llvm.experimental.constrained.exp2.f64(double %a, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %log = call double @llvm.experimental.constrained.log.f64(double %a, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %log10 = call double @llvm.experimental.constrained.log10.f64(double %a, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %log2 = call double @llvm.experimental.constrained.log2.f64(double %a, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %sqrt_bits = bitcast double %sqrt to i64
+  %floor_bits = bitcast double %floor to i64
+  %ceil_bits = bitcast double %ceil to i64
+  %trunc_bits = bitcast double %trunc to i64
+  %rint_bits = bitcast double %rint to i64
+  %nearby_bits = bitcast double %nearby to i64
+  %round_bits = bitcast double %round to i64
+  %roundeven_bits = bitcast double %roundeven to i64
+  %sin_bits = bitcast double %sin to i64
+  %cos_bits = bitcast double %cos to i64
+  %exp_bits = bitcast double %exp to i64
+  %exp2_bits = bitcast double %exp2 to i64
+  %log_bits = bitcast double %log to i64
+  %log10_bits = bitcast double %log10 to i64
+  %log2_bits = bitcast double %log2 to i64
+  %m0 = xor i64 %sqrt_bits, %floor_bits
+  %m1 = xor i64 %m0, %ceil_bits
+  %m2 = xor i64 %m1, %trunc_bits
+  %m3 = xor i64 %m2, %rint_bits
+  %m4 = xor i64 %m3, %nearby_bits
+  %m5 = xor i64 %m4, %round_bits
+  %m6 = xor i64 %m5, %roundeven_bits
+  %m7 = xor i64 %m6, %sin_bits
+  %m8 = xor i64 %m7, %cos_bits
+  %m9 = xor i64 %m8, %exp_bits
+  %m10 = xor i64 %m9, %exp2_bits
+  %m11 = xor i64 %m10, %log_bits
+  %m12 = xor i64 %m11, %log10_bits
+  %m13 = xor i64 %m12, %log2_bits
+  ret i64 %m13
+}
+"#,
+    )
+    .expect("constrained floating unary LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_float_unary_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_float_unary(double a, double b);
+
+int main(void) {
+    uint64_t a = vm_constrained_float_unary(1.25, -3.75);
+    uint64_t b = vm_constrained_float_unary(2.5, 4.125);
+    uint64_t c = vm_constrained_float_unary(8.0, -0.625);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained floating unary C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_constrained_float_unary_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_constrained_float_unary.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_float_unary");
+    for handler in [
+        "fsqrt",
+        "ffloor",
+        "fceil",
+        "ftrunc",
+        "frint",
+        "fnearbyint",
+        "fround",
+        "froundeven",
+        "fsin",
+        "fcos",
+        "fexp",
+        "fexp2",
+        "flog",
+        "flog10",
+        "flog2",
+    ] {
+        assert!(
+            dump.contains(&format!(": {handler} ")),
+            "constrained floating unary intrinsic should lower through {handler} VM handler:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_constrained_float_unary",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained floating unary virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_float_unary"));
+    assert!(ir.contains("handler.fsqrt"));
+    assert!(ir.contains("handler.ffloor"));
+    assert!(ir.contains("handler.fceil"));
+    assert!(ir.contains("handler.ftrunc"));
+    assert!(ir.contains("handler.frint"));
+    assert!(ir.contains("handler.fnearbyint"));
+    assert!(ir.contains("handler.fround"));
+    assert!(ir.contains("handler.froundeven"));
+    assert!(ir.contains("handler.fsin"));
+    assert!(ir.contains("handler.fcos"));
+    assert!(ir.contains("handler.fexp"));
+    assert!(ir.contains("handler.fexp2"));
+    assert!(ir.contains("handler.flog"));
+    assert!(ir.contains("handler.flog10"));
+    assert!(ir.contains("handler.flog2"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_float_extra_intrinsics_compile_after_virtualization() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_constrained_float_extra.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_float_extra'
+source_filename = "vm_virtualize_constrained_float_extra.ll"
+
+declare double @llvm.experimental.constrained.fabs.f64(double, metadata)
+declare double @llvm.experimental.constrained.canonicalize.f64(double, metadata)
+declare double @llvm.experimental.constrained.copysign.f64(double, double, metadata)
+
+define i64 @vm_constrained_float_extra(double %a, double %b) {
+entry:
+  %abs = call double @llvm.experimental.constrained.fabs.f64(double %a, metadata !"fpexcept.ignore")
+  %canonical = call double @llvm.experimental.constrained.canonicalize.f64(double %abs, metadata !"fpexcept.ignore")
+  %copy = call double @llvm.experimental.constrained.copysign.f64(double %canonical, double %b, metadata !"fpexcept.ignore")
+  %bits = bitcast double %copy to i64
+  ret i64 %bits
+}
+"#,
+    )
+    .expect("constrained floating extra LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_float_extra_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+uint64_t vm_constrained_float_extra(double a, double b);
+
+static uint64_t bits(double value) {
+    uint64_t out = 0;
+    memcpy(&out, &value, sizeof(out));
+    return out;
+}
+
+static uint64_t expected(double a, double b) {
+    double finite_canonical = fabs(a);
+    return bits(copysign(finite_canonical, b));
+}
+
+int main(void) {
+    const double inputs[][2] = {
+        {-2.5, 1.0},
+        {7.25, -0.0},
+        {-13.5, -9.0},
+        {0.125, 3.0},
+    };
+    uint64_t acc = 0;
+    for (unsigned i = 0; i < sizeof(inputs) / sizeof(inputs[0]); ++i) {
+        uint64_t got = vm_constrained_float_extra(inputs[i][0], inputs[i][1]);
+        uint64_t want = expected(inputs[i][0], inputs[i][1]);
+        if (got != want) {
+            printf("mismatch %u got=%016llx want=%016llx\n",
+                   i,
+                   (unsigned long long)got,
+                   (unsigned long long)want);
+            return 1;
+        }
+        acc ^= got;
+    }
+    printf("%016llx\n", (unsigned long long)acc);
+    return 0;
+}
+"#,
+    )
+    .expect("constrained floating extra C harness should be writable");
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_constrained_float_extra.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_float_extra");
+    for handler in ["fabs", "fcanonicalize", "fcopysign"] {
+        assert!(
+            dump.contains(&format!(": {handler} ")),
+            "constrained floating extra intrinsic should lower through {handler} VM handler:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_constrained_float_extra",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained floating extra virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_float_extra"));
+    assert!(ir.contains("handler.fabs"));
+    assert!(ir.contains("handler.fcanonicalize"));
+    assert!(ir.contains("handler.fcopysign"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_float_math_intrinsics_match_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_constrained_float_math.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_float_math'
+source_filename = "vm_virtualize_constrained_float_math.ll"
+
+declare double @llvm.experimental.constrained.pow.f64(double, double, metadata, metadata)
+declare double @llvm.experimental.constrained.powi.f64.i32(double, i32, metadata, metadata)
+declare double @llvm.experimental.constrained.fma.f64(double, double, double, metadata, metadata)
+declare double @llvm.experimental.constrained.fmuladd.f64(double, double, double, metadata, metadata)
+declare double @llvm.experimental.constrained.minnum.f64(double, double, metadata)
+declare double @llvm.experimental.constrained.maxnum.f64(double, double, metadata)
+declare i32 @llvm.experimental.constrained.lrint.i32.f64(double, metadata, metadata)
+declare i64 @llvm.experimental.constrained.llrint.i64.f64(double, metadata, metadata)
+declare i32 @llvm.experimental.constrained.lround.i32.f64(double, metadata)
+declare i64 @llvm.experimental.constrained.llround.i64.f64(double, metadata)
+
+define i64 @vm_constrained_float_math(double %a, double %b, i32 %e) {
+entry:
+  %pow = call double @llvm.experimental.constrained.pow.f64(double %a, double %b, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %powi = call double @llvm.experimental.constrained.powi.f64.i32(double %a, i32 %e, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %fma = call double @llvm.experimental.constrained.fma.f64(double %a, double %b, double 1.250000e+00, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %fmuladd = call double @llvm.experimental.constrained.fmuladd.f64(double %a, double %b, double 2.500000e-01, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %minnum = call double @llvm.experimental.constrained.minnum.f64(double %a, double %b, metadata !"fpexcept.ignore")
+  %maxnum = call double @llvm.experimental.constrained.maxnum.f64(double %a, double %b, metadata !"fpexcept.ignore")
+  %lrint = call i32 @llvm.experimental.constrained.lrint.i32.f64(double %b, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %llrint = call i64 @llvm.experimental.constrained.llrint.i64.f64(double %b, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %lround = call i32 @llvm.experimental.constrained.lround.i32.f64(double %b, metadata !"fpexcept.ignore")
+  %llround = call i64 @llvm.experimental.constrained.llround.i64.f64(double %b, metadata !"fpexcept.ignore")
+  %pow_bits = bitcast double %pow to i64
+  %powi_bits = bitcast double %powi to i64
+  %fma_bits = bitcast double %fma to i64
+  %fmuladd_bits = bitcast double %fmuladd to i64
+  %minnum_bits = bitcast double %minnum to i64
+  %maxnum_bits = bitcast double %maxnum to i64
+  %lrint64 = sext i32 %lrint to i64
+  %lround64 = sext i32 %lround to i64
+  %m0 = xor i64 %pow_bits, %powi_bits
+  %m1 = xor i64 %m0, %fma_bits
+  %m2 = xor i64 %m1, %fmuladd_bits
+  %m3 = xor i64 %m2, %minnum_bits
+  %m4 = xor i64 %m3, %maxnum_bits
+  %m7 = xor i64 %m4, %lrint64
+  %m8 = xor i64 %m7, %llrint
+  %m9 = xor i64 %m8, %lround64
+  %m10 = xor i64 %m9, %llround
+  ret i64 %m10
+}
+"#,
+    )
+    .expect("constrained floating math LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_float_math_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_float_math(double a, double b, int32_t e);
+
+int main(void) {
+    uint64_t a = vm_constrained_float_math(1.25, 2.75, 3);
+    uint64_t b = vm_constrained_float_math(2.0, 3.25, 4);
+    uint64_t c = vm_constrained_float_math(8.0, 1.5, 2);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained floating math C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &ir_source,
+        &harness,
+        "vm_virtualize_constrained_float_math_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_constrained_float_math.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_float_math");
+    for handler in [
+        "fpow", "fpowi", "ffma", "ffmuladd", "fminnum", "fmaxnum", "flrint", "fllrint", "flround", "fllround",
+    ] {
+        assert!(
+            dump.contains(&format!(": {handler} ")),
+            "constrained floating math intrinsic should lower through {handler} VM handler:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_constrained_float_math",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained floating math virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_float_math"));
+    assert!(ir.contains("handler.fpow"));
+    assert!(ir.contains("handler.fpowi"));
+    assert!(ir.contains("handler.ffma"));
+    assert!(ir.contains("handler.ffmuladd"));
+    assert!(ir.contains("handler.fminnum"));
+    assert!(ir.contains("handler.fmaxnum"));
+    assert!(ir.contains("handler.flrint"));
+    assert!(ir.contains("handler.fllrint"));
+    assert!(ir.contains("handler.flround"));
+    assert!(ir.contains("handler.fllround"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_vector_float_binary_math_match_baseline() {
+    ensure_plugin_built();
+
+    let virtualized_source = output_dir().join("vm_virtualize_constrained_vector_float_binary_math.input.ll");
+    std::fs::write(
+        &virtualized_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_binary_math'
+source_filename = "vm_virtualize_constrained_vector_float_binary_math.ll"
+
+declare <2 x double> @llvm.experimental.constrained.copysign.v2f64(<2 x double>, <2 x double>, metadata)
+declare <2 x double> @llvm.experimental.constrained.pow.v2f64(<2 x double>, <2 x double>, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.minnum.v2f64(<2 x double>, <2 x double>, metadata)
+declare <2 x double> @llvm.experimental.constrained.maxnum.v2f64(<2 x double>, <2 x double>, metadata)
+declare <2 x double> @llvm.experimental.constrained.minimum.v2f64(<2 x double>, <2 x double>, metadata)
+declare <2 x double> @llvm.experimental.constrained.maximum.v2f64(<2 x double>, <2 x double>, metadata)
+
+define i64 @vm_constrained_vector_float_binary_math(double %a, double %b, double %c, double %d) {
+entry:
+  %av0 = insertelement <2 x double> poison, double %a, i32 0
+  %av1 = insertelement <2 x double> %av0, double %b, i32 1
+  %bv0 = insertelement <2 x double> poison, double %c, i32 0
+  %bv1 = insertelement <2 x double> %bv0, double %d, i32 1
+  %copy = call <2 x double> @llvm.experimental.constrained.copysign.v2f64(<2 x double> %av1, <2 x double> %bv1, metadata !"fpexcept.ignore")
+  %pow = call <2 x double> @llvm.experimental.constrained.pow.v2f64(<2 x double> %av1, <2 x double> %bv1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %minnum = call <2 x double> @llvm.experimental.constrained.minnum.v2f64(<2 x double> %av1, <2 x double> %bv1, metadata !"fpexcept.ignore")
+  %maxnum = call <2 x double> @llvm.experimental.constrained.maxnum.v2f64(<2 x double> %av1, <2 x double> %bv1, metadata !"fpexcept.ignore")
+  %minimum = call <2 x double> @llvm.experimental.constrained.minimum.v2f64(<2 x double> %av1, <2 x double> %bv1, metadata !"fpexcept.ignore")
+  %maximum = call <2 x double> @llvm.experimental.constrained.maximum.v2f64(<2 x double> %av1, <2 x double> %bv1, metadata !"fpexcept.ignore")
+
+  %copy0 = extractelement <2 x double> %copy, i32 0
+  %copy1 = extractelement <2 x double> %copy, i32 1
+  %pow0 = extractelement <2 x double> %pow, i32 0
+  %pow1 = extractelement <2 x double> %pow, i32 1
+  %min0 = extractelement <2 x double> %minnum, i32 0
+  %min1 = extractelement <2 x double> %minnum, i32 1
+  %max0 = extractelement <2 x double> %maxnum, i32 0
+  %max1 = extractelement <2 x double> %maxnum, i32 1
+  %minimum0 = extractelement <2 x double> %minimum, i32 0
+  %minimum1 = extractelement <2 x double> %minimum, i32 1
+  %maximum0 = extractelement <2 x double> %maximum, i32 0
+  %maximum1 = extractelement <2 x double> %maximum, i32 1
+  %copy0b = bitcast double %copy0 to i64
+  %copy1b = bitcast double %copy1 to i64
+  %pow0b = bitcast double %pow0 to i64
+  %pow1b = bitcast double %pow1 to i64
+  %min0b = bitcast double %min0 to i64
+  %min1b = bitcast double %min1 to i64
+  %max0b = bitcast double %max0 to i64
+  %max1b = bitcast double %max1 to i64
+  %minimum0b = bitcast double %minimum0 to i64
+  %minimum1b = bitcast double %minimum1 to i64
+  %maximum0b = bitcast double %maximum0 to i64
+  %maximum1b = bitcast double %maximum1 to i64
+  %m0 = xor i64 %copy0b, %copy1b
+  %m1 = xor i64 %m0, %pow0b
+  %m2 = xor i64 %m1, %pow1b
+  %m3 = xor i64 %m2, %min0b
+  %m4 = xor i64 %m3, %min1b
+  %m5 = xor i64 %m4, %max0b
+  %m6 = xor i64 %m5, %max1b
+  %m7 = xor i64 %m6, %minimum0b
+  %m8 = xor i64 %m7, %minimum1b
+  %m9 = xor i64 %m8, %maximum0b
+  %result = xor i64 %m9, %maximum1b
+  ret i64 %result
+}
+"#,
+    )
+    .expect("constrained vector floating binary math LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_constrained_vector_float_binary_math.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_binary_math_baseline'
+source_filename = "vm_virtualize_constrained_vector_float_binary_math_baseline.ll"
+
+declare <2 x double> @llvm.copysign.v2f64(<2 x double>, <2 x double>)
+declare <2 x double> @llvm.pow.v2f64(<2 x double>, <2 x double>)
+declare <2 x double> @llvm.minnum.v2f64(<2 x double>, <2 x double>)
+declare <2 x double> @llvm.maxnum.v2f64(<2 x double>, <2 x double>)
+declare <2 x double> @llvm.minimum.v2f64(<2 x double>, <2 x double>)
+declare <2 x double> @llvm.maximum.v2f64(<2 x double>, <2 x double>)
+
+define i64 @vm_constrained_vector_float_binary_math(double %a, double %b, double %c, double %d) {
+entry:
+  %av0 = insertelement <2 x double> poison, double %a, i32 0
+  %av1 = insertelement <2 x double> %av0, double %b, i32 1
+  %bv0 = insertelement <2 x double> poison, double %c, i32 0
+  %bv1 = insertelement <2 x double> %bv0, double %d, i32 1
+  %copy = call <2 x double> @llvm.copysign.v2f64(<2 x double> %av1, <2 x double> %bv1)
+  %pow = call <2 x double> @llvm.pow.v2f64(<2 x double> %av1, <2 x double> %bv1)
+  %minnum = call <2 x double> @llvm.minnum.v2f64(<2 x double> %av1, <2 x double> %bv1)
+  %maxnum = call <2 x double> @llvm.maxnum.v2f64(<2 x double> %av1, <2 x double> %bv1)
+  %minimum = call <2 x double> @llvm.minimum.v2f64(<2 x double> %av1, <2 x double> %bv1)
+  %maximum = call <2 x double> @llvm.maximum.v2f64(<2 x double> %av1, <2 x double> %bv1)
+
+  %copy0 = extractelement <2 x double> %copy, i32 0
+  %copy1 = extractelement <2 x double> %copy, i32 1
+  %pow0 = extractelement <2 x double> %pow, i32 0
+  %pow1 = extractelement <2 x double> %pow, i32 1
+  %min0 = extractelement <2 x double> %minnum, i32 0
+  %min1 = extractelement <2 x double> %minnum, i32 1
+  %max0 = extractelement <2 x double> %maxnum, i32 0
+  %max1 = extractelement <2 x double> %maxnum, i32 1
+  %minimum0 = extractelement <2 x double> %minimum, i32 0
+  %minimum1 = extractelement <2 x double> %minimum, i32 1
+  %maximum0 = extractelement <2 x double> %maximum, i32 0
+  %maximum1 = extractelement <2 x double> %maximum, i32 1
+  %copy0b = bitcast double %copy0 to i64
+  %copy1b = bitcast double %copy1 to i64
+  %pow0b = bitcast double %pow0 to i64
+  %pow1b = bitcast double %pow1 to i64
+  %min0b = bitcast double %min0 to i64
+  %min1b = bitcast double %min1 to i64
+  %max0b = bitcast double %max0 to i64
+  %max1b = bitcast double %max1 to i64
+  %minimum0b = bitcast double %minimum0 to i64
+  %minimum1b = bitcast double %minimum1 to i64
+  %maximum0b = bitcast double %maximum0 to i64
+  %maximum1b = bitcast double %maximum1 to i64
+  %m0 = xor i64 %copy0b, %copy1b
+  %m1 = xor i64 %m0, %pow0b
+  %m2 = xor i64 %m1, %pow1b
+  %m3 = xor i64 %m2, %min0b
+  %m4 = xor i64 %m3, %min1b
+  %m5 = xor i64 %m4, %max0b
+  %m6 = xor i64 %m5, %max1b
+  %m7 = xor i64 %m6, %minimum0b
+  %m8 = xor i64 %m7, %minimum1b
+  %m9 = xor i64 %m8, %maximum0b
+  %result = xor i64 %m9, %maximum1b
+  ret i64 %result
+}
+"#,
+    )
+    .expect("constrained vector floating binary math baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_vector_float_binary_math_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_vector_float_binary_math(double a, double b, double c, double d);
+
+int main(void) {
+    uint64_t a = vm_constrained_vector_float_binary_math(2.0, 9.0, 3.0, -2.0);
+    uint64_t b = vm_constrained_vector_float_binary_math(1.25, 4.0, -5.0, 2.0);
+    uint64_t c = vm_constrained_vector_float_binary_math(8.0, 0.5, 1.5, -3.0);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained vector floating binary math C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_constrained_vector_float_binary_math_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &virtualized_source,
+        "vm_virtualize_constrained_vector_float_binary_math.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_vector_float_binary_math");
+    for handler in ["fcopysign", "fpow", "fminnum", "fmaxnum", "fminimum", "fmaximum"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "constrained vector floating binary math should lower each lane through {handler} VM handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_constrained_vector_float_binary_math",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained vector floating binary math virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_vector_float_binary_math"));
+    assert!(ir.contains("handler.fcopysign"));
+    assert!(ir.contains("handler.fpow"));
+    assert!(ir.contains("handler.fminnum"));
+    assert!(ir.contains("handler.fmaxnum"));
+    assert!(ir.contains("handler.fminimum"));
+    assert!(ir.contains("handler.fmaximum"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.copysign"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.pow"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.minnum"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.maxnum"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.minimum"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.maximum"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_vector_float_powi_ternary_math_match_baseline() {
+    ensure_plugin_built();
+
+    let virtualized_source = output_dir().join("vm_virtualize_constrained_vector_float_powi_ternary_math.input.ll");
+    std::fs::write(
+        &virtualized_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_powi_ternary_math'
+source_filename = "vm_virtualize_constrained_vector_float_powi_ternary_math.ll"
+
+declare <2 x double> @llvm.experimental.constrained.powi.v2f64.i32(<2 x double>, i32, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.fma.v2f64(<2 x double>, <2 x double>, <2 x double>, metadata, metadata)
+declare <2 x double> @llvm.experimental.constrained.fmuladd.v2f64(<2 x double>, <2 x double>, <2 x double>, metadata, metadata)
+
+define i64 @vm_constrained_vector_float_powi_ternary_math(double %a, double %b, double %c, double %d, double %e, double %f, i32 %p) {
+entry:
+  %av0 = insertelement <2 x double> poison, double %a, i32 0
+  %av1 = insertelement <2 x double> %av0, double %b, i32 1
+  %bv0 = insertelement <2 x double> poison, double %c, i32 0
+  %bv1 = insertelement <2 x double> %bv0, double %d, i32 1
+  %cv0 = insertelement <2 x double> poison, double %e, i32 0
+  %cv1 = insertelement <2 x double> %cv0, double %f, i32 1
+  %powi = call <2 x double> @llvm.experimental.constrained.powi.v2f64.i32(<2 x double> %av1, i32 %p, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %fma = call <2 x double> @llvm.experimental.constrained.fma.v2f64(<2 x double> %av1, <2 x double> %bv1, <2 x double> %cv1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+  %fmuladd = call <2 x double> @llvm.experimental.constrained.fmuladd.v2f64(<2 x double> %av1, <2 x double> %bv1, <2 x double> %cv1, metadata !"round.tonearest", metadata !"fpexcept.ignore")
+
+  %powi0 = extractelement <2 x double> %powi, i32 0
+  %powi1 = extractelement <2 x double> %powi, i32 1
+  %fma0 = extractelement <2 x double> %fma, i32 0
+  %fma1 = extractelement <2 x double> %fma, i32 1
+  %fmuladd0 = extractelement <2 x double> %fmuladd, i32 0
+  %fmuladd1 = extractelement <2 x double> %fmuladd, i32 1
+  %powi0b = bitcast double %powi0 to i64
+  %powi1b = bitcast double %powi1 to i64
+  %fma0b = bitcast double %fma0 to i64
+  %fma1b = bitcast double %fma1 to i64
+  %fmuladd0b = bitcast double %fmuladd0 to i64
+  %fmuladd1b = bitcast double %fmuladd1 to i64
+  %m0 = xor i64 %powi0b, %powi1b
+  %m1 = xor i64 %m0, %fma0b
+  %m2 = xor i64 %m1, %fma1b
+  %m3 = xor i64 %m2, %fmuladd0b
+  %result = xor i64 %m3, %fmuladd1b
+  ret i64 %result
+}
+"#,
+    )
+    .expect("constrained vector powi/ternary math LLVM IR fixture should be writable");
+
+    let baseline_source = output_dir().join("vm_virtualize_constrained_vector_float_powi_ternary_math.baseline.ll");
+    std::fs::write(
+        &baseline_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_vector_float_powi_ternary_math_baseline'
+source_filename = "vm_virtualize_constrained_vector_float_powi_ternary_math_baseline.ll"
+
+declare <2 x double> @llvm.powi.v2f64.i32(<2 x double>, i32)
+declare <2 x double> @llvm.fma.v2f64(<2 x double>, <2 x double>, <2 x double>)
+declare <2 x double> @llvm.fmuladd.v2f64(<2 x double>, <2 x double>, <2 x double>)
+
+define i64 @vm_constrained_vector_float_powi_ternary_math(double %a, double %b, double %c, double %d, double %e, double %f, i32 %p) {
+entry:
+  %av0 = insertelement <2 x double> poison, double %a, i32 0
+  %av1 = insertelement <2 x double> %av0, double %b, i32 1
+  %bv0 = insertelement <2 x double> poison, double %c, i32 0
+  %bv1 = insertelement <2 x double> %bv0, double %d, i32 1
+  %cv0 = insertelement <2 x double> poison, double %e, i32 0
+  %cv1 = insertelement <2 x double> %cv0, double %f, i32 1
+  %powi = call <2 x double> @llvm.powi.v2f64.i32(<2 x double> %av1, i32 %p)
+  %fma = call <2 x double> @llvm.fma.v2f64(<2 x double> %av1, <2 x double> %bv1, <2 x double> %cv1)
+  %fmuladd = call <2 x double> @llvm.fmuladd.v2f64(<2 x double> %av1, <2 x double> %bv1, <2 x double> %cv1)
+
+  %powi0 = extractelement <2 x double> %powi, i32 0
+  %powi1 = extractelement <2 x double> %powi, i32 1
+  %fma0 = extractelement <2 x double> %fma, i32 0
+  %fma1 = extractelement <2 x double> %fma, i32 1
+  %fmuladd0 = extractelement <2 x double> %fmuladd, i32 0
+  %fmuladd1 = extractelement <2 x double> %fmuladd, i32 1
+  %powi0b = bitcast double %powi0 to i64
+  %powi1b = bitcast double %powi1 to i64
+  %fma0b = bitcast double %fma0 to i64
+  %fma1b = bitcast double %fma1 to i64
+  %fmuladd0b = bitcast double %fmuladd0 to i64
+  %fmuladd1b = bitcast double %fmuladd1 to i64
+  %m0 = xor i64 %powi0b, %powi1b
+  %m1 = xor i64 %m0, %fma0b
+  %m2 = xor i64 %m1, %fma1b
+  %m3 = xor i64 %m2, %fmuladd0b
+  %result = xor i64 %m3, %fmuladd1b
+  ret i64 %result
+}
+"#,
+    )
+    .expect("constrained vector powi/ternary math baseline LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_constrained_vector_float_powi_ternary_math_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm_constrained_vector_float_powi_ternary_math(
+    double a, double b, double c, double d, double e, double f, int32_t p);
+
+int main(void) {
+    uint64_t a = vm_constrained_vector_float_powi_ternary_math(1.5, 2.0, -3.0, 4.0, 0.25, -0.5, 3);
+    uint64_t b = vm_constrained_vector_float_powi_ternary_math(-2.0, 0.5, 7.0, -1.25, 8.0, 2.5, -2);
+    uint64_t c = vm_constrained_vector_float_powi_ternary_math(4.0, 9.0, 0.75, -6.0, 1.5, 3.0, 0);
+    printf("%016llx %016llx %016llx %016llx\n",
+           (unsigned long long)a,
+           (unsigned long long)b,
+           (unsigned long long)c,
+           (unsigned long long)(a ^ b ^ c));
+    return 0;
+}
+"#,
+    )
+    .expect("constrained vector powi/ternary math C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness_and_args(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_constrained_vector_float_powi_ternary_math_baseline",
+        &["-lm"],
+    );
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &virtualized_source,
+        "vm_virtualize_constrained_vector_float_powi_ternary_math.ll",
+        "default<O0>",
+        config,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_constrained_vector_float_powi_ternary_math");
+    for handler in ["fpowi", "ffma", "ffmuladd"] {
+        assert!(
+            dump.matches(&format!(": {handler} ")).count() >= 2,
+            "constrained vector powi/ternary math should lower each lane through {handler} VM handlers:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness_and_args(
+        &virtualized_ir,
+        &harness,
+        "vm_virtualize_constrained_vector_float_powi_ternary_math",
+        &["-lm"],
+    );
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(virtualized_ir)
+        .expect("constrained vector powi/ternary math virtualized LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_constrained_vector_float_powi_ternary_math"));
+    assert!(ir.contains("handler.fpowi"));
+    assert!(ir.contains("handler.ffma"));
+    assert!(ir.contains("handler.ffmuladd"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.powi"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.fma"));
+    assert!(!ir.contains("call <2 x double> @llvm.experimental.constrained.fmuladd"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_constrained_float_metadata_safely_skips_without_blocking_module() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_constrained_float_metadata_skip.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_constrained_float_metadata_skip'
+source_filename = "vm_virtualize_constrained_float_metadata_skip.ll"
+
+declare double @llvm.experimental.constrained.fadd.f64(double, double, metadata, metadata)
+declare i1 @llvm.experimental.constrained.fcmp.f64(double, double, metadata, metadata)
+declare double @llvm.experimental.constrained.sitofp.f64.i32(i32, metadata, metadata)
+declare double @llvm.experimental.constrained.sqrt.f64(double, metadata, metadata)
+declare double @llvm.experimental.constrained.pow.f64(double, double, metadata, metadata)
+
+define i64 @vm_constrained_float_rounding_skip(double %a, double %b) {
+entry:
+  %r = call double @llvm.experimental.constrained.fadd.f64(double %a, double %b, metadata !"round.downward", metadata !"fpexcept.ignore")
+  %bits = bitcast double %r to i64
+  ret i64 %bits
+}
+
+define i64 @vm_constrained_float_compare_exception_skip(double %a, double %b) {
+entry:
+  %r = call i1 @llvm.experimental.constrained.fcmp.f64(double %a, double %b, metadata !"ogt", metadata !"fpexcept.maytrap")
+  %bits = zext i1 %r to i64
+  ret i64 %bits
+}
+
+define i64 @vm_constrained_float_cast_rounding_skip(i32 %x) {
+entry:
+  %r = call double @llvm.experimental.constrained.sitofp.f64.i32(i32 %x, metadata !"round.downward", metadata !"fpexcept.ignore")
+  %bits = bitcast double %r to i64
+  ret i64 %bits
+}
+
+define i64 @vm_constrained_float_unary_rounding_skip(double %x) {
+entry:
+  %r = call double @llvm.experimental.constrained.sqrt.f64(double %x, metadata !"round.downward", metadata !"fpexcept.ignore")
+  %bits = bitcast double %r to i64
+  ret i64 %bits
+}
+
+define i64 @vm_constrained_float_binary_rounding_skip(double %a, double %b) {
+entry:
+  %r = call double @llvm.experimental.constrained.pow.f64(double %a, double %b, metadata !"round.downward", metadata !"fpexcept.ignore")
+  %bits = bitcast double %r to i64
+  ret i64 %bits
+}
+
+define i64 @vm_integer_after_constrained_float_skip(i64 %x, i64 %y) {
+entry:
+  %a = add i64 %x, %y
+  %b = xor i64 %a, 1311768467463790320
+  ret i64 %b
+}
+"#,
+    )
+    .expect("constrained floating metadata safe-skip LLVM IR fixture should be writable");
+
+    let (ir_path, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_constrained_float_metadata_skip.ll",
+        "default<O0>",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let ir =
+        std::fs::read_to_string(ir_path).expect("constrained floating metadata safe-skip output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_constrained_float_rounding_skip"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_constrained_float_compare_exception_skip"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_constrained_float_cast_rounding_skip"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_constrained_float_unary_rounding_skip"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_constrained_float_binary_rounding_skip"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_after_constrained_float_skip"));
+    assert!(stderr.contains("skip function"));
+    assert!(stderr.contains("vm_constrained_float_rounding_skip"));
+    assert!(stderr.contains("vm_constrained_float_compare_exception_skip"));
+    assert!(stderr.contains("vm_constrained_float_cast_rounding_skip"));
+    assert!(stderr.contains("vm_constrained_float_unary_rounding_skip"));
+    assert!(stderr.contains("vm_constrained_float_binary_rounding_skip"));
+    assert!(stderr.contains("round.downward"));
+    assert!(stderr.contains("constrained floating binop rounding mode"));
+    assert!(stderr.contains("constrained floating cast rounding mode"));
+    assert!(stderr.contains("constrained floating unary rounding mode"));
+    assert!(stderr.contains("constrained floating binary rounding mode"));
+    assert!(stderr.contains("fpexcept.maytrap"));
+    assert!(stderr.contains("constrained floating compare exception behavior"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_non_half_float_double_float_safely_skips() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_non_float_double.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_non_float_double'
+source_filename = "vm_virtualize_non_float_double.ll"
+
+define fp128 @vm_fp128_skip(fp128 %a, fp128 %b) {
+entry:
+  %r = fadd fp128 %a, %b
+  ret fp128 %r
+}
+
+define bfloat @vm_bfloat_skip(bfloat %a, bfloat %b) {
+entry:
+  %r = fadd bfloat %a, %b
+  ret bfloat %r
+}
+
+define i32 @vm_integer_after_fp128_skip(i32 %x, i32 %y) {
+entry:
+  %a = add i32 %x, %y
+  %b = xor i32 %a, 85
+  ret i32 %b
+}
+"#,
+    )
+    .expect("non-float/double safe-skip LLVM IR fixture should be writable");
+
+    let (ir_path, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_non_float_double.ll", vm_virtualize_config());
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let ir = std::fs::read_to_string(ir_path).expect("non-float/double virtualized LLVM IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_fp128_skip"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_bfloat_skip"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_after_fp128_skip"));
+    assert!(stderr.contains("skip function"));
+    assert!(stderr.contains("vm_fp128_skip"));
+    assert!(stderr.contains("vm_bfloat_skip"));
+    assert!(stderr.contains("unsupported floating point type kind"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_non_integral_pointer_address_space_safely_skips_without_blocking_module() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_non_integral_pointer_skip.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_non_integral_pointer_skip'
+source_filename = "vm_virtualize_non_integral_pointer_skip.ll"
+target datalayout = "e-p:64:64-p1:64:64-ni:1"
+
+define i64 @vm_non_integral_pointer_param_skip(ptr addrspace(1) %p, i64 %salt) {
+entry:
+  %bits = ptrtoint ptr addrspace(1) %p to i64
+  %ret = xor i64 %bits, %salt
+  ret i64 %ret
+}
+
+define i64 @vm_integer_after_non_integral_pointer_skip(i64 %x, i64 %y) {
+entry:
+  %a = add i64 %x, %y
+  %b = xor i64 %a, 3735928559
+  ret i64 %b
+}
+"#,
+    )
+    .expect("non-integral pointer safe-skip LLVM IR fixture should be writable");
+
+    let (ir_path, output) = optimize_ir_with_plugin_debug(
+        &ir_source,
+        "vm_virtualize_non_integral_pointer_skip.ll",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let ir = std::fs::read_to_string(ir_path).expect("non-integral pointer safe-skip output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_non_integral_pointer_param_skip"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_after_non_integral_pointer_skip"));
+    assert!(stderr.contains("skip function"));
+    assert!(stderr.contains("vm_non_integral_pointer_param_skip"));
+    assert!(stderr.contains("non-integral pointer address space 1"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_vp_non_integral_pointer_cast_safely_skips_without_blocking_module() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_vp_non_integral_pointer_skip.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_vp_non_integral_pointer_skip'
+source_filename = "vm_virtualize_vp_non_integral_pointer_skip.ll"
+target datalayout = "e-p:64:64-p1:64:64-ni:1"
+
+declare <2 x ptr addrspace(1)> @llvm.vp.inttoptr.v2p1.v2i64(<2 x i64>, <2 x i1>, i32)
+
+define i64 @vm_vp_non_integral_pointer_cast_skip(i64 %a, i64 %b) {
+entry:
+  %v0 = insertelement <2 x i64> poison, i64 %a, i32 0
+  %v1 = insertelement <2 x i64> %v0, i64 %b, i32 1
+  %ptrs = call <2 x ptr addrspace(1)> @llvm.vp.inttoptr.v2p1.v2i64(<2 x i64> %v1, <2 x i1> <i1 true, i1 true>, i32 2)
+  %p0 = extractelement <2 x ptr addrspace(1)> %ptrs, i32 0
+  %bits = ptrtoint ptr addrspace(1) %p0 to i64
+  ret i64 %bits
+}
+
+define i64 @vm_integer_after_vp_non_integral_pointer_skip(i64 %x, i64 %y) {
+entry:
+  %a = add i64 %x, %y
+  %b = xor i64 %a, 3405691582
+  ret i64 %b
+}
+"#,
+    )
+    .expect("VP non-integral pointer safe-skip LLVM IR fixture should be writable");
+
+    let (ir_path, output) = optimize_ir_with_plugin_debug(
+        &ir_source,
+        "vm_virtualize_vp_non_integral_pointer_skip.ll",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let ir = std::fs::read_to_string(ir_path).expect("VP non-integral pointer safe-skip output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_vp_non_integral_pointer_cast_skip"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_after_vp_non_integral_pointer_skip"));
+    assert!(stderr.contains("skip function"));
+    assert!(stderr.contains("vm_vp_non_integral_pointer_cast_skip"));
+    assert!(stderr.contains("non-integral pointer address space 1"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_fixed_vector_function_abi_matches_baseline() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_fixed_vector_function_abi.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_fixed_vector_function_abi'
+source_filename = "vm_virtualize_fixed_vector_function_abi.ll"
+
+@fmt = private unnamed_addr constant [4 x i8] c"%d\0A\00"
+declare i32 @printf(ptr, ...)
+
+define <2 x i32> @vm_vector_abi(<2 x i32> %lhs, <2 x i32> %rhs, i32 %salt) #0 {
+entry:
+  %sum = add <2 x i32> %lhs, %rhs
+  %lane0 = extractelement <2 x i32> %sum, i32 0
+  %lane1 = extractelement <2 x i32> %sum, i32 1
+  %mixed0 = xor i32 %lane0, %salt
+  %mixed1 = sub i32 %lane1, %salt
+  %out0 = insertelement <2 x i32> poison, i32 %mixed0, i32 0
+  %out1 = insertelement <2 x i32> %out0, i32 %mixed1, i32 1
+  ret <2 x i32> %out1
+}
+
+define i32 @main() {
+entry:
+  %a0 = insertelement <2 x i32> poison, i32 7, i32 0
+  %a1 = insertelement <2 x i32> %a0, i32 -11, i32 1
+  %b0 = insertelement <2 x i32> poison, i32 1234, i32 0
+  %b1 = insertelement <2 x i32> %b0, i32 55, i32 1
+  %r0 = call <2 x i32> @vm_vector_abi(<2 x i32> %a1, <2 x i32> %b1, i32 99)
+  %r00 = extractelement <2 x i32> %r0, i32 0
+  %r01 = extractelement <2 x i32> %r0, i32 1
+
+  %c0 = insertelement <2 x i32> poison, i32 -71, i32 0
+  %c1 = insertelement <2 x i32> %c0, i32 2048, i32 1
+  %d0 = insertelement <2 x i32> poison, i32 19, i32 0
+  %d1 = insertelement <2 x i32> %d0, i32 -4096, i32 1
+  %r1 = call <2 x i32> @vm_vector_abi(<2 x i32> %c1, <2 x i32> %d1, i32 -17)
+  %r10 = extractelement <2 x i32> %r1, i32 0
+  %r11 = extractelement <2 x i32> %r1, i32 1
+
+  %m0 = xor i32 %r00, %r01
+  %m1 = xor i32 %m0, %r10
+  %acc = xor i32 %m1, %r11
+  %printed = call i32 (ptr, ...) @printf(ptr @fmt, i32 %acc)
+  ret i32 0
+}
+
+attributes #0 = { noinline optnone }
+"#,
+    )
+    .expect("fixed vector ABI LLVM IR fixture should be writable");
+
+    let baseline = compile_ir_binary(&ir_source, "vm_virtualize_fixed_vector_function_abi_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (ir_path, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_fixed_vector_function_abi.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    let dump = bytecode_dump_for_function(&stderr, "vm_vector_abi");
+    assert!(
+        dump.matches(": iadd ").count() >= 2,
+        "fixed vector ABI function should lower lane-wise vector add through VM handlers:\n{dump}"
+    );
+    assert!(
+        !stderr.contains("vector returns are not supported by vm_virtualize function ABI")
+            && !stderr.contains("vector parameters are not supported by vm_virtualize function ABI"),
+        "fixed vector function ABI should no longer safe-skip:\n{stderr}"
+    );
+
+    let virtualized = compile_ir_binary(&ir_path, "vm_virtualize_fixed_vector_function_abi");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir = std::fs::read_to_string(ir_path).expect("fixed vector ABI output IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_vector_abi"));
+    assert!(ir.contains("handler.iadd"));
+    assert!(!ir.contains(".amice.vm.original.vm_vector_abi"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_stack_introspection_intrinsics_safely_skip_without_blocking_module() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_stack_introspection_skip.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_stack_introspection_skip'
+source_filename = "vm_virtualize_stack_introspection_skip.ll"
+
+declare ptr @llvm.returnaddress(i32 immarg)
+declare ptr @llvm.frameaddress.p0(i32 immarg)
+
+define i64 @vm_returnaddress_skip(i64 %x) {
+entry:
+  %ra = call ptr @llvm.returnaddress(i32 0)
+  %bits = ptrtoint ptr %ra to i64
+  %ret = xor i64 %bits, %x
+  ret i64 %ret
+}
+
+define i64 @vm_frameaddress_skip(i64 %x) {
+entry:
+  %fa = call ptr @llvm.frameaddress.p0(i32 0)
+  %bits = ptrtoint ptr %fa to i64
+  %ret = add i64 %bits, %x
+  ret i64 %ret
+}
+
+define i64 @vm_integer_after_stack_introspection_skip(i64 %x, i64 %y) {
+entry:
+  %a = add i64 %x, %y
+  %b = xor i64 %a, 3405691582
+  ret i64 %b
+}
+"#,
+    )
+    .expect("stack introspection safe-skip LLVM IR fixture should be writable");
+
+    let (ir_path, output) = optimize_ir_with_plugin_debug(
+        &ir_source,
+        "vm_virtualize_stack_introspection_skip.ll",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let ir = std::fs::read_to_string(ir_path).expect("stack introspection safe-skip output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_returnaddress_skip"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_frameaddress_skip"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_after_stack_introspection_skip"));
+    assert!(stderr.contains("skip function"));
+    assert!(stderr.contains("vm_returnaddress_skip"));
+    assert!(stderr.contains("llvm.returnaddress is stack introspection and is not supported by vm_virtualize"));
+    assert!(stderr.contains("vm_frameaddress_skip"));
+    assert!(stderr.contains("llvm.frameaddress is stack introspection and is not supported by vm_virtualize"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_target_register_intrinsics_safely_skip_without_blocking_module() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_target_register_skip.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_target_register_skip'
+source_filename = "vm_virtualize_target_register_skip.ll"
+
+!0 = !{!"rsp"}
+
+declare i64 @llvm.read_register.i64(metadata)
+declare void @llvm.write_register.i64(metadata, i64)
+
+define i64 @vm_read_register_skip(i64 %x) {
+entry:
+  %r = call i64 @llvm.read_register.i64(metadata !0)
+  %ret = xor i64 %r, %x
+  ret i64 %ret
+}
+
+define void @vm_write_register_skip(i64 %x) {
+entry:
+  call void @llvm.write_register.i64(metadata !0, i64 %x)
+  ret void
+}
+
+define i64 @vm_integer_after_target_register_skip(i64 %x, i64 %y) {
+entry:
+  %a = mul i64 %x, 17
+  %b = add i64 %a, %y
+  ret i64 %b
+}
+"#,
+    )
+    .expect("target-register safe-skip LLVM IR fixture should be writable");
+
+    let (ir_path, output) = optimize_ir_with_plugin_debug(
+        &ir_source,
+        "vm_virtualize_target_register_skip.ll",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let ir = std::fs::read_to_string(ir_path).expect("target-register safe-skip output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_read_register_skip"));
+    assert!(!ir.contains(".amice.vm.bytecode.vm_write_register_skip"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_after_target_register_skip"));
+    assert!(stderr.contains("skip function"));
+    assert!(stderr.contains("vm_read_register_skip"));
+    assert!(stderr.contains("vm_write_register_skip"));
+    assert!(stderr.contains("LLVM target register intrinsics are not supported by vm_virtualize"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_target_specific_intrinsics_safely_skip_without_blocking_module() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_target_specific_intrinsic_skip.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_target_specific_intrinsic_skip'
+source_filename = "vm_virtualize_target_specific_intrinsic_skip.ll"
+
+declare i64 @llvm.x86.rdtsc()
+
+define i64 @vm_x86_intrinsic_skip(i64 %x) {
+entry:
+  %t = call i64 @llvm.x86.rdtsc()
+  %ret = xor i64 %t, %x
+  ret i64 %ret
+}
+
+define i64 @vm_integer_after_target_specific_intrinsic_skip(i64 %x, i64 %y) {
+entry:
+  %a = shl i64 %x, 3
+  %b = xor i64 %a, %y
+  ret i64 %b
+}
+"#,
+    )
+    .expect("target-specific intrinsic safe-skip LLVM IR fixture should be writable");
+
+    let (ir_path, output) = optimize_ir_with_plugin_debug(
+        &ir_source,
+        "vm_virtualize_target_specific_intrinsic_skip.ll",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let ir =
+        std::fs::read_to_string(ir_path).expect("target-specific intrinsic safe-skip output IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_x86_intrinsic_skip"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_after_target_specific_intrinsic_skip"));
+    assert!(stderr.contains("skip function"));
+    assert!(stderr.contains("vm_x86_intrinsic_skip"));
+    assert!(stderr.contains("LLVM target-specific intrinsics are not supported by vm_virtualize"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_scalable_vector_safely_skips_without_blocking_module() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm_virtualize_scalable_vector_skip.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_scalable_vector_skip'
+source_filename = "vm_virtualize_scalable_vector_skip.ll"
+
+define i32 @vm_scalable_vector_skip(i32 %x) {
+entry:
+  %vec = insertelement <vscale x 4 x i32> poison, i32 %x, i64 0
+  %sum = add <vscale x 4 x i32> %vec, %vec
+  %lane = extractelement <vscale x 4 x i32> %sum, i64 0
+  ret i32 %lane
+}
+
+define i32 @vm_integer_after_scalable_vector_skip(i32 %x, i32 %y) {
+entry:
+  %a = add i32 %x, %y
+  %b = xor i32 %a, 170
+  ret i32 %b
+}
+"#,
+    )
+    .expect("scalable vector safe-skip LLVM IR fixture should be writable");
+
+    let (ir_path, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_scalable_vector_skip.ll",
+        "default<O0>",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let ir = std::fs::read_to_string(ir_path).expect("scalable vector safe-skip LLVM IR should be readable");
+    assert!(!ir.contains(".amice.vm.bytecode.vm_scalable_vector_skip"));
+    assert!(ir.contains(".amice.vm.bytecode.vm_integer_after_scalable_vector_skip"));
+    assert!(stderr.contains("skip function"));
+    assert!(stderr.contains("vm_scalable_vector_skip"));
+    assert!(stderr.contains("scalable vector values are not supported by vm_virtualize"));
 }
 
 #[test]

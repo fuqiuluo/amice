@@ -11,11 +11,12 @@
 //! - 当 `q.lowering = disabled` 时，ABI、lowering 或 ISA semantic 中的 q 依赖都是硬错误。
 //! - lowering action 必须在 `emit`/`bind` 消费值前先定义这些值。
 
+use crate::HOST_VM_MAX_ARGS;
 use crate::abi::{NativeCallPolicy, VmRegister};
 use crate::isa::{
-    AtomicRmwOp, BinOp, CastOp, CounterKind, FloatBinOp, FloatCastOp, FloatTernaryOp, FloatUnaryOp, HandlerSemantic,
-    InstructionDesc, IntOverflowOp, IntTernaryOp, IntUnaryOp, OperandDesc, OperandKind, SUPPORTED_DECODED_WIDTHS,
-    SuperOp,
+    AtomicRmwOp, BinOp, CastOp, CounterKind, FloatBinOp, FloatCastOp, FloatIntBinOp, FloatTernaryOp, FloatUnaryOp,
+    FpStateKind, HandlerSemantic, InstructionDesc, IntOverflowOp, IntTernaryOp, IntUnaryOp, OperandDesc, OperandKind,
+    SUPPORTED_DECODED_WIDTHS, SuperOp,
 };
 use crate::lowering::{NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS};
 use crate::profile::{
@@ -23,7 +24,36 @@ use crate::profile::{
     REQUIRED_LOWERING_MATCHES, RelocBase, RelocWidth, RuntimeScope, SegmentMode,
 };
 use crate::runtime::{DispatchStrategy, HandlerClonePolicy, WideRegisterPolicy};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+const SUPPORTED_SUPER_FUSIONS: &[(SuperOp, &str)] = &[
+    (SuperOp::AddXor, "super.iadd_xor"),
+    (SuperOp::IcmpBrIf, "super.icmp_br_if"),
+    (SuperOp::GepLoad, "super.gep_load"),
+    (SuperOp::LoadAdd, "super.load_iadd"),
+    (SuperOp::LoadMul, "super.load_imul"),
+    (SuperOp::LoadUDiv, "super.load_iudiv"),
+    (SuperOp::LoadSDiv, "super.load_isdiv"),
+    (SuperOp::LoadURem, "super.load_iurem"),
+    (SuperOp::LoadSRem, "super.load_isrem"),
+    (SuperOp::LoadShl, "super.load_ishl"),
+    (SuperOp::LoadLShr, "super.load_ilshr"),
+    (SuperOp::LoadAShr, "super.load_iashr"),
+    (SuperOp::LoadSMax, "super.load_ismax"),
+    (SuperOp::LoadSMin, "super.load_ismin"),
+    (SuperOp::LoadUMax, "super.load_iumax"),
+    (SuperOp::LoadUMin, "super.load_iumin"),
+    (SuperOp::LoadUAddSat, "super.load_iuadd_sat"),
+    (SuperOp::LoadUSubSat, "super.load_iusub_sat"),
+    (SuperOp::LoadSAddSat, "super.load_isadd_sat"),
+    (SuperOp::LoadSSubSat, "super.load_issub_sat"),
+    (SuperOp::LoadUShlSat, "super.load_iushl_sat"),
+    (SuperOp::LoadSShlSat, "super.load_isshl_sat"),
+    (SuperOp::LoadAnd, "super.load_iand"),
+    (SuperOp::LoadOr, "super.load_ior"),
+    (SuperOp::LoadSub, "super.load_isub"),
+    (SuperOp::LoadXor, "super.load_ixor"),
+];
 
 /// 校验 VMP runtime 所需的 profile package 不变量。
 ///
@@ -84,11 +114,29 @@ pub fn verify_profile(profile: &ProfilePackage) -> Result<(), ProfileError> {
         }
     }
 
-    if !profile.isa.has_unique_opcodes() {
-        return Err(ProfileError::Invalid("ISA opcodes must be unique".to_owned()));
-    }
+    verify_instruction_identity(profile)?;
 
+    verify_instruction_effects(profile)?;
+    verify_instruction_operands(profile)?;
+    verify_instruction_record_widths(profile)?;
+    verify_required_isa(profile)?;
+    verify_lowering_rules(profile)?;
+    verify_bytecode(profile)?;
+    verify_decoder_steps(&profile.decoder.steps)?;
+
+    Ok(())
+}
+
+fn verify_instruction_identity(profile: &ProfilePackage) -> Result<(), ProfileError> {
     let mut names = HashSet::with_capacity(profile.isa.instructions.len());
+    let alias_count = profile
+        .isa
+        .instructions
+        .iter()
+        .map(|instruction| instruction.opcodes().len())
+        .sum();
+    let mut opcodes = HashMap::with_capacity(alias_count);
+
     for instruction in &profile.isa.instructions {
         if instruction.opcodes().is_empty() {
             return Err(ProfileError::Invalid(format!(
@@ -102,15 +150,23 @@ pub fn verify_profile(profile: &ProfilePackage) -> Result<(), ProfileError> {
                 instruction.name
             )));
         }
-    }
 
-    verify_instruction_effects(profile)?;
-    verify_instruction_operands(profile)?;
-    verify_instruction_record_widths(profile)?;
-    verify_required_isa(profile)?;
-    verify_lowering_rules(profile)?;
-    verify_bytecode(profile)?;
-    verify_decoder_steps(&profile.decoder.steps)?;
+        let mut local_opcodes = HashSet::with_capacity(instruction.opcodes().len());
+        for opcode in instruction.opcodes() {
+            if !local_opcodes.insert(*opcode) {
+                return Err(ProfileError::Invalid(format!(
+                    "ISA instruction {} declares opcode alias {opcode:#x} more than once",
+                    instruction.name
+                )));
+            }
+            if let Some(previous) = opcodes.insert(*opcode, instruction.name.as_str()) {
+                return Err(ProfileError::Invalid(format!(
+                    "ISA opcode alias {opcode:#x} is used by both {previous} and {}",
+                    instruction.name
+                )));
+            }
+        }
+    }
 
     Ok(())
 }
@@ -227,7 +283,8 @@ fn worst_case_bitpacked_operand_len(operand: &OperandDesc) -> Result<usize, Prof
 fn immediate_type_bits(value_type: &str) -> Result<usize, ProfileError> {
     match value_type {
         "i1" | "u1" => Ok(1),
-        "i8" | "u8" => Ok(7),
+        "i7" | "u7" => Ok(7),
+        "i8" | "u8" => Ok(8),
         "i16" | "u16" => Ok(16),
         "i32" | "u32" => Ok(32),
         "i64" | "u64" | "ptr" | "usize" | "label" | "const_pool_index" => Ok(64),
@@ -274,10 +331,78 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
         Super(crate::isa::SuperOp::LoadAdd) => {
             operands([("dst", VReg), ("ptr", VReg), ("addend", VReg), ("width", Imm)])
         },
+        Super(crate::isa::SuperOp::LoadMul) => {
+            operands([("dst", VReg), ("ptr", VReg), ("factor", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadUDiv) => {
+            operands([("dst", VReg), ("ptr", VReg), ("divisor", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadSDiv) => {
+            operands([("dst", VReg), ("ptr", VReg), ("divisor", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadURem) => {
+            operands([("dst", VReg), ("ptr", VReg), ("divisor", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadSRem) => {
+            operands([("dst", VReg), ("ptr", VReg), ("divisor", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadShl) => {
+            operands([("dst", VReg), ("ptr", VReg), ("shift", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadLShr) => {
+            operands([("dst", VReg), ("ptr", VReg), ("shift", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadAShr) => {
+            operands([("dst", VReg), ("ptr", VReg), ("shift", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadSMax) => operands([("dst", VReg), ("ptr", VReg), ("rhs", VReg), ("width", Imm)]),
+        Super(crate::isa::SuperOp::LoadSMin) => operands([("dst", VReg), ("ptr", VReg), ("rhs", VReg), ("width", Imm)]),
+        Super(crate::isa::SuperOp::LoadUMax) => operands([("dst", VReg), ("ptr", VReg), ("rhs", VReg), ("width", Imm)]),
+        Super(crate::isa::SuperOp::LoadUMin) => operands([("dst", VReg), ("ptr", VReg), ("rhs", VReg), ("width", Imm)]),
+        Super(crate::isa::SuperOp::LoadUAddSat) => {
+            operands([("dst", VReg), ("ptr", VReg), ("rhs", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadUSubSat) => {
+            operands([("dst", VReg), ("ptr", VReg), ("rhs", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadSAddSat) => {
+            operands([("dst", VReg), ("ptr", VReg), ("rhs", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadSSubSat) => {
+            operands([("dst", VReg), ("ptr", VReg), ("rhs", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadUShlSat) => {
+            operands([("dst", VReg), ("ptr", VReg), ("rhs", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadSShlSat) => {
+            operands([("dst", VReg), ("ptr", VReg), ("rhs", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadAnd) => {
+            operands([("dst", VReg), ("ptr", VReg), ("and_rhs", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadOr) => {
+            operands([("dst", VReg), ("ptr", VReg), ("or_rhs", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadSub) => {
+            operands([("dst", VReg), ("ptr", VReg), ("subtrahend", VReg), ("width", Imm)])
+        },
+        Super(crate::isa::SuperOp::LoadXor) => {
+            operands([("dst", VReg), ("ptr", VReg), ("xor_rhs", VReg), ("width", Imm)])
+        },
         ReadCounter(_) => operands([("dst", VReg), ("width", Imm)]),
+        ReadVScale => operands([("dst", VReg), ("width", Imm)]),
+        ReadRounding => operands([("dst", VReg), ("width", Imm)]),
+        ReadFltRounds => operands([("dst", VReg), ("width", Imm)]),
+        WriteRounding => operands([("src", VReg), ("width", Imm)]),
+        ReadFpState(_) => operands([("dst", VReg), ("width", Imm)]),
+        WriteFpState(_) => operands([("src", VReg), ("width", Imm)]),
+        ResetFpState(_) => Vec::new(),
+        ReadThreadPointer => operands([("dst", VReg), ("width", Imm)]),
         StackSave => operands([("dst", VReg)]),
         StackRestore => operands([("ptr", VReg)]),
         ClearCache => operands([("start", VReg), ("end", VReg)]),
+        PseudoProbe => operands([("guid", Imm), ("index", Imm), ("probe_type", Imm), ("attributes", Imm)]),
+        Prefetch => operands([("ptr", VReg), ("rw", Imm), ("locality", Imm), ("cache", Imm)]),
         Mov => operands([("dst", VReg), ("src", VReg), ("width", Imm)]),
         Bin(_) => operands([("dst", VReg), ("lhs", VReg), ("rhs", VReg), ("width", Imm)]),
         IntUnary(_) => operands([("dst", VReg), ("src", VReg), ("width", Imm)]),
@@ -295,7 +420,7 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
             ("rhs", VReg),
             ("width", Imm),
         ]),
-        FloatBin(_) => operands([("dst", VReg), ("lhs", VReg), ("rhs", VReg), ("width", Imm)]),
+        FloatBin(_) | FloatIntBin(_) => operands([("dst", VReg), ("lhs", VReg), ("rhs", VReg), ("width", Imm)]),
         FloatUnary(_) => operands([("dst", VReg), ("src", VReg), ("width", Imm)]),
         FloatTernary(_) => operands([
             ("dst", VReg),
@@ -305,6 +430,7 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
             ("width", Imm),
         ]),
         FloatCast(_) => operands([("dst", VReg), ("src", VReg), ("from_width", Imm), ("to_width", Imm)]),
+        FloatRoundToInt(_) => operands([("dst", VReg), ("src", VReg), ("from_width", Imm), ("to_width", Imm)]),
         FloatClass => operands([("dst", VReg), ("src", VReg), ("mask", Imm), ("width", Imm)]),
         Icmp => operands([
             ("pred", Imm),
@@ -333,16 +459,41 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
         VolatileMemcpyDynamic => operands([("dst", VReg), ("src", VReg), ("len", VReg)]),
         VolatileMemmoveDynamic => operands([("dst", VReg), ("src", VReg), ("len", VReg)]),
         VolatileMemsetDynamic => operands([("dst", VReg), ("value", VReg), ("len", VReg)]),
-        AtomicLoad => operands([("dst", VReg), ("ptr", VReg), ("width", Imm), ("ordering", Imm)]),
-        AtomicStore => operands([("src", VReg), ("ptr", VReg), ("width", Imm), ("ordering", Imm)]),
-        VolatileAtomicLoad => operands([("dst", VReg), ("ptr", VReg), ("width", Imm), ("ordering", Imm)]),
-        VolatileAtomicStore => operands([("src", VReg), ("ptr", VReg), ("width", Imm), ("ordering", Imm)]),
+        AtomicLoad => operands([
+            ("dst", VReg),
+            ("ptr", VReg),
+            ("width", Imm),
+            ("ordering", Imm),
+            ("sync_scope", Imm),
+        ]),
+        AtomicStore => operands([
+            ("src", VReg),
+            ("ptr", VReg),
+            ("width", Imm),
+            ("ordering", Imm),
+            ("sync_scope", Imm),
+        ]),
+        VolatileAtomicLoad => operands([
+            ("dst", VReg),
+            ("ptr", VReg),
+            ("width", Imm),
+            ("ordering", Imm),
+            ("sync_scope", Imm),
+        ]),
+        VolatileAtomicStore => operands([
+            ("src", VReg),
+            ("ptr", VReg),
+            ("width", Imm),
+            ("ordering", Imm),
+            ("sync_scope", Imm),
+        ]),
         AtomicRmw(_) | VolatileAtomicRmw(_) => operands([
             ("dst", VReg),
             ("ptr", VReg),
             ("src", VReg),
             ("width", Imm),
             ("ordering", Imm),
+            ("sync_scope", Imm),
         ]),
         CmpXchg => operands([
             ("old", VReg),
@@ -353,6 +504,7 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
             ("width", Imm),
             ("success_ordering", Imm),
             ("failure_ordering", Imm),
+            ("sync_scope", Imm),
         ]),
         VolatileCmpXchg => operands([
             ("old", VReg),
@@ -363,8 +515,9 @@ fn expected_operands(semantic: &HandlerSemantic) -> Vec<(String, OperandKind)> {
             ("width", Imm),
             ("success_ordering", Imm),
             ("failure_ordering", Imm),
+            ("sync_scope", Imm),
         ]),
-        Fence => operands([("ordering", Imm)]),
+        Fence => operands([("ordering", Imm), ("sync_scope", Imm)]),
         Gep => operands([("dst", VReg), ("base", VReg), ("offset", Imm)]),
         CallNative => call_native_operand_contract(),
         SideEffect => Vec::new(),
@@ -433,13 +586,13 @@ fn verify_instruction_effects(profile: &ProfilePackage) -> Result<(), ProfileErr
                 instruction.name, instruction.effect.native_call, expected.native_call
             )));
         }
-        verify_register_effect_subset(
+        verify_register_effect_set(
             &instruction.name,
             "reads",
             &expected.register_reads,
             &instruction.effect.register_reads,
         )?;
-        verify_register_effect_subset(
+        verify_register_effect_set(
             &instruction.name,
             "writes",
             &expected.register_writes,
@@ -450,7 +603,7 @@ fn verify_instruction_effects(profile: &ProfilePackage) -> Result<(), ProfileErr
     Ok(())
 }
 
-fn verify_register_effect_subset(
+fn verify_register_effect_set(
     instruction: &str,
     kind: &str,
     expected: &[String],
@@ -639,10 +792,10 @@ fn verify_abi(profile: &ProfilePackage) -> Result<(), ProfileError> {
             )));
         }
     }
-    if profile.abi.integer_args.len() > 8 {
+    if profile.abi.integer_args.len() > HOST_VM_MAX_ARGS {
         return Err(ProfileError::Invalid(format!(
-            "abi.vm maps {} integer arguments but the current native wrapper supports at most 8",
-            profile.abi.integer_args.len()
+            "abi.vm maps {} integer arguments but the current native wrapper supports at most {HOST_VM_MAX_ARGS}",
+            profile.abi.integer_args.len(),
         )));
     }
     verify_abi_register_list("abi.vm vm_call call_args", &profile.abi.vm_call_args)?;
@@ -777,16 +930,19 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
     use CastOp::*;
     use FloatBinOp::{
         Add as FAdd, CopySign as FCopySign, Div as FDiv, MaxNum as FMaxNum, Maximum as FMaximum, MinNum as FMinNum,
-        Minimum as FMinimum, Mul as FMul, Rem as FRem, Sub as FSub,
+        Minimum as FMinimum, Mul as FMul, Pow as FPow, Rem as FRem, Sub as FSub,
     };
     use FloatCastOp::{
-        FloatExt as FFPExt, FloatToSignedInt as FFPToSI, FloatToUnsignedInt as FFPToUI, FloatTrunc as FFPTrunc,
+        FloatExt as FFPExt, FloatToSignedInt as FFPToSI, FloatToSignedIntSat as FFPToSISat,
+        FloatToUnsignedInt as FFPToUI, FloatToUnsignedIntSat as FFPToUISat, FloatTrunc as FFPTrunc,
         SignedIntToFloat as FSIToFP, UnsignedIntToFloat as FUIToFP,
     };
+    use FloatIntBinOp::PowI as FPowI;
     use FloatTernaryOp::{Fma as FFma, MulAdd as FFMulAdd};
     use FloatUnaryOp::{
-        Canonicalize as FCanonicalize, Ceil as FCeil, Floor as FFloor, NearbyInt as FNearbyInt, Neg as FNeg,
-        Rint as FRint, Round as FRound, RoundEven as FRoundEven, Sqrt as FSqrt, Trunc as FTrunc,
+        Canonicalize as FCanonicalize, Ceil as FCeil, Cos as FCos, Exp as FExp, Exp2 as FExp2, Floor as FFloor,
+        Log as FLog, Log2 as FLog2, Log10 as FLog10, NearbyInt as FNearbyInt, Neg as FNeg, Rint as FRint,
+        Round as FRound, RoundEven as FRoundEven, Sin as FSin, Sqrt as FSqrt, Trunc as FTrunc,
     };
     use HandlerSemantic::*;
     use IntOverflowOp::{
@@ -800,9 +956,22 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (ConstLoad, 3, "const_load"),
         (ReadCounter(CounterKind::Cycle), 2, "read_cycle"),
         (ReadCounter(CounterKind::Steady), 2, "read_steady"),
+        (ReadVScale, 2, "read_vscale"),
+        (ReadRounding, 2, "read_rounding"),
+        (ReadFltRounds, 2, "read_flt_rounds"),
+        (WriteRounding, 2, "write_rounding"),
+        (ReadFpState(FpStateKind::Env), 2, "read_fpenv"),
+        (WriteFpState(FpStateKind::Env), 2, "write_fpenv"),
+        (ResetFpState(FpStateKind::Env), 0, "reset_fpenv"),
+        (ReadFpState(FpStateKind::Mode), 2, "read_fpmode"),
+        (WriteFpState(FpStateKind::Mode), 2, "write_fpmode"),
+        (ResetFpState(FpStateKind::Mode), 0, "reset_fpmode"),
+        (ReadThreadPointer, 2, "read_thread_pointer"),
         (StackSave, 1, "stacksave"),
         (StackRestore, 1, "stackrestore"),
         (ClearCache, 2, "clear_cache"),
+        (PseudoProbe, 4, "pseudoprobe"),
+        (Prefetch, 4, "prefetch"),
         (Mov, 3, "mov"),
         (Bin(Add), 4, "iadd"),
         (Bin(Sub), 4, "isub"),
@@ -851,6 +1020,8 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (FloatBin(FMinimum), 4, "fminimum"),
         (FloatBin(FMaximum), 4, "fmaximum"),
         (FloatBin(FCopySign), 4, "fcopysign"),
+        (FloatBin(FPow), 4, "fpow"),
+        (FloatIntBin(FPowI), 4, "fpowi"),
         (FloatUnary(FNeg), 3, "fneg"),
         (FloatUnary(FloatUnaryOp::Abs), 3, "fabs"),
         (FloatUnary(FSqrt), 3, "fsqrt"),
@@ -862,12 +1033,21 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (FloatUnary(FNearbyInt), 3, "fnearbyint"),
         (FloatUnary(FRound), 3, "fround"),
         (FloatUnary(FRoundEven), 3, "froundeven"),
+        (FloatUnary(FSin), 3, "fsin"),
+        (FloatUnary(FCos), 3, "fcos"),
+        (FloatUnary(FExp), 3, "fexp"),
+        (FloatUnary(FExp2), 3, "fexp2"),
+        (FloatUnary(FLog), 3, "flog"),
+        (FloatUnary(FLog10), 3, "flog10"),
+        (FloatUnary(FLog2), 3, "flog2"),
         (FloatTernary(FFma), 5, "ffma"),
         (FloatTernary(FFMulAdd), 5, "ffmuladd"),
         (FloatCast(FSIToFP), 4, "sitofp"),
         (FloatCast(FUIToFP), 4, "uitofp"),
         (FloatCast(FFPToSI), 4, "fptosi"),
         (FloatCast(FFPToUI), 4, "fptoui"),
+        (FloatCast(FFPToSISat), 4, "fptosi_sat"),
+        (FloatCast(FFPToUISat), 4, "fptoui_sat"),
         (FloatCast(FFPTrunc), 4, "fptrunc"),
         (FloatCast(FFPExt), 4, "fpext"),
         (FloatClass, 4, "fpclass"),
@@ -889,79 +1069,79 @@ fn verify_required_isa(profile: &ProfilePackage) -> Result<(), ProfileError> {
         (VolatileMemcpyDynamic, 3, "volatile_memcpy_dyn"),
         (VolatileMemmoveDynamic, 3, "volatile_memmove_dyn"),
         (VolatileMemsetDynamic, 3, "volatile_memset_dyn"),
-        (AtomicLoad, 4, "atomic_load"),
-        (AtomicStore, 4, "atomic_store"),
-        (VolatileAtomicLoad, 4, "volatile_atomic_load"),
-        (VolatileAtomicStore, 4, "volatile_atomic_store"),
-        (AtomicRmw(AtomicRmwOp::Xchg), 5, "atomic_rmw_xchg"),
-        (AtomicRmw(AtomicRmwOp::Add), 5, "atomic_rmw_add"),
-        (AtomicRmw(AtomicRmwOp::Sub), 5, "atomic_rmw_sub"),
-        (AtomicRmw(AtomicRmwOp::And), 5, "atomic_rmw_and"),
-        (AtomicRmw(AtomicRmwOp::Or), 5, "atomic_rmw_or"),
-        (AtomicRmw(AtomicRmwOp::Xor), 5, "atomic_rmw_xor"),
-        (AtomicRmw(AtomicRmwOp::Nand), 5, "atomic_rmw_nand"),
-        (AtomicRmw(AtomicRmwOp::Max), 5, "atomic_rmw_max"),
-        (AtomicRmw(AtomicRmwOp::Min), 5, "atomic_rmw_min"),
-        (AtomicRmw(AtomicRmwOp::UMax), 5, "atomic_rmw_umax"),
-        (AtomicRmw(AtomicRmwOp::UMin), 5, "atomic_rmw_umin"),
-        (AtomicRmw(AtomicRmwOp::UIncWrap), 5, "atomic_rmw_uinc_wrap"),
-        (AtomicRmw(AtomicRmwOp::UDecWrap), 5, "atomic_rmw_udec_wrap"),
-        (AtomicRmw(AtomicRmwOp::USubCond), 5, "atomic_rmw_usub_cond"),
-        (AtomicRmw(AtomicRmwOp::USubSat), 5, "atomic_rmw_usub_sat"),
-        (AtomicRmw(AtomicRmwOp::FAdd), 5, "atomic_rmw_fadd"),
-        (AtomicRmw(AtomicRmwOp::FSub), 5, "atomic_rmw_fsub"),
-        (AtomicRmw(AtomicRmwOp::FMax), 5, "atomic_rmw_fmax"),
-        (AtomicRmw(AtomicRmwOp::FMin), 5, "atomic_rmw_fmin"),
-        (AtomicRmw(AtomicRmwOp::FMaximum), 5, "atomic_rmw_fmaximum"),
-        (AtomicRmw(AtomicRmwOp::FMinimum), 5, "atomic_rmw_fminimum"),
-        (VolatileAtomicRmw(AtomicRmwOp::Xchg), 5, "volatile_atomic_rmw_xchg"),
-        (VolatileAtomicRmw(AtomicRmwOp::Add), 5, "volatile_atomic_rmw_add"),
-        (VolatileAtomicRmw(AtomicRmwOp::Sub), 5, "volatile_atomic_rmw_sub"),
-        (VolatileAtomicRmw(AtomicRmwOp::And), 5, "volatile_atomic_rmw_and"),
-        (VolatileAtomicRmw(AtomicRmwOp::Or), 5, "volatile_atomic_rmw_or"),
-        (VolatileAtomicRmw(AtomicRmwOp::Xor), 5, "volatile_atomic_rmw_xor"),
-        (VolatileAtomicRmw(AtomicRmwOp::Nand), 5, "volatile_atomic_rmw_nand"),
-        (VolatileAtomicRmw(AtomicRmwOp::Max), 5, "volatile_atomic_rmw_max"),
-        (VolatileAtomicRmw(AtomicRmwOp::Min), 5, "volatile_atomic_rmw_min"),
-        (VolatileAtomicRmw(AtomicRmwOp::UMax), 5, "volatile_atomic_rmw_umax"),
-        (VolatileAtomicRmw(AtomicRmwOp::UMin), 5, "volatile_atomic_rmw_umin"),
+        (AtomicLoad, 5, "atomic_load"),
+        (AtomicStore, 5, "atomic_store"),
+        (VolatileAtomicLoad, 5, "volatile_atomic_load"),
+        (VolatileAtomicStore, 5, "volatile_atomic_store"),
+        (AtomicRmw(AtomicRmwOp::Xchg), 6, "atomic_rmw_xchg"),
+        (AtomicRmw(AtomicRmwOp::Add), 6, "atomic_rmw_add"),
+        (AtomicRmw(AtomicRmwOp::Sub), 6, "atomic_rmw_sub"),
+        (AtomicRmw(AtomicRmwOp::And), 6, "atomic_rmw_and"),
+        (AtomicRmw(AtomicRmwOp::Or), 6, "atomic_rmw_or"),
+        (AtomicRmw(AtomicRmwOp::Xor), 6, "atomic_rmw_xor"),
+        (AtomicRmw(AtomicRmwOp::Nand), 6, "atomic_rmw_nand"),
+        (AtomicRmw(AtomicRmwOp::Max), 6, "atomic_rmw_max"),
+        (AtomicRmw(AtomicRmwOp::Min), 6, "atomic_rmw_min"),
+        (AtomicRmw(AtomicRmwOp::UMax), 6, "atomic_rmw_umax"),
+        (AtomicRmw(AtomicRmwOp::UMin), 6, "atomic_rmw_umin"),
+        (AtomicRmw(AtomicRmwOp::UIncWrap), 6, "atomic_rmw_uinc_wrap"),
+        (AtomicRmw(AtomicRmwOp::UDecWrap), 6, "atomic_rmw_udec_wrap"),
+        (AtomicRmw(AtomicRmwOp::USubCond), 6, "atomic_rmw_usub_cond"),
+        (AtomicRmw(AtomicRmwOp::USubSat), 6, "atomic_rmw_usub_sat"),
+        (AtomicRmw(AtomicRmwOp::FAdd), 6, "atomic_rmw_fadd"),
+        (AtomicRmw(AtomicRmwOp::FSub), 6, "atomic_rmw_fsub"),
+        (AtomicRmw(AtomicRmwOp::FMax), 6, "atomic_rmw_fmax"),
+        (AtomicRmw(AtomicRmwOp::FMin), 6, "atomic_rmw_fmin"),
+        (AtomicRmw(AtomicRmwOp::FMaximum), 6, "atomic_rmw_fmaximum"),
+        (AtomicRmw(AtomicRmwOp::FMinimum), 6, "atomic_rmw_fminimum"),
+        (VolatileAtomicRmw(AtomicRmwOp::Xchg), 6, "volatile_atomic_rmw_xchg"),
+        (VolatileAtomicRmw(AtomicRmwOp::Add), 6, "volatile_atomic_rmw_add"),
+        (VolatileAtomicRmw(AtomicRmwOp::Sub), 6, "volatile_atomic_rmw_sub"),
+        (VolatileAtomicRmw(AtomicRmwOp::And), 6, "volatile_atomic_rmw_and"),
+        (VolatileAtomicRmw(AtomicRmwOp::Or), 6, "volatile_atomic_rmw_or"),
+        (VolatileAtomicRmw(AtomicRmwOp::Xor), 6, "volatile_atomic_rmw_xor"),
+        (VolatileAtomicRmw(AtomicRmwOp::Nand), 6, "volatile_atomic_rmw_nand"),
+        (VolatileAtomicRmw(AtomicRmwOp::Max), 6, "volatile_atomic_rmw_max"),
+        (VolatileAtomicRmw(AtomicRmwOp::Min), 6, "volatile_atomic_rmw_min"),
+        (VolatileAtomicRmw(AtomicRmwOp::UMax), 6, "volatile_atomic_rmw_umax"),
+        (VolatileAtomicRmw(AtomicRmwOp::UMin), 6, "volatile_atomic_rmw_umin"),
         (
             VolatileAtomicRmw(AtomicRmwOp::UIncWrap),
-            5,
+            6,
             "volatile_atomic_rmw_uinc_wrap",
         ),
         (
             VolatileAtomicRmw(AtomicRmwOp::UDecWrap),
-            5,
+            6,
             "volatile_atomic_rmw_udec_wrap",
         ),
         (
             VolatileAtomicRmw(AtomicRmwOp::USubCond),
-            5,
+            6,
             "volatile_atomic_rmw_usub_cond",
         ),
         (
             VolatileAtomicRmw(AtomicRmwOp::USubSat),
-            5,
+            6,
             "volatile_atomic_rmw_usub_sat",
         ),
-        (VolatileAtomicRmw(AtomicRmwOp::FAdd), 5, "volatile_atomic_rmw_fadd"),
-        (VolatileAtomicRmw(AtomicRmwOp::FSub), 5, "volatile_atomic_rmw_fsub"),
-        (VolatileAtomicRmw(AtomicRmwOp::FMax), 5, "volatile_atomic_rmw_fmax"),
-        (VolatileAtomicRmw(AtomicRmwOp::FMin), 5, "volatile_atomic_rmw_fmin"),
+        (VolatileAtomicRmw(AtomicRmwOp::FAdd), 6, "volatile_atomic_rmw_fadd"),
+        (VolatileAtomicRmw(AtomicRmwOp::FSub), 6, "volatile_atomic_rmw_fsub"),
+        (VolatileAtomicRmw(AtomicRmwOp::FMax), 6, "volatile_atomic_rmw_fmax"),
+        (VolatileAtomicRmw(AtomicRmwOp::FMin), 6, "volatile_atomic_rmw_fmin"),
         (
             VolatileAtomicRmw(AtomicRmwOp::FMaximum),
-            5,
+            6,
             "volatile_atomic_rmw_fmaximum",
         ),
         (
             VolatileAtomicRmw(AtomicRmwOp::FMinimum),
-            5,
+            6,
             "volatile_atomic_rmw_fminimum",
         ),
-        (CmpXchg, 8, "cmpxchg"),
-        (VolatileCmpXchg, 8, "volatile_cmpxchg"),
-        (Fence, 1, "fence"),
+        (CmpXchg, 9, "cmpxchg"),
+        (VolatileCmpXchg, 9, "volatile_cmpxchg"),
+        (Fence, 2, "fence"),
         (Gep, 3, "gep"),
         (CallNative, call_native_operand_contract().len() as u8, "call_native"),
         (SideEffect, 0, "sideeffect"),
@@ -1038,9 +1218,200 @@ fn verify_lowering_rules(profile: &ProfilePackage) -> Result<(), ProfileError> {
         verify_lowering_action_flow(profile, rule)?;
     }
 
+    verify_required_lowering_shapes(profile)?;
     verify_lowering_fusions(profile, &isa_names)?;
 
     Ok(())
+}
+
+fn verify_required_lowering_shapes(profile: &ProfilePackage) -> Result<(), ProfileError> {
+    for rule_name in [
+        "llvm.cast.pointer",
+        "llvm.vector.cast.pointer",
+        "llvm.vp.vector.cast.pointer",
+    ] {
+        verify_cast_rule_shapes(profile, rule_name, "type_width(%a)", "type_width(%r)")?;
+    }
+    for rule_name in ["llvm.constexpr.ptrtoint", "llvm.constexpr.inttoptr"] {
+        verify_cast_rule_shapes(profile, rule_name, "type_width(%value)", "type_width(%r)")?;
+    }
+
+    verify_required_emit_shape(
+        profile,
+        "llvm.gep.dynamic",
+        &HandlerSemantic::Cast(CastOp::SExt),
+        &[
+            ("dst", "%vx"),
+            ("src", "%vi"),
+            ("from_width", "type_width(%index)"),
+            ("to_width", "64"),
+        ],
+    )?;
+    verify_required_emit_shape(
+        profile,
+        "llvm.gep.dynamic",
+        &HandlerSemantic::Bin(BinOp::Mul),
+        &[
+            ("dst", "%vs"),
+            ("lhs", "%vx"),
+            ("rhs", "element_size(%base)"),
+            ("width", "64"),
+        ],
+    )?;
+    verify_required_emit_shape(
+        profile,
+        "llvm.gep.dynamic",
+        &HandlerSemantic::Bin(BinOp::Add),
+        &[("dst", "%vr"), ("lhs", "%vb"), ("rhs", "%vs"), ("width", "64")],
+    )?;
+    verify_required_emit_shape(
+        profile,
+        "llvm.gep.dynamic",
+        &HandlerSemantic::Gep,
+        &[("dst", "%vr"), ("base", "%vr"), ("offset", "constant_gep_offset(%r)")],
+    )?;
+
+    for rule_name in [
+        "llvm.memory.vp.strided.vector.load",
+        "llvm.memory.vp.strided.vector.store",
+    ] {
+        verify_required_emit_shape(
+            profile,
+            rule_name,
+            &HandlerSemantic::Cast(CastOp::SExt),
+            &[
+                ("dst", "%vwide"),
+                ("src", "%vs"),
+                ("from_width", "type_width(%stride)"),
+                ("to_width", "64"),
+            ],
+        )?;
+        verify_required_emit_shape(
+            profile,
+            rule_name,
+            &HandlerSemantic::Bin(BinOp::Mul),
+            &[("dst", "%vo"), ("lhs", "%vwide"), ("rhs", "%vi"), ("width", "64")],
+        )?;
+    }
+
+    verify_required_emit_shape(
+        profile,
+        "llvm.experimental.get.vector.length.integer",
+        &HandlerSemantic::Cast(CastOp::ZExt),
+        &[
+            ("dst", "%vwide"),
+            ("src", "%va"),
+            ("from_width", "type_width(%avl)"),
+            ("to_width", "compare_width(%avl)"),
+        ],
+    )?;
+    verify_required_emit_shape(
+        profile,
+        "llvm.experimental.get.vector.length.integer",
+        &HandlerSemantic::Icmp,
+        &[
+            ("pred", "ult"),
+            ("dst", "%vc"),
+            ("lhs", "%vwide"),
+            ("rhs", "%vv"),
+            ("width", "compare_width(%avl)"),
+        ],
+    )?;
+    verify_required_emit_shape(
+        profile,
+        "llvm.vector.step",
+        &HandlerSemantic::MovImm,
+        &[
+            ("dst", "%vr"),
+            ("imm", "lane_index(%lane)"),
+            ("width", "lane_width(%lane)"),
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn verify_cast_rule_shapes(
+    profile: &ProfilePackage,
+    rule_name: &str,
+    from_width: &str,
+    to_width: &str,
+) -> Result<(), ProfileError> {
+    for semantic in [
+        HandlerSemantic::Cast(CastOp::ZExt),
+        HandlerSemantic::Cast(CastOp::Trunc),
+        HandlerSemantic::Cast(CastOp::Bitcast),
+    ] {
+        verify_required_emit_shape(
+            profile,
+            rule_name,
+            &semantic,
+            &[
+                ("dst", "%vr"),
+                ("src", "%va"),
+                ("from_width", from_width),
+                ("to_width", to_width),
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn verify_required_emit_shape(
+    profile: &ProfilePackage,
+    rule_name: &str,
+    semantic: &HandlerSemantic,
+    required_operands: &[(&str, &str)],
+) -> Result<(), ProfileError> {
+    let has_instruction = profile
+        .isa
+        .instructions
+        .iter()
+        .any(|instruction| instruction.semantic == *semantic);
+    if !has_instruction {
+        return Err(ProfileError::Invalid(format!(
+            "isa.vm must declare an instruction with semantic {semantic:?} for lowering.vm rule {rule_name}"
+        )));
+    }
+
+    let rule = profile
+        .lowering
+        .rule(rule_name)
+        .ok_or_else(|| ProfileError::Invalid(format!("lowering.vm must declare rule {rule_name}")))?;
+    let has_shape = rule.actions.iter().any(|action| {
+        let LoweringAction::Emit { instruction, operands } = action else {
+            return false;
+        };
+        let Some(desc) = profile.isa.by_name(instruction) else {
+            return false;
+        };
+        desc.semantic == *semantic && lowering_emit_has_operands(operands, required_operands)
+    });
+    if !has_shape {
+        return Err(ProfileError::Invalid(format!(
+            "lowering.vm rule {rule_name} must emit semantic {semantic:?} with operands {}",
+            format_operand_shape(required_operands)
+        )));
+    }
+
+    Ok(())
+}
+
+fn lowering_emit_has_operands(actual: &[(String, String)], required: &[(&str, &str)]) -> bool {
+    required.iter().all(|(name, expression)| {
+        actual
+            .iter()
+            .any(|(actual_name, actual_expression)| actual_name == name && actual_expression.trim() == *expression)
+    })
+}
+
+fn format_operand_shape(required_operands: &[(&str, &str)]) -> String {
+    required_operands
+        .iter()
+        .map(|(name, expression)| format!("{name}={expression}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn verify_lowering_fusions(profile: &ProfilePackage, isa_names: &HashSet<&str>) -> Result<(), ProfileError> {
@@ -1087,16 +1458,11 @@ fn verify_lowering_fusions(profile: &ProfilePackage, isa_names: &HashSet<&str>) 
         verify_supported_fusion_template(profile, &target.semantic, fusion)?;
     }
 
-    for (super_op, name) in [
-        (SuperOp::AddXor, "iadd_xor"),
-        (SuperOp::IcmpBrIf, "icmp_br_if"),
-        (SuperOp::GepLoad, "gep_load"),
-        (SuperOp::LoadAdd, "load_iadd"),
-    ] {
+    for &(super_op, fusion_name) in SUPPORTED_SUPER_FUSIONS {
         if let Some(desc) = profile.isa.by_semantic(&HandlerSemantic::Super(super_op)) {
             if profile.lowering.fusion_for_target(&desc.name).is_none() {
                 return Err(ProfileError::Invalid(format!(
-                    "lowering.vm must declare fusion super.{name} for isa.vm instruction {}",
+                    "lowering.vm must declare fusion {fusion_name} for isa.vm instruction {}",
                     desc.name
                 )));
             }
@@ -1111,6 +1477,19 @@ fn verify_supported_fusion_template(
     semantic: &HandlerSemantic,
     fusion: &crate::profile::LoweringFusion,
 ) -> Result<(), ProfileError> {
+    let Some(expected_fusion_name) = canonical_super_fusion_name(semantic) else {
+        return Err(ProfileError::Invalid(format!(
+            "lowering.vm fusion {} target semantic {semantic:?} is not supported",
+            fusion.name
+        )));
+    };
+    if fusion.name != expected_fusion_name {
+        return Err(ProfileError::Invalid(format!(
+            "lowering.vm fusion {} targets {:?} but must be named {expected_fusion_name}",
+            fusion.name, semantic
+        )));
+    }
+
     let (expected_sequence, expected_names, required) = match semantic {
         HandlerSemantic::Super(SuperOp::AddXor) => (
             &[HandlerSemantic::Bin(BinOp::Add), HandlerSemantic::Bin(BinOp::Xor)][..],
@@ -1130,6 +1509,116 @@ fn verify_supported_fusion_template(
         HandlerSemantic::Super(SuperOp::LoadAdd) => (
             &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::Add)][..],
             &["load", "iadd"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadMul) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::Mul)][..],
+            &["load", "imul"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadUDiv) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::UDiv)][..],
+            &["load", "iudiv"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadSDiv) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::SDiv)][..],
+            &["load", "isdiv"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadURem) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::URem)][..],
+            &["load", "iurem"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadSRem) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::SRem)][..],
+            &["load", "isrem"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadShl) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::Shl)][..],
+            &["load", "ishl"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadLShr) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::LShr)][..],
+            &["load", "ilshr"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadAShr) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::AShr)][..],
+            &["load", "iashr"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadSMax) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::SMax)][..],
+            &["load", "ismax"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadSMin) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::SMin)][..],
+            &["load", "ismin"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadUMax) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::UMax)][..],
+            &["load", "iumax"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadUMin) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::UMin)][..],
+            &["load", "iumin"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadUAddSat) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::UAddSat)][..],
+            &["load", "iuadd_sat"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadUSubSat) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::USubSat)][..],
+            &["load", "iusub_sat"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadSAddSat) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::SAddSat)][..],
+            &["load", "isadd_sat"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadSSubSat) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::SSubSat)][..],
+            &["load", "issub_sat"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadUShlSat) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::UShlSat)][..],
+            &["load", "iushl_sat"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadSShlSat) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::SShlSat)][..],
+            &["load", "isshl_sat"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadAnd) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::And)][..],
+            &["load", "iand"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadOr) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::Or)][..],
+            &["load", "ior"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadSub) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::Sub)][..],
+            &["load", "isub"][..],
+            &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
+        ),
+        HandlerSemantic::Super(SuperOp::LoadXor) => (
+            &[HandlerSemantic::Load, HandlerSemantic::Bin(BinOp::Xor)][..],
+            &["load", "ixor"][..],
             &["adjacent", "no_label_between", "temp_single_use", "same_width"][..],
         ),
         other => {
@@ -1188,6 +1677,15 @@ fn verify_supported_fusion_template(
     Ok(())
 }
 
+fn canonical_super_fusion_name(semantic: &HandlerSemantic) -> Option<&'static str> {
+    if let HandlerSemantic::Super(super_op) = semantic {
+        return SUPPORTED_SUPER_FUSIONS
+            .iter()
+            .find_map(|(supported, name)| (*supported == *super_op).then_some(*name));
+    }
+    None
+}
+
 fn verify_lowering_action_flow(
     profile: &ProfilePackage,
     rule: &crate::profile::LoweringRule,
@@ -1241,6 +1739,20 @@ fn verify_lowering_action_flow(
             )));
         }
     }
+    if rule
+        .matcher
+        .as_ref()
+        .is_some_and(|matcher| matcher.pattern.contains("llvm.test.start.loop.iterations"))
+    {
+        for required in ["%vr", "%vt"] {
+            if !vm_values.contains(required) {
+                return Err(ProfileError::Invalid(format!(
+                    "lowering.vm rule {} must define {required} for llvm.test.start.loop.iterations aggregate result",
+                    rule.name
+                )));
+            }
+        }
+    }
 
     Ok(())
 }
@@ -1248,6 +1760,9 @@ fn verify_lowering_action_flow(
 fn required_lowering_bind(rule: &crate::profile::LoweringRule) -> Option<&str> {
     let matcher = rule.matcher.as_ref()?;
     if matcher.pattern.contains("with.overflow") {
+        return None;
+    }
+    if matcher.pattern.contains("llvm.test.start.loop.iterations") {
         return None;
     }
     if matcher.pattern == "llvm.memory scalar %ptr" {
@@ -1401,6 +1916,8 @@ fn is_q_register(register: &str) -> bool {
 fn verify_decoder_steps(steps: &[DecoderStep]) -> Result<(), ProfileError> {
     let varint = steps.iter().position(|step| *step == DecoderStep::VarintDecode);
     let bit_unpack = steps.iter().position(|step| *step == DecoderStep::BitUnpack);
+    let varint_count = steps.iter().filter(|step| **step == DecoderStep::VarintDecode).count();
+    let bit_unpack_count = steps.iter().filter(|step| **step == DecoderStep::BitUnpack).count();
 
     let Some(varint) = varint else {
         return Err(ProfileError::Invalid(
@@ -1410,6 +1927,17 @@ fn verify_decoder_steps(steps: &[DecoderStep]) -> Result<(), ProfileError> {
     let Some(bit_unpack) = bit_unpack else {
         return Err(ProfileError::Invalid("decoder.vm must include bit_unpack".to_owned()));
     };
+
+    if varint_count != 1 {
+        return Err(ProfileError::Invalid(format!(
+            "decoder.vm must include exactly one varint_decode, got {varint_count}"
+        )));
+    }
+    if bit_unpack_count != 1 {
+        return Err(ProfileError::Invalid(format!(
+            "decoder.vm must include exactly one bit_unpack, got {bit_unpack_count}"
+        )));
+    }
 
     if varint >= bit_unpack {
         return Err(ProfileError::Invalid(

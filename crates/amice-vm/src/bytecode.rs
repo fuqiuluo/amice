@@ -14,8 +14,9 @@
 //! `debug_dump` 只用于诊断文本。runtime 生成必须消费结构化 offset 和 `bytes` 字段。
 
 use crate::isa::{
-    AtomicRmwOp, BinOp, CastOp, FloatBinOp, FloatCastOp, FloatTernaryOp, FloatUnaryOp, HandlerSemantic, IntOverflowOp,
-    IntTernaryOp, IntUnaryOp, MemoryOrdering, Opcode, SuperOp,
+    AtomicRmwOp, BinOp, CastOp, FloatBinOp, FloatCastOp, FloatIntBinOp, FloatRoundToIntOp, FloatTernaryOp,
+    FloatUnaryOp, HandlerSemantic, IntOverflowOp, IntTernaryOp, IntUnaryOp, MemoryOrdering, Opcode, OperandDesc,
+    OperandKind, SuperOp,
 };
 use crate::lowering::{
     LabelId, NATIVE_CALL_MAX_ARGS, NATIVE_CALL_MAX_RETURNS, NativeReturn, VmFunction, VmInstruction,
@@ -229,6 +230,70 @@ impl<'a> BytecodeEncoder<'a> {
                 pc,
                 operands([("dst", *dst as u64), ("width", *width as u64)]),
             ),
+            VmInstruction::ReadVScale { dst, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::ReadVScale,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::ReadRounding { dst, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::ReadRounding,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::ReadFltRounds { dst, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::ReadFltRounds,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::WriteRounding { src, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::WriteRounding,
+                key,
+                pc,
+                operands([("src", *src as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::ReadFpState { kind, dst, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::ReadFpState(*kind),
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::WriteFpState { kind, src, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::WriteFpState(*kind),
+                key,
+                pc,
+                operands([("src", *src as u64), ("width", *width as u64)]),
+            ),
+            VmInstruction::ResetFpState { kind } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::ResetFpState(*kind),
+                key,
+                pc,
+                operands([]),
+            ),
+            VmInstruction::ReadThreadPointer { dst, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::ReadThreadPointer,
+                key,
+                pc,
+                operands([("dst", *dst as u64), ("width", *width as u64)]),
+            ),
             VmInstruction::StackSave { dst } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -252,6 +317,42 @@ impl<'a> BytecodeEncoder<'a> {
                 key,
                 pc,
                 operands([("start", *start as u64), ("end", *end as u64)]),
+            ),
+            VmInstruction::PseudoProbe {
+                guid,
+                index,
+                probe_type,
+                attributes,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::PseudoProbe,
+                key,
+                pc,
+                operands([
+                    ("guid", *guid),
+                    ("index", *index),
+                    ("probe_type", *probe_type as u64),
+                    ("attributes", *attributes),
+                ]),
+            ),
+            VmInstruction::Prefetch {
+                ptr,
+                rw,
+                locality,
+                cache,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Prefetch,
+                key,
+                pc,
+                operands([
+                    ("ptr", *ptr as u64),
+                    ("rw", *rw as u64),
+                    ("locality", *locality as u64),
+                    ("cache", *cache as u64),
+                ]),
             ),
             VmInstruction::SuperAddXor {
                 dst,
@@ -328,6 +429,337 @@ impl<'a> BytecodeEncoder<'a> {
                     ("dst", *dst as u64),
                     ("ptr", *ptr as u64),
                     ("addend", *addend as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadMul {
+                dst,
+                ptr,
+                factor,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadMul),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("factor", *factor as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadUDiv {
+                dst,
+                ptr,
+                divisor,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadUDiv),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("divisor", *divisor as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadSDiv {
+                dst,
+                ptr,
+                divisor,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadSDiv),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("divisor", *divisor as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadURem {
+                dst,
+                ptr,
+                divisor,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadURem),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("divisor", *divisor as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadSRem {
+                dst,
+                ptr,
+                divisor,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadSRem),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("divisor", *divisor as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadShl { dst, ptr, shift, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadShl),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("shift", *shift as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadLShr { dst, ptr, shift, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadLShr),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("shift", *shift as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadAShr { dst, ptr, shift, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadAShr),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("shift", *shift as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadSMax { dst, ptr, rhs, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadSMax),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadSMin { dst, ptr, rhs, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadSMin),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadUMax { dst, ptr, rhs, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadUMax),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadUMin { dst, ptr, rhs, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadUMin),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadUAddSat { dst, ptr, rhs, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadUAddSat),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadUSubSat { dst, ptr, rhs, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadUSubSat),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadSAddSat { dst, ptr, rhs, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadSAddSat),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadSSubSat { dst, ptr, rhs, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadSSubSat),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadUShlSat { dst, ptr, rhs, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadUShlSat),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadSShlSat { dst, ptr, rhs, width } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadSShlSat),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadAnd {
+                dst,
+                ptr,
+                and_rhs,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadAnd),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("and_rhs", *and_rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadOr {
+                dst,
+                ptr,
+                or_rhs,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadOr),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("or_rhs", *or_rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadSub {
+                dst,
+                ptr,
+                subtrahend,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadSub),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("subtrahend", *subtrahend as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
+            VmInstruction::SuperLoadXor {
+                dst,
+                ptr,
+                xor_rhs,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::Super(SuperOp::LoadXor),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("ptr", *ptr as u64),
+                    ("xor_rhs", *xor_rhs as u64),
                     ("width", *width as u64),
                 ]),
             ),
@@ -447,6 +879,25 @@ impl<'a> BytecodeEncoder<'a> {
                     ("width", *width as u64),
                 ]),
             ),
+            VmInstruction::FloatIntBin {
+                op,
+                dst,
+                lhs,
+                rhs,
+                width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::FloatIntBin(*op),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("lhs", *lhs as u64),
+                    ("rhs", *rhs as u64),
+                    ("width", *width as u64),
+                ]),
+            ),
             VmInstruction::FloatUnary { op, dst, src, width } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -486,6 +937,25 @@ impl<'a> BytecodeEncoder<'a> {
                 self.profile,
                 profile_instruction,
                 &HandlerSemantic::FloatCast(*op),
+                key,
+                pc,
+                operands([
+                    ("dst", *dst as u64),
+                    ("src", *src as u64),
+                    ("from_width", *from_width as u64),
+                    ("to_width", *to_width as u64),
+                ]),
+            ),
+            VmInstruction::FloatRoundToInt {
+                op,
+                dst,
+                src,
+                from_width,
+                to_width,
+            } => record_tokens(
+                self.profile,
+                profile_instruction,
+                &HandlerSemantic::FloatRoundToInt(*op),
                 key,
                 pc,
                 operands([
@@ -658,6 +1128,7 @@ impl<'a> BytecodeEncoder<'a> {
                 ptr,
                 width,
                 ordering,
+                sync_scope,
             } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -669,6 +1140,7 @@ impl<'a> BytecodeEncoder<'a> {
                     ("ptr", *ptr as u64),
                     ("width", *width as u64),
                     ("ordering", memory_ordering_tag(*ordering) as u64),
+                    ("sync_scope", *sync_scope as u64),
                 ]),
             ),
             VmInstruction::AtomicStore {
@@ -676,6 +1148,7 @@ impl<'a> BytecodeEncoder<'a> {
                 ptr,
                 width,
                 ordering,
+                sync_scope,
             } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -687,6 +1160,7 @@ impl<'a> BytecodeEncoder<'a> {
                     ("ptr", *ptr as u64),
                     ("width", *width as u64),
                     ("ordering", memory_ordering_tag(*ordering) as u64),
+                    ("sync_scope", *sync_scope as u64),
                 ]),
             ),
             VmInstruction::VolatileAtomicLoad {
@@ -694,6 +1168,7 @@ impl<'a> BytecodeEncoder<'a> {
                 ptr,
                 width,
                 ordering,
+                sync_scope,
             } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -705,6 +1180,7 @@ impl<'a> BytecodeEncoder<'a> {
                     ("ptr", *ptr as u64),
                     ("width", *width as u64),
                     ("ordering", memory_ordering_tag(*ordering) as u64),
+                    ("sync_scope", *sync_scope as u64),
                 ]),
             ),
             VmInstruction::VolatileAtomicStore {
@@ -712,6 +1188,7 @@ impl<'a> BytecodeEncoder<'a> {
                 ptr,
                 width,
                 ordering,
+                sync_scope,
             } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -723,6 +1200,7 @@ impl<'a> BytecodeEncoder<'a> {
                     ("ptr", *ptr as u64),
                     ("width", *width as u64),
                     ("ordering", memory_ordering_tag(*ordering) as u64),
+                    ("sync_scope", *sync_scope as u64),
                 ]),
             ),
             VmInstruction::AtomicRmw {
@@ -732,6 +1210,7 @@ impl<'a> BytecodeEncoder<'a> {
                 src,
                 width,
                 ordering,
+                sync_scope,
             } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -744,6 +1223,7 @@ impl<'a> BytecodeEncoder<'a> {
                     ("src", *src as u64),
                     ("width", *width as u64),
                     ("ordering", memory_ordering_tag(*ordering) as u64),
+                    ("sync_scope", *sync_scope as u64),
                 ]),
             ),
             VmInstruction::VolatileAtomicRmw {
@@ -753,6 +1233,7 @@ impl<'a> BytecodeEncoder<'a> {
                 src,
                 width,
                 ordering,
+                sync_scope,
             } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -765,6 +1246,7 @@ impl<'a> BytecodeEncoder<'a> {
                     ("src", *src as u64),
                     ("width", *width as u64),
                     ("ordering", memory_ordering_tag(*ordering) as u64),
+                    ("sync_scope", *sync_scope as u64),
                 ]),
             ),
             VmInstruction::CmpXchg {
@@ -776,6 +1258,7 @@ impl<'a> BytecodeEncoder<'a> {
                 width,
                 success_ordering,
                 failure_ordering,
+                sync_scope,
             } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -791,6 +1274,7 @@ impl<'a> BytecodeEncoder<'a> {
                     ("width", *width as u64),
                     ("success_ordering", memory_ordering_tag(*success_ordering) as u64),
                     ("failure_ordering", memory_ordering_tag(*failure_ordering) as u64),
+                    ("sync_scope", *sync_scope as u64),
                 ]),
             ),
             VmInstruction::VolatileCmpXchg {
@@ -802,6 +1286,7 @@ impl<'a> BytecodeEncoder<'a> {
                 width,
                 success_ordering,
                 failure_ordering,
+                sync_scope,
             } => record_tokens(
                 self.profile,
                 profile_instruction,
@@ -817,15 +1302,19 @@ impl<'a> BytecodeEncoder<'a> {
                     ("width", *width as u64),
                     ("success_ordering", memory_ordering_tag(*success_ordering) as u64),
                     ("failure_ordering", memory_ordering_tag(*failure_ordering) as u64),
+                    ("sync_scope", *sync_scope as u64),
                 ]),
             ),
-            VmInstruction::Fence { ordering } => record_tokens(
+            VmInstruction::Fence { ordering, sync_scope } => record_tokens(
                 self.profile,
                 profile_instruction,
                 &HandlerSemantic::Fence,
                 key,
                 pc,
-                operands([("ordering", memory_ordering_tag(*ordering) as u64)]),
+                operands([
+                    ("ordering", memory_ordering_tag(*ordering) as u64),
+                    ("sync_scope", *sync_scope as u64),
+                ]),
             ),
             VmInstruction::Gep { dst, base, offset } => record_tokens(
                 self.profile,
@@ -1236,22 +1725,56 @@ fn collect_const_pool_values(function: &VmFunction) -> Vec<u64> {
             VmInstruction::MovImm { .. }
             | VmInstruction::Mov { .. }
             | VmInstruction::ReadCounter { .. }
+            | VmInstruction::ReadVScale { .. }
+            | VmInstruction::ReadRounding { .. }
+            | VmInstruction::ReadFltRounds { .. }
+            | VmInstruction::WriteRounding { .. }
+            | VmInstruction::ReadFpState { .. }
+            | VmInstruction::WriteFpState { .. }
+            | VmInstruction::ResetFpState { .. }
+            | VmInstruction::ReadThreadPointer { .. }
             | VmInstruction::StackSave { .. }
             | VmInstruction::StackRestore { .. }
             | VmInstruction::ClearCache { .. }
+            | VmInstruction::PseudoProbe { .. }
+            | VmInstruction::Prefetch { .. }
             | VmInstruction::SuperAddXor { .. }
             | VmInstruction::SuperIcmpBrIf { .. }
             | VmInstruction::SuperGepLoad { .. }
             | VmInstruction::SuperLoadAdd { .. }
+            | VmInstruction::SuperLoadMul { .. }
+            | VmInstruction::SuperLoadUDiv { .. }
+            | VmInstruction::SuperLoadSDiv { .. }
+            | VmInstruction::SuperLoadURem { .. }
+            | VmInstruction::SuperLoadSRem { .. }
+            | VmInstruction::SuperLoadShl { .. }
+            | VmInstruction::SuperLoadLShr { .. }
+            | VmInstruction::SuperLoadAShr { .. }
+            | VmInstruction::SuperLoadSMax { .. }
+            | VmInstruction::SuperLoadSMin { .. }
+            | VmInstruction::SuperLoadUMax { .. }
+            | VmInstruction::SuperLoadUMin { .. }
+            | VmInstruction::SuperLoadUAddSat { .. }
+            | VmInstruction::SuperLoadUSubSat { .. }
+            | VmInstruction::SuperLoadSAddSat { .. }
+            | VmInstruction::SuperLoadSSubSat { .. }
+            | VmInstruction::SuperLoadUShlSat { .. }
+            | VmInstruction::SuperLoadSShlSat { .. }
+            | VmInstruction::SuperLoadAnd { .. }
+            | VmInstruction::SuperLoadOr { .. }
+            | VmInstruction::SuperLoadSub { .. }
+            | VmInstruction::SuperLoadXor { .. }
             | VmInstruction::Bin { .. }
             | VmInstruction::IntUnary { .. }
             | VmInstruction::IntTernary { .. }
             | VmInstruction::IntOverflow { .. }
             | VmInstruction::Icmp { .. }
             | VmInstruction::FloatBin { .. }
+            | VmInstruction::FloatIntBin { .. }
             | VmInstruction::FloatUnary { .. }
             | VmInstruction::FloatTernary { .. }
             | VmInstruction::FloatCast { .. }
+            | VmInstruction::FloatRoundToInt { .. }
             | VmInstruction::Fcmp { .. }
             | VmInstruction::FloatClass { .. }
             | VmInstruction::Cast { .. }
@@ -1394,16 +1917,52 @@ fn record_tokens(
     let mut tokens = Vec::with_capacity(1 + desc.operand_descs.len());
     tokens.push(desc.opcode_for_site(key, pc) as u64);
     for operand in &desc.operand_descs {
-        tokens.push(
-            *operand_values
-                .get(&operand.name)
-                .ok_or_else(|| anyhow::anyhow!("missing operand {} for {}", operand.name, desc.name))?,
-        );
+        let value = *operand_values
+            .get(&operand.name)
+            .ok_or_else(|| anyhow::anyhow!("missing operand {} for {}", operand.name, desc.name))?;
+        tokens.push(checked_operand_value(operand, value, &desc.name)?);
     }
     Ok(InstructionRecord {
         decoded_width: desc.decoded_width,
         tokens,
     })
+}
+
+fn checked_operand_value(operand: &OperandDesc, value: u64, instruction_name: &str) -> anyhow::Result<u64> {
+    match operand.kind {
+        OperandKind::VReg => {
+            if value > 31 {
+                anyhow::bail!(
+                    "VM instruction {instruction_name} operand {} references x{value}, but current scalar VM only has x0..x31",
+                    operand.name
+                );
+            }
+        },
+        OperandKind::Imm => {
+            let bits = immediate_value_bits(&operand.value_type)?;
+            if bits < 64 && value >= (1_u64 << bits) {
+                anyhow::bail!(
+                    "VM instruction {instruction_name} operand {} value {value} does not fit in imm<{}>",
+                    operand.name,
+                    operand.value_type
+                );
+            }
+        },
+        OperandKind::ConstPoolIndex | OperandKind::Label | OperandKind::Unknown => {},
+    }
+    Ok(value)
+}
+
+fn immediate_value_bits(value_type: &str) -> anyhow::Result<u32> {
+    match value_type {
+        "i1" | "u1" => Ok(1),
+        "i7" | "u7" => Ok(7),
+        "i8" | "u8" => Ok(8),
+        "i16" | "u16" => Ok(16),
+        "i32" | "u32" => Ok(32),
+        "i64" | "u64" | "ptr" | "usize" | "label" | "const_pool_index" => Ok(64),
+        other => anyhow::bail!("unsupported immediate operand value type {other}"),
+    }
 }
 
 fn label_pc(label_pcs: &HashMap<LabelId, usize>, label: LabelId) -> anyhow::Result<usize> {
@@ -1499,6 +2058,39 @@ impl Hash for VmInstruction {
                 dst.hash(state);
                 width.hash(state);
             },
+            VmInstruction::ReadVScale { dst, width } => {
+                dst.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::ReadRounding { dst, width } => {
+                dst.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::ReadFltRounds { dst, width } => {
+                dst.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::WriteRounding { src, width } => {
+                src.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::ReadFpState { kind, dst, width } => {
+                kind.hash(state);
+                dst.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::WriteFpState { kind, src, width } => {
+                kind.hash(state);
+                src.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::ResetFpState { kind } => {
+                kind.hash(state);
+            },
+            VmInstruction::ReadThreadPointer { dst, width } => {
+                dst.hash(state);
+                width.hash(state);
+            },
             VmInstruction::SuperAddXor {
                 dst,
                 lhs,
@@ -1549,6 +2141,118 @@ impl Hash for VmInstruction {
                 addend.hash(state);
                 width.hash(state);
             },
+            VmInstruction::SuperLoadMul {
+                dst,
+                ptr,
+                factor,
+                width,
+            } => {
+                dst.hash(state);
+                ptr.hash(state);
+                factor.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::SuperLoadUDiv {
+                dst,
+                ptr,
+                divisor,
+                width,
+            } => {
+                dst.hash(state);
+                ptr.hash(state);
+                divisor.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::SuperLoadSDiv {
+                dst,
+                ptr,
+                divisor,
+                width,
+            }
+            | VmInstruction::SuperLoadURem {
+                dst,
+                ptr,
+                divisor,
+                width,
+            }
+            | VmInstruction::SuperLoadSRem {
+                dst,
+                ptr,
+                divisor,
+                width,
+            } => {
+                dst.hash(state);
+                ptr.hash(state);
+                divisor.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::SuperLoadShl { dst, ptr, shift, width }
+            | VmInstruction::SuperLoadLShr { dst, ptr, shift, width }
+            | VmInstruction::SuperLoadAShr { dst, ptr, shift, width } => {
+                dst.hash(state);
+                ptr.hash(state);
+                shift.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::SuperLoadSMax { dst, ptr, rhs, width }
+            | VmInstruction::SuperLoadSMin { dst, ptr, rhs, width }
+            | VmInstruction::SuperLoadUMax { dst, ptr, rhs, width }
+            | VmInstruction::SuperLoadUMin { dst, ptr, rhs, width }
+            | VmInstruction::SuperLoadUAddSat { dst, ptr, rhs, width }
+            | VmInstruction::SuperLoadUSubSat { dst, ptr, rhs, width }
+            | VmInstruction::SuperLoadSAddSat { dst, ptr, rhs, width }
+            | VmInstruction::SuperLoadSSubSat { dst, ptr, rhs, width }
+            | VmInstruction::SuperLoadUShlSat { dst, ptr, rhs, width }
+            | VmInstruction::SuperLoadSShlSat { dst, ptr, rhs, width } => {
+                dst.hash(state);
+                ptr.hash(state);
+                rhs.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::SuperLoadAnd {
+                dst,
+                ptr,
+                and_rhs,
+                width,
+            } => {
+                dst.hash(state);
+                ptr.hash(state);
+                and_rhs.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::SuperLoadOr {
+                dst,
+                ptr,
+                or_rhs,
+                width,
+            } => {
+                dst.hash(state);
+                ptr.hash(state);
+                or_rhs.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::SuperLoadSub {
+                dst,
+                ptr,
+                subtrahend,
+                width,
+            } => {
+                dst.hash(state);
+                ptr.hash(state);
+                subtrahend.hash(state);
+                width.hash(state);
+            },
+            VmInstruction::SuperLoadXor {
+                dst,
+                ptr,
+                xor_rhs,
+                width,
+            } => {
+                dst.hash(state);
+                ptr.hash(state);
+                xor_rhs.hash(state);
+                width.hash(state);
+            },
             VmInstruction::Mov { dst, src, width } => {
                 dst.hash(state);
                 src.hash(state);
@@ -1593,6 +2297,19 @@ impl Hash for VmInstruction {
                 rhs.hash(state);
                 width.hash(state);
             },
+            VmInstruction::FloatIntBin {
+                op,
+                dst,
+                lhs,
+                rhs,
+                width,
+            } => {
+                float_int_bin_tag(*op).hash(state);
+                dst.hash(state);
+                lhs.hash(state);
+                rhs.hash(state);
+                width.hash(state);
+            },
             VmInstruction::FloatUnary { op, dst, src, width } => {
                 float_unary_tag(*op).hash(state);
                 dst.hash(state);
@@ -1622,6 +2339,19 @@ impl Hash for VmInstruction {
                 to_width,
             } => {
                 float_cast_tag(*op).hash(state);
+                dst.hash(state);
+                src.hash(state);
+                from_width.hash(state);
+                to_width.hash(state);
+            },
+            VmInstruction::FloatRoundToInt {
+                op,
+                dst,
+                src,
+                from_width,
+                to_width,
+            } => {
+                float_round_to_int_tag(*op).hash(state);
                 dst.hash(state);
                 src.hash(state);
                 from_width.hash(state);
@@ -1757,44 +2487,52 @@ impl Hash for VmInstruction {
                 ptr,
                 width,
                 ordering,
+                sync_scope,
             } => {
                 dst.hash(state);
                 ptr.hash(state);
                 width.hash(state);
                 memory_ordering_tag(*ordering).hash(state);
+                sync_scope.hash(state);
             },
             VmInstruction::AtomicStore {
                 src,
                 ptr,
                 width,
                 ordering,
+                sync_scope,
             } => {
                 src.hash(state);
                 ptr.hash(state);
                 width.hash(state);
                 memory_ordering_tag(*ordering).hash(state);
+                sync_scope.hash(state);
             },
             VmInstruction::VolatileAtomicLoad {
                 dst,
                 ptr,
                 width,
                 ordering,
+                sync_scope,
             } => {
                 dst.hash(state);
                 ptr.hash(state);
                 width.hash(state);
                 memory_ordering_tag(*ordering).hash(state);
+                sync_scope.hash(state);
             },
             VmInstruction::VolatileAtomicStore {
                 src,
                 ptr,
                 width,
                 ordering,
+                sync_scope,
             } => {
                 src.hash(state);
                 ptr.hash(state);
                 width.hash(state);
                 memory_ordering_tag(*ordering).hash(state);
+                sync_scope.hash(state);
             },
             VmInstruction::AtomicRmw {
                 op,
@@ -1803,6 +2541,7 @@ impl Hash for VmInstruction {
                 src,
                 width,
                 ordering,
+                sync_scope,
             } => {
                 atomic_rmw_tag(*op).hash(state);
                 dst.hash(state);
@@ -1810,6 +2549,7 @@ impl Hash for VmInstruction {
                 src.hash(state);
                 width.hash(state);
                 memory_ordering_tag(*ordering).hash(state);
+                sync_scope.hash(state);
             },
             VmInstruction::VolatileAtomicRmw {
                 op,
@@ -1818,6 +2558,7 @@ impl Hash for VmInstruction {
                 src,
                 width,
                 ordering,
+                sync_scope,
             } => {
                 atomic_rmw_tag(*op).hash(state);
                 dst.hash(state);
@@ -1825,6 +2566,7 @@ impl Hash for VmInstruction {
                 src.hash(state);
                 width.hash(state);
                 memory_ordering_tag(*ordering).hash(state);
+                sync_scope.hash(state);
             },
             VmInstruction::CmpXchg {
                 old,
@@ -1835,6 +2577,7 @@ impl Hash for VmInstruction {
                 width,
                 success_ordering,
                 failure_ordering,
+                sync_scope,
             } => {
                 old.hash(state);
                 success.hash(state);
@@ -1844,6 +2587,7 @@ impl Hash for VmInstruction {
                 width.hash(state);
                 memory_ordering_tag(*success_ordering).hash(state);
                 memory_ordering_tag(*failure_ordering).hash(state);
+                sync_scope.hash(state);
             },
             VmInstruction::VolatileCmpXchg {
                 old,
@@ -1854,6 +2598,7 @@ impl Hash for VmInstruction {
                 width,
                 success_ordering,
                 failure_ordering,
+                sync_scope,
             } => {
                 old.hash(state);
                 success.hash(state);
@@ -1863,9 +2608,11 @@ impl Hash for VmInstruction {
                 width.hash(state);
                 memory_ordering_tag(*success_ordering).hash(state);
                 memory_ordering_tag(*failure_ordering).hash(state);
+                sync_scope.hash(state);
             },
-            VmInstruction::Fence { ordering } => {
+            VmInstruction::Fence { ordering, sync_scope } => {
                 memory_ordering_tag(*ordering).hash(state);
+                sync_scope.hash(state);
             },
             VmInstruction::Gep { dst, base, offset } => {
                 dst.hash(state);
@@ -1892,6 +2639,30 @@ impl Hash for VmInstruction {
                 8_u8.hash(state);
                 start.hash(state);
                 end.hash(state);
+            },
+            VmInstruction::PseudoProbe {
+                guid,
+                index,
+                probe_type,
+                attributes,
+            } => {
+                9_u8.hash(state);
+                guid.hash(state);
+                index.hash(state);
+                probe_type.hash(state);
+                attributes.hash(state);
+            },
+            VmInstruction::Prefetch {
+                ptr,
+                rw,
+                locality,
+                cache,
+            } => {
+                10_u8.hash(state);
+                ptr.hash(state);
+                rw.hash(state);
+                locality.hash(state);
+                cache.hash(state);
             },
             VmInstruction::SideEffect => 5_u8.hash(state),
             VmInstruction::Nop => 2_u8.hash(state),
@@ -1984,6 +2755,13 @@ fn float_bin_tag(op: FloatBinOp) -> u8 {
         FloatBinOp::Minimum => 7,
         FloatBinOp::Maximum => 8,
         FloatBinOp::CopySign => 9,
+        FloatBinOp::Pow => 10,
+    }
+}
+
+fn float_int_bin_tag(op: FloatIntBinOp) -> u8 {
+    match op {
+        FloatIntBinOp::PowI => 0,
     }
 }
 
@@ -2000,6 +2778,13 @@ fn float_unary_tag(op: FloatUnaryOp) -> u8 {
         FloatUnaryOp::NearbyInt => 8,
         FloatUnaryOp::Round => 9,
         FloatUnaryOp::RoundEven => 10,
+        FloatUnaryOp::Sin => 11,
+        FloatUnaryOp::Cos => 12,
+        FloatUnaryOp::Exp => 13,
+        FloatUnaryOp::Exp2 => 14,
+        FloatUnaryOp::Log => 15,
+        FloatUnaryOp::Log10 => 16,
+        FloatUnaryOp::Log2 => 17,
     }
 }
 
@@ -2016,8 +2801,19 @@ fn float_cast_tag(op: FloatCastOp) -> u8 {
         FloatCastOp::UnsignedIntToFloat => 1,
         FloatCastOp::FloatToSignedInt => 2,
         FloatCastOp::FloatToUnsignedInt => 3,
-        FloatCastOp::FloatTrunc => 4,
-        FloatCastOp::FloatExt => 5,
+        FloatCastOp::FloatToSignedIntSat => 4,
+        FloatCastOp::FloatToUnsignedIntSat => 5,
+        FloatCastOp::FloatTrunc => 6,
+        FloatCastOp::FloatExt => 7,
+    }
+}
+
+fn float_round_to_int_tag(op: FloatRoundToIntOp) -> u8 {
+    match op {
+        FloatRoundToIntOp::LRint => 0,
+        FloatRoundToIntOp::LLRint => 1,
+        FloatRoundToIntOp::LRound => 2,
+        FloatRoundToIntOp::LLRound => 3,
     }
 }
 
@@ -2307,6 +3103,43 @@ mod tests {
     }
 
     #[test]
+    fn super_gep_load_fuses_when_pointer_register_is_reused_after_rewrite() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_gep_load_reused_register", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Gep {
+            dst: 1,
+            base: 0,
+            offset: 8,
+        });
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::MovImm {
+            dst: 1,
+            imm: 123,
+            width: 32,
+        });
+        builder.push(VmInstruction::Mov {
+            dst: 3,
+            src: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 2 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "gep_load");
+        assert!(matches!(fused.instructions[0], VmInstruction::SuperGepLoad { .. }));
+        assert_eq!(fused.profile_instructions[1], "mov_imm");
+        assert_eq!(fused.profile_instructions[2], "mov");
+    }
+
+    #[test]
     fn super_load_add_fusion_uses_wide_record() {
         let profile = ProfilePackage::builtin_test().expect("profile");
         verify_profile(&profile).expect("verified profile");
@@ -2366,6 +3199,854 @@ mod tests {
 
         assert_eq!(fused.profile_instructions[0], "load");
         assert_eq!(fused.profile_instructions[1], "iadd");
+    }
+
+    #[test]
+    fn super_load_mul_fusion_uses_wide_record_with_commuted_operand() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_imul", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Mul,
+            dst: 3,
+            lhs: 1,
+            rhs: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load_imul");
+        assert!(matches!(
+            fused.instructions[0],
+            VmInstruction::SuperLoadMul { factor: 1, .. }
+        ));
+        let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+        assert!(image.debug_dump.contains("load_imul width=32"));
+    }
+
+    #[test]
+    fn super_load_mul_does_not_fuse_when_loaded_value_has_extra_use() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_imul_no_fuse", 5, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Mul,
+            dst: 3,
+            lhs: 2,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Mov {
+            dst: 4,
+            src: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load");
+        assert_eq!(fused.profile_instructions[1], "imul");
+    }
+
+    #[test]
+    fn super_load_udiv_fusion_uses_wide_record() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_iudiv", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::UDiv,
+            dst: 3,
+            lhs: 2,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load_iudiv");
+        assert!(matches!(
+            fused.instructions[0],
+            VmInstruction::SuperLoadUDiv { divisor: 1, .. }
+        ));
+        let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+        assert!(image.debug_dump.contains("load_iudiv width=32"));
+    }
+
+    #[test]
+    fn super_load_udiv_does_not_fuse_when_loaded_value_is_rhs() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_iudiv_rhs_no_fuse", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::UDiv,
+            dst: 3,
+            lhs: 1,
+            rhs: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load");
+        assert_eq!(fused.profile_instructions[1], "iudiv");
+    }
+
+    #[test]
+    fn super_load_div_rem_fusions_use_wide_records() {
+        for (op, profile_instruction, build_name) in [
+            (BinOp::SDiv, "load_isdiv", "super_load_isdiv"),
+            (BinOp::URem, "load_iurem", "super_load_iurem"),
+            (BinOp::SRem, "load_isrem", "super_load_isrem"),
+        ] {
+            let profile = ProfilePackage::builtin_test().expect("profile");
+            verify_profile(&profile).expect("verified profile");
+            let mut builder = VmFunctionBuilder::new(build_name, 4, 32);
+            let entry = builder.new_label();
+            builder.bind_label(entry);
+            builder.push(VmInstruction::Load {
+                dst: 2,
+                ptr: 0,
+                width: 32,
+            });
+            builder.push(VmInstruction::Bin {
+                op,
+                dst: 3,
+                lhs: 2,
+                rhs: 1,
+                width: 32,
+            });
+            builder.push(VmInstruction::Ret { src: 3 });
+            let function = builder.finish().expect("vm function");
+            let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+            assert_eq!(fused.profile_instructions[0], profile_instruction);
+            match op {
+                BinOp::SDiv => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadSDiv { divisor: 1, .. }
+                )),
+                BinOp::URem => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadURem { divisor: 1, .. }
+                )),
+                BinOp::SRem => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadSRem { divisor: 1, .. }
+                )),
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::UDiv
+                | BinOp::Xor
+                | BinOp::And
+                | BinOp::Or
+                | BinOp::Shl
+                | BinOp::LShr
+                | BinOp::AShr
+                | BinOp::SMax
+                | BinOp::SMin
+                | BinOp::UMax
+                | BinOp::UMin
+                | BinOp::UAddSat
+                | BinOp::USubSat
+                | BinOp::SAddSat
+                | BinOp::SSubSat
+                | BinOp::UShlSat
+                | BinOp::SShlSat => panic!("unexpected test op {op:?}"),
+            }
+            let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+            assert!(image.debug_dump.contains(&format!("{profile_instruction} width=32")));
+        }
+    }
+
+    #[test]
+    fn super_load_div_rem_do_not_fuse_when_loaded_value_is_rhs() {
+        for (op, profile_instruction, build_name) in [
+            (BinOp::SDiv, "isdiv", "super_load_isdiv_rhs_no_fuse"),
+            (BinOp::URem, "iurem", "super_load_iurem_rhs_no_fuse"),
+            (BinOp::SRem, "isrem", "super_load_isrem_rhs_no_fuse"),
+        ] {
+            let profile = ProfilePackage::builtin_test().expect("profile");
+            verify_profile(&profile).expect("verified profile");
+            let mut builder = VmFunctionBuilder::new(build_name, 4, 32);
+            let entry = builder.new_label();
+            builder.bind_label(entry);
+            builder.push(VmInstruction::Load {
+                dst: 2,
+                ptr: 0,
+                width: 32,
+            });
+            builder.push(VmInstruction::Bin {
+                op,
+                dst: 3,
+                lhs: 1,
+                rhs: 2,
+                width: 32,
+            });
+            builder.push(VmInstruction::Ret { src: 3 });
+            let function = builder.finish().expect("vm function");
+            let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+            assert_eq!(fused.profile_instructions[0], "load");
+            assert_eq!(fused.profile_instructions[1], profile_instruction);
+        }
+    }
+
+    #[test]
+    fn super_load_shift_fusions_use_wide_records() {
+        for (op, profile_instruction, build_name) in [
+            (BinOp::Shl, "load_ishl", "super_load_ishl"),
+            (BinOp::LShr, "load_ilshr", "super_load_ilshr"),
+            (BinOp::AShr, "load_iashr", "super_load_iashr"),
+        ] {
+            let profile = ProfilePackage::builtin_test().expect("profile");
+            verify_profile(&profile).expect("verified profile");
+            let mut builder = VmFunctionBuilder::new(build_name, 4, 32);
+            let entry = builder.new_label();
+            builder.bind_label(entry);
+            builder.push(VmInstruction::Load {
+                dst: 2,
+                ptr: 0,
+                width: 32,
+            });
+            builder.push(VmInstruction::Bin {
+                op,
+                dst: 3,
+                lhs: 2,
+                rhs: 1,
+                width: 32,
+            });
+            builder.push(VmInstruction::Ret { src: 3 });
+            let function = builder.finish().expect("vm function");
+            let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+            assert_eq!(fused.profile_instructions[0], profile_instruction);
+            match op {
+                BinOp::Shl => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadShl { shift: 1, .. }
+                )),
+                BinOp::LShr => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadLShr { shift: 1, .. }
+                )),
+                BinOp::AShr => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadAShr { shift: 1, .. }
+                )),
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::UDiv
+                | BinOp::SDiv
+                | BinOp::URem
+                | BinOp::SRem
+                | BinOp::Xor
+                | BinOp::And
+                | BinOp::Or
+                | BinOp::SMax
+                | BinOp::SMin
+                | BinOp::UMax
+                | BinOp::UMin
+                | BinOp::UAddSat
+                | BinOp::USubSat
+                | BinOp::SAddSat
+                | BinOp::SSubSat
+                | BinOp::UShlSat
+                | BinOp::SShlSat => panic!("unexpected test op {op:?}"),
+            }
+            let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+            assert!(image.debug_dump.contains(&format!("{profile_instruction} width=32")));
+        }
+    }
+
+    #[test]
+    fn super_load_shift_do_not_fuse_when_loaded_value_is_rhs() {
+        for (op, profile_instruction, build_name) in [
+            (BinOp::Shl, "ishl", "super_load_ishl_rhs_no_fuse"),
+            (BinOp::LShr, "ilshr", "super_load_ilshr_rhs_no_fuse"),
+            (BinOp::AShr, "iashr", "super_load_iashr_rhs_no_fuse"),
+        ] {
+            let profile = ProfilePackage::builtin_test().expect("profile");
+            verify_profile(&profile).expect("verified profile");
+            let mut builder = VmFunctionBuilder::new(build_name, 4, 32);
+            let entry = builder.new_label();
+            builder.bind_label(entry);
+            builder.push(VmInstruction::Load {
+                dst: 2,
+                ptr: 0,
+                width: 32,
+            });
+            builder.push(VmInstruction::Bin {
+                op,
+                dst: 3,
+                lhs: 1,
+                rhs: 2,
+                width: 32,
+            });
+            builder.push(VmInstruction::Ret { src: 3 });
+            let function = builder.finish().expect("vm function");
+            let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+            assert_eq!(fused.profile_instructions[0], "load");
+            assert_eq!(fused.profile_instructions[1], profile_instruction);
+        }
+    }
+
+    #[test]
+    fn super_load_minmax_fusions_use_wide_records() {
+        for (op, profile_instruction, build_name, loaded_on_rhs) in [
+            (BinOp::SMax, "load_ismax", "super_load_ismax", false),
+            (BinOp::SMin, "load_ismin", "super_load_ismin_commuted", true),
+            (BinOp::UMax, "load_iumax", "super_load_iumax", false),
+            (BinOp::UMin, "load_iumin", "super_load_iumin_commuted", true),
+        ] {
+            let profile = ProfilePackage::builtin_test().expect("profile");
+            verify_profile(&profile).expect("verified profile");
+            let mut builder = VmFunctionBuilder::new(build_name, 4, 32);
+            let entry = builder.new_label();
+            builder.bind_label(entry);
+            builder.push(VmInstruction::Load {
+                dst: 2,
+                ptr: 0,
+                width: 32,
+            });
+            let (lhs, rhs) = if loaded_on_rhs { (1, 2) } else { (2, 1) };
+            builder.push(VmInstruction::Bin {
+                op,
+                dst: 3,
+                lhs,
+                rhs,
+                width: 32,
+            });
+            builder.push(VmInstruction::Ret { src: 3 });
+            let function = builder.finish().expect("vm function");
+            let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+            assert_eq!(fused.profile_instructions[0], profile_instruction);
+            match op {
+                BinOp::SMax => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadSMax { rhs: 1, .. }
+                )),
+                BinOp::SMin => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadSMin { rhs: 1, .. }
+                )),
+                BinOp::UMax => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadUMax { rhs: 1, .. }
+                )),
+                BinOp::UMin => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadUMin { rhs: 1, .. }
+                )),
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::UDiv
+                | BinOp::SDiv
+                | BinOp::URem
+                | BinOp::SRem
+                | BinOp::Xor
+                | BinOp::And
+                | BinOp::Or
+                | BinOp::Shl
+                | BinOp::LShr
+                | BinOp::AShr
+                | BinOp::UAddSat
+                | BinOp::USubSat
+                | BinOp::SAddSat
+                | BinOp::SSubSat
+                | BinOp::UShlSat
+                | BinOp::SShlSat => panic!("unexpected test op {op:?}"),
+            }
+            let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+            assert!(image.debug_dump.contains(&format!("{profile_instruction} width=32")));
+        }
+    }
+
+    #[test]
+    fn super_load_minmax_do_not_fuse_when_loaded_value_has_extra_use() {
+        for (op, profile_instruction, build_name) in [
+            (BinOp::SMax, "ismax", "super_load_ismax_no_fuse"),
+            (BinOp::SMin, "ismin", "super_load_ismin_no_fuse"),
+            (BinOp::UMax, "iumax", "super_load_iumax_no_fuse"),
+            (BinOp::UMin, "iumin", "super_load_iumin_no_fuse"),
+        ] {
+            let profile = ProfilePackage::builtin_test().expect("profile");
+            verify_profile(&profile).expect("verified profile");
+            let mut builder = VmFunctionBuilder::new(build_name, 5, 32);
+            let entry = builder.new_label();
+            builder.bind_label(entry);
+            builder.push(VmInstruction::Load {
+                dst: 2,
+                ptr: 0,
+                width: 32,
+            });
+            builder.push(VmInstruction::Bin {
+                op,
+                dst: 3,
+                lhs: 1,
+                rhs: 2,
+                width: 32,
+            });
+            builder.push(VmInstruction::Mov {
+                dst: 4,
+                src: 2,
+                width: 32,
+            });
+            builder.push(VmInstruction::Ret { src: 3 });
+            let function = builder.finish().expect("vm function");
+            let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+            assert_eq!(fused.profile_instructions[0], "load");
+            assert_eq!(fused.profile_instructions[1], profile_instruction);
+        }
+    }
+
+    #[test]
+    fn super_load_saturating_fusions_use_wide_records() {
+        for (op, profile_instruction, build_name, loaded_on_rhs) in [
+            (BinOp::UAddSat, "load_iuadd_sat", "super_load_iuadd_sat_commuted", true),
+            (BinOp::SAddSat, "load_isadd_sat", "super_load_isadd_sat", false),
+            (BinOp::USubSat, "load_iusub_sat", "super_load_iusub_sat", false),
+            (BinOp::SSubSat, "load_issub_sat", "super_load_issub_sat", false),
+            (BinOp::UShlSat, "load_iushl_sat", "super_load_iushl_sat", false),
+            (BinOp::SShlSat, "load_isshl_sat", "super_load_isshl_sat", false),
+        ] {
+            let profile = ProfilePackage::builtin_test().expect("profile");
+            verify_profile(&profile).expect("verified profile");
+            let mut builder = VmFunctionBuilder::new(build_name, 4, 32);
+            let entry = builder.new_label();
+            builder.bind_label(entry);
+            builder.push(VmInstruction::Load {
+                dst: 2,
+                ptr: 0,
+                width: 32,
+            });
+            let (lhs, rhs) = if loaded_on_rhs { (1, 2) } else { (2, 1) };
+            builder.push(VmInstruction::Bin {
+                op,
+                dst: 3,
+                lhs,
+                rhs,
+                width: 32,
+            });
+            builder.push(VmInstruction::Ret { src: 3 });
+            let function = builder.finish().expect("vm function");
+            let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+            assert_eq!(fused.profile_instructions[0], profile_instruction);
+            match op {
+                BinOp::UAddSat => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadUAddSat { rhs: 1, .. }
+                )),
+                BinOp::SAddSat => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadSAddSat { rhs: 1, .. }
+                )),
+                BinOp::USubSat => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadUSubSat { rhs: 1, .. }
+                )),
+                BinOp::SSubSat => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadSSubSat { rhs: 1, .. }
+                )),
+                BinOp::UShlSat => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadUShlSat { rhs: 1, .. }
+                )),
+                BinOp::SShlSat => assert!(matches!(
+                    fused.instructions[0],
+                    VmInstruction::SuperLoadSShlSat { rhs: 1, .. }
+                )),
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::UDiv
+                | BinOp::SDiv
+                | BinOp::URem
+                | BinOp::SRem
+                | BinOp::Xor
+                | BinOp::And
+                | BinOp::Or
+                | BinOp::Shl
+                | BinOp::LShr
+                | BinOp::AShr
+                | BinOp::SMax
+                | BinOp::SMin
+                | BinOp::UMax
+                | BinOp::UMin => panic!("unexpected test op {op:?}"),
+            }
+            let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+            assert!(image.debug_dump.contains(&format!("{profile_instruction} width=32")));
+        }
+    }
+
+    #[test]
+    fn super_load_saturating_do_not_fuse_when_loaded_value_has_extra_use() {
+        for (op, profile_instruction, build_name) in [
+            (BinOp::UAddSat, "iuadd_sat", "super_load_iuadd_sat_no_fuse"),
+            (BinOp::USubSat, "iusub_sat", "super_load_iusub_sat_no_fuse"),
+            (BinOp::SAddSat, "isadd_sat", "super_load_isadd_sat_no_fuse"),
+            (BinOp::SSubSat, "issub_sat", "super_load_issub_sat_no_fuse"),
+            (BinOp::UShlSat, "iushl_sat", "super_load_iushl_sat_no_fuse"),
+            (BinOp::SShlSat, "isshl_sat", "super_load_isshl_sat_no_fuse"),
+        ] {
+            let profile = ProfilePackage::builtin_test().expect("profile");
+            verify_profile(&profile).expect("verified profile");
+            let mut builder = VmFunctionBuilder::new(build_name, 5, 32);
+            let entry = builder.new_label();
+            builder.bind_label(entry);
+            builder.push(VmInstruction::Load {
+                dst: 2,
+                ptr: 0,
+                width: 32,
+            });
+            builder.push(VmInstruction::Bin {
+                op,
+                dst: 3,
+                lhs: 2,
+                rhs: 1,
+                width: 32,
+            });
+            builder.push(VmInstruction::Mov {
+                dst: 4,
+                src: 2,
+                width: 32,
+            });
+            builder.push(VmInstruction::Ret { src: 3 });
+            let function = builder.finish().expect("vm function");
+            let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+            assert_eq!(fused.profile_instructions[0], "load");
+            assert_eq!(fused.profile_instructions[1], profile_instruction);
+        }
+    }
+
+    #[test]
+    fn super_load_saturating_non_commutative_do_not_fuse_when_loaded_value_is_rhs() {
+        for (op, profile_instruction, build_name) in [
+            (BinOp::USubSat, "iusub_sat", "super_load_iusub_sat_rhs_no_fuse"),
+            (BinOp::SSubSat, "issub_sat", "super_load_issub_sat_rhs_no_fuse"),
+            (BinOp::UShlSat, "iushl_sat", "super_load_iushl_sat_rhs_no_fuse"),
+            (BinOp::SShlSat, "isshl_sat", "super_load_isshl_sat_rhs_no_fuse"),
+        ] {
+            let profile = ProfilePackage::builtin_test().expect("profile");
+            verify_profile(&profile).expect("verified profile");
+            let mut builder = VmFunctionBuilder::new(build_name, 4, 32);
+            let entry = builder.new_label();
+            builder.bind_label(entry);
+            builder.push(VmInstruction::Load {
+                dst: 2,
+                ptr: 0,
+                width: 32,
+            });
+            builder.push(VmInstruction::Bin {
+                op,
+                dst: 3,
+                lhs: 1,
+                rhs: 2,
+                width: 32,
+            });
+            builder.push(VmInstruction::Ret { src: 3 });
+            let function = builder.finish().expect("vm function");
+            let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+            assert_eq!(fused.profile_instructions[0], "load");
+            assert_eq!(fused.profile_instructions[1], profile_instruction);
+        }
+    }
+
+    #[test]
+    fn super_load_and_fusion_uses_wide_record_with_commuted_operand() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_iand", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::And,
+            dst: 3,
+            lhs: 1,
+            rhs: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load_iand");
+        assert!(matches!(
+            fused.instructions[0],
+            VmInstruction::SuperLoadAnd { and_rhs: 1, .. }
+        ));
+        let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+        assert!(image.debug_dump.contains("load_iand width=32"));
+    }
+
+    #[test]
+    fn super_load_and_does_not_fuse_when_loaded_value_has_extra_use() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_iand_no_fuse", 5, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::And,
+            dst: 3,
+            lhs: 2,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Mov {
+            dst: 4,
+            src: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load");
+        assert_eq!(fused.profile_instructions[1], "iand");
+    }
+
+    #[test]
+    fn super_load_or_fusion_uses_wide_record_with_commuted_operand() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_ior", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Or,
+            dst: 3,
+            lhs: 1,
+            rhs: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load_ior");
+        assert!(matches!(
+            fused.instructions[0],
+            VmInstruction::SuperLoadOr { or_rhs: 1, .. }
+        ));
+        let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+        assert!(image.debug_dump.contains("load_ior width=32"));
+    }
+
+    #[test]
+    fn super_load_or_does_not_fuse_when_loaded_value_has_extra_use() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_ior_no_fuse", 5, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Or,
+            dst: 3,
+            lhs: 2,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Mov {
+            dst: 4,
+            src: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load");
+        assert_eq!(fused.profile_instructions[1], "ior");
+    }
+
+    #[test]
+    fn super_load_sub_fusion_uses_wide_record() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_isub", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Sub,
+            dst: 3,
+            lhs: 2,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load_isub");
+        assert!(matches!(fused.instructions[0], VmInstruction::SuperLoadSub { .. }));
+        let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+        assert!(image.debug_dump.contains("load_isub width=32"));
+    }
+
+    #[test]
+    fn super_load_sub_does_not_fuse_when_loaded_value_is_rhs() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_isub_rhs_no_fuse", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Sub,
+            dst: 3,
+            lhs: 1,
+            rhs: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load");
+        assert_eq!(fused.profile_instructions[1], "isub");
+    }
+
+    #[test]
+    fn super_load_xor_fusion_uses_wide_record() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_ixor", 4, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Xor,
+            dst: 3,
+            lhs: 2,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load_ixor");
+        assert!(matches!(fused.instructions[0], VmInstruction::SuperLoadXor { .. }));
+        let image = BytecodeEncoder::new(&profile).encode(&fused).expect("bytecode");
+
+        assert!(image.debug_dump.contains("load_ixor width=32"));
+    }
+
+    #[test]
+    fn super_load_xor_does_not_fuse_when_loaded_value_has_extra_use() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("super_load_ixor_no_fuse", 5, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Load {
+            dst: 2,
+            ptr: 0,
+            width: 32,
+        });
+        builder.push(VmInstruction::Bin {
+            op: BinOp::Xor,
+            dst: 3,
+            lhs: 2,
+            rhs: 1,
+            width: 32,
+        });
+        builder.push(VmInstruction::Mov {
+            dst: 4,
+            src: 2,
+            width: 32,
+        });
+        builder.push(VmInstruction::Ret { src: 3 });
+        let function = builder.finish().expect("vm function");
+        let fused = fuse_superinstructions(function, &profile.isa, &profile.lowering);
+
+        assert_eq!(fused.profile_instructions[0], "load");
+        assert_eq!(fused.profile_instructions[1], "ixor");
     }
 
     #[test]
@@ -2429,6 +4110,29 @@ mod tests {
         );
         assert_eq!(&decoded[0][1..], &[0, 0, 32]);
         assert_eq!(execute_for_test(&profile, &image, &[]), 0x1234_5678);
+    }
+
+    #[test]
+    fn encoder_rejects_operand_value_outside_profile_schema() {
+        let profile = ProfilePackage::builtin_test().expect("profile");
+        verify_profile(&profile).expect("verified profile");
+        let mut builder = VmFunctionBuilder::new("wide_width_operand", 1, 32);
+        let entry = builder.new_label();
+        builder.bind_label(entry);
+        builder.push(VmInstruction::Mov {
+            dst: 0,
+            src: 0,
+            width: 128,
+        });
+        builder.push(VmInstruction::Ret { src: 0 });
+        let function = builder.finish().expect("vm function");
+
+        let err = BytecodeEncoder::new(&profile)
+            .encode(&function)
+            .expect_err("imm<u7> width operand must reject 128");
+
+        assert!(err.to_string().contains("width value 128"));
+        assert!(err.to_string().contains("imm<u7>"));
     }
 
     #[test]
@@ -2594,7 +4298,7 @@ mod tests {
     fn opcode_alias_selection_uses_function_key() {
         let profile = profile_with_isa(&include_str!("../profiles/amice-simple-vmp/isa.vm").replace(
             "opcode alias [0x10, 0x2c, 0x5a, 0x6d, 0x7a]",
-            "opcode alias [0x10, 0x1f0]",
+            "opcode alias [0x10, 0x3f0]",
         ));
         verify_profile(&profile).expect("profile with add aliases should verify");
 
@@ -2607,13 +4311,13 @@ mod tests {
         }
 
         assert!(seen.contains(&0x10));
-        assert!(seen.contains(&0x1f0));
+        assert!(seen.contains(&0x3f0));
     }
 
     #[test]
     fn bytecode_uses_vm_ir_profile_instruction_identity() {
-        let alt_iadd = r#"instr iadd_alt(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u8>) { # 第二条同语义整数加法处理器
-opcode alias [0x1f1] # iadd_alt 使用独立操作码 0x1f1
+        let alt_iadd = r#"instr iadd_alt(dst: vreg<i64>, lhs: vreg<i64>, rhs: vreg<i64>, width: imm<u7>) { # 第二条同语义整数加法处理器
+opcode alias [0x3f1] # iadd_alt 使用独立操作码 0x3f1
 semantic { # iadd_alt 保持与 iadd 相同的加法语义
 reg[dst] = trunc_width(reg[lhs] + reg[rhs], width) # 加法结果按目标宽度掩码
 pc = next # 执行继续到下一条字节码指令
@@ -2976,7 +4680,32 @@ pc = next # 执行继续到下一条字节码指令
                         operands[6] as usize
                     };
                 },
-                HandlerSemantic::Super(SuperOp::GepLoad | SuperOp::LoadAdd) => {
+                HandlerSemantic::Super(
+                    SuperOp::GepLoad
+                    | SuperOp::LoadAdd
+                    | SuperOp::LoadMul
+                    | SuperOp::LoadUDiv
+                    | SuperOp::LoadSDiv
+                    | SuperOp::LoadURem
+                    | SuperOp::LoadSRem
+                    | SuperOp::LoadShl
+                    | SuperOp::LoadLShr
+                    | SuperOp::LoadAShr
+                    | SuperOp::LoadSMax
+                    | SuperOp::LoadSMin
+                    | SuperOp::LoadUMax
+                    | SuperOp::LoadUMin
+                    | SuperOp::LoadUAddSat
+                    | SuperOp::LoadUSubSat
+                    | SuperOp::LoadSAddSat
+                    | SuperOp::LoadSSubSat
+                    | SuperOp::LoadUShlSat
+                    | SuperOp::LoadSShlSat
+                    | SuperOp::LoadAnd
+                    | SuperOp::LoadOr
+                    | SuperOp::LoadSub
+                    | SuperOp::LoadXor,
+                ) => {
                     unreachable!("not emitted by this test interpreter")
                 },
                 HandlerSemantic::Bin(op) => {
@@ -3045,19 +4774,32 @@ pc = next # 执行继续到下一条字节码指令
                 | HandlerSemantic::Gep
                 | HandlerSemantic::CallNative
                 | HandlerSemantic::ReadCounter(_)
+                | HandlerSemantic::ReadVScale
+                | HandlerSemantic::ReadRounding
+                | HandlerSemantic::ReadFltRounds
+                | HandlerSemantic::WriteRounding
+                | HandlerSemantic::ReadFpState(_)
+                | HandlerSemantic::WriteFpState(_)
+                | HandlerSemantic::ResetFpState(_)
+                | HandlerSemantic::ReadThreadPointer
                 | HandlerSemantic::StackSave
                 | HandlerSemantic::StackRestore
                 | HandlerSemantic::ClearCache
+                | HandlerSemantic::Prefetch
                 | HandlerSemantic::IntUnary(_)
                 | HandlerSemantic::IntTernary(_)
                 | HandlerSemantic::IntOverflow(_)
                 | HandlerSemantic::FloatBin(_)
+                | HandlerSemantic::FloatIntBin(_)
                 | HandlerSemantic::FloatUnary(_)
                 | HandlerSemantic::FloatTernary(_)
                 | HandlerSemantic::FloatCast(_)
+                | HandlerSemantic::FloatRoundToInt(_)
                 | HandlerSemantic::FloatClass
                 | HandlerSemantic::Fcmp => unreachable!("not emitted by this test"),
-                HandlerSemantic::SideEffect | HandlerSemantic::Nop => pc += record.decoded_width,
+                HandlerSemantic::PseudoProbe | HandlerSemantic::SideEffect | HandlerSemantic::Nop => {
+                    pc += record.decoded_width
+                },
                 HandlerSemantic::Br => pc = operands[1] as usize,
                 HandlerSemantic::BrCond => {
                     pc = if regs[operands[1] as usize] != 0 {
