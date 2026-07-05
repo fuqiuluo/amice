@@ -19,16 +19,19 @@ use amice_llvm::inkwell2::{
 };
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use amice_plugin::inkwell::basic_block::BasicBlock;
+#[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
+use amice_plugin::inkwell::llvm_sys::core::LLVMGetAtomicSyncScopeID;
+#[cfg(not(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1")))]
+use amice_plugin::inkwell::llvm_sys::core::LLVMIsAtomicSingleThread;
 use amice_plugin::inkwell::llvm_sys::core::{
     LLVMConstIntGetSExtValue, LLVMCountStructElementTypes, LLVMGetAggregateElement, LLVMGetAlignment,
-    LLVMGetAllocatedType, LLVMGetAtomicSyncScopeID, LLVMGetCalledFunctionType, LLVMGetCalledValue,
-    LLVMGetCmpXchgFailureOrdering, LLVMGetCmpXchgSuccessOrdering, LLVMGetConstOpcode, LLVMGetElementType,
-    LLVMGetGEPSourceElementType, LLVMGetMaskValue, LLVMGetNumMaskElements, LLVMGetNumOperandBundles,
-    LLVMGetNumOperands, LLVMGetOperand, LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGetValueKind,
-    LLVMGlobalGetValueType, LLVMIsAAddrSpaceCastInst, LLVMIsAAllocaInst, LLVMIsABitCastInst, LLVMIsAConstant,
-    LLVMIsAConstantAggregateZero, LLVMIsAConstantDataVector, LLVMIsAConstantExpr, LLVMIsAConstantInt,
-    LLVMIsAConstantVector, LLVMIsAGetElementPtrInst, LLVMIsAGlobalValue, LLVMIsAGlobalVariable, LLVMIsAInlineAsm,
-    LLVMIsInBounds, LLVMStructGetTypeAtIndex, LLVMTypeOf,
+    LLVMGetAllocatedType, LLVMGetCalledFunctionType, LLVMGetCalledValue, LLVMGetCmpXchgFailureOrdering,
+    LLVMGetCmpXchgSuccessOrdering, LLVMGetConstOpcode, LLVMGetElementType, LLVMGetGEPSourceElementType,
+    LLVMGetMaskValue, LLVMGetNumMaskElements, LLVMGetNumOperandBundles, LLVMGetNumOperands, LLVMGetOperand,
+    LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMGetValueKind, LLVMGlobalGetValueType, LLVMIsAAddrSpaceCastInst,
+    LLVMIsAAllocaInst, LLVMIsABitCastInst, LLVMIsAConstant, LLVMIsAConstantAggregateZero, LLVMIsAConstantDataVector,
+    LLVMIsAConstantExpr, LLVMIsAConstantInt, LLVMIsAConstantVector, LLVMIsAGetElementPtrInst, LLVMIsAGlobalValue,
+    LLVMIsAGlobalVariable, LLVMIsAInlineAsm, LLVMIsInBounds, LLVMStructGetTypeAtIndex, LLVMTypeOf,
 };
 use amice_plugin::inkwell::llvm_sys::prelude::{LLVMTypeRef, LLVMValueRef};
 use amice_plugin::inkwell::llvm_sys::target::{LLVMOffsetOfElement, LLVMStoreSizeOfType};
@@ -18866,13 +18869,26 @@ fn memory_is_volatile(instruction: InstructionValue<'_>, kind: &str) -> anyhow::
 }
 
 fn atomic_sync_scope(instruction: InstructionValue<'_>, kind: &str) -> anyhow::Result<u8> {
-    // SAFETY: `instruction` 是当前 module 中的 live atomic/fence instruction；C API
-    // 只读取 syncscope ID，不访问用户内存。LLVM 21 在 LLVMContext.h 中定义
-    // `SyncScope::SingleThread = 0`、`SyncScope::System = 1`。
-    checked_supported_atomic_sync_scope(
-        unsafe { LLVMGetAtomicSyncScopeID(instruction.as_value_ref()) } as u64,
-        kind,
-    )
+    #[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
+    {
+        // SAFETY: `instruction` 是当前 module 中的 live atomic/fence instruction；C API
+        // 只读取 syncscope ID，不访问用户内存。LLVM 20+ 暴露通用 syncscope ID。
+        return checked_supported_atomic_sync_scope(
+            unsafe { LLVMGetAtomicSyncScopeID(instruction.as_value_ref()) } as u64,
+            kind,
+        );
+    }
+
+    #[cfg(not(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1")))]
+    {
+        // SAFETY: LLVM 20 之前的 C API 只能表示 system/singlethread；这正是 runtime 支持的边界。
+        let scope = if unsafe { LLVMIsAtomicSingleThread(instruction.as_value_ref()) } != 0 {
+            LLVM_SINGLETHREAD_SYNC_SCOPE_ID
+        } else {
+            LLVM_SYSTEM_SYNC_SCOPE_ID
+        };
+        checked_supported_atomic_sync_scope(scope as u64, kind)
+    }
 }
 
 fn checked_supported_atomic_sync_scope(scope: u64, kind: &str) -> anyhow::Result<u8> {
@@ -19081,11 +19097,27 @@ fn map_atomic_rmw_op(op: AtomicRMWBinOp) -> anyhow::Result<AtomicRmwOp> {
         AtomicRMWBinOp::FSub => Ok(AtomicRmwOp::FSub),
         AtomicRMWBinOp::FMax => Ok(AtomicRmwOp::FMax),
         AtomicRMWBinOp::FMin => Ok(AtomicRmwOp::FMin),
+        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1"))]
         AtomicRMWBinOp::FMaximum => Ok(AtomicRmwOp::FMaximum),
+        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1"))]
         AtomicRMWBinOp::FMinimum => Ok(AtomicRmwOp::FMinimum),
+        #[cfg(any(
+            feature = "llvm19-1",
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1"
+        ))]
         AtomicRMWBinOp::UIncWrap => Ok(AtomicRmwOp::UIncWrap),
+        #[cfg(any(
+            feature = "llvm19-1",
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1"
+        ))]
         AtomicRMWBinOp::UDecWrap => Ok(AtomicRmwOp::UDecWrap),
+        #[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
         AtomicRMWBinOp::USubCond => Ok(AtomicRmwOp::USubCond),
+        #[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
         AtomicRMWBinOp::USubSat => Ok(AtomicRmwOp::USubSat),
     }
 }
@@ -19774,6 +19806,8 @@ fn instruction_basic_operand(instruction: InstructionValue<'_>, index: u32) -> O
             | LLVMTypeKind::LLVMMetadataTypeKind
             | LLVMTypeKind::LLVMTokenTypeKind
             | LLVMTypeKind::LLVMFunctionTypeKind => None,
+            #[cfg(not(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1")))]
+            LLVMTypeKind::LLVMX86_MMXTypeKind => Some(BasicValueEnum::new(value)),
             LLVMTypeKind::LLVMHalfTypeKind
             | LLVMTypeKind::LLVMBFloatTypeKind
             | LLVMTypeKind::LLVMFloatTypeKind

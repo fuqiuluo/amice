@@ -13,8 +13,9 @@ use amice_llvm::ptr_type;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::llvm_sys::core::{
-    LLVMBuildAtomicRMW, LLVMBuildFenceSyncScope, LLVMSetAlignment, LLVMSetAtomicSyncScopeID, LLVMSetVolatile,
+    LLVMBuildAtomicRMW, LLVMBuildFence, LLVMSetAlignment, LLVMSetAtomicSingleThread, LLVMSetVolatile,
 };
+use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use amice_plugin::inkwell::module::{Linkage, Module};
 use amice_plugin::inkwell::types::{ArrayType, FunctionType, IntType, PointerType};
 use amice_plugin::inkwell::values::{
@@ -2604,10 +2605,18 @@ fn emit_handler<'ctx, 'profile>(
             emit_atomic_store_handler(builder, operands, ctx, true)?;
         },
         RuntimeHandlerTemplate::AtomicRmw(op) => {
-            emit_atomic_rmw_handler(builder, operands, ctx, op, false)?;
+            if atomic_rmw_op_for_llvm(op).is_ok() {
+                emit_atomic_rmw_handler(builder, operands, ctx, op, false)?;
+            } else {
+                emit_trap_handler(builder, ctx)?;
+            }
         },
         RuntimeHandlerTemplate::VolatileAtomicRmw(op) => {
-            emit_atomic_rmw_handler(builder, operands, ctx, op, true)?;
+            if atomic_rmw_op_for_llvm(op).is_ok() {
+                emit_atomic_rmw_handler(builder, operands, ctx, op, true)?;
+            } else {
+                emit_trap_handler(builder, ctx)?;
+            }
         },
         RuntimeHandlerTemplate::CmpXchg => {
             emit_cmpxchg_handler(builder, operands, ctx, false)?;
@@ -2694,9 +2703,7 @@ fn emit_handler<'ctx, 'profile>(
             builder.build_unreachable()?;
         },
         RuntimeHandlerTemplate::Trap => {
-            let args: [BasicMetadataValueEnum<'ctx>; 0] = [];
-            builder.build_call(ctx.trap, &args, "vm.trap")?;
-            builder.build_unreachable()?;
+            emit_trap_handler(builder, ctx)?;
         },
         RuntimeHandlerTemplate::Ret => {
             let src = operands.get("src")?;
@@ -2713,6 +2720,16 @@ fn emit_handler<'ctx, 'profile>(
         },
     }
 
+    Ok(())
+}
+
+fn emit_trap_handler<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+) -> anyhow::Result<()> {
+    let args: [BasicMetadataValueEnum<'ctx>; 0] = [];
+    builder.build_call(ctx.trap, &args, "vm.trap")?;
+    builder.build_unreachable()?;
     Ok(())
 }
 
@@ -5671,9 +5688,7 @@ fn emit_atomic_load_case<'ctx>(
         .context("atomic load should produce an instruction")?;
     load_inst.set_atomic_ordering(ordering)?;
     load_inst.set_alignment(atomic_alignment(width_bits)?)?;
-    // SAFETY: `load_inst` 是刚由 LLVMBuildLoad2 创建的 live load instruction；
-    // syncscope 来自有限常量 case，仅写入 LLVM instruction metadata。
-    unsafe { LLVMSetAtomicSyncScopeID(load_inst.as_value_ref(), sync_scope_id) };
+    set_atomic_sync_scope(load_inst.as_value_ref(), sync_scope_id);
     if volatile {
         load_inst.set_volatile(true)?;
     }
@@ -5706,9 +5721,7 @@ fn emit_atomic_store_case<'ctx>(
     let store_inst = builder.build_store(ptr, stored)?;
     store_inst.set_atomic_ordering(ordering)?;
     store_inst.set_alignment(atomic_alignment(width_bits)?)?;
-    // SAFETY: `store_inst` 是刚由 LLVMBuildStore 创建的 live store instruction；
-    // syncscope 来自有限常量 case，仅写入 LLVM instruction metadata。
-    unsafe { LLVMSetAtomicSyncScopeID(store_inst.as_value_ref(), sync_scope_id) };
+    set_atomic_sync_scope(store_inst.as_value_ref(), sync_scope_id);
     if volatile {
         store_inst.set_volatile(true)?;
     }
@@ -5830,7 +5843,7 @@ fn emit_atomic_rmw_case<'ctx>(
     } else {
         builder.build_int_truncate(value, int_type, "atomic.rmw.trunc")?
     };
-    let old = builder.build_atomicrmw(atomic_rmw_op_for_llvm(op), ptr, operand, ordering)?;
+    let old = builder.build_atomicrmw(atomic_rmw_op_for_llvm(op)?, ptr, operand, ordering)?;
     let old_inst = old
         .as_instruction_value()
         .context("atomicrmw should produce an instruction")?;
@@ -5842,7 +5855,7 @@ fn emit_atomic_rmw_case<'ctx>(
     // alignment/syncscope metadata，且 alignment 来自已限制的 8/16/32/64 位自然对齐。
     unsafe {
         LLVMSetAlignment(old_inst.as_value_ref(), alignment);
-        LLVMSetAtomicSyncScopeID(old_inst.as_value_ref(), sync_scope_id);
+        set_atomic_sync_scope(old_inst.as_value_ref(), sync_scope_id);
     }
     let old = if width_bits == 64 {
         old
@@ -5891,11 +5904,11 @@ fn emit_float_atomic_rmw_case<'ctx>(
     let old_ref = unsafe {
         LLVMBuildAtomicRMW(
             builder.as_mut_ptr(),
-            atomic_rmw_op_for_llvm(op).into(),
+            atomic_rmw_op_for_llvm(op)?.into(),
             ptr.as_value_ref(),
             operand.as_value_ref(),
             ordering.into(),
-            i32::from(sync_scope_id == LLVM_SINGLETHREAD_SYNC_SCOPE_ID),
+            atomic_single_thread_flag(sync_scope_id),
         )
     };
     if old_ref.is_null() {
@@ -5908,7 +5921,7 @@ fn emit_float_atomic_rmw_case<'ctx>(
             LLVMSetVolatile(old_ref, 1);
         }
         LLVMSetAlignment(old_ref, alignment);
-        LLVMSetAtomicSyncScopeID(old_ref, sync_scope_id);
+        set_atomic_sync_scope(old_ref, sync_scope_id);
     }
 
     // SAFETY: LLVMBuildAtomicRMW 的返回值类型与 `operand` 类型一致，因此这里可按 FloatValue 包装。
@@ -6056,7 +6069,7 @@ fn emit_cmpxchg_case<'ctx>(
     // alignment/syncscope metadata，且 alignment 来自已限制的 8/16/32/64 位自然对齐。
     unsafe {
         LLVMSetAlignment(pair.as_value_ref(), alignment);
-        LLVMSetAtomicSyncScopeID(pair.as_value_ref(), sync_scope_id);
+        set_atomic_sync_scope(pair.as_value_ref(), sync_scope_id);
     }
     let old = builder.build_extract_value(pair, 0, "cmpxchg.old")?.into_int_value();
     let old = if width_bits == 64 {
@@ -6138,7 +6151,12 @@ fn emit_fence_case(
     // so LLVM receives only supported acquire/release/acq_rel/seq_cst fences in
     // system or singlethread syncscope.
     unsafe {
-        LLVMBuildFenceSyncScope(builder.as_mut_ptr(), ordering.into(), sync_scope_id, c"".as_ptr());
+        LLVMBuildFence(
+            builder.as_mut_ptr(),
+            ordering.into(),
+            atomic_single_thread_flag(sync_scope_id),
+            c"".as_ptr(),
+        );
     }
 }
 
@@ -6241,8 +6259,8 @@ fn atomic_ordering_rank_for_cmpxchg(ordering: AtomicOrdering) -> u8 {
     }
 }
 
-fn atomic_rmw_op_for_llvm(op: AtomicRmwOp) -> AtomicRMWBinOp {
-    match op {
+fn atomic_rmw_op_for_llvm(op: AtomicRmwOp) -> anyhow::Result<AtomicRMWBinOp> {
+    Ok(match op {
         AtomicRmwOp::Xchg => AtomicRMWBinOp::Xchg,
         AtomicRmwOp::Add => AtomicRMWBinOp::Add,
         AtomicRmwOp::Sub => AtomicRMWBinOp::Sub,
@@ -6254,16 +6272,61 @@ fn atomic_rmw_op_for_llvm(op: AtomicRmwOp) -> AtomicRMWBinOp {
         AtomicRmwOp::Min => AtomicRMWBinOp::Min,
         AtomicRmwOp::UMax => AtomicRMWBinOp::UMax,
         AtomicRmwOp::UMin => AtomicRMWBinOp::UMin,
+        #[cfg(any(
+            feature = "llvm19-1",
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1"
+        ))]
         AtomicRmwOp::UIncWrap => AtomicRMWBinOp::UIncWrap,
+        #[cfg(any(
+            feature = "llvm19-1",
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1"
+        ))]
         AtomicRmwOp::UDecWrap => AtomicRMWBinOp::UDecWrap,
+        #[cfg(not(any(
+            feature = "llvm19-1",
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1"
+        )))]
+        AtomicRmwOp::UIncWrap | AtomicRmwOp::UDecWrap => return unsupported_atomic_rmw_op(op),
+        #[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
         AtomicRmwOp::USubCond => AtomicRMWBinOp::USubCond,
+        #[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
         AtomicRmwOp::USubSat => AtomicRMWBinOp::USubSat,
+        #[cfg(not(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1")))]
+        AtomicRmwOp::USubCond | AtomicRmwOp::USubSat => return unsupported_atomic_rmw_op(op),
         AtomicRmwOp::FAdd => AtomicRMWBinOp::FAdd,
         AtomicRmwOp::FSub => AtomicRMWBinOp::FSub,
         AtomicRmwOp::FMax => AtomicRMWBinOp::FMax,
         AtomicRmwOp::FMin => AtomicRMWBinOp::FMin,
+        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1"))]
         AtomicRmwOp::FMaximum => AtomicRMWBinOp::FMaximum,
+        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1"))]
         AtomicRmwOp::FMinimum => AtomicRMWBinOp::FMinimum,
+        #[cfg(not(any(feature = "llvm21-1", feature = "llvm22-1")))]
+        AtomicRmwOp::FMaximum | AtomicRmwOp::FMinimum => return unsupported_atomic_rmw_op(op),
+    })
+}
+
+#[cfg(not(any(feature = "llvm21-1", feature = "llvm22-1")))]
+fn unsupported_atomic_rmw_op<T>(op: AtomicRmwOp) -> anyhow::Result<T> {
+    anyhow::bail!("atomicrmw operation {op:?} is not supported by the selected LLVM feature")
+}
+
+fn atomic_single_thread_flag(sync_scope_id: u32) -> i32 {
+    i32::from(sync_scope_id == LLVM_SINGLETHREAD_SYNC_SCOPE_ID)
+}
+
+fn set_atomic_sync_scope(inst: LLVMValueRef, sync_scope_id: u32) {
+    // SAFETY: callers pass freshly-created live atomic/fence instructions and a scope from
+    // `atomic_sync_scope_cases`, so the legacy singleThread bit exactly represents the only
+    // two sync scopes emitted by this runtime.
+    unsafe {
+        LLVMSetAtomicSingleThread(inst, atomic_single_thread_flag(sync_scope_id));
     }
 }
 
