@@ -1,6 +1,6 @@
 [package]
 name = "amice"
-version = "0.1.5-beta.2"
+version = "0.1.5-beta.3"
 edition = "2024"
 authors = ["fuqiuluo", "ylarod", "aviraxp", "5ec1cff"]
 
