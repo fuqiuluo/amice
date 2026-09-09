@@ -10,12 +10,12 @@ error: unable to load plugin 'libamice.so': libLLVM.so: cannot open shared objec
 
 Use the Android NDK bundle from AMICE releases:
 
-- `amice-android-ndk-r29-linux-x86_64.tar.gz`
-- `amice-android-ndk-r29-darwin-x86_64.tar.gz`
+- `amice-android-ndk-r30-linux-x86_64.tar.gz`
+- `amice-android-ndk-r30-darwin-x86_64.tar.gz`
 
 The bundle contains:
 
-- Official Android NDK: `android-ndk-r29/`
+- Official Android NDK: `android-ndk-r30/`
 - AMICE plugin: `amice/lib/libamice.so` or `amice/lib/libamice.dylib`
 - Matching LLVM runtime libraries: `amice/llvm-lib/`
 - Wrapper compilers that set the runtime library path and add `-fpass-plugin`: `amice/bin/`
@@ -27,15 +27,15 @@ The macOS NDK host tag is still named `darwin-x86_64`. That is Android NDK's his
 Linux:
 
 ```bash
-tar xf amice-android-ndk-r29-linux-x86_64.tar.gz
-cd amice-android-ndk-r29-linux-x86_64
+tar xf amice-android-ndk-r30-linux-x86_64.tar.gz
+cd amice-android-ndk-r30-linux-x86_64
 ```
 
 macOS:
 
 ```bash
-tar xf amice-android-ndk-r29-darwin-x86_64.tar.gz
-cd amice-android-ndk-r29-darwin-x86_64
+tar xf amice-android-ndk-r30-darwin-x86_64.tar.gz
+cd amice-android-ndk-r30-darwin-x86_64
 ```
 
 Build an arm64 Android executable:
@@ -58,8 +58,8 @@ Default API levels:
 
 - `aarch64-linux-android-*`: API 23
 - `x86_64-linux-android-*`: API 23
-- `armv7a-linux-androideabi-*`: API 19
-- `i686-linux-android-*`: API 19
+- `armv7a-linux-androideabi-*`: API 21
+- `i686-linux-android-*`: API 21
 
 Override the API level:
 
@@ -82,11 +82,11 @@ All passes are disabled by default. Enable them with environment variables or a 
 First, make the bundled LLVM runtime visible to the build process:
 
 ```bash
-cd /path/to/amice-android-ndk-r29-linux-x86_64
+cd /path/to/amice-android-ndk-r30-linux-x86_64
 source ./amice/env.sh
 ```
 
-On macOS, use the `amice-android-ndk-r29-darwin-x86_64` directory and the `.dylib` plugin extension instead.
+On macOS, use the `amice-android-ndk-r30-darwin-x86_64` directory and the `.dylib` plugin extension instead.
 
 In CMake, add the plugin path to compile options:
 
@@ -121,17 +121,17 @@ endif()
 If Gradle still uses another NDK, point it at the bundled one:
 
 ```properties
-ndk.dir=/absolute/path/to/amice-android-ndk-r29-linux-x86_64/android-ndk-r29
+ndk.dir=/absolute/path/to/amice-android-ndk-r30-linux-x86_64/android-ndk-r30
 ```
 
-If your Android Gradle Plugin requires `android.ndkVersion`, remember that it uses the numeric NDK revision, not the `r29` release name. In that setup, install the matching NDK into the Android SDK and use `source ./amice/env.sh` only for `libLLVM` and `libamice`.
+If your Android Gradle Plugin requires `android.ndkVersion`, remember that it uses the numeric NDK revision, not the `r30` release name. In that setup, install the matching NDK into the Android SDK and use `source ./amice/env.sh` only for `libLLVM` and `libamice`.
 
 ## Repository Helper Script
 
 From the source repository, the existing helper can use an unpacked release bundle:
 
 ```bash
-AMICE_ANDROID_BUNDLE=/absolute/path/to/amice-android-ndk-r29-linux-x86_64 \
+AMICE_ANDROID_BUNDLE=/absolute/path/to/amice-android-ndk-r30-linux-x86_64 \
   ./scripts/build_android_arm64.sh hello.c hello
 ```
 
@@ -143,13 +143,22 @@ CI currently covers this mapping:
 
 | NDK | LLVM feature | `LLVM_SYS_*_PREFIX` | Android clang revision |
 | --- | --- | --- | --- |
-| r25c | `llvm14-0` | `LLVM_SYS_140_PREFIX` | `r450784d1` |
-| r26d | `llvm17-0` | `LLVM_SYS_170_PREFIX` | `r487747e` |
 | r27d | `llvm18-1` | `LLVM_SYS_181_PREFIX` | `r522817d` |
 | r28c | `llvm19-1` | `LLVM_SYS_191_PREFIX` | `r530567e` |
 | r29 | `llvm21-1` | `LLVM_SYS_211_PREFIX` | `r563880c` |
+| r30 | `llvm21-1` | `LLVM_SYS_211_PREFIX` | `r574158c` |
 
-Example for r29:
+The final r30 revision is `30.0.16248370`. Its Android Clang still reports `21.0.0`, so select `llvm21-1`. r29 and r30 use different Android clang revisions; their plugins and host LLVM libraries are not interchangeable. The historical r25c/r26d CI entries are currently commented out.
+
+Linux r30 has an additional host-library requirement: ELF symbol preemption causes four owning globals in Clang and AOSP `libLLVM.so` to be destroyed twice at process exit. AMICE bundles automatically correct the visibility of these four symbols in the copied shared library. For a manual toolchain, run this from the repository root first:
+
+```bash
+python3 scripts/prepare_android_llvm.py /path/to/unstripped-android-clang/lib/libLLVM.so
+```
+
+Use this only for the Linux r30 `r574158c` runtime. It is idempotent and leaves the official NDK Clang, LLVM analysis keys and function symbols unchanged. macOS does not need this ELF correction.
+
+Example for r30:
 
 ```bash
 export LLVM_SYS_211_PREFIX=/path/to/unstripped-android-clang
@@ -171,7 +180,7 @@ Cause: a plain NDK does not include the host LLVM shared library required by the
 Fix:
 
 ```bash
-source /path/to/amice-android-ndk-r29-linux-x86_64/amice/env.sh
+source /path/to/amice-android-ndk-r30-linux-x86_64/amice/env.sh
 ```
 
 or set it manually:
@@ -199,7 +208,7 @@ Cause: the official NDK `clang` may be signed with hardened runtime, which can r
 If you are using an older bundle or a plain NDK, re-sign the local extracted copy:
 
 ```bash
-codesign --force --sign - android-ndk-r29/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang-21
+codesign --force --sign - android-ndk-r30/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang-21
 ```
 
 This modifies the extracted local NDK copy. Do not do this to a shared system NDK unless you explicitly accept that change.
@@ -220,6 +229,23 @@ strings -a hello | grep AMICE_NDK_STRING_TEST_20260603
 ```
 
 If the string is still printed, string encryption did not run. If `grep` prints nothing, the marker was hidden. More switches are documented in [Runtime Environment Variables](EnvConfig_en_US.md).
+
+## Regression tests
+
+NDK CI builds and extracts r29/r30 bundles into paths containing spaces on Linux/macOS. It checks C/C++ compilation, shared-library linking, string encryption, O0/O2, ThinLTO and full LTO for arm64-v8a, armeabi-v7a, x86_64 and x86. r30 also runs on an Android x86_64 emulator, comparing baseline and obfuscated output for branching arithmetic and nested C++ exception cleanup.
+
+Run from the repository root:
+
+```bash
+python3 -m unittest discover -s scripts/tests -v
+python3 scripts/test_android_ndk_bundle.py \
+  --bundle /path/to/amice-android-ndk-r30-linux-x86_64 \
+  --output-dir target/android-ndk-tests
+
+# Optional: run compatible test binaries on a connected device or emulator
+python3 scripts/test_android_ndk_bundle.py --runtime-only \
+  --output-dir target/android-ndk-tests --adb-serial SERIAL
+```
 
 ## References
 

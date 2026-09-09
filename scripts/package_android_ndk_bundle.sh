@@ -8,9 +8,9 @@ Usage:
     --ndk-home <official-ndk-root> \
     --llvm-home <matching-unstripped-clang-root> \
     --plugin <target/release/libamice.so|libamice.dylib> \
-    --ndk-release <r29> \
+    --ndk-release <r30> \
     --llvm-feature <llvm21-1> \
-    --clang-revision <r563880c> \
+    --clang-revision <r574158c> \
     --host-tag <linux-x86_64|darwin-x86_64> \
     --out-dir <dist>
 
@@ -124,6 +124,40 @@ if [[ ! -f "$PLUGIN" ]]; then
     exit 1
 fi
 
+# A matching LLVM major is insufficient for Android's patched plugin ABI.
+for version_file in \
+    "$NDK_HOME/toolchains/llvm/prebuilt/$HOST_TAG/AndroidVersion.txt" \
+    "$LLVM_HOME/AndroidVersion.txt"; do
+    if ! grep -Fxq "based on $CLANG_REVISION" "$version_file"; then
+        echo "ERROR: expected Android clang $CLANG_REVISION in $version_file" >&2
+        exit 1
+    fi
+done
+
+LLVM_MAJOR="$("$LLVM_HOME/bin/llvm-config" --version | cut -d. -f1)"
+if [[ "$LLVM_FEATURE" != "llvm${LLVM_MAJOR}-"* ]]; then
+    echo "ERROR: $LLVM_FEATURE does not match LLVM $LLVM_MAJOR" >&2
+    exit 1
+fi
+
+if [[ "$NDK_RELEASE" == r30 ]] && ! grep -Eq '^Pkg.Revision *= *30\.0\.16248370$' "$NDK_HOME/source.properties"; then
+    echo "ERROR: r30 requires the final NDK 30.0.16248370, not a beta or another release" >&2
+    exit 1
+fi
+
+NDK_MIN_API="$(python3 - "$NDK_HOME/meta/platforms.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1]) as source:
+    minimum = json.load(source)["min"]
+if not isinstance(minimum, int) or minimum < 1:
+    raise SystemExit("Invalid NDK minimum API level")
+print(minimum)
+PY
+)"
+API_32="$(( NDK_MIN_API > 19 ? NDK_MIN_API : 19 ))"
+API_64="$(( NDK_MIN_API > 23 ? NDK_MIN_API : 23 ))"
+
 resolve_symlink_target() {
     local path="$1"
     local dir
@@ -210,7 +244,16 @@ cp -a "$PLUGIN" "$BUNDLE_DIR/amice/lib/libamice.$PLUGIN_EXT"
 
 echo "Copying LLVM runtime from: $LLVM_LIBDIR"
 while IFS= read -r -d '' file; do
-    cp -a "$file" "$BUNDLE_DIR/amice/llvm-lib/"
+    if [[ -L "$file" ]]; then
+        # CI can create absolute libLLVM symlinks; make the bundle relocatable.
+        target="$(resolve_symlink_target "$file")"
+        cp -a "$target" "$BUNDLE_DIR/amice/llvm-lib/"
+        if [[ "$(basename "$file")" != "$(basename "$target")" ]]; then
+            ln -sf "$(basename "$target")" "$BUNDLE_DIR/amice/llvm-lib/$(basename "$file")"
+        fi
+    else
+        cp -a "$file" "$BUNDLE_DIR/amice/llvm-lib/"
+    fi
 done < <(
     find "$LLVM_LIBDIR" -maxdepth 1 \( \
         -name 'libLLVM*' -o \
@@ -242,6 +285,11 @@ if [[ "$PLUGIN_EXT" == "dylib" && ! -e "$BUNDLE_DIR/amice/llvm-lib/libLLVM.dylib
     if [[ -n "$candidate" ]]; then
         ln -s "$(basename "$candidate")" "$BUNDLE_DIR/amice/llvm-lib/libLLVM.dylib"
     fi
+fi
+
+if [[ "$NDK_RELEASE" == r30 && "$HOST_TAG" == linux-x86_64 ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    python3 "$SCRIPT_DIR/prepare_android_llvm.py" "$BUNDLE_DIR/amice/llvm-lib/libLLVM.so"
 fi
 
 cat > "$BUNDLE_DIR/amice/bin/amice-clang-wrapper" <<EOF
@@ -286,10 +334,10 @@ esac
 
 target=""
 case "\$tool_name" in
-    aarch64-linux-android-clang*) target="aarch64-linux-android\${AMICE_ANDROID_API:-23}" ;;
-    armv7a-linux-androideabi-clang*) target="armv7a-linux-androideabi\${AMICE_ANDROID_API:-19}" ;;
-    x86_64-linux-android-clang*) target="x86_64-linux-android\${AMICE_ANDROID_API:-23}" ;;
-    i686-linux-android-clang*) target="i686-linux-android\${AMICE_ANDROID_API:-19}" ;;
+    aarch64-linux-android-clang*) target="aarch64-linux-android\${AMICE_ANDROID_API:-${API_64}}" ;;
+    armv7a-linux-androideabi-clang*) target="armv7a-linux-androideabi\${AMICE_ANDROID_API:-${API_32}}" ;;
+    x86_64-linux-android-clang*) target="x86_64-linux-android\${AMICE_ANDROID_API:-${API_64}}" ;;
+    i686-linux-android-clang*) target="i686-linux-android\${AMICE_ANDROID_API:-${API_32}}" ;;
 esac
 
 has_target=false
@@ -361,6 +409,8 @@ Build metadata:
 - Android clang revision: \`${CLANG_REVISION}\`
 - Host tag: \`${HOST_TAG}\`
 
+For r30 on Linux, the copied \`libLLVM.so\` uses ELF protected visibility for four owning global containers to prevent double destruction when loaded into NDK clang. The official NDK compiler is unchanged.
+
 Smoke test:
 
 \`\`\`bash
@@ -379,10 +429,10 @@ fi
 
 Default target wrapper API levels:
 
-- \`aarch64-linux-android-*\`: API 23
-- \`x86_64-linux-android-*\`: API 23
-- \`armv7a-linux-androideabi-*\`: API 19
-- \`i686-linux-android-*\`: API 19
+- \`aarch64-linux-android-*\`: API ${API_64}
+- \`x86_64-linux-android-*\`: API ${API_64}
+- \`armv7a-linux-androideabi-*\`: API ${API_32}
+- \`i686-linux-android-*\`: API ${API_32}
 
 Override with \`AMICE_ANDROID_API=21\`, or pass \`--target=...\` yourself.
 
@@ -393,7 +443,7 @@ For CMake/Gradle, use \`android-ndk-${NDK_RELEASE}\` as the NDK path, add \`-fpa
 macOS note: this bundle ad-hoc signs the copied NDK clang driver so it can load the AMICE plugin. If you use a plain NDK or an older bundle and see a Team ID mismatch from \`dlopen\`, re-sign the extracted clang driver:
 
 \`\`\`bash
-codesign --force --sign - android-ndk-${NDK_RELEASE}/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang-21
+codesign --force --sign - android-ndk-${NDK_RELEASE}/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang-${LLVM_MAJOR}
 \`\`\`
 EOF
 

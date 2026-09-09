@@ -208,8 +208,8 @@ cargo build --release --no-default-features --features llvm21-1,win-link-lld
 普通 Android NDK 通常缺少加载插件所需的 host `libLLVM.so` / `libLLVM.dylib`。优先使用 release 里的 Android NDK bundle：
 
 ```bash
-tar xf amice-android-ndk-r29-linux-x86_64.tar.gz
-cd amice-android-ndk-r29-linux-x86_64
+tar xf amice-android-ndk-r30-linux-x86_64.tar.gz
+cd amice-android-ndk-r30-linux-x86_64
 
 cat > hello.c <<'SRC'
 extern int puts(const char *);

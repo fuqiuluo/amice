@@ -274,6 +274,7 @@ jobs:
           - ["18", "18-1", "181", "r27d", "r522817d"]
           - ["19", "19-1", "191", "r28c", "r530567e"]
           - ["21", "21-1", "211", "r29", "r563880c"]
+          - ["21", "21-1", "211", "r30", "r574158c"]
         os: [ubuntu-latest, macos-latest]
     steps:
       - name: Checkout Repo
@@ -298,7 +299,7 @@ jobs:
 
       - name: Install Android NDK Clang
         id: ndk-clang
-        uses: Ylarod/setup-ndk-clang@v1
+        uses: ./.github/actions/setup-ndk-clang
         with:
           ndk-version: ${{ matrix.llvm-version[3] }}
 
@@ -385,14 +386,14 @@ jobs:
 
       - name: Install Android NDK for Bundle
         id: setup-ndk
-        if: ${{ matrix.llvm-version[3] == 'r29' }}
+        if: ${{ matrix.llvm-version[3] == 'r29' || matrix.llvm-version[3] == 'r30' }}
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: ${{ matrix.llvm-version[3] }}
           add-to-path: false
 
       - name: Package Android NDK Bundle
-        if: ${{ matrix.llvm-version[3] == 'r29' }}
+        if: ${{ matrix.llvm-version[3] == 'r29' || matrix.llvm-version[3] == 'r30' }}
         run: |
           set -euxo pipefail
           scripts/package_android_ndk_bundle.sh \
@@ -407,23 +408,16 @@ jobs:
           ls -lh dist
 
       - name: Smoke Test Android NDK Bundle
-        if: ${{ matrix.llvm-version[3] == 'r29' }}
+        if: ${{ matrix.llvm-version[3] == 'r29' || matrix.llvm-version[3] == 'r30' }}
         run: |
           set -euxo pipefail
           package="$(ls dist/amice-android-ndk-${{ matrix.llvm-version[3] }}-*.tar.gz | head -n 1)"
           tmp="$(mktemp -d)"
           tar -xzf "$package" -C "$tmp"
-          cd "$tmp"/amice-android-ndk-${{ matrix.llvm-version[3] }}-*
-          cat > hello.c <<'SRC'
-          extern int puts(const char *);
-          int main(void) { return puts("AMICE_RELEASE_BUNDLE_STRING_TEST_20260603") < 0; }
-          SRC
-          AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
-          file hello
-          if strings -a hello | grep -q 'AMICE_RELEASE_BUNDLE_STRING_TEST_20260603'; then
-            echo "ERROR: string encryption did not hide the marker"
-            exit 1
-          fi
+          python3 scripts/test_android_ndk_bundle.py \
+            --bundle "$tmp/amice-android-ndk-${{ matrix.llvm-version[3] }}-${ANDROID_HOST_TAG}" \
+            --ndk-release "${{ matrix.llvm-version[3] }}" \
+            --clang-revision "${{ matrix.llvm-version[4] }}"
 
       - name: Upload Android NDK plugin assets
         uses: softprops/action-gh-release@v2
@@ -433,7 +427,7 @@ jobs:
             dist/libamice-android-ndk-${{ matrix.llvm-version[3] }}-*
 
       - name: Upload Android NDK bundle assets
-        if: ${{ matrix.llvm-version[3] == 'r29' }}
+        if: ${{ matrix.llvm-version[3] == 'r29' || matrix.llvm-version[3] == 'r30' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag_name || github.ref_name }}

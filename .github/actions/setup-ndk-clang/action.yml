@@ -1,0 +1,66 @@
+name: Setup matching Android NDK Clang
+description: Install the host LLVM development files matching the selected NDK
+inputs:
+  ndk-version:
+    description: Android NDK release
+    required: true
+outputs:
+  clang-path:
+    description: Root containing bin/llvm-config, LLVM headers and shared libraries
+    value: ${{ steps.r30.outputs.clang-path || steps.legacy.outputs.clang-path }}
+runs:
+  using: composite
+  steps:
+    - name: Install existing NDK toolchains
+      if: inputs.ndk-version != 'r30'
+      id: legacy
+      uses: Ylarod/setup-ndk-clang@v1
+      with:
+        ndk-version: ${{ inputs.ndk-version }}
+
+    - name: Cache r30 host LLVM
+      if: inputs.ndk-version == 'r30'
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.tool_cache }}/amice-ndk-r30-clang
+        key: ndk-r30-r574158c-${{ runner.os }}-${{ runner.arch }}-v1
+
+    - name: Install r30 host LLVM from AOSP
+      if: inputs.ndk-version == 'r30'
+      id: r30
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        # These immutable commits contain r574158c, also shipped in r30 final.
+        # setup-ndk-clang's upstream mapping does not yet include r30.
+        case "$RUNNER_OS" in
+          Linux)
+            host=linux-x86
+            revision=b726ba7eb54b490467464bd4a02427b7b956f9ff
+            ;;
+          macOS)
+            host=darwin-x86
+            revision=1ec45ecf4df8698174ae3ce6c25f529e21646c6e
+            ;;
+          *) echo "Unsupported host: $RUNNER_OS" >&2; exit 1 ;;
+        esac
+        destination="$RUNNER_TOOL_CACHE/amice-ndk-r30-clang"
+        if [[ "$CACHE_HIT" != true ]]; then
+          archive="$RUNNER_TEMP/clang-r574158c.tar.gz"
+          curl --fail --location --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/$host/+archive/$revision/clang-r574158c.tar.gz" \
+            --output "$archive"
+          mkdir -p "$destination"
+          tar -xzf "$archive" -C "$destination"
+          rm "$archive"
+        fi
+        grep -Fx 'based on r574158c' "$destination/AndroidVersion.txt"
+        if [[ "$RUNNER_OS" == Linux ]]; then
+          python3 scripts/prepare_android_llvm.py "$destination/lib/libLLVM.so"
+        fi
+        "$destination/bin/llvm-config" --version
+        echo "clang-path=$destination" >> "$GITHUB_OUTPUT"
+        echo "$destination/bin" >> "$GITHUB_PATH"

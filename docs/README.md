@@ -18,7 +18,7 @@ Most Android failures are not target ABI problems. The usual issue is that the o
 
 Use the release bundle first:
 
-- Linux: `amice-android-ndk-r29-linux-x86_64.tar.gz`
-- macOS: `amice-android-ndk-r29-darwin-x86_64.tar.gz`
+- Linux: `amice-android-ndk-r30-linux-x86_64.tar.gz`
+- macOS: `amice-android-ndk-r30-darwin-x86_64.tar.gz`
 
 Then follow [Android NDK Usage](AndroidNDKSupport_en_US.md) / [Android NDK 使用说明](AndroidNDKSupport_zh_CN.md).

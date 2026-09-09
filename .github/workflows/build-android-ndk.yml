@@ -8,8 +8,13 @@ on:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
       - '**/build.rs'
+      - 'crates/**/cpp/**'
+      - 'crates/amice/tests/c/fixtures/android_ndk/**'
+      - 'scripts/**'
+      - '.github/actions/setup-ndk-clang/**'
       - 'rust-toolchain*'
       - '.github/workflows/build-android-ndk.yml'
+      - '.github/workflows/release.yml'
   pull_request:
     branches: [ master ]
     paths:
@@ -17,8 +22,13 @@ on:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
       - '**/build.rs'
+      - 'crates/**/cpp/**'
+      - 'crates/amice/tests/c/fixtures/android_ndk/**'
+      - 'scripts/**'
+      - '.github/actions/setup-ndk-clang/**'
       - 'rust-toolchain*'
       - '.github/workflows/build-android-ndk.yml'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 env:
@@ -36,6 +46,7 @@ jobs:
           - ["18", "18-1", "181", "r27d", "r522817d"]
           - ["19", "19-1", "191", "r28c", "r530567e"]
           - ["21", "21-1", "211", "r29", "r563880c"]
+          - ["21", "21-1", "211", "r30", "r574158c"]
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
@@ -62,7 +73,7 @@ jobs:
 
       - name: Install Android NDK Clang
         id: ndk-clang
-        uses: Ylarod/setup-ndk-clang@v1
+        uses: ./.github/actions/setup-ndk-clang
         with:
           ndk-version: ${{ matrix.llvm-version[3] }}
 
@@ -72,7 +83,7 @@ jobs:
 
           env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
           echo "${env_name}=${{ steps.ndk-clang.outputs.clang-path }}" >> "$GITHUB_ENV"
-          echo "${{ steps.ndk-clang.outputs.clang-path }}" >> "$GITHUB_PATH"
+          echo "${{ steps.ndk-clang.outputs.clang-path }}/bin" >> "$GITHUB_PATH"
           LLVM_HOME="${{ steps.ndk-clang.outputs.clang-path }}"
           echo "LLVM_HOME=${LLVM_HOME}" >> "$GITHUB_ENV"
 
@@ -157,6 +168,56 @@ jobs:
             ldd "${{ env.BUILD_OUTPUT_PATH }}/libamice.${EXT}" || true
           fi
 
+      - name: Test bundle packaging and wrappers
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - name: Install Android NDK for bundle tests
+        if: matrix.llvm-version[3] == 'r29' || matrix.llvm-version[3] == 'r30'
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ matrix.llvm-version[3] }}
+          add-to-path: false
+
+      - name: Package and test Android NDK bundle
+        if: matrix.llvm-version[3] == 'r29' || matrix.llvm-version[3] == 'r30'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            host_tag=darwin-x86_64
+            extension=dylib
+          else
+            host_tag=linux-x86_64
+            extension=so
+          fi
+          scripts/package_android_ndk_bundle.sh \
+            --ndk-home "${{ steps.setup-ndk.outputs.ndk-path }}" \
+            --llvm-home "$LLVM_HOME" \
+            --plugin "$BUILD_OUTPUT_PATH/libamice.$extension" \
+            --ndk-release "${{ matrix.llvm-version[3] }}" \
+            --llvm-feature "llvm${{ matrix.llvm-version[1] }}" \
+            --clang-revision "${{ matrix.llvm-version[4] }}" \
+            --host-tag "$host_tag" --out-dir "$RUNNER_TEMP/ndk-dist"
+          # Extract into a path with spaces to exercise relocation and quoting.
+          extracted="$RUNNER_TEMP/ndk bundle test"
+          mkdir -p "$extracted"
+          tar -xzf "$RUNNER_TEMP/ndk-dist/amice-android-ndk-${{ matrix.llvm-version[3] }}-$host_tag.tar.gz" -C "$extracted"
+          python3 scripts/test_android_ndk_bundle.py \
+            --bundle "$extracted/amice-android-ndk-${{ matrix.llvm-version[3] }}-$host_tag" \
+            --ndk-release "${{ matrix.llvm-version[3] }}" \
+            --clang-revision "${{ matrix.llvm-version[4] }}" \
+            --output-dir "$RUNNER_TEMP/android-test-binaries"
+
+      - name: Upload r30 runtime fixtures
+        if: runner.os == 'Linux' && matrix.llvm-version[3] == 'r30'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ndk-r30-runtime-tests
+          path: ${{ runner.temp }}/android-test-binaries/
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload Build Artifact (Linux)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
@@ -174,3 +235,26 @@ jobs:
           path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.dylib
           retention-days: 30
           if-no-files-found: error
+
+  android-runtime:
+    name: Run NDK r30 fixtures on Android
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ndk-r30-runtime-tests
+          path: android-test-binaries
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify runtime behavior on Android x86_64
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          disable-animations: true
+          script: python3 scripts/test_android_ndk_bundle.py --runtime-only --output-dir android-test-binaries --adb-serial emulator-5554 --abi x86_64

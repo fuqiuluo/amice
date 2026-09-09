@@ -208,8 +208,8 @@ cargo build --release --no-default-features --features llvm21-1,win-link-lld
 The plain Android NDK usually does not include the host `libLLVM.so` / `libLLVM.dylib` required to load the plugin. Prefer the Android NDK bundle from AMICE releases:
 
 ```bash
-tar xf amice-android-ndk-r29-linux-x86_64.tar.gz
-cd amice-android-ndk-r29-linux-x86_64
+tar xf amice-android-ndk-r30-linux-x86_64.tar.gz
+cd amice-android-ndk-r30-linux-x86_64
 
 cat > hello.c <<'SRC'
 extern int puts(const char *);
