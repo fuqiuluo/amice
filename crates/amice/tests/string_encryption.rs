@@ -175,14 +175,56 @@ fn test_const_strings_global_xor() {
         "const_strings_global_xor",
     )
     .config(string_config_global_xor())
+    .optimization("O2")
     .compile();
 
     result.assert_success();
+    let binary = std::fs::read(&result.binary_path).expect("failed to read protected binary");
+    assert!(
+        !binary
+            .windows(b"This is a literal.".len())
+            .any(|value| value == b"This is a literal."),
+        "O2 restored a plaintext initializer for XOR global decryption"
+    );
     let run = result.run();
     run.assert_success();
 
     let lines = run.stdout_lines();
     check_const_strings_output(&lines);
+}
+
+#[test]
+fn test_constant_aggregate_string_uses_fall_back_without_errors() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("string_encryption", "constant_aggregate.cpp", Language::Cpp),
+        "constant_aggregate_lazy_xor",
+    )
+    .config(string_config_lazy_xor())
+    .optimization("O2")
+    .compile();
+
+    result.assert_success();
+    assert!(
+        !result.stderr().contains("unexpected StructValue user"),
+        "constant aggregates should use the global fallback, not emit errors: {}",
+        result.stderr()
+    );
+    let binary = std::fs::read(&result.binary_path).expect("failed to read protected binary");
+    assert!(
+        !binary
+            .windows(b"AMICE_AGGREGATE_SECRET_ALPHA".len())
+            .any(|value| value == b"AMICE_AGGREGATE_SECRET_ALPHA"),
+        "constant aggregate marker remained in plaintext"
+    );
+
+    let run = result.run();
+    run.assert_success();
+    assert_eq!(
+        run.stdout_lines(),
+        ["AMICE_AGGREGATE_SECRET_ALPHA", "AMICE_AGGREGATE_SECRET_BETA"]
+    );
 }
 
 #[test]

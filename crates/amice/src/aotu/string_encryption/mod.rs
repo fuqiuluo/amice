@@ -199,104 +199,54 @@ pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]>
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InsertPointCollection {
+    Direct,
+    RequiresGlobalFallback,
+}
+
 pub(crate) fn collect_insert_points<'a>(
     string_global: GlobalValue,
     user: AnyValueEnum<'a>,
     output: &mut Vec<(LLVMValueRef, u32)>,
-) -> anyhow::Result<()> {
-    use std::collections::HashSet;
+) -> InsertPointCollection {
+    // Inkwell classifies an instruction by its result type, so calls returning
+    // integers, pointers, arrays, or structs do not necessarily arrive as an
+    // InstructionValue. Recover the instruction where possible.
+    let target_inst = match user {
+        AnyValueEnum::InstructionValue(inst) => Some(inst),
+        AnyValueEnum::IntValue(value) => value.as_instruction_value(),
+        AnyValueEnum::PointerValue(value) => value.as_instruction_value(),
+        AnyValueEnum::ArrayValue(value) => value.as_instruction_value(),
+        AnyValueEnum::StructValue(value) => value.as_instruction_value(),
+        _ => None,
+    };
 
-    // visited: 按 ValueRef 去重，避免重复与潜在环
-    let mut visited = HashSet::new();
-    let mut worklist = vec![user.as_value_ref()];
+    let Some(inst) = target_inst else {
+        // ConstantExpr, constant aggregates and global initializers have no
+        // legal instruction insertion point. Their strings must be decrypted
+        // by the global constructor instead of producing an error diagnostic.
+        return InsertPointCollection::RequiresGlobalFallback;
+    };
 
-    while let Some(curr_ptr) = worklist.pop() {
-        // 如果已访问，继续
-        if !visited.insert(curr_ptr) {
-            continue;
-        }
-
-        // 通过 ValueRef 还原为 AnyValueEnum
-        let curr = unsafe { AnyValueEnum::new(curr_ptr) };
-
-        // 如果能解析到“指令”层面，就在该指令上找操作数
-        // 否则（常见于 PointerValue/ArrayValue 非 instruction 值），
-        // 沿着 use 链继续向上游 user 追溯，直到遇到指令为止
-        let mut target_inst: Option<InstructionValue<'a>> = None;
-
-        match curr {
-            AnyValueEnum::InstructionValue(inst) => {
-                target_inst = Some(inst);
-            },
-            AnyValueEnum::IntValue(v) => {
-                if let Some(inst) = v.as_instruction_value() {
-                    target_inst = Some(inst);
-                } else {
-                    error!("(strenc) unexpected IntValue user: {v:?}");
-                }
-            },
-            AnyValueEnum::PointerValue(v) => {
-                if let Some(inst) = v.as_instruction_value() {
-                    target_inst = Some(inst);
-                } else {
-                    let mut found = false;
-                    let mut use_opt = v.get_first_use();
-                    while let Some(u) = use_opt {
-                        use_opt = u.get_next_use();
-                        found = true;
-                        debug!("{:?}", u.get_user());
-                        worklist.push(u.get_user().as_value_ref());
-                    }
-                    if !found {
-                        error!("(strenc) unexpected PointerValue user (no uses): {v:?}");
-                    }
-                }
-            },
-            AnyValueEnum::ArrayValue(v) => {
-                let mut found = false;
-                let mut use_opt = v.get_first_use();
-                while let Some(u) = use_opt {
-                    use_opt = u.get_next_use();
-                    found = true;
-                    worklist.push(u.get_user().as_value_ref());
-                }
-                if !found {
-                    error!("(strenc) unexpected ArrayValue user (no uses): {v:?}");
-                }
-            },
-            AnyValueEnum::StructValue(v) => {
-                // %3 = call { ptr, i64 } @_ZN3fmt3v1112vformat_to_nIPcJETnNSt9enable_ifIXsr6detail18is_output_iteratorIT_cEE5valueEiE4typeELi0EEENS0_18format_to_n_resultIS4_EES4_mNS0_17basic_string_viewIcEENS0_17basic_format_argsINS0_7contextEEE(ptr noundef nonnull %2, i64 noundef 1023, ptr nonnull @.str, i64 2, i64 12, ptr nonnull %1)
-                // { ptr, i64 } 是一个匿名结构体类型，包含两个字段：
-                // 调用这个函数返回匿名结构体，很明显这个是一条指令，但是没有走InstructionValue！为什么呢？
-                // 因为inkwell的安全封装设计，解决办法旧很简单了，直接复用inst的逻辑，llvm兜底
-                // ---- 作为指令：它是一条 call 指令（Instruction）
-                // ---- 作为值：它产生一个 { ptr, i64 } 类型的值（Value）
-                if let Some(inst) = v.as_instruction_value() {
-                    target_inst = Some(inst);
-                } else {
-                    error!("(strenc) unexpected StructValue user: {v:?}");
-                }
-            },
-            // 其他类型：目前未覆盖，打印日志
-            _ => error!("(strenc) unexpected user type: {curr:?}"),
-        }
-
-        // 在找到的目标指令上遍历其操作数，定位引用到目标全局的操作数索引
-        if let Some(inst) = target_inst {
-            for i in 0..inst.get_num_operands() {
-                if let Some(op) = inst.get_operand(i) {
-                    if let Some(operand) = op.value() {
-                        // 只收集直接引用的插入点
-                        if operand.as_value_ref() == string_global.as_value_ref() {
-                            output.push((inst.as_value_ref() as _, i));
-                        }
-                    }
-                }
-            }
+    let original_len = output.len();
+    for i in 0..inst.get_num_operands() {
+        if let Some(op) = inst.get_operand(i)
+            && let Some(operand) = op.value()
+            && operand.as_value_ref() == string_global.as_value_ref()
+        {
+            output.push((inst.as_value_ref() as _, i));
         }
     }
 
-    Ok(())
+    if output.len() == original_len {
+        // The instruction references the string through a constant expression
+        // or aggregate. Replacing only the final operand would not preserve
+        // that expression, so use the safe global fallback for the whole string.
+        InsertPointCollection::RequiresGlobalFallback
+    } else {
+        InsertPointCollection::Direct
+    }
 }
 
 fn alloc_stack_string<'a>(

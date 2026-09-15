@@ -1,6 +1,6 @@
 use crate::aotu::string_encryption::{
-    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo, alloc_stack_string,
-    array_as_const_string, collect_insert_points,
+    EncryptedGlobalValue, InsertPointCollection, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo,
+    alloc_stack_string, array_as_const_string, collect_insert_points,
 };
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};
@@ -198,16 +198,14 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
 
                     let mut temp_user = Vec::new();
                     // 只收集直接引用字符串的插入点
-                    if let Err(e) = collect_insert_points(global, u.get_user(), &mut temp_user) {
-                        error!("(strenc) failed to collect insert points: {e}");
-                    }
+                    let collection = collect_insert_points(global, u.get_user(), &mut temp_user);
 
                     // 这里出现了这个字符串获取不到插入点的情况，这里是只要任何一个调用者获取不到插入点，整体就下降到回写解密（全局函数内）
                     // 为什么是任意一个调用者获取不到就进入下降？因为做局部回写很麻烦直接改成整个字符串加密都回写解密
                     // @.str = private unnamed_addr constant [3 x i8] c"\8F\D9\AA", align 1
                     // @S_BRANCH_A = internal global ptr @.str.12, align 8 <-- 调用者，但是获取不到插入点（其实可以获取，不过太麻烦了）
                     // %28 = call i32 (ptr, ...) @printf(ptr noundef @.str.3) <-- 调用者，可以获取到插入点
-                    if temp_user.is_empty() {
+                    if collection == InsertPointCollection::RequiresGlobalFallback || temp_user.is_empty() {
                         debug!("(strenc) failed to collect insert points for {:?}", u.get_user());
                         // 保证非直接引用的解密下降正常运行，需要清空
                         users.clear();
@@ -713,12 +711,19 @@ fn add_decrypt_function<'a>(
     // 从源地址读取
     let src_gep = builder.build_gep2(i8_ty, ptr, &[index], "src_gep")?;
     let ch = builder.build_load2(i8_ty, src_gep, "cur")?.into_int_value();
+    if let Some(load_inst) = ch.as_instruction_value() {
+        // Keep the deterministic XOR loop opaque to GlobalOpt. Otherwise LLVM
+        // can execute a global decryptor during compilation, restore the
+        // plaintext initializer, and remove llvm.global_ctors.
+        load_inst.set_volatile(true)?;
+    }
     // 解密
     let xor_ch = i8_ty.const_int(0xAA, false);
     let xored = builder.build_xor(ch, xor_ch, "new")?;
     // 写入目标地址（栈上）
     let dst_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "dst_gep")?;
-    builder.build_store(dst_gep, xored)?;
+    let store_inst = builder.build_store(dst_gep, xored)?;
+    store_inst.set_volatile(true)?;
 
     let next_index = builder.build_int_add(index, ctx.i32_type().const_int(1, false), "")?;
     builder.build_store(idx, next_index)?;

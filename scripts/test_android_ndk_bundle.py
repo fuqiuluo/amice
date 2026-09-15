@@ -15,6 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "crates/amice/tests/c/fixtures/android_ndk"
+PARAM_AGGREGATE_FIXTURE = ROOT / "crates/amice/tests/c/fixtures/param_aggregate/basic.c"
 TARGETS = {
     "arm64-v8a": ("aarch64-linux-android", 183, 2, 23),
     "armeabi-v7a": ("armv7a-linux-androideabi", 40, 1, 21),
@@ -22,6 +23,10 @@ TARGETS = {
     "x86": ("i686-linux-android", 3, 1, 21),
 }
 MODES = {"O0": ["-O0"], "O2": ["-O2"], "thin": ["-O2", "-flto=thin"], "full": ["-O2", "-flto"]}
+STRING_PROFILES = {
+    "lazy-xor": {"AMICE_STRING_DECRYPT_TIMING": "lazy", "AMICE_STRING_ALGORITHM": "xor"},
+    "global-xor": {"AMICE_STRING_DECRYPT_TIMING": "global", "AMICE_STRING_ALGORITHM": "xor"},
+}
 
 
 def run(command, **kwargs):
@@ -67,35 +72,47 @@ def compile_suite(args):
         if not key.startswith("AMICE_") and key not in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
     }
     env["AMICE_STRING_ENCRYPTION"] = "true"
+    env["AMICE_PARAM_AGGREGATE"] = "true"
     minimal = args.output_dir / "load-plugin.c"
     minimal.write_text("int main(void) { return 0; }\n")
     run([bundle / "amice/bin/aarch64-linux-android-clang", minimal,
-         "-o", args.output_dir / "load-plugin"], env={**env, "AMICE_STRING_ENCRYPTION": "false"})
+         "-o", args.output_dir / "load-plugin"],
+        env={**env, "AMICE_STRING_ENCRYPTION": "false", "AMICE_PARAM_AGGREGATE": "false"})
     print("PASS plugin loading and process shutdown with all passes disabled", flush=True)
+
+    param_ir = args.output_dir / "param-aggregate.ll"
+    run([bundle / "amice/bin/aarch64-linux-android-clang", "-O2", "-S", "-emit-llvm",
+         PARAM_AGGREGATE_FIXTURE, "-o", param_ir],
+        env={**env, "AMICE_STRING_ENCRYPTION": "false"})
+    if "param.aggregate" not in param_ir.read_text():
+        raise RuntimeError("ParamAggregate was enabled but did not create an Android aggregate ABI wrapper")
+    print("PASS Android ParamAggregate creates an aggregate ABI wrapper", flush=True)
+
     records = []
     for abi in args.abi:
         triple, _, _, api = TARGETS[abi]
         for language, suffix in (("c", ""), ("cpp", "++")):
             source = FIXTURES / f"smoke.{language}"
             marker = f"AMICE_NDK_{language.upper()}_MARKER".encode()
-            for mode, flags in MODES.items():
-                stem = f"{abi}-{language}-{mode}"
-                baseline = args.output_dir / f"{stem}-baseline"
-                protected = args.output_dir / f"{stem}-protected"
-                common = [*flags, "-Werror=unused-command-line-argument"]
-                if language == "cpp":
-                    common += ["-std=c++17", "-static-libstdc++"]
-                run([toolchain / f"bin/clang{suffix}", f"--target={triple}{api}",
-                     *common, source, "-o", baseline], env=env)
-                wrapper = bundle / f"amice/bin/{triple}-clang{suffix}"
-                run([wrapper, *common, source, "-o", protected], env=env)
-                if marker not in check_elf(baseline, abi):
-                    raise RuntimeError(f"Baseline lost the marker: {baseline}")
-                if marker in check_elf(protected, abi):
-                    raise RuntimeError(f"String encryption did not hide the marker: {protected}")
-                records.append({"abi": abi, "language": language,
-                                "baseline": baseline.name, "protected": protected.name})
-                print(f"PASS {stem}: compile, link, ELF target and string encryption", flush=True)
+            for profile, profile_env in STRING_PROFILES.items():
+                for mode, flags in MODES.items():
+                    stem = f"{abi}-{language}-{profile}-{mode}"
+                    baseline = args.output_dir / f"{stem}-baseline"
+                    protected = args.output_dir / f"{stem}-protected"
+                    common = [*flags, "-Werror=unused-command-line-argument"]
+                    if language == "cpp":
+                        common += ["-std=c++17", "-static-libstdc++"]
+                    run([toolchain / f"bin/clang{suffix}", f"--target={triple}{api}",
+                         *common, source, "-o", baseline], env=env)
+                    wrapper = bundle / f"amice/bin/{triple}-clang{suffix}"
+                    run([wrapper, *common, source, "-o", protected], env={**env, **profile_env})
+                    if marker not in check_elf(baseline, abi):
+                        raise RuntimeError(f"Baseline lost the marker: {baseline}")
+                    if marker in check_elf(protected, abi):
+                        raise RuntimeError(f"String encryption did not hide the marker: {protected}")
+                    records.append({"abi": abi, "language": language, "profile": profile,
+                                    "baseline": baseline.name, "protected": protected.name})
+                    print(f"PASS {stem}: compile, link, ELF target and string encryption", flush=True)
 
             shared = args.output_dir / f"{abi}-{language}.so"
             shared_flags = ["-std=c++17", "-static-libstdc++"] if language == "cpp" else []

@@ -109,7 +109,7 @@ void amice_function_fix_stack(llvm::Function *f, int AtTerminator, int MaxIterat
         }
 #endif
         iteration++;
-        if (MaxIterations != 0 && iteration > MaxIterations) {
+        if (MaxIterations != 0 && iteration >= MaxIterations) {
             break;
         }
     } while (tmpReg.size() != 0 || tmpPhi.size() != 0);

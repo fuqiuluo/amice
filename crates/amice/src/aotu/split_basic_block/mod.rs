@@ -11,7 +11,10 @@ use log::{Level, log_enabled};
 use rand::seq::SliceRandom;
 
 #[amice(
-    priority = 980,
+    // Flatten must run before SplitBasicBlock. Splitting first creates many
+    // cross-block SSA uses which make Flatten's register-to-stack repair
+    // pathological on real-world C++ translation units.
+    priority = 958,
     name = "SplitBasicBlock",
     flag = AmicePassFlag::PipelineStart | AmicePassFlag::OptimizerLast | AmicePassFlag::FunctionLevel,
     config = SplitBasicBlockConfig,

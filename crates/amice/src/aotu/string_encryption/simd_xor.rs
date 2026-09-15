@@ -1,6 +1,6 @@
 use crate::aotu::string_encryption::{
-    EncryptedGlobalValue, STACK_ALLOC_THRESHOLD, StringEncryptionAlgo, alloc_stack_string, array_as_const_string,
-    collect_insert_points,
+    EncryptedGlobalValue, InsertPointCollection, STACK_ALLOC_THRESHOLD, StringEncryptionAlgo, alloc_stack_string,
+    array_as_const_string, collect_insert_points,
 };
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
 use amice_llvm::const_array;
@@ -162,10 +162,8 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                     use_opt = u.get_next_use();
 
                     let mut temp_user = Vec::new();
-                    if let Err(e) = collect_insert_points(global, u.get_user(), &mut temp_user) {
-                        error!("(strenc) failed to collect insert points: {e}");
-                    }
-                    if temp_user.is_empty() {
+                    let collection = collect_insert_points(global, u.get_user(), &mut temp_user);
+                    if collection == InsertPointCollection::RequiresGlobalFallback || temp_user.is_empty() {
                         // 保证非直接引用的解密下降正常运行，需要清空
                         users.clear();
                         should_use_stack = false;
