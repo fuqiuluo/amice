@@ -15,9 +15,7 @@ use amice_macro::amice;
 use amice_plugin::PreservedAnalyses;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use amice_plugin::inkwell::module::{Linkage, Module};
-use amice_plugin::inkwell::values::{
-    BasicValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue,
-};
+use amice_plugin::inkwell::values::{GlobalValue, InstructionOpcode, InstructionValue, IntValue, PointerValue};
 use std::cmp::max;
 use std::collections::HashMap;
 
@@ -277,7 +275,12 @@ fn rewrite_binop_with_mba<'a>(
     let rhs = rhs.into_int_value();
     assert_eq!(lhs.get_type().get_bit_width(), rhs.get_type().get_bit_width());
 
-    let value_type = lhs.get_type();
+    let ctx = module.get_context();
+    let result_type = lhs.get_type();
+    // Reuse the byte-width MBA identities for booleans. Truncating the result
+    // preserves the modulo-2 semantics of i1 add/sub as well as bitwise ops.
+    let widen_boolean = result_type.get_bit_width() == 1;
+    let value_type = if widen_boolean { ctx.i8_type() } else { result_type };
     let mba_int_width =
         BitWidth::from_bits(value_type.get_bit_width()).ok_or(anyhow::anyhow!("unsupported int type"))?;
 
@@ -299,9 +302,17 @@ fn rewrite_binop_with_mba<'a>(
     );
     let expr = mba_binop(&mut rng, binop, Expr::Var(0), Expr::Var(1), &cfg);
 
-    let ctx = module.get_context();
     let builder = ctx.create_builder();
     builder.position_before(&binop_inst);
+
+    let (lhs, rhs) = if widen_boolean {
+        (
+            builder.build_int_z_extend(lhs, value_type, "mba.lhs")?,
+            builder.build_int_z_extend(rhs, value_type, "mba.rhs")?,
+        )
+    } else {
+        (lhs, rhs)
+    };
 
     let mut aux_params = vec![];
     for i in 0..cfg.aux_count {
@@ -337,9 +348,15 @@ fn rewrite_binop_with_mba<'a>(
     }
 
     let value = generator::expr_to_llvm_value(ctx, &builder, &expr, &aux_params, value_type, mba_int_width);
-    let new_inst = value.as_instruction_value().unwrap();
-
-    binop_inst.replace_all_uses_with(&new_inst);
+    let value = if widen_boolean {
+        builder.build_int_truncate(value, result_type, "mba.bool")?
+    } else {
+        value
+    };
+    // IRBuilder can fold an MBA expression to a constant, so replacement must
+    // accept any integer value rather than requiring another instruction.
+    let original = IntValue::try_from(binop_inst).map_err(|_| anyhow::anyhow!("expected integer binop"))?;
+    original.replace_all_uses_with(value);
     binop_inst.erase_from_basic_block();
 
     Ok(())

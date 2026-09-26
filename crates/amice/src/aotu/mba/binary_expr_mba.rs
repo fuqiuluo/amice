@@ -268,6 +268,28 @@ mod tests {
     fn test_mba_binops_w8() {
         check_width_for_all_ops(BitWidth::W8);
     }
+
+    #[test]
+    fn test_mba_boolean_ops_via_w8() {
+        let cfg = build_cfg(BitWidth::W8);
+        for seed in 0..32 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            for op in [OpKind::Or, OpKind::Xor, OpKind::Add, OpKind::Sub] {
+                let expr = build_mba_expr(&mut rng, op, &cfg);
+                for a in 0..=1 {
+                    for b in 0..=1 {
+                        // Exhaust the extra byte-wide auxiliary input too: it
+                        // must not affect the truncated boolean result.
+                        for aux in 0..=255 {
+                            let got = eval_const_mba_expr(&expr, &[a, b, aux], BitWidth::W8) & 1;
+                            let expected = baseline(op, a, b, BitWidth::W8) & 1;
+                            assert_eq!(got, expected, "seed={seed}, op={op:?}, a={a}, b={b}, aux={aux}");
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn test_mba_binops_w16() {
         check_width_for_all_ops(BitWidth::W16);
