@@ -440,6 +440,8 @@ enum PointerIntrinsicKind {
 enum VectorPermuteIntrinsicKind {
     Reverse,
     Splice,
+    SpliceLeft,
+    SpliceRight,
     InsertSubvector,
     ExtractSubvector,
     Interleave(u8),
@@ -451,7 +453,7 @@ impl VectorPermuteIntrinsicKind {
     fn lowering_rule(self) -> &'static str {
         match self {
             Self::Reverse => "llvm.vector.reverse.element",
-            Self::Splice => "llvm.vector.splice.element",
+            Self::Splice | Self::SpliceLeft | Self::SpliceRight => "llvm.vector.splice.element",
             Self::InsertSubvector => "llvm.vector.insert.subvector.element",
             Self::ExtractSubvector => "llvm.vector.extract.subvector.element",
             Self::Interleave(_) => "llvm.vector.interleave.element",
@@ -463,7 +465,7 @@ impl VectorPermuteIntrinsicKind {
     fn arg_count(self) -> u32 {
         match self {
             Self::Reverse => 1,
-            Self::Splice => 3,
+            Self::Splice | Self::SpliceLeft | Self::SpliceRight => 3,
             Self::InsertSubvector => 3,
             Self::ExtractSubvector => 2,
             Self::Interleave(factor) => u32::from(factor),
@@ -6066,24 +6068,21 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 
     fn lower_masked_vector_load(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
-        let actual_args = instruction.get_num_operands().saturating_sub(1);
-        if actual_args != 4 {
-            bail!("llvm.masked.load expects exactly 4 arguments, got {actual_args}");
-        }
+        let mask_index = masked_memory_mask_index(instruction, 1, "llvm.masked.load")?;
         let AnyTypeEnum::VectorType(vector_type) = instruction.get_type() else {
             bail!("llvm.masked.load result must be a fixed vector");
         };
         let fields = vector_memory_fields(&self.target_data, BasicTypeEnum::VectorType(vector_type))
             .context("llvm.masked.load fixed vector memory fields")?;
-        let mask_value = instruction_operand_value(instruction, 2)?;
+        let mask_value = instruction_operand_value(instruction, mask_index)?;
         let mask = constant_i1_vector_mask(mask_value, fields.len(), "llvm.masked.load mask")?;
-        let passthru_value = instruction_operand_value(instruction, 3)?;
+        let passthru_value = instruction_operand_value(instruction, mask_index + 1)?;
         let passthru = if is_undef_or_poison_value(passthru_value) {
             AggregateBinding {
                 fields: vec![None; fields.len()],
             }
         } else {
-            self.vector_operand(instruction, 3)
+            self.vector_operand(instruction, mask_index + 1)
                 .context("llvm.masked.load passthru vector")?
         };
         if passthru.fields.len() != fields.len() {
@@ -6094,7 +6093,6 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             );
         }
 
-        let _ = constant_int_operand(instruction, 1, "llvm.masked.load alignment")?;
         let ptr_value = instruction_operand_value(instruction, 0)?;
         let ptr = self.materialize_value(ptr_value)?;
         let contract = MaskedMemoryIntrinsicKind::Load.lowering_rule();
@@ -6351,14 +6349,11 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 
     fn lower_masked_vector_store(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
-        let actual_args = instruction.get_num_operands().saturating_sub(1);
-        if actual_args != 4 {
-            bail!("llvm.masked.store expects exactly 4 arguments, got {actual_args}");
-        }
+        let mask_index = masked_memory_mask_index(instruction, 2, "llvm.masked.store")?;
         let src_value = instruction_operand_value(instruction, 0)?;
         let fields =
             vector_memory_fields(&self.target_data, src_value.get_type()).context("llvm.masked.store memory fields")?;
-        let mask_value = instruction_operand_value(instruction, 3)?;
+        let mask_value = instruction_operand_value(instruction, mask_index)?;
         let mask = constant_i1_vector_mask(mask_value, fields.len(), "llvm.masked.store mask")?;
         if !mask.iter().any(|enabled| *enabled) {
             return Ok(());
@@ -6379,7 +6374,6 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             );
         }
 
-        let _ = constant_int_operand(instruction, 2, "llvm.masked.store alignment")?;
         let ptr_value = instruction_operand_value(instruction, 1)?;
         let ptr = self.materialize_value(ptr_value)?;
         let contract = MaskedMemoryIntrinsicKind::Store.lowering_rule();
@@ -6841,10 +6835,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 
     fn lower_masked_vector_gather(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
-        let actual_args = instruction.get_num_operands().saturating_sub(1);
-        if actual_args != 4 {
-            bail!("llvm.masked.gather expects exactly 4 arguments, got {actual_args}");
-        }
+        let mask_index = masked_memory_mask_index(instruction, 1, "llvm.masked.gather")?;
         let AnyTypeEnum::VectorType(result_type) = instruction.get_type() else {
             bail!("llvm.masked.gather result must be a fixed vector");
         };
@@ -6866,15 +6857,15 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 fields.len()
             );
         }
-        let mask_value = instruction_operand_value(instruction, 2)?;
+        let mask_value = instruction_operand_value(instruction, mask_index)?;
         let mask = constant_i1_vector_mask(mask_value, fields.len(), "llvm.masked.gather mask")?;
-        let passthru_value = instruction_operand_value(instruction, 3)?;
+        let passthru_value = instruction_operand_value(instruction, mask_index + 1)?;
         let passthru = if is_undef_or_poison_value(passthru_value) {
             AggregateBinding {
                 fields: vec![None; fields.len()],
             }
         } else {
-            self.vector_operand(instruction, 3)
+            self.vector_operand(instruction, mask_index + 1)
                 .context("llvm.masked.gather passthru vector")?
         };
         if passthru.fields.len() != fields.len() {
@@ -6885,7 +6876,6 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             );
         }
 
-        let _ = constant_int_operand(instruction, 1, "llvm.masked.gather alignment")?;
         let contract = MaskedMemoryIntrinsicKind::Gather.lowering_rule();
         let load = self.emit_action_for_shape(
             contract,
@@ -7053,13 +7043,10 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 
     fn lower_masked_vector_scatter(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
-        let actual_args = instruction.get_num_operands().saturating_sub(1);
-        if actual_args != 4 {
-            bail!("llvm.masked.scatter expects exactly 4 arguments, got {actual_args}");
-        }
+        let mask_index = masked_memory_mask_index(instruction, 2, "llvm.masked.scatter")?;
         let src_value = instruction_operand_value(instruction, 0)?;
         let fields = vector_byte_addressable_fields(src_value.get_type()).context("llvm.masked.scatter lane fields")?;
-        let mask_value = instruction_operand_value(instruction, 3)?;
+        let mask_value = instruction_operand_value(instruction, mask_index)?;
         let mask = constant_i1_vector_mask(mask_value, fields.len(), "llvm.masked.scatter mask")?;
         if !mask.iter().any(|enabled| *enabled) {
             return Ok(());
@@ -7096,7 +7083,6 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             );
         }
 
-        let _ = constant_int_operand(instruction, 2, "llvm.masked.scatter alignment")?;
         let contract = MaskedMemoryIntrinsicKind::Scatter.lowering_rule();
         let store = self.emit_action_for_shape(
             contract,
@@ -11748,6 +11734,16 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         instruction: InstructionValue<'ctx>,
         kind: NopIntrinsicKind,
     ) -> anyhow::Result<()> {
+        // LLVM 22 removes the size operand from lifetime.start/end.
+        if matches!(kind, NopIntrinsicKind::LifetimeStart | NopIntrinsicKind::LifetimeEnd)
+            && instruction.get_num_operands().saturating_sub(1) == 1
+        {
+            if !instruction_operand_value(instruction, 0)?.is_pointer_value() {
+                bail!("nop intrinsic {:?} operand 0 must be a pointer", kind);
+            }
+            self.execute_lowering_rule(kind.lowering_rule(), LoweringEnv::new(), Some(HandlerSemantic::Nop))?;
+            return Ok(());
+        }
         if let Some(expected) = kind.checked_arg_count() {
             let actual = instruction.get_num_operands().saturating_sub(1);
             if actual != expected {
@@ -16422,7 +16418,9 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 let source = self.vector_seed_from_operand(instruction, 0)?;
                 (vec![(source, first_fields)], mask)
             },
-            VectorPermuteIntrinsicKind::Splice => {
+            VectorPermuteIntrinsicKind::Splice
+            | VectorPermuteIntrinsicKind::SpliceLeft
+            | VectorPermuteIntrinsicKind::SpliceRight => {
                 let first_fields = vector_fields_from_type(instruction_operand_value(instruction, 0)?.get_type())
                     .context("llvm.vector.splice lhs fields")?;
                 if first_fields.len() != lane_count {
@@ -16448,9 +16446,29 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 }
                 let imm = signed_constant_int_operand(instruction, 2, "llvm.vector.splice immarg")?;
                 let lane_count_i64 = i64::try_from(lane_count).context("llvm.vector.splice lane count overflow")?;
-                if !(-lane_count_i64..lane_count_i64).contains(&imm) {
-                    bail!("llvm.vector.splice immarg {imm} is outside -VL..VL-1 for VL {lane_count}");
-                }
+                // LLVM 22 splits splice into left/right intrinsics with an
+                // unsigned offset. Right splice starts at VL - offset,
+                // including offset zero (the whole right-hand vector).
+                let imm = match kind {
+                    VectorPermuteIntrinsicKind::SpliceRight => {
+                        if !(0..=lane_count_i64).contains(&imm) {
+                            bail!("llvm.vector.splice.right immarg {imm} is outside 0..VL for VL {lane_count}");
+                        }
+                        lane_count_i64 - imm
+                    },
+                    VectorPermuteIntrinsicKind::SpliceLeft => {
+                        if !(0..lane_count_i64).contains(&imm) {
+                            bail!("llvm.vector.splice.left immarg {imm} is outside 0..VL-1 for VL {lane_count}");
+                        }
+                        imm
+                    },
+                    _ => {
+                        if !(-lane_count_i64..lane_count_i64).contains(&imm) {
+                            bail!("llvm.vector.splice immarg {imm} is outside -VL..VL-1 for VL {lane_count}");
+                        }
+                        imm
+                    },
+                };
                 let mask = vector_splice_mask(lane_count, imm)?;
                 let lhs = self.vector_seed_from_operand(instruction, 0)?;
                 let rhs = self.vector_seed_from_operand(instruction, 1)?;
@@ -16612,6 +16630,8 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             match kind {
                 VectorPermuteIntrinsicKind::Reverse => "llvm.vector.reverse",
                 VectorPermuteIntrinsicKind::Splice => "llvm.vector.splice",
+                VectorPermuteIntrinsicKind::SpliceLeft => "llvm.vector.splice.left",
+                VectorPermuteIntrinsicKind::SpliceRight => "llvm.vector.splice.right",
                 VectorPermuteIntrinsicKind::InsertSubvector => "llvm.vector.insert",
                 VectorPermuteIntrinsicKind::ExtractSubvector => "llvm.vector.extract",
                 VectorPermuteIntrinsicKind::Interleave(_) => "llvm.vector.interleave",
@@ -19492,6 +19512,24 @@ fn shuffle_vector_mask(instruction: InstructionValue<'_>) -> anyhow::Result<Vec<
     Ok(mask)
 }
 
+fn masked_memory_mask_index(
+    instruction: InstructionValue<'_>,
+    legacy_alignment_index: u32,
+    name: &str,
+) -> anyhow::Result<u32> {
+    match instruction.get_num_operands().saturating_sub(1) {
+        // LLVM 22 moved alignment from an operand to a pointer attribute.
+        // The runtime already handles unaligned accesses, so no alignment
+        // promise is needed when lowering the new spelling.
+        3 => Ok(legacy_alignment_index),
+        4 => {
+            constant_int_operand(instruction, legacy_alignment_index, &format!("{name} alignment"))?;
+            Ok(legacy_alignment_index + 1)
+        },
+        count => bail!("{name} expects 3 or 4 arguments, got {count}"),
+    }
+}
+
 fn vector_splice_mask(lane_count: usize, imm: i64) -> anyhow::Result<Vec<Option<usize>>> {
     let lane_count_i64 = i64::try_from(lane_count).context("llvm.vector.splice lane count overflow")?;
     let mut mask = Vec::with_capacity(lane_count);
@@ -20029,6 +20067,10 @@ fn vector_permute_intrinsic_kind(function: FunctionValue<'_>) -> Option<VectorPe
     let name = function.get_name().to_string_lossy();
     if name.starts_with("llvm.vector.reverse.") {
         Some(VectorPermuteIntrinsicKind::Reverse)
+    } else if name.starts_with("llvm.vector.splice.left.") {
+        Some(VectorPermuteIntrinsicKind::SpliceLeft)
+    } else if name.starts_with("llvm.vector.splice.right.") {
+        Some(VectorPermuteIntrinsicKind::SpliceRight)
     } else if name.starts_with("llvm.vector.splice.") {
         Some(VectorPermuteIntrinsicKind::Splice)
     } else if name.starts_with("llvm.vector.insert.") {

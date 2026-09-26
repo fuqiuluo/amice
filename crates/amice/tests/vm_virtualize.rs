@@ -10961,6 +10961,84 @@ int main(void) {
     assert!(!ir.contains(".amice.vm.original.vm_vector_reverse_splice"));
 }
 
+#[cfg(feature = "llvm22-1")]
+#[test]
+#[serial]
+fn test_vm_virtualize_llvm22_splice_directions_and_boundaries() {
+    ensure_plugin_built();
+    std::fs::create_dir_all(output_dir()).unwrap();
+    let mut source = String::from(
+        "declare <4 x i32> @llvm.vector.splice.left.v4i32(<4 x i32>, <4 x i32>, i32 immarg)\n\
+         declare <4 x i32> @llvm.vector.splice.right.v4i32(<4 x i32>, <4 x i32>, i32 immarg)\n",
+    );
+    let lanes = ["%x", "11", "13", "17", "19", "23", "29", "31"];
+    let mut functions = Vec::new();
+    for (direction, max_offset) in [("left", 3), ("right", 4)] {
+        for offset in 0..=max_offset {
+            let start = if direction == "left" { offset } else { 4 - offset };
+            let value = format!("{direction}_{offset}");
+            let function = format!("vm_splice_{value}");
+            writeln!(source, "define i32 @{function}(i32 %x) {{\nentry:\n%lhs = insertelement <4 x i32> <i32 0, i32 11, i32 13, i32 17>, i32 %x, i32 0").unwrap();
+            writeln!(source, "%{value} = call <4 x i32> @llvm.vector.splice.{direction}.v4i32(<4 x i32> %lhs, <4 x i32> <i32 19, i32 23, i32 29, i32 31>, i32 {offset})").unwrap();
+            let mut combined = "false".to_owned();
+            for lane in 0..4 {
+                let error = format!("error_{value}_{lane}");
+                writeln!(
+                    source,
+                    "%lane_{value}_{lane} = extractelement <4 x i32> %{value}, i32 {lane}"
+                )
+                .unwrap();
+                writeln!(
+                    source,
+                    "%{error} = icmp ne i32 %lane_{value}_{lane}, {}",
+                    lanes[start + lane]
+                )
+                .unwrap();
+                let next = format!("combined_{value}_{lane}");
+                writeln!(source, "%{next} = or i1 {combined}, %{error}").unwrap();
+                combined = format!("%{next}");
+            }
+            writeln!(source, "%result = zext i1 {combined} to i32\nret i32 %result\n}}").unwrap();
+            functions.push(function);
+        }
+    }
+    let input = output_dir().join("vm_splice_boundaries.input.ll");
+    std::fs::write(&input, source).unwrap();
+    let harness = output_dir().join("vm_splice_boundaries.c");
+    let declarations = functions
+        .iter()
+        .map(|name| format!("int {name}(int);\n"))
+        .collect::<String>();
+    let calls = functions
+        .iter()
+        .map(|name| format!("{name}(7) | {name}(-2147483647 - 1)"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    std::fs::write(
+        &harness,
+        format!("{declarations}int main(void) {{ return {calls}; }}\n"),
+    )
+    .unwrap();
+    let baseline = compile_ir_with_c_harness(&input, &harness, "vm_splice_boundaries_baseline");
+    baseline.assert_success();
+    baseline.run().assert_success();
+    let (output_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &input,
+        "vm_splice_boundaries.ll",
+        "default<O0>",
+        vm_virtualize_config(),
+    );
+    assert_success(output);
+    let ir = std::fs::read_to_string(&output_ir).unwrap();
+    for function in functions {
+        assert!(ir.contains(&format!(".amice.vm.bytecode.{function}")));
+    }
+    assert!(!ir.contains("call <4 x i32> @llvm.vector.splice"));
+    let virtualized = compile_ir_with_c_harness(&output_ir, &harness, "vm_splice_boundaries");
+    virtualized.assert_success();
+    virtualized.run().assert_success();
+}
+
 #[test]
 #[serial]
 fn test_vm_virtualize_vector_subvector_intrinsics_match_baseline() {

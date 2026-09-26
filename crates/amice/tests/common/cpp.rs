@@ -129,6 +129,11 @@ impl CppCompileBuilder {
         for arg in &self.extra_args {
             cmd.arg(arg);
         }
+        if self.requests_llvm_ir_output() {
+            // IR assertions inspect generated value and block names. Clang
+            // release builds otherwise discard them by default.
+            cmd.arg("-fno-discard-value-names");
+        }
 
         // Add source and output
         cmd.arg(&self.source);
@@ -195,6 +200,7 @@ impl CppCompileBuilder {
         }
         cmd.arg("-Xclang")
             .arg("-disable-lifetime-markers")
+            .arg("-fno-discard-value-names")
             .arg("-S")
             .arg("-emit-llvm")
             .arg(&self.source)
