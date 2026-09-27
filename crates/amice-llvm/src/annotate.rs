@@ -1,96 +1,89 @@
-use inkwell::llvm_sys::core::{LLVMGetAsString, LLVMGetNumOperands, LLVMGetOperand, LLVMGetSection};
-use inkwell::llvm_sys::prelude::LLVMValueRef;
-use inkwell::values::{AsValueRef, BasicValueEnum, GlobalValue, StructValue};
-use inkwell::{module::Module, values::FunctionValue};
-use std::ffi::{CStr, CString, c_uint};
+use inkwell::llvm_sys::{LLVMOpcode, core::*, prelude::LLVMValueRef};
+use inkwell::{
+    module::Module,
+    values::{AsValueRef, FunctionValue},
+};
 
-/// 读取给定函数在 llvm.global.annotations 里的注解
+/// Strip pointer wrappers used by annotation tables from typed-pointer LLVM.
+/// Nonzero GEPs are deliberately not reinterpreted as the start of a string.
+unsafe fn annotation_base(mut value: LLVMValueRef) -> LLVMValueRef {
+    unsafe {
+        for _ in 0..8 {
+            if value.is_null() || LLVMIsAConstantExpr(value).is_null() {
+                break;
+            }
+            let count = LLVMGetNumOperands(value);
+            let transparent = match LLVMGetConstOpcode(value) {
+                LLVMOpcode::LLVMBitCast | LLVMOpcode::LLVMAddrSpaceCast => count == 1,
+                LLVMOpcode::LLVMGetElementPtr => {
+                    count > 1
+                        && (1..count).all(|n| {
+                            let index = LLVMGetOperand(value, n as u32);
+                            !LLVMIsAConstantInt(index).is_null() && LLVMIsNull(index) != 0
+                        })
+                },
+                _ => false,
+            };
+            if !transparent {
+                break;
+            }
+            value = LLVMGetOperand(value, 0);
+        }
+        value
+    }
+}
+
+/// Read the annotation field only; filenames and optional arguments are not
+/// configuration. Its section is optional and is never dereferenced as a C string.
 pub(crate) fn read_function_annotate<'ctx>(
     module: &Module<'ctx>,
     func: FunctionValue<'ctx>,
 ) -> Result<Vec<String>, &'static str> {
     let mut out = Vec::new();
-
     let Some(global) = module.get_global("llvm.global.annotations") else {
         return Ok(out);
     };
-
-    let Some(ca) = global.get_initializer() else {
+    let Some(initializer) = global.get_initializer() else {
         return Ok(out);
     };
-    let ca_ref = ca.as_value_ref();
-
     unsafe {
-        let num_operands = LLVMGetNumOperands(ca_ref as LLVMValueRef);
-        for i in 0..num_operands {
-            let elem = LLVMGetOperand(ca_ref as LLVMValueRef, i as c_uint);
-            if elem.is_null() {
+        let array = initializer.as_value_ref();
+        for n in 0..LLVMGetNumOperands(array) {
+            let row = LLVMGetOperand(array, n as u32);
+            if LLVMIsAConstantStruct(row).is_null() || LLVMGetNumOperands(row) < 2 {
                 continue;
             }
-
-            let constant_struct = StructValue::new(elem);
-            if constant_struct.is_null() || constant_struct.count_fields() < 2 {
+            if annotation_base(LLVMGetOperand(row, 0)) != func.as_value_ref() {
                 continue;
             }
-
-            if let Some(first_field) = constant_struct.get_field_at_index(0)
-                && first_field.is_pointer_value()
-                && first_field.as_value_ref() == func.as_value_ref()
-            {
-                for j in 1..constant_struct.count_fields() {
-                    let Some(field) = constant_struct.get_field_at_index(j) else {
-                        continue;
-                    };
-
-                    if !field.is_pointer_value() || field.into_pointer_value().is_null() {
-                        continue;
-                    }
-
-                    let section = CStr::from_ptr(LLVMGetSection(field.as_value_ref() as LLVMValueRef));
-                    let section = section.to_str().unwrap().to_string().to_lowercase();
-
-                    if section != "llvm.metadata" {
-                        continue;
-                    }
-
-                    let global_string = GlobalValue::new(field.as_value_ref());
-                    let Some(str_arr) = (match global_string
-                        .get_initializer()
-                        .ok_or("Invalid string field: initializer needed")?
-                    {
-                        BasicValueEnum::ArrayValue(arr) => Some(arr),
-                        BasicValueEnum::StructValue(stru) if stru.count_fields() <= 1 => {
-                            match stru.get_field_at_index(0).ok_or("Invalid string field")? {
-                                BasicValueEnum::ArrayValue(arr) => Some(arr),
-                                _ => None,
-                            }
-                        },
-                        _ => None,
-                    }) else {
-                        eprintln!("Invalid string field: {:?}", field);
-                        continue;
-                    };
-
-                    let mut len = 0;
-                    let ptr = LLVMGetAsString(str_arr.as_value_ref(), &mut len);
-                    if ptr.is_null() {
-                        continue;
-                    }
-                    let arr = std::slice::from_raw_parts::<u8>(ptr.cast(), len - 1);
-                    let c_str = CString::new(arr).unwrap();
-                    out.push(c_str.to_string_lossy().into_owned());
-                }
-            } else {
+            let string = annotation_base(LLVMGetOperand(row, 1));
+            if LLVMIsAGlobalVariable(string).is_null() {
                 continue;
+            }
+            let mut data = LLVMGetInitializer(string);
+            if data.is_null() {
+                continue;
+            }
+            // Some frontends wrap their byte array in a one-field struct.
+            if !LLVMIsAConstantStruct(data).is_null() && LLVMGetNumOperands(data) == 1 {
+                data = LLVMGetOperand(data, 0);
+            }
+            // LLVMIsConstantString casts to ConstantDataSequential internally;
+            // empty/all-zero arrays may instead be ConstantAggregateZero.
+            if LLVMIsAConstantDataSequential(data).is_null() || LLVMIsConstantString(data) == 0 {
+                continue;
+            }
+            let mut len = 0;
+            let bytes = LLVMGetAsString(data, &mut len);
+            if bytes.is_null() || len == 0 {
+                continue;
+            }
+            let bytes = std::slice::from_raw_parts(bytes.cast::<u8>(), len);
+            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            if end != 0 {
+                out.push(String::from_utf8_lossy(&bytes[..end]).into_owned());
             }
         }
     }
-
     Ok(out)
 }
-
-// @.str = private unnamed_addr constant [18 x i8] c"add(10, 20) = %d\0A\00", align 1
-// @.str.1 = private unnamed_addr constant [21 x i8] c"multiply(5, 6) = %d\0A\00", align 1
-// @.str.2 = private unnamed_addr constant [20 x i8] c"custom_calling_conv\00", section "llvm.metadata"
-// @.str.3 = private unnamed_addr constant [8 x i8] c"test1.c\00", section "llvm.metadata"
-// @llvm.global.annotations = appending global [2 x { ptr, ptr, ptr, i32, ptr }] [{ ptr, ptr, ptr, i32, ptr } { ptr @add, ptr @.str.2, ptr @.str.3, i32 6, ptr null }, { ptr, ptr, ptr, i32, ptr } { ptr @multiply, ptr @.str.2, ptr @.str.3, i32 11, ptr null }], section "llvm.metadata"

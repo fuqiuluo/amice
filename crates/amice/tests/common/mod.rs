@@ -286,8 +286,11 @@ pub struct ObfuscationConfig {
 
     // MBA
     pub mba: Option<bool>,
-    pub mba_aux_count: Option<u32>,
-    pub mba_alloc_aux_params_in_global: Option<bool>,
+    pub mba_float_regions: Option<bool>,
+    pub mba_pre_expand: Option<bool>,
+    pub mba_opaque_guard: Option<bool>,
+    pub mba_max_instructions: Option<u32>,
+    pub mba_max_added_instructions: Option<u32>,
 
     // Function wrapper
     pub function_wrapper: Option<bool>,
@@ -416,12 +419,11 @@ impl ObfuscationConfig {
 
         // MBA
         set_env_bool!(cmd, "AMICE_MBA", self.mba);
-        set_env_num!(cmd, "AMICE_MBA_AUX_COUNT", self.mba_aux_count);
-        set_env_bool!(
-            cmd,
-            "AMICE_MBA_ALLOC_AUX_PARAMS_IN_GLOBAL",
-            self.mba_alloc_aux_params_in_global
-        );
+        set_env_bool!(cmd, "AMICE_MBA_FLOAT_REGIONS", self.mba_float_regions);
+        set_env_bool!(cmd, "AMICE_MBA_PRE_EXPAND", self.mba_pre_expand);
+        set_env_bool!(cmd, "AMICE_MBA_OPAQUE_GUARD", self.mba_opaque_guard);
+        set_env_num!(cmd, "AMICE_MBA_MAX_INSTRUCTIONS", self.mba_max_instructions);
+        set_env_num!(cmd, "AMICE_MBA_MAX_ADDED_INSTRUCTIONS", self.mba_max_added_instructions);
 
         // Function wrapper
         set_env_bool!(cmd, "AMICE_FUNCTION_WRAPPER", self.function_wrapper);

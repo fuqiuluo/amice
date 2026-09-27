@@ -7,6 +7,7 @@ use inkwell::module::Module;
 use inkwell::values::{AsValueRef, FunctionValue, GlobalValue};
 
 pub trait ModuleExt<'ctx> {
+    fn invalidate_memory_attrs_for_volatile(&mut self);
     fn append_to_global_ctors(&mut self, function: FunctionValue, priority: i32);
 
     fn append_to_used(&mut self, value: GlobalValue);
@@ -24,6 +25,9 @@ pub trait ModuleExt<'ctx> {
 }
 
 impl<'ctx> ModuleExt<'ctx> for Module<'ctx> {
+    fn invalidate_memory_attrs_for_volatile(&mut self) {
+        unsafe { ffi::amice_module_invalidate_memory_attrs_for_volatile(self.as_mut_ptr()) }
+    }
     fn append_to_global_ctors(&mut self, function: FunctionValue, priority: i32) {
         unsafe {
             ffi::amice_module_append_to_global_ctors(

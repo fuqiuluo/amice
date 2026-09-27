@@ -105,11 +105,14 @@
 | 变量名                                  | 说明                                             | 默认值   |
 |--------------------------------------|------------------------------------------------|-------|
 | AMICE_MBA                            | 是否开启：<br/>• `true` —— 启用；<br/>• `false` —— 关闭; | false |
-| AMICE_MBA_AUX_COUNT                  | 算术混淆辅助变量个数                                     | `2`   |
-| AMICE_MBA_REWRITE_OPS                |                                                | `24`  |
-| AMICE_MBA_REWRITE_DEPTH              |                                                | `3`   |
-| AMICE_MBA_ALLOC_AUX_PARAMS_IN_GLOBAL | 是否将辅助变量分配到全局变量                                 | false |
-| AMICE_MBA_FIX_STACK                  | 混淆后执行`fixStack`                                | false |
+| AMICE_MBA_FLOAT_REGIONS              | 在受支持的硬件浮点目标上启用精确 binary64 SSA 区域             | true  |
+| AMICE_MBA_PRE_EXPAND                 | 将整数等价 DAG 直接展开到浮点区域内                          | true  |
+| AMICE_MBA_OPAQUE_GUARD               | 每次调用 volatile 读取私有全局种子，生成有界浮点载体           | true  |
+| AMICE_MBA_MAX_INSTRUCTIONS           | 每函数最多改写的原始指令数，上限 512；0 表示跳过                | `128` |
+| AMICE_MBA_MAX_ADDED_INSTRUCTIONS     | 每函数生成指令数的保守预算                                  | `2048` |
+
+MBA 现在沿算术、位运算、select 和 phi 改变 SSA 值的表示。旧的辅助变量、重写深度、
+fixStack 和 optnone 配置已移除。支持范围、语义约束和测试方法见 [MBA 区域设计](MbaRegions.md)。
 
 ## 虚假控制流混淆
 

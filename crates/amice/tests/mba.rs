@@ -17,11 +17,10 @@ fn mba_config() -> ObfuscationConfig {
     }
 }
 
-fn mba_aux_count_config(aux_count: u32, alloc_aux_params_in_global: bool) -> ObfuscationConfig {
+fn mba_regions_config(float_regions: bool) -> ObfuscationConfig {
     ObfuscationConfig {
         mba: Some(true),
-        mba_aux_count: Some(aux_count),
-        mba_alloc_aux_params_in_global: Some(alloc_aux_params_in_global),
+        mba_float_regions: Some(float_regions),
         ..ObfuscationConfig::disabled()
     }
 }
@@ -99,30 +98,27 @@ fn test_mba_with_bcf() {
 }
 
 #[test]
-fn test_mba_i128_aux_count_three() {
+fn test_mba_i128() {
     ensure_plugin_built();
 
-    let result = CppCompileBuilder::new(
-        fixture_path("mba", "mba_i128_aux.c", Language::C),
-        "mba_i128_aux_count_three",
-    )
-    .config(mba_aux_count_config(3, false))
-    .optimization("O1")
-    .compile();
+    let result = CppCompileBuilder::new(fixture_path("mba", "mba_i128_aux.c", Language::C), "mba_i128")
+        .config(mba_regions_config(true))
+        .optimization("O1")
+        .compile();
 
     result.assert_success();
     result.run().assert_success();
 }
 
 #[test]
-fn test_mba_i128_global_aux_count_three() {
+fn test_mba_i128_integer_only() {
     ensure_plugin_built();
 
     let result = CppCompileBuilder::new(
         fixture_path("mba", "mba_i128_aux.c", Language::C),
-        "mba_i128_global_aux_count_three",
+        "mba_i128_integer_only",
     )
-    .config(mba_aux_count_config(3, true))
+    .config(mba_regions_config(false))
     .optimization("O1")
     .compile();
 
@@ -130,27 +126,25 @@ fn test_mba_i128_global_aux_count_three() {
     result.run().assert_success();
 }
 
-fn assert_mba_i1(aux_count: u32, global_aux: bool) {
+fn assert_mba_i1(float_regions: bool) {
     ensure_plugin_built();
     let opt_name = format!("opt{}", std::env::consts::EXE_SUFFIX);
     let opt = detect_llvm_config()
         .map(|config| PathBuf::from(config.prefix).join("bin").join(&opt_name))
         .filter(|path| path.exists())
         .unwrap_or_else(|| PathBuf::from(opt_name));
-    let name = format!("mba_i1_aux_{aux_count}_global_{global_aux}");
+    let name = format!("mba_i1_float_{float_regions}");
     std::fs::create_dir_all(output_dir()).unwrap();
     let output_ir = output_dir().join(format!("{name}.ll"));
 
     let mut cmd = Command::new(opt);
-    let mut config = mba_aux_count_config(aux_count, global_aux);
+    let mut config = mba_regions_config(float_regions);
     // Exercise function-scoped +mba with global MBA disabled, as in issue #89.
     config.mba = Some(false);
     config.apply_to_command(&mut cmd);
     let output = cmd
         .env_remove("AMICE_CONFIG_PATH")
         .env("AMICE_PASS_ORDER", "Mba")
-        .env("AMICE_MBA_FIX_STACK", "false")
-        .env("AMICE_MBA_OPT_NONE", "false")
         .env("RUST_LOG", "warn")
         .arg(format!("--load-pass-plugin={}", plugin_path().display()))
         .args(["-passes=default<O0>", "-verify-each", "-S"])
@@ -198,15 +192,10 @@ fn assert_mba_i1(aux_count: u32, global_aux: bool) {
 
 #[test]
 fn test_mba_i1_function_annotation() {
-    assert_mba_i1(2, false);
+    assert_mba_i1(true);
 }
 
 #[test]
-fn test_mba_i1_stack_aux_count_three() {
-    assert_mba_i1(3, false);
-}
-
-#[test]
-fn test_mba_i1_global_aux_count_three() {
-    assert_mba_i1(3, true);
+fn test_mba_i1_integer_only() {
+    assert_mba_i1(false);
 }

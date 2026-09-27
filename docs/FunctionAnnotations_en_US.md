@@ -205,7 +205,7 @@ Pre-lowers switch statements to if-else chains, facilitating subsequent obfuscat
 Replaces arithmetic/logical operations with equivalent MBA expressions.
 
 - Switch
-    - `+mba` (alias: `+linearmba`)
+    - `+mba`; optional `-mba_float_regions`, `-mba_pre_expand`, `-mba_opaque_guard`, `mba_max_instructions=32`, `mba_max_added_instructions=512`
         - Function: Enable MBA rewriting
         - Default: false
 

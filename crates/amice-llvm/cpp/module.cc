@@ -3,12 +3,53 @@
 #include "amice_ffi.h"
 
 #include <map>
+#include <llvm/Config/llvm-config.h>
+#if LLVM_VERSION_MAJOR >= 16
+#include <llvm/Support/ModRef.h>
+#endif
 
 #include <llvm/Transforms/Utils/Cloning.h>
 #include <llvm/Transforms/Utils/ModuleUtils.h>
 #include <llvm/Transforms/Utils/ValueMapper.h>
 
+namespace {
+template <typename T> void clearVolatileMemorySummaries(T &V) {
+#if LLVM_VERSION_MAJOR >= 16
+    V.setMemoryEffects(llvm::MemoryEffects::unknown());
+#else
+    V.removeFnAttr(llvm::Attribute::ArgMemOnly);
+    V.removeFnAttr(llvm::Attribute::InaccessibleMemOnly);
+    V.removeFnAttr(llvm::Attribute::InaccessibleMemOrArgMemOnly);
+#endif
+    V.removeFnAttr(llvm::Attribute::ReadNone);
+    V.removeFnAttr(llvm::Attribute::ReadOnly);
+    V.removeFnAttr(llvm::Attribute::WriteOnly);
+    V.removeFnAttr(llvm::Attribute::Speculatable);
+    V.removeFnAttr(llvm::Attribute::NoSync);
+}
+}
+
 extern "C" {
+
+// A local rewrite can invalidate transitive caller summaries and indirect
+// call-site contracts. Conservatively reset definitions and non-intrinsic call
+// sites module-wide; ordinary analysis can infer valid summaries again later.
+void amice_module_invalidate_memory_attrs_for_volatile(llvm::Module &M) {
+    for (auto &F : M) {
+        if (F.isDeclaration())
+            continue;
+        clearVolatileMemorySummaries(F);
+        for (auto &BB : F) {
+            for (auto &I : BB) {
+                if (auto *Call = llvm::dyn_cast<llvm::CallBase>(&I)) {
+                    auto *Callee = Call->getCalledFunction();
+                    if (!Callee || !Callee->isIntrinsic())
+                        clearVolatileMemorySummaries(*Call);
+                }
+            }
+        }
+    }
+}
 
 void amice_module_append_to_global_ctors(llvm::Module &M, llvm::Function *F, int P) {
     llvm::appendToGlobalCtors(M, F, P);

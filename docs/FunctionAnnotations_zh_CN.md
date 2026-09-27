@@ -206,7 +206,7 @@
 将算术/逻辑运算替换为等价的 MBA 表达式。
 
 - 开关
-    - `+mba`（别名：`+linearmba`）
+    - `+mba`；可选 `-mba_float_regions`、`-mba_pre_expand`、`-mba_opaque_guard`、`mba_max_instructions=32`、`mba_max_added_instructions=512`
         - 功能：启用 MBA 重写
         - 默认值：false
 

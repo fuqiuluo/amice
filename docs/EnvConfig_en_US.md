@@ -104,11 +104,15 @@ Source code: `src/aotu/mba`
 | Variable                             | Description                                                 | Default |
 |--------------------------------------|-------------------------------------------------------------|---------|
 | AMICE_MBA                            | Enable MBA:<br/>- `true` — enabled<br/>- `false` — disabled | false   |
-| AMICE_MBA_AUX_COUNT                  | Number of auxiliary variables                               | `2`     |
-| AMICE_MBA_REWRITE_OPS                |                                                             | `24`    |
-| AMICE_MBA_REWRITE_DEPTH              |                                                             | `3`     |
-| AMICE_MBA_ALLOC_AUX_PARAMS_IN_GLOBAL | Allocate auxiliary variables in global                      | false   |
-| AMICE_MBA_FIX_STACK                  | Execute `fixStack` after obfuscation                        | false   |
+| AMICE_MBA_FLOAT_REGIONS              | Enable exact binary64 SSA regions on supported FP targets    | true    |
+| AMICE_MBA_PRE_EXPAND                 | Lower integer identity DAGs directly into FP regions        | true    |
+| AMICE_MBA_OPAQUE_GUARD               | Read a private global seed once per call using volatile     | true    |
+| AMICE_MBA_MAX_INSTRUCTIONS           | Source instructions per function; capped at 512; zero skips | `128`   |
+| AMICE_MBA_MAX_ADDED_INSTRUCTIONS     | Conservative emitted-instruction budget per function       | `2048`  |
+
+MBA now changes SSA representations across arithmetic, boolean operations, select and phi nodes.
+The old auxiliary-variable, rewrite-depth, stack-fixing and optnone settings have been removed.
+See [MBA region design](MbaRegions.md) for supported targets, semantic constraints and testing.
 
 ## Bogus Control Flow
 

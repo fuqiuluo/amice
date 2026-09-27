@@ -5,6 +5,9 @@ on:
     branches: [ master ]
     paths:
       - '**/*.rs'
+      - 'crates/amice-llvm/cpp/**'
+      - 'crates/amice/tests/**'
+      - 'scripts/test_mba_cross_runtime.py'
       - '**/Cargo.toml'
       - '**/Cargo.lock'
       - '**/build.rs'
@@ -14,6 +17,9 @@ on:
     branches: [ master ]
     paths:
       - '**/*.rs'
+      - 'crates/amice-llvm/cpp/**'
+      - 'crates/amice/tests/**'
+      - 'scripts/test_mba_cross_runtime.py'
       - '**/Cargo.toml'
       - '**/Cargo.lock'
       - '**/build.rs'
@@ -84,6 +90,8 @@ jobs:
                                                       llvm-${{ matrix.llvm-version[0] }} \
                                                       llvm-${{ matrix.llvm-version[0] }}-dev \
                                                       llvm-${{ matrix.llvm-version[0] }}-runtime \
+                                                      clang-${{ matrix.llvm-version[0] }} \
+                                                      lld-${{ matrix.llvm-version[0] }} \
                                                       libpolly-${{ matrix.llvm-version[0] }}-dev
           sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-${{ matrix.llvm-version[0] }} 10
 
@@ -152,6 +160,14 @@ jobs:
           # Show library info
           file "${{ env.BUILD_OUTPUT_PATH }}/libamice.so"
           ldd "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" || true
+
+      - name: Test MBA regions (LLVM 21 and 22)
+        if: ${{ matrix.llvm-version[0] == '21' || matrix.llvm-version[0] == '22' }}
+        timeout-minutes: 15
+        run: |
+          cargo test --release -p amice --no-default-features --features llvm${{ matrix.llvm-version[1] }} --lib every_identity
+          cargo test --release -p amice --no-default-features --features llvm${{ matrix.llvm-version[1] }} \
+            --test mba --test mba_regions --test rust_mba -- --test-threads=1
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
