@@ -1,7 +1,7 @@
 use crate::config::{Config, IndirectBranchConfig, IndirectBranchFlags};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::const_array;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use amice_plugin::inkwell::basic_block::BasicBlock;
@@ -97,8 +97,6 @@ impl AmicePass for IndirectBranch {
         global_indirect_branch_table.set_linkage(Linkage::Internal);
         global_indirect_branch_table.set_constant(true);
 
-        module.append_to_compiler_used(global_indirect_branch_table);
-
         let encrypt_key_global = if self
             .default_config
             .flags
@@ -116,8 +114,6 @@ impl AmicePass for IndirectBranch {
             table.set_initializer(&initializer);
             table.set_linkage(Linkage::Private);
             table.set_constant(true);
-
-            module.append_to_compiler_used(table);
 
             Some(table)
         } else {
@@ -177,8 +173,6 @@ impl AmicePass for IndirectBranch {
                         local_indirect_branch_table.set_initializer(&initializer);
                         local_indirect_branch_table.set_linkage(Linkage::Private);
                         local_indirect_branch_table.set_constant(true);
-
-                        module.append_to_compiler_used(local_indirect_branch_table);
 
                         Some(local_indirect_branch_table)
                     } else {

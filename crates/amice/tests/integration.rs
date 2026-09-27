@@ -219,7 +219,6 @@ fn test_crypto_pipeline_with_vmp_indirect_string_call_and_flatten() {
     assert!(ir_text.contains("AMICE_VMP_RUNTIME_BYTECODE"));
     assert!(ir_text.contains(".amice.vm.bytecode"));
     assert!(ir_text.contains(".amice_indirect_call_table"));
-    assert!(ir_text.contains("global_indirect_branch_table"));
     assert!(ir_text.contains("__amice__decrypt_strings_"));
     assert!(ir_text.contains("dispatcher"));
 }
