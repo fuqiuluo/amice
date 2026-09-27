@@ -1,5 +1,7 @@
 # Android NDK 使用说明
 
+[English](AndroidNDKSupport_en_US.md) | 简体中文
+
 ## 先说结论
 
 不要直接拿普通 Android NDK 的 clang 加载随便构建出来的 `libamice.so`。AMICE 是 clang 在宿主机上加载的 LLVM Pass 插件，插件本身需要匹配的 host `libLLVM.so`/`libLLVM.dylib`。官方 NDK 通常不带这个动态库，所以用户最常见的失败是：
@@ -8,10 +10,12 @@
 error: unable to load plugin 'libamice.so': libLLVM.so: cannot open shared object file
 ```
 
-推荐方式是下载 AMICE release 里的 Android NDK bundle：
+推荐方式是从 [AMICE Releases](https://github.com/fuqiuluo/amice/releases) 下载对应版本的 Android NDK bundle，在所选 release 的 Assets 中选择：
 
 - `amice-android-ndk-r30-linux-x86_64.tar.gz`
 - `amice-android-ndk-r30-darwin-x86_64.tar.gz`
+
+包名描述编译器运行的宿主系统，不是 Android 设备的 ABI。当前 release 工作流没有提供 Windows 宿主 bundle，下面的 Bash 步骤适用于 Linux/macOS。
 
 这个包里面已经放好了：
 
@@ -75,7 +79,7 @@ AMICE_ANDROID_API=21 ./amice/bin/aarch64-linux-android-clang hello.c -o hello
 
 `amice/bin/amice-clang` 和 `amice/bin/amice-clang++` 是通用 wrapper，只负责设置动态库路径并注入插件；它们不会自动选择 Android ABI。使用它们时要显式传 `--target=aarch64-linux-android23` 这类 target。想要默认 Android target，就用 `aarch64-linux-android-clang` 这类带 ABI 名的 wrapper。
 
-所有 Pass 默认关闭。通过环境变量或配置文件开启，完整列表见 [运行时环境变量](EnvConfig_zh_CN.md)。
+实际执行混淆的功能默认需要显式开启。`CustomCallingConv` 的配置默认值虽为 true，目前仍是预留实现。通过环境变量或配置文件启用所需功能，完整列表见 [运行时环境变量](EnvConfig_zh_CN.md)。
 
 ## 在 CMake/Gradle 里用
 
@@ -221,7 +225,7 @@ codesign --force --sign - android-ndk-r30/toolchains/llvm/prebuilt/darwin-x86_64
 
 ### Pass 没有效果
 
-AMICE 的 Pass 默认关闭。先用环境变量开一个最容易观察的 Pass：
+先用环境变量开一个最容易观察的 Pass：
 
 ```bash
 AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello

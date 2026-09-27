@@ -1,6 +1,27 @@
 # 函数注解（FunctionAnnotation）
 
-源代码内的`annotate`的优先级永远高于环境变量/配置文件，~~但是低于脚本配置~~。
+[English](FunctionAnnotations_en_US.md) | 简体中文
+
+对支持函数注解的 Pass，优先级为 **函数注解 > 环境变量 > 配置文件 > 默认值**。`AMICE_PASS_ORDER` 是更外层的 Pass 允许列表：没有列入的 Pass 不会因为函数注解而重新运行。
+
+## C/C++ 最小示例
+
+```c
+__attribute__((noinline, annotate("+flatten,flatten_mode=basic")))
+int protected_function(int x) {
+    if (x > 10) return x * 3;
+    return x + 7;
+}
+
+__attribute__((noinline, annotate("-flatten")))
+int excluded_function(int x) {
+    return x + 1;
+}
+```
+
+按 [快速上手](QuickStart_zh_CN.md) 加载插件编译包含这些函数的完整程序。即使全局未开启 Flatten，第一个函数也会请求启用；全局开启时，第二个函数请求排除。`noinline` 用于帮助保留演示函数，不保证函数一定满足该 Pass 的支持条件。
+
+字符串加密目前使用全局配置，没有可用的逐函数注解覆盖。Rust 接入见 [Rust 使用说明](RustUsage_zh_CN.md)，不要直接使用上述 C 属性语法。
 
 ## 配置表达式
 
@@ -10,12 +31,11 @@
 
 ### 键值表达式
 
-`^key=value`传递一个键值对，当然你也可以写为`key=value`或者(`+key=value`/`-key=value`)，
-最好按照正常情况来编写，否则可能出问题！
+`^key=value` 传递一个键值对，也可以写作 `key=value` 或 `+key=value` / `-key=value`。推荐使用 `^key=value` 或 `key=value` 这类常规写法。
 
-> 特殊情况: `+flag` = `+flag=yes` = `+flag=1` = `+flag=true`
-> </br> = `^flag=yes` = `^flag=1` = `^flag=true`
-> </br> = `flag=yes` = `flag=1` = `flag=true`
+> 特殊情况：`+flag` = `+flag=yes` = `+flag=1` = `+flag=true`，
+> 亦等价于 `^flag=yes` = `^flag=1` = `^flag=true`
+> 和 `flag=yes` = `flag=1` = `flag=true`。
 
 ## 可用的混淆
 
@@ -251,3 +271,18 @@
     - `+vm_flatten`（别名：`+vmf`）
         - 功能：启用基于虚拟机的控制流扁平化
         - 默认值：false
+
+### 指令级 VMP（VmVirtualize）
+
+- `+vm_virtualize`（别名 `+vmp`）：对当前函数启用 VMP；默认 false。
+- `vm_profile_path=/absolute/path/to/profile`（别名 `vm_profile`）：选择 profile package；未设置时用内置 `amice-simple-vmp`。
+- `vm_runtime_scope=func` 或 `module`：覆盖 profile 的 runtime scope。
+
+```c
+__attribute__((noinline, annotate("+vm_virtualize,vm_runtime_scope=func")))
+int sensitive(int x) {
+    return (x * 7) ^ 0x55;
+}
+```
+
+不支持的函数会保留原实现；使用 `RUST_LOG=amice=debug` 查看跳过原因。先在一个函数上验证，再扩大范围；不要把“启用 VMP”理解为所有函数一定被虚拟化。profile 的实现约束见 [VMP 设计](VMPDesign_zh_CN.md)。

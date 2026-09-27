@@ -2,283 +2,57 @@
 
 [English](README_en_US.md) | 简体中文
 
-Amice 是一个基于 Rust、`llvm-plugin` 和 `inkwell` 构建的 LLVM Pass 插件。它以 clang `-fpass-plugin` 动态插件形式加载到编译流程中，用于在编译期对 C/C++、Rust 等 LLVM IR 进行混淆变换。
+[![Release](https://img.shields.io/github/v/release/fuqiuluo/amice?include_prereleases)](https://github.com/fuqiuluo/amice/releases)
+[![CI](https://github.com/fuqiuluo/amice/actions/workflows/linux-x64-build.yml/badge.svg)](https://github.com/fuqiuluo/amice/actions/workflows/linux-x64-build.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-当前仓库是 Cargo workspace，主插件 crate 位于 `crates/amice`，构建产物是 `target/release/libamice.so`、`target/release/libamice.dylib` 或 `target/release/amice.dll`。
+Amice 是一个以 LLVM Pass 插件形式工作的代码混淆工具，为 C/C++、Rust 和 Android 原生代码提供字符串加密、控制流混淆和指令级 VMP 虚拟化。下载预编译插件后，一条 `-fpass-plugin` 参数即可接入现有构建——不需要重新编译 LLVM，也不需要修改编译器或项目源码。
 
----
+> **状态**：当前为 beta（v0.1.5-beta.4），配置项和行为可能随版本调整。预编译插件覆盖 Linux/macOS 上的 LLVM/Clang 18–22，以及 Android NDK r27d–r30（其中 r29/r30 提供含 NDK 和运行库的完整 bundle，r27d/r28c 仅提供插件）；Windows 暂无预编译包，可[从源码构建](docs/LLVMSetup_zh_CN.md)。
 
-## 快速上手
+## 特性
 
-### 1. 构建插件
+- **即插即用** — 以动态库形式加载进 clang，无需重编 LLVM；使用 Clang 的现有项目只加一个编译参数即可接入
+- **字符串加密** — `xor` / `simd_xor` 算法，支持 lazy 与程序启动时解密、栈/堆分配
+- **控制流混淆** — 控制流平坦化（`basic` / `dominator`）、VM 风格扁平化、虚假控制流、间接调用/跳转、基本块拆分与重排等
+- **指令级 VMP** — 将函数提升为 VM bytecode 并生成解释执行的 runtime
+- **MBA 混淆** — 混合布尔算术重写，覆盖整数与 binary64 浮点区域
+- **函数级控制** — 通过 `__attribute__((annotate(...)))` 按函数选择混淆策略
+- **多语言接入** — C/C++、Rust（nightly `-Zllvm-plugins`）、Android NDK（CMake/Gradle bundle）
+- **可组合** — 全部开关、参数与 Pass 执行顺序通过环境变量或 `amice.toml` 配置
 
-默认 LLVM feature 是 `llvm21-1`，需要 LLVM 21 开发包或可用的 `llvm-config`。LLVM 22.1 也已支持，可通过 `llvm22-1` feature 显式启用。
+完整的 Pass 支持矩阵（语言覆盖 × 环境变量开关）见 [运行时环境变量](docs/EnvConfig_zh_CN.md)。
+
+## 快速开始
+
+从 [Releases](https://github.com/fuqiuluo/amice/releases) 下载与你的 LLVM 主版本匹配的插件后，在原有编译命令上加载插件并打开功能开关：
 
 ```bash
-# macOS
-brew install llvm@21
-export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
-
-# Linux 示例：如果 llvm-config/llvm-config-21 已在 PATH，可以不设置 PREFIX
-# export LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
-
-cargo build --release
-```
-
-### 2. 注入到 clang
-
-```bash
-cat > /tmp/amice_hello.c <<'SRC'
-extern int puts(const char *);
-int main(void) { return puts("AMICE_STRING_TEST") < 0; }
-SRC
-
 AMICE_STRING_ENCRYPTION=true \
-clang -fpass-plugin="$(pwd)/target/release/libamice.so" /tmp/amice_hello.c -o /tmp/amice_hello
+  clang-21 -fpass-plugin=/path/to/libamice-llvm21-linux-x86_64.so hello.c -o hello
+# 程序行为不变，但二进制中的明文字符串已被加密隐藏
 ```
 
-macOS 下插件后缀是 `.dylib`，请把路径替换为 `target/release/libamice.dylib`。
+第一次使用？跟着 [快速上手](docs/QuickStart_zh_CN.md) 用五分钟跑通一个可验证的示例，含 macOS、Android、Rust 与 CMake 接入。
 
-### 3. 使用amice (以VMP pass,Linux环境下举例)
+> **使用注意**：请仅在你有权保护的软件上使用 Amice。混淆会改变代码生成，接入后请运行项目原有测试；混淆产物可能触发杀毒软件或应用商店的误报；VMP 等强混淆会增大体积、影响运行性能，建议按函数启用。
 
-VMP pass 对应环境变量是 `AMICE_VM_VIRTUALIZE`。拿到一个编译好的 `libamice.so`，直接通过 clang 加载这个插件：
+## 文档
 
-```bash
-export AMICE_PLUGIN=/absolute/path/to/libamice.so
+| 你想做什么 | 文档 |
+| --- | --- |
+| 五分钟跑通第一个示例 | [快速上手](docs/QuickStart_zh_CN.md) |
+| 选择下载包、准备运行环境 | [下载与环境准备](docs/Download_zh_CN.md) |
+| 接入 Android CMake / Gradle 项目 | [Android NDK](docs/AndroidNDKSupport_zh_CN.md) |
+| 接入 Rust / Cargo 项目 | [Rust 接入](docs/RustUsage_zh_CN.md) |
+| 查询开关、参数、默认值和支持矩阵 | [运行时环境变量](docs/EnvConfig_zh_CN.md) |
+| 只处理或排除指定函数 | [函数注解](docs/FunctionAnnotations_zh_CN.md) |
+| 控制功能组合与执行顺序 | [Pass 运行顺序](docs/PassOrder_zh_CN.md) |
+| 解决加载失败、配置无效等问题 | [故障排除](docs/Troubleshooting_zh_CN.md) |
 
-AMICE_VM_VIRTUALIZE=true \
-clang -fpass-plugin="$AMICE_PLUGIN" input.c -o output
-```
+## 参与贡献
 
-更推荐按函数启用，在源码里标记需要保护的函数：
-
-```c
-__attribute__((annotate("+vm_virtualize")))
-int sensitive(int x) {
-    return (x * 7) ^ 0x55;
-}
-```
-
-```bash
-clang -fpass-plugin="$AMICE_PLUGIN" input.c -o output
-```
-
-VMP 默认使用内置 profile。需要指定自定义 profile package 时：
-
-```bash
-AMICE_VM_VIRTUALIZE=true \
-AMICE_VM_PROFILE_PATH=/path/to/amice-simple-vmp \
-clang -fpass-plugin="$AMICE_PLUGIN" input.c -o output
-```
-
-也可以在注解里给单个函数指定 profile：
-
-```c
-__attribute__((annotate("+vm_virtualize,vm_profile_path=/path/to/amice-simple-vmp")))
-int sensitive_with_profile(int x) {
-    return x + 1;
-}
-```
-
----
-
-## 支持的混淆
-
-| Pass | 环境变量开关 | C/C++ | Rust | ObjC | 说明 |
-|:---|:---|:---:|:---:|:---:|:---|
-| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | 字符串加密，支持 `xor` / `simd_xor`、lazy/global 解密、栈/堆解密配置 |
-| Indirect Call | `AMICE_INDIRECT_CALL` | ✅ | ✅ | ❌ | 将直接调用改写为函数表/索引形式的间接调用 |
-| Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | 将分支改写为 `indirectbr`，支持 dummy block、表重排、索引加密等 flags |
-| Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | 按配置切割基本块 |
-| Lower Switch | `AMICE_LOWER_SWITCH` | ✅ | ✅ | ❌ | 降级 LLVM `switch` 指令 |
-| VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM 风格控制流扁平化 |
-| VM Virtualize | `AMICE_VM_VIRTUALIZE` | ✅ | ✅ | ❌ | 指令级 VMP 虚拟化，支持全局开启或通过函数注解按函数启用 |
-| Flatten | `AMICE_FLATTEN` | ✅ | ✅ | ❌ | 控制流平坦化，支持 `basic` / `dominator` 模式 |
-| MBA | `AMICE_MBA` | ✅ | ✅ | ❌ | 混合布尔算术表达式重写 |
-| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | 插入虚假控制流，支持 basic / polaris-primes 模式 |
-| Function Wrapper | `AMICE_FUNCTION_WRAPPER` | ✅ | ✅ | ❌ | 生成包装函数并替换调用点 |
-| Clone Function | `AMICE_CLONE_FUNCTION` | ✅ | ✅ | ❌ | 常量参数特化克隆 |
-| Alias Access | `AMICE_ALIAS_ACCESS` | ✅ | ✅ | ❌ | 基于指针链的别名访问混淆 |
-| Custom Calling Conv | `AMICE_CUSTOM_CALLING_CONV` | ⏳ | ⏳ | ❌ | 自定义调用约定，通常通过函数注解按函数启用 |
-| Delay Offset Loading | `AMICE_DELAY_OFFSET_LOADING` | ✅ | ⏳ | ❌ | GEP 偏移延迟加载/可选 XOR 保护 |
-| Param Aggregate | `AMICE_PARAM_AGGREGATE` | ✅ | ⏳ | ❌ | 参数结构化聚合混淆 |
-| Basic Block Outlining | `AMICE_BASIC_BLOCK_OUTLINING` | ✅ | ⏳ | ❌ | 将基础块提取为独立子函数，亦称 BB2Func |
-| Shuffle Blocks | `AMICE_SHUFFLE_BLOCKS` | ✅ | ⏳ | ❌ | 基本块重排 |
-
-> 说明：
-> - ✅ 已支持
-> - ⏳ 进行中 / 计划中 / 未测试
-> - ❌ 暂未规划
->
-> Rust 字符串加密通常需要设置 `AMICE_STRING_ONLY_DOT_STRING=false`（兼容旧名 `AMICE_STRING_ONLY_LLVM_STRING=false`），详见 [运行时环境变量](docs/EnvConfig_zh_CN.md)。
-
-完整配置项请看 [运行时环境变量](docs/EnvConfig_zh_CN.md)，按函数启用/禁用请看 [函数注解](docs/FunctionAnnotations_zh_CN.md)。
-
----
-
-## 配置方式
-
-Amice 的配置优先级如下：
-
-1. 若设置 `AMICE_CONFIG_PATH`，先读取 TOML/YAML/JSON 配置文件。
-2. 未设置配置文件时使用默认配置。
-3. 最后叠加 `AMICE_*` 环境变量，环境变量优先级最高。
-
-示例：
-
-```bash
-cat > /tmp/amice.toml <<'TOML'
-[string_encryption]
-enable = true
-algorithm = "xor"
-
-[flatten]
-enable = true
-mode = "basic"
-TOML
-
-AMICE_CONFIG_PATH=/tmp/amice.toml \
-clang -fpass-plugin="$(pwd)/target/release/libamice.so" input.c -o output
-```
-
-Pass 运行顺序可通过 `AMICE_PASS_ORDER` 或配置文件里的 `pass_order.order` 控制；显式顺序只运行列表中的 pass。详情见 [Pass 运行顺序](docs/PassOrder_zh_CN.md)。
-
----
-
-## 构建指南
-
-### Linux
-
-```bash
-# Fedora / RHEL
-sudo dnf install llvm llvm-devel clang
-cargo build --release
-
-# Debian / Ubuntu，建议使用 https://apt.llvm.org/ 安装 LLVM 21
-sudo apt install llvm-21 llvm-21-dev clang-21
-# export LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
-cargo build --release
-```
-
-切换非默认 LLVM 版本时，Cargo feature 和 `LLVM_SYS_*_PREFIX` 需要匹配：
-
-```bash
-# LLVM 22 示例
-export LLVM_SYS_221_PREFIX=/usr/lib64/llvm22
-cargo build --release --no-default-features --features llvm22-1
-
-# LLVM 18 示例
-export LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
-cargo build --release --no-default-features --features llvm18-1
-```
-
-支持的 LLVM feature：`llvm11-0` 到 `llvm22-1`。
-
-### macOS
-
-```bash
-brew install llvm@21
-export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
-cargo build --release
-
-# LLVM 22 示例
-brew install llvm@22
-export LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)
-cargo build --release --no-default-features --features llvm22-1
-```
-
-### Windows
-
-LLVM 官方预编译包通常无法直接支持动态 pass 插件。建议自行构建 LLVM，或使用支持插件加载的社区构建。
-
-```powershell
-setx LLVM_SYS_211_PREFIX "C:\llvm21"
-cargo build --release --features win-link-lld
-# 或使用 opt 链接：cargo build --release --features win-link-opt
-```
-
-如果关闭默认 feature，需要显式带上 LLVM feature，例如：
-
-```powershell
-cargo build --release --no-default-features --features llvm21-1,win-link-lld
-```
-
-### Android NDK
-
-普通 Android NDK 通常缺少加载插件所需的 host `libLLVM.so` / `libLLVM.dylib`。优先使用 release 里的 Android NDK bundle：
-
-```bash
-tar xf amice-android-ndk-r30-linux-x86_64.tar.gz
-cd amice-android-ndk-r30-linux-x86_64
-
-cat > hello.c <<'SRC'
-extern int puts(const char *);
-int main(void) { return puts("AMICE_NDK_STRING_TEST_20260603") < 0; }
-SRC
-
-AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello
-file hello
-if strings -a hello | grep -q 'AMICE_NDK_STRING_TEST_20260603'; then
-  echo "ERROR: string encryption did not hide the marker"
-  exit 1
-fi
-```
-
-详细说明见 [Android NDK 使用说明](docs/AndroidNDKSupport_zh_CN.md)。
-
----
-
-## 测试
-
-集成测试会调用 clang 加载 release 版插件，因此请使用 `--release`。测试脚本会自动探测 `llvm-config`，也支持 `LLVM_SYS_*_PREFIX`。
-
-```bash
-# 构建并运行全部测试
-./crates/amice/tests/scripts/run_tests.sh --build
-
-# 只运行名称匹配的测试
-./crates/amice/tests/scripts/run_tests.sh -v string
-
-# 直接使用 cargo
-cargo test --release --no-default-features --features llvm21-1
-cargo test --release --no-default-features --features llvm21-1 --test string_encryption
-cargo test --release --no-default-features --features llvm21-1 test_md5
-
-# LLVM 22 示例
-LLVM_SYS_221_PREFIX=/usr/lib64/llvm22 cargo test --release --no-default-features --features llvm22-1
-```
-
-更多测试说明见 [crates/amice/tests/README.md](crates/amice/tests/README.md)。
-
----
-
-## 项目结构
-
-| 路径 | 说明 |
-|:---|:---|
-| `crates/amice` | 主 clang pass 插件，注册和实现各类混淆 pass |
-| `crates/amice-llvm` | LLVM/inkwell 扩展层和 C++ FFI glue |
-| `crates/amice-macro` | `#[amice(...)]` pass 注册宏和配置宏 |
-| `crates/amice-plugin` | pass manager / pass builder 适配层 |
-| `crates/amice-plugin-macros` | plugin 适配层宏 |
-| `crates/amice-build-support` | 构建期 LLVM 探测辅助 |
-| `docs` | 构建、环境变量、函数注解、Android NDK 和排障文档 |
-| `scripts` | Android NDK bundle 打包和辅助构建脚本 |
-
----
-
-## 文档入口
-
-| 主题 | 文档 |
-|:---|:---|
-| LLVM 环境配置 | [docs/LLVMSetup_zh_CN.md](docs/LLVMSetup_zh_CN.md) |
-| 运行时环境变量 | [docs/EnvConfig_zh_CN.md](docs/EnvConfig_zh_CN.md) |
-| 函数注解 | [docs/FunctionAnnotations_zh_CN.md](docs/FunctionAnnotations_zh_CN.md) |
-| Pass 运行顺序 | [docs/PassOrder_zh_CN.md](docs/PassOrder_zh_CN.md) |
-| Android NDK | [docs/AndroidNDKSupport_zh_CN.md](docs/AndroidNDKSupport_zh_CN.md) |
-| 故障排除 | [docs/Troubleshooting_zh_CN.md](docs/Troubleshooting_zh_CN.md) |
-
----
+欢迎通过 issue 和 PR 参与。开发环境搭建、测试运行方式和项目结构见 [开发指南](docs/Development_zh_CN.md)，从源码构建见 [LLVM 环境配置](docs/LLVMSetup_zh_CN.md)。
 
 ## 鸣谢
 
@@ -293,7 +67,8 @@ LLVM_SYS_221_PREFIX=/usr/lib64/llvm22 cargo test --release --no-default-features
 - MBA: <https://plzin.github.io/posts/mba>
 - LLVM PassManager 变更及动态注册: <https://bbs.kanxue.com/thread-272801.htm>
 
----
+## 许可证
 
-> © 2025-2026 Fuqiuluo & Contributors.<br>
-> 使用遵循本仓库 LICENSE。
+Amice 以 [Apache-2.0](LICENSE) 发布。
+
+> © 2025-2026 Fuqiuluo & Contributors.

@@ -1,6 +1,27 @@
 # Function Annotations
 
-In-source `annotate` attributes always take precedence over environment variables/config files.
+English | [简体中文](FunctionAnnotations_zh_CN.md)
+
+For passes supporting function annotations, precedence is **function annotation > environment > config file > default**. `AMICE_PASS_ORDER` is an outer pass allowlist: annotations cannot restore an excluded pass.
+
+## Minimal C/C++ Example
+
+```c
+__attribute__((noinline, annotate("+flatten,flatten_mode=basic")))
+int protected_function(int x) {
+    if (x > 10) return x * 3;
+    return x + 7;
+}
+
+__attribute__((noinline, annotate("-flatten")))
+int excluded_function(int x) {
+    return x + 1;
+}
+```
+
+Compile a complete program containing these functions with the plugin as shown in [Quick Start](QuickStart_en_US.md). The first function requests Flatten even without a global switch; the second requests exclusion even when globally enabled. `noinline` helps preserve the demonstration function but does not guarantee that a pass supports it.
+
+String encryption currently uses global configuration and has no working per-function annotation override. For Rust see [Rust Usage](RustUsage_en_US.md); the C attribute syntax above does not apply directly.
 
 ## Configuration Expressions
 
@@ -10,11 +31,11 @@ In-source `annotate` attributes always take precedence over environment variable
 
 ### Key-Value Expressions
 
-`^key=value` passes a key-value pair. You can also write `key=value` or (`+key=value`/`-key=value`), but it's best to follow normal conventions to avoid issues.
+`^key=value` passes a key-value pair. You can also write `key=value` or `+key=value` / `-key=value`; prefer the plain `^key=value` or `key=value` forms.
 
-> Special case: `+flag` = `+flag=yes` = `+flag=1` = `+flag=true`
-> <br/> = `^flag=yes` = `^flag=1` = `^flag=true`
-> <br/> = `flag=yes` = `flag=1` = `flag=true`
+> Special case: `+flag` = `+flag=yes` = `+flag=1` = `+flag=true`,
+> equivalently `^flag=yes` = `^flag=1` = `^flag=true`
+> and `flag=yes` = `flag=1` = `flag=true`.
 
 ## Available Obfuscations
 
@@ -250,3 +271,18 @@ Rewrites the target function as a control flow driven by a "virtual machine inte
     - `+vm_flatten` (alias: `+vmf`)
         - Function: Enable VM-based control flow flattening
         - Default: false
+
+### Instruction-Level VMP (VmVirtualize)
+
+- `+vm_virtualize` (alias `+vmp`): enable VMP for this function; default false.
+- `vm_profile_path=/absolute/path/to/profile` (alias `vm_profile`): select a profile package; defaults to the built-in `amice-simple-vmp`.
+- `vm_runtime_scope=func` or `module`: override the profile's runtime scope.
+
+```c
+__attribute__((noinline, annotate("+vm_virtualize,vm_runtime_scope=func")))
+int sensitive(int x) {
+    return (x * 7) ^ 0x55;
+}
+```
+
+Unsupported functions keep their original implementation. Use `RUST_LOG=amice=debug` to inspect skip reasons. Validate one function before expanding coverage; enabling VMP does not guarantee every function is virtualized. Profile constraints are documented in [VMP Design (Chinese)](VMPDesign_zh_CN.md).

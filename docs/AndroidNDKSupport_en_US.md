@@ -1,5 +1,7 @@
 # Android NDK Usage
 
+English | [简体中文](AndroidNDKSupport_zh_CN.md)
+
 ## Short Version
 
 Do not load a random `libamice.so` with the clang from a plain Android NDK. AMICE is an LLVM Pass plugin loaded by the host clang process, and the plugin needs a matching host `libLLVM.so`/`libLLVM.dylib`. The official NDK usually does not ship that shared library, so the common failure is:
@@ -8,10 +10,12 @@ Do not load a random `libamice.so` with the clang from a plain Android NDK. AMIC
 error: unable to load plugin 'libamice.so': libLLVM.so: cannot open shared object file
 ```
 
-Use the Android NDK bundle from AMICE releases:
+Download the matching Android NDK bundle from [AMICE Releases](https://github.com/fuqiuluo/amice/releases), selecting the file in that release's Assets:
 
 - `amice-android-ndk-r30-linux-x86_64.tar.gz`
 - `amice-android-ndk-r30-darwin-x86_64.tar.gz`
+
+Names describe the compiler host, not the Android device ABI. The current release workflow does not provide a Windows host bundle; the Bash instructions below target Linux/macOS.
 
 The bundle contains:
 
@@ -75,7 +79,7 @@ For C++:
 
 `amice/bin/amice-clang` and `amice/bin/amice-clang++` are generic wrappers. They set the runtime library path and inject the plugin, but they do not choose an Android ABI. Use them with an explicit target such as `--target=aarch64-linux-android23`. If you want a default Android target, use an ABI-named wrapper such as `aarch64-linux-android-clang`.
 
-All passes are disabled by default. Enable them with environment variables or a config file. See [Runtime Environment Variables](EnvConfig_en_US.md).
+Effective obfuscation requires explicit enablement. Although `CustomCallingConv` defaults to true in configuration, it is currently a placeholder. Enable the desired features through environment variables or a config file; see [Runtime Environment Variables](EnvConfig_en_US.md).
 
 ## CMake/Gradle
 
@@ -221,7 +225,7 @@ Fix: use the bundle for the same NDK release, or rebuild using the version table
 
 ### The Pass Does Nothing
 
-AMICE passes are disabled by default. Start with an easy-to-check pass:
+Start with an easy-to-check pass:
 
 ```bash
 AMICE_STRING_ENCRYPTION=true ./amice/bin/aarch64-linux-android-clang hello.c -o hello

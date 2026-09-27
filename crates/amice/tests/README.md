@@ -46,26 +46,11 @@ crates/amice/tests/
 
 ### 前置条件
 
-1. 安装 Rust 工具链
-2. 安装 LLVM 并设置环境变量：
-   ```bash
-   # Linux (默认 LLVM 21)
-   export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21
-   # Linux (LLVM 22)
-   export LLVM_SYS_221_PREFIX=/usr/lib64/llvm22
+1. 按 [LLVM 环境配置](../../../docs/LLVMSetup_zh_CN.md) 安装 Rust、C++ 工具链及匹配的 LLVM 开发文件。Cargo feature 与 `LLVM_SYS_*_PREFIX` 必须对应。
+2. Linux/macOS 使用同一 LLVM 目录的 clang；Windows 使用原生 PowerShell 的 `$env:...` 设置，不使用 `setx` 代替当前进程环境。
+3. Rust 测试另需匹配的 Rust 工具链，见 [Rust 接入](../../../docs/RustUsage_zh_CN.md)。`AMICE_RUST_TOOLCHAIN` 可以为测试指定工具链名称。
 
-   # macOS (Homebrew)
-   export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
-   # 或 LLVM 22
-   export LLVM_SYS_221_PREFIX=$(brew --prefix llvm@22)
-
-   # Windows
-   setx LLVM_SYS_211_PREFIX "C:\llvm"
-   # 或 LLVM 22
-   setx LLVM_SYS_221_PREFIX "C:\llvm22"
-   ```
-3. 确保 `clang` 在 PATH 中
-
+Windows 的 `run_tests.ps1` 当前按 `win-link-lld` 构建，而 [Windows 入门示例](../../../docs/LLVMSetup_zh_CN.md#windows) 使用 `win-link-opt`。两者的加载路径不同；先完成 opt 的最小验证，不要把整个测试套件通过当成 Windows 安装的先决条件。
 ### 运行测试
 
 **方式一：使用测试脚本（推荐）**

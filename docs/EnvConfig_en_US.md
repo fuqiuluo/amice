@@ -1,8 +1,52 @@
 # Runtime Environment Variables
 
+English | [简体中文](EnvConfig_zh_CN.md)
+
+Variables are read by the compiler process loading the plugin. In Bash use `export AMICE_STRING_ENCRYPTION=true` or a per-command prefix; in PowerShell use `$env:AMICE_STRING_ENCRYPTION = 'true'`.
+
+Global precedence is **environment > config file > defaults**. Passes supporting [Function Annotations](FunctionAnnotations_en_US.md) then apply those overrides. Environment booleans accept `true/false`, `1/0` and `on/off` case-insensitively; the annotation value `yes` is not a true environment value.
+
+## Support Matrix
+
+| Pass | Environment Variable | C/C++ | Rust | ObjC | Description |
+|:---|:---|:---:|:---:|:---:|:---|
+| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | String encryption with `xor` / `simd_xor`, lazy/global decryption, stack/heap allocation options |
+| Indirect Call | `AMICE_INDIRECT_CALL` | ✅ | ✅ | ❌ | Rewrites direct calls into table/index based indirect calls |
+| Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | Rewrites branches into `indirectbr`; supports dummy blocks, table shuffling, index encryption, and other flags |
+| Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | Splits basic blocks according to configuration |
+| Lower Switch | `AMICE_LOWER_SWITCH` | ✅ | ✅ | ❌ | Lowers LLVM `switch` instructions |
+| VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM-style control-flow flattening |
+| VM Virtualize | `AMICE_VM_VIRTUALIZE` | ✅ | ✅ | ❌ | Instruction-level VMP virtualization, enabled globally or per function with annotations |
+| Flatten | `AMICE_FLATTEN` | ✅ | ✅ | ❌ | Control-flow flattening with `basic` / `dominator` modes |
+| MBA | `AMICE_MBA` | ✅ | ✅ | ❌ | Mixed Boolean-arithmetic expression rewriting |
+| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | Inserts bogus control flow; supports basic / polaris-primes modes |
+| Function Wrapper | `AMICE_FUNCTION_WRAPPER` | ✅ | ✅ | ❌ | Creates wrapper functions and replaces call sites |
+| Clone Function | `AMICE_CLONE_FUNCTION` | ✅ | ✅ | ❌ | Constant-argument specialization by function cloning |
+| Alias Access | `AMICE_ALIAS_ACCESS` | ✅ | ✅ | ❌ | Pointer-chain based alias access obfuscation |
+| Custom Calling Conv | `AMICE_CUSTOM_CALLING_CONV` | ⏳ | ⏳ | ❌ | Placeholder; currently performs no calling-convention transform |
+| Delay Offset Loading | `AMICE_DELAY_OFFSET_LOADING` | ✅ | ⏳ | ❌ | Delayed GEP offset loading with optional XOR protection |
+| Param Aggregate | `AMICE_PARAM_AGGREGATE` | ✅ | ⏳ | ❌ | Parameter aggregation obfuscation |
+| Basic Block Outlining | `AMICE_BASIC_BLOCK_OUTLINING` | ✅ | ⏳ | ❌ | Extracts basic blocks into standalone helper functions, also known as BB2Func |
+| Shuffle Blocks | `AMICE_SHUFFLE_BLOCKS` | ✅ | ⏳ | ❌ | Basic block reordering |
+
+> Legend: ✅ supported; ⏳ in progress / planned / untested; ❌ not planned.
+
+Full parameters for each pass are in the sections below; for per-function enable/disable see [Function Annotations](FunctionAnnotations_en_US.md).
+
+## Files, Ordering and Logging
+
+| Variable | Usage | Default |
+| --- | --- | --- |
+| `AMICE_CONFIG_PATH` | TOML/YAML/JSON path, preferably absolute; see [complete examples](PassOrder_en_US.md) | No file |
+| `AMICE_PASS_ORDER` | Comma- or semicolon-separated pass names; only listed passes are installed, without enabling them automatically | Priority order |
+| `AMICE_PASS_PRIORITY_OVERRIDE` | For example `IndirectCall=1100,StringEncryption=1000`; ignored when explicit order is present | No override |
+| `RUST_LOG` | `amice=info` for load/execution messages; `amice=debug` for detailed diagnosis | Not explicitly configured |
+
+Configuration read errors currently fall back to defaults. Setting a path does not prove its contents were applied. Verify the output artifact; see [Troubleshooting](Troubleshooting_en_US.md).
+
 ## String Encryption
 
-Source code: `src/aotu/string_encryption`
+Source code: `crates/amice/src/aotu/string_encryption`
 
 | Variable                                 | Description                                                                                                                                                                                                                                           | Default |
 |------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
@@ -13,15 +57,18 @@ Source code: `src/aotu/string_encryption`
 | AMICE_STRING_INLINE_DECRYPT_FN           | Inline decrypt function:<br/>- `true` — inline<br/>- `false` — don't inline                                                                                                                                                                           | false   |
 | AMICE_STRING_ONLY_DOT_STRING             | Only process strings in `.str` section:<br/>- `true` — only encrypt `.str` strings<br/>- `false` — may encrypt char[] global variables in llvm::Module, possibly causing crashes                                                                      | true    |
 | AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC | Allow stack allocation in non-entry blocks (stack decryption mode):<br/>- `true` — allow (many LLVM optimization passes assume all alloca are in entry block)<br/>- `false` — recommended                                                             | false   |
+| AMICE_STRING_MAX_ENCRYPTION_COUNT        | Encryption count for non-global decryption; clamped to 1–100000                                                                 | 1       |
 
 > **Note for Rust**: 
 > ```bash
-> export AMICE_STRING_ONLY_LLVM_STRING=false  # Rust string globals are named alloc_xxx, not .str
+> export AMICE_STRING_ONLY_DOT_STRING=false  # Rust string globals are named alloc_xxx, not .str
 > ```
+
+> `AMICE_STRING_ONLY_LLVM_STRING` is a legacy alias of `AMICE_STRING_ONLY_DOT_STRING`; the latter wins if both are set.
 
 ## Indirect Call Obfuscation
 
-Source code: `src/aotu/indirect_call`
+Source code: `crates/amice/src/aotu/indirect_call`
 
 | Variable                    | Description                                                                     | Default |
 |-----------------------------|---------------------------------------------------------------------------------|---------|
@@ -30,7 +77,7 @@ Source code: `src/aotu/indirect_call`
 
 ## Indirect Branch Obfuscation
 
-Source code: `src/aotu/indirect_branch`
+Source code: `crates/amice/src/aotu/indirect_branch`
 
 | Variable                    | Description                                                                                                                                      | Default                     |
 |-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------|
@@ -47,16 +94,16 @@ Source code: `src/aotu/indirect_branch`
 
 ## Split Basic Block
 
-Source code: `src/aotu/split_basic_block`
+Source code: `crates/amice/src/aotu/split_basic_block`
 
 | Variable                     | Description                                                                   | Default |
 |------------------------------|-------------------------------------------------------------------------------|---------|
 | AMICE_SPLIT_BASIC_BLOCK      | Enable basic block splitting:<br/>- `true` — enabled<br/>- `false` — disabled | false   |
-| AMICE_SPLIT_BASIC_BLOCk_NUMS | Number of split iterations                                                    | 3       |
+| AMICE_SPLIT_BASIC_BLOCK_NUM | Number of split iterations                                                    | 3       |
 
 ## Switch Lowering
 
-Source code: `src/aotu/lower_switch`
+Source code: `crates/amice/src/aotu/lower_switch`
 
 | Variable                               | Description                                                                                | Default |
 |----------------------------------------|--------------------------------------------------------------------------------------------|---------|
@@ -65,7 +112,7 @@ Source code: `src/aotu/lower_switch`
 
 ## VM Flatten
 
-Source code: `src/aotu/vm_flatten`
+Source code: `crates/amice/src/aotu/vm_flatten`
 
 | Variable         | Description                                                        | Default |
 |------------------|--------------------------------------------------------------------|---------|
@@ -73,7 +120,7 @@ Source code: `src/aotu/vm_flatten`
 
 ## VM Virtualize
 
-Source code: `src/aotu/vm_virtualize`
+Source code: `crates/amice/src/aotu/vm_virtualize`
 
 | Variable                | Description                                                                                       | Default                         |
 |-------------------------|---------------------------------------------------------------------------------------------------|---------------------------------|
@@ -86,7 +133,7 @@ Source code: `src/aotu/vm_virtualize`
 
 ## Control Flow Flattening
 
-Source code: `src/aotu/flatten`
+Source code: `crates/amice/src/aotu/flatten`
 
 | Variable                    | Description                                                                              | Default |
 |-----------------------------|------------------------------------------------------------------------------------------|---------|
@@ -96,10 +143,11 @@ Source code: `src/aotu/flatten`
 | AMICE_FLATTEN_LOWER_SWITCH  | Automatically lower switch                                                               | true    |
 | AMICE_FLATTEN_LOOP_COUNT    | Loop count (recommended <= 7)                                                            | 1       |
 | AMICE_FLATTEN_ALWAYS_INLINE | Inline the `key_array` update function in `dominator` mode                               | false   |
+| `AMICE_FLATTEN_SKIP_BIG_FUNCTION` | Skip oversized functions | false |
 
 ## MBA Arithmetic Obfuscation
 
-Source code: `src/aotu/mba`
+Source code: `crates/amice/src/aotu/mba`
 
 | Variable                             | Description                                                 | Default |
 |--------------------------------------|-------------------------------------------------------------|---------|
@@ -116,7 +164,7 @@ See [MBA region design](MbaRegions.md) for supported targets, semantic constrain
 
 ## Bogus Control Flow
 
-Source code: `src/aotu/bogus_control_flow`
+Source code: `crates/amice/src/aotu/bogus_control_flow`
 
 | Variable                       | Description                                                                                                                                                                                                                                             | Default |
 |--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
@@ -127,17 +175,17 @@ Source code: `src/aotu/bogus_control_flow`
 
 ## Function Wrapper
 
-Source code: `src/aotu/function_wrapper`
+Source code: `crates/amice/src/aotu/function_wrapper`
 
 | Variable                           | Description                                                              | Default |
 |------------------------------------|--------------------------------------------------------------------------|---------|
 | AMICE_FUNCTION_WRAPPER             | Enable function wrapper:<br/>- `true` — enabled<br/>- `false` — disabled | false   |
-| AMICE_FUNCTION_WRAPPER_PROBABILITY | Obfuscation probability                                                  | `80`    |
-| AMICE_FUNCTION_WRAPPER_TIMES       | Loop iterations                                                          | `1`     |
+| AMICE_FUNCTION_WRAPPER_PROBABILITY | Obfuscation probability                                                  | `70`    |
+| AMICE_FUNCTION_WRAPPER_TIMES       | Loop iterations                                                          | `3`     |
 
 ## Clone Function (Constant Argument Specialization)
 
-Source code: `src/aotu/clone_function`
+Source code: `crates/amice/src/aotu/clone_function`
 
 | Variable             | Description                                                            | Default |
 |----------------------|------------------------------------------------------------------------|---------|
@@ -145,7 +193,7 @@ Source code: `src/aotu/clone_function`
 
 ## Alias Access
 
-Source code: `src/aotu/alias_access`
+Source code: `crates/amice/src/aotu/alias_access`
 
 | Variable                           | Description                                                                              | Default         |
 |------------------------------------|------------------------------------------------------------------------------------------|-----------------|
@@ -156,26 +204,17 @@ Source code: `src/aotu/alias_access`
 
 ## Custom Calling Convention
 
-Source code: `src/aotu/custom_calling_conv`
+Source code: `crates/amice/src/aotu/custom_calling_conv`
 
 | Variable                  | Description                                                                       | Default |
 |---------------------------|-----------------------------------------------------------------------------------|---------|
 | AMICE_CUSTOM_CALLING_CONV | Enable custom calling convention:<br/>- `true` — enabled<br/>- `false` — disabled | true    |
 
-> Enabled by default, but won't modify any function's calling convention unless annotated:
-> ```cpp
-> #define OBFUSCATE_CC __attribute__((annotate("+custom_calling_conv")))
->
-> OBFUSCATE_CC
-> int add(int a, int b) {
->      return a + b;
-> }
-> ```
-> Only functions marked with the `custom_calling_conv` annotation will be processed!
+> The configuration defaults to true, but the calling-convention implementation is currently a placeholder. Even an annotation does not produce a calling-convention transform.
 
 ## GEP Offset Obfuscation (Delayed Offset Loading)
 
-Source code: `src/aotu/delay_offset_loading`
+Source code: `crates/amice/src/aotu/delay_offset_loading`
 
 | Variable                              | Description                                                                    | Default |
 |---------------------------------------|--------------------------------------------------------------------------------|---------|
@@ -184,8 +223,26 @@ Source code: `src/aotu/delay_offset_loading`
 
 ## Parameter Aggregation (PAO)
 
-Source code: `src/aotu/param_aggregate`
+Source code: `crates/amice/src/aotu/param_aggregate`
 
 | Variable              | Description                                                                   | Default |
 |-----------------------|-------------------------------------------------------------------------------|---------|
 | AMICE_PARAM_AGGREGATE | Enable parameter aggregation:<br/>- `true` — enabled<br/>- `false` — disabled | false   |
+
+## Basic Block Outlining
+
+Source code: `crates/amice/src/aotu/basic_block_outlining`
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `AMICE_BASIC_BLOCK_OUTLINING` | Enable basic block outlining | false |
+| `AMICE_BASIC_BLOCK_OUTLINING_MAX_EXTRACTOR_SIZE` | Extractor size parameter; must be a nonnegative integer; invalid input fails configuration parsing | 16 |
+
+## Shuffle Blocks
+
+Source code: `crates/amice/src/aotu/shuffle_blocks`
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `AMICE_SHUFFLE_BLOCKS` | Enable block shuffling | false |
+| `AMICE_SHUFFLE_BLOCKS_FLAGS` | Comma-separated `random`, `reverse`, `rotate`; select at least one to reorder blocks; environment flags merge with file flags | Empty |

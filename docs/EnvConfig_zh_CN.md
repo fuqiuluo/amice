@@ -1,8 +1,52 @@
 # 运行时环境变量
 
+[English](EnvConfig_en_US.md) | 简体中文
+
+环境变量由加载插件的编译器进程读取。Bash 使用 `export AMICE_STRING_ENCRYPTION=true` 或单条命令前缀，PowerShell 使用 `$env:AMICE_STRING_ENCRYPTION = 'true'`。
+
+全局优先级为 **环境变量 > 配置文件 > 默认值**；支持函数注解的 Pass 会再应用 [函数注解](FunctionAnnotations_zh_CN.md)。环境布尔值接受 `true/false`、`1/0`、`on/off`（不区分大小写）；不要把注解支持的 `yes` 当作环境变量的 true。
+
+## 支持矩阵
+
+| Pass | 环境变量开关 | C/C++ | Rust | ObjC | 说明 |
+|:---|:---|:---:|:---:|:---:|:---|
+| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | 字符串加密，支持 `xor` / `simd_xor`、lazy/global 解密、栈/堆解密配置 |
+| Indirect Call | `AMICE_INDIRECT_CALL` | ✅ | ✅ | ❌ | 将直接调用改写为函数表/索引形式的间接调用 |
+| Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | 将分支改写为 `indirectbr`，支持 dummy block、表重排、索引加密等 flags |
+| Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | 按配置切割基本块 |
+| Lower Switch | `AMICE_LOWER_SWITCH` | ✅ | ✅ | ❌ | 降级 LLVM `switch` 指令 |
+| VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM 风格控制流扁平化 |
+| VM Virtualize | `AMICE_VM_VIRTUALIZE` | ✅ | ✅ | ❌ | 指令级 VMP 虚拟化，支持全局开启或通过函数注解按函数启用 |
+| Flatten | `AMICE_FLATTEN` | ✅ | ✅ | ❌ | 控制流平坦化，支持 `basic` / `dominator` 模式 |
+| MBA | `AMICE_MBA` | ✅ | ✅ | ❌ | 混合布尔算术表达式重写 |
+| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | 插入虚假控制流，支持 basic / polaris-primes 模式 |
+| Function Wrapper | `AMICE_FUNCTION_WRAPPER` | ✅ | ✅ | ❌ | 生成包装函数并替换调用点 |
+| Clone Function | `AMICE_CLONE_FUNCTION` | ✅ | ✅ | ❌ | 常量参数特化克隆 |
+| Alias Access | `AMICE_ALIAS_ACCESS` | ✅ | ✅ | ❌ | 基于指针链的别名访问混淆 |
+| Custom Calling Conv | `AMICE_CUSTOM_CALLING_CONV` | ⏳ | ⏳ | ❌ | 预留实现，目前不执行调用约定变换 |
+| Delay Offset Loading | `AMICE_DELAY_OFFSET_LOADING` | ✅ | ⏳ | ❌ | GEP 偏移延迟加载/可选 XOR 保护 |
+| Param Aggregate | `AMICE_PARAM_AGGREGATE` | ✅ | ⏳ | ❌ | 参数结构化聚合混淆 |
+| Basic Block Outlining | `AMICE_BASIC_BLOCK_OUTLINING` | ✅ | ⏳ | ❌ | 将基础块提取为独立子函数，亦称 BB2Func |
+| Shuffle Blocks | `AMICE_SHUFFLE_BLOCKS` | ✅ | ⏳ | ❌ | 基本块重排 |
+
+> 图例：✅ 已支持；⏳ 进行中 / 计划中 / 未测试；❌ 暂未规划。
+
+各 Pass 的完整参数见下文分节；按函数启用/禁用见 [函数注解](FunctionAnnotations_zh_CN.md)。
+
+## 配置文件、顺序和日志
+
+| 变量 | 用法 | 默认 |
+| --- | --- | --- |
+| `AMICE_CONFIG_PATH` | TOML/YAML/JSON 文件路径，推荐绝对路径；完整示例见 [Pass 运行顺序](PassOrder_zh_CN.md) | 不读取文件 |
+| `AMICE_PASS_ORDER` | 逗号或分号分隔的 Pass 名称；只安装列表中的 Pass，不会自动开启它们 | 按优先级排序 |
+| `AMICE_PASS_PRIORITY_OVERRIDE` | 例如 `IndirectCall=1100,StringEncryption=1000`；有显式顺序时不生效 | 不覆盖 |
+| `RUST_LOG` | `amice=info` 查看加载/执行日志；`amice=debug` 查看更细的诊断 | 未显式配置 |
+
+配置读取失败目前会回退默认值；设置了路径不代表文件已成功应用。用下面的开关验证目标产物，排查步骤见 [故障排除](Troubleshooting_zh_CN.md)。
+
 ## 字符串加密
 
-源代码：`src/aotu/string_encryption`
+源代码：`crates/amice/src/aotu/string_encryption`
 
 | 变量名                                      | 说明                                                                                                                             | 默认值   |
 |------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|-------|
@@ -13,24 +57,27 @@
 | AMICE_STRING_INLINE_DECRYPT_FN           | 控制是否内联解密函数：<br/>• `true` ——内联解密函数；<br/>• `false` —— 不内联解密函数。                                                                   | false |
 | AMICE_STRING_ONLY_DOT_STRING             | 控制是否仅处理 `.str` 段中的字符串：<br/>• `true` ——只加密`.str`字符串；<br/>• `false` —— 可能加密了llvm::Module内的类型为char[]全局变量，导致崩溃。                    | true  |
 | AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC | 控制是否允许在栈解密模式下，在非基本块分配栈：<br/>• `true` ——允许，许多LLVM优化pass假设所有 alloca 都在入口块；<br/>• `false` —— 推荐                                   | false |
+| AMICE_STRING_MAX_ENCRYPTION_COUNT | 非 global 解密模式的加密次数，限制到 1–100000                                                                              | 1     |
 
 > **Rust 注意**
 > ```bash
-> export AMICE_STRING_ONLY_LLVM_STRING=false  # Rust 字符串全局变量名为 alloc_xxx，而非 .str
+> export AMICE_STRING_ONLY_DOT_STRING=false  # Rust 字符串全局变量名为 alloc_xxx，而非 .str
 > ```
+
+> `AMICE_STRING_ONLY_LLVM_STRING` 是 `AMICE_STRING_ONLY_DOT_STRING` 的兼容旧名；两者都设置时以后者为准。
 
 ## 间接调用混淆
 
-源代码：`src/aotu/indirect_call`
+源代码：`crates/amice/src/aotu/indirect_call`
 
 | 变量名                         | 说明                                                 | 默认值   |
 |-----------------------------|----------------------------------------------------|-------|
-| AMICE_INDIRECT_CALL         | 是否启用间接跳转：<br/>• `true` —— 启用；<br/>• `false` —— 关闭; | false |
+| AMICE_INDIRECT_CALL         | 是否启用间接调用：<br/>• `true` —— 启用；<br/>• `false` —— 关闭; | false |
 | AMICE_INDIRECT_CALL_XOR_KEY | 间接跳转下标xor密钥<br/>备注：输入`0`关闭间接跳转下标加密                 | 随机数   |
 
 ## 间接跳转混淆
 
-源代码：`src/aotu/indirect_branch`
+源代码：`crates/amice/src/aotu/indirect_branch`
 
 | 变量名                         | 说明                                                               | 默认值                |
 |-----------------------------|------------------------------------------------------------------|--------------------|
@@ -48,16 +95,16 @@
 
 ## 切割基本块
 
-源代码：`src/aotu/split_basic_block`
+源代码：`crates/amice/src/aotu/split_basic_block`
 
 | 变量名                          | 说明                                                  | 默认值   |
 |------------------------------|-----------------------------------------------------|-------|
 | AMICE_SPLIT_BASIC_BLOCK      | 是否启用切割基本块：<br/>• `true` —— 启用；<br/>• `false` —— 关闭; | false |
-| AMICE_SPLIT_BASIC_BLOCk_NUMS | 切割基本块次数                                             | 3     |
+| AMICE_SPLIT_BASIC_BLOCK_NUM | 切割基本块次数                                             | 3     |
 
 ## `switch`降级
 
-源代码：`src/aotu/lower_switch`
+源代码：`crates/amice/src/aotu/lower_switch`
 
 | 变量名                                    | 说明                                             | 默认值   |
 |----------------------------------------|------------------------------------------------|-------|
@@ -66,7 +113,7 @@
 
 ## 扁平化控制流 (VM)
 
-源代码：`src/aotu/vm_flatten`
+源代码：`crates/amice/src/aotu/vm_flatten`
 
 | 变量名              | 说明                                             | 默认值   |
 |------------------|------------------------------------------------|-------|
@@ -74,7 +121,7 @@
 
 ## 指令级 VMP 虚拟化
 
-源代码：`src/aotu/vm_virtualize`
+源代码：`crates/amice/src/aotu/vm_virtualize`
 
 | 变量名                    | 说明                                                                                                         | 默认值                       |
 |------------------------|------------------------------------------------------------------------------------------------------------|---------------------------|
@@ -87,7 +134,7 @@
 
 ## 控制流平坦化
 
-源代码：`src/aotu/flatten`
+源代码：`crates/amice/src/aotu/flatten`
 
 | 变量名                         | 说明                                                       | 默认值     |
 |-----------------------------|----------------------------------------------------------|---------|
@@ -97,10 +144,11 @@
 | AMICE_FLATTEN_LOWER_SWITCH  | 是否自动降级switch                                             | true    |
 | AMICE_FLATTEN_LOOP_COUNT    | 循环次数（最好小于等于7）                                            | 1       |
 | AMICE_FLATTEN_ALWAYS_INLINE | 是否把`dominator`模式的更新`key_array`的函数给inline了                | false   |
+| `AMICE_FLATTEN_SKIP_BIG_FUNCTION` | 跳过过大的函数 | false |
 
 ## MBA算术混淆
 
-源代码：`src/aotu/mba`
+源代码：`crates/amice/src/aotu/mba`
 
 | 变量名                                  | 说明                                             | 默认值   |
 |--------------------------------------|------------------------------------------------|-------|
@@ -116,7 +164,7 @@ fixStack 和 optnone 配置已移除。支持范围、语义约束和测试方�
 
 ## 虚假控制流混淆
 
-源代码：`src/aotu/bogus_control_flow`
+源代码：`crates/amice/src/aotu/bogus_control_flow`
 
 | 变量名                            | 说明                                                                                                                                                                                                             | 默认值     |
 |--------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
@@ -127,17 +175,17 @@ fixStack 和 optnone 配置已移除。支持范围、语义约束和测试方�
 
 ## 函数包装
 
-源代码：`src/aotu/function_wrapper`
+源代码：`crates/amice/src/aotu/function_wrapper`
 
 | 变量名                                | 说明                                             | 默认值   |
 |------------------------------------|------------------------------------------------|-------|
 | AMICE_FUNCTION_WRAPPER             | 是否开启：<br/>• `true` —— 启用；<br/>• `false` —— 关闭; | false |
-| AMICE_FUNCTION_WRAPPER_PROBABILITY | 混淆概率                                           | `80`  |
-| AMICE_FUNCTION_WRAPPER_TIMES       | 循环执行次数                                         | `1`   |
+| AMICE_FUNCTION_WRAPPER_PROBABILITY | 混淆概率                                           | `70`  |
+| AMICE_FUNCTION_WRAPPER_TIMES       | 循环执行次数                                         | `3`   |
 
 ## 常参特化克隆混淆
 
-源代码：`src/aotu/clone_function`
+源代码：`crates/amice/src/aotu/clone_function`
 
 | 变量名                  | 说明                                             | 默认值   |
 |----------------------|------------------------------------------------|-------|
@@ -145,7 +193,7 @@ fixStack 和 optnone 配置已移除。支持范围、语义约束和测试方�
 
 ## 别名访问混淆
 
-源代码：`src/aotu/alias_access`
+源代码：`crates/amice/src/aotu/alias_access`
 
 | 变量名                                | 说明                                                         | 默认值             |
 |------------------------------------|------------------------------------------------------------|-----------------|
@@ -156,26 +204,17 @@ fixStack 和 optnone 配置已移除。支持范围、语义约束和测试方�
 
 ## 自定义调用约定
 
-源代码：`src/aotu/custom_calling_conv`
+源代码：`crates/amice/src/aotu/custom_calling_conv`
 
 | 变量名                       | 说明                                             | 默认值  |
 |---------------------------|------------------------------------------------|------|
 | AMICE_CUSTOM_CALLING_CONV | 是否开启：<br/>• `true` —— 启用；<br/>• `false` —— 关闭; | true |
 
-> 默认情况下开启，但是不会修改任何函数的调用约定，
-> ```cpp
-> #define OBFUSCATE_CC __attribute__((annotate("+custom_calling_conv")))
-> 
-> OBFUSCATE_CC
-> int add(int a, int b) {
->      return a + b;
-> }
-> ```
-> 只有当函数标记了`custom_calling_conv`注解的时候，才会对这个函数执行该混淆！
+> 配置默认值为 true，但当前调用约定实现仍是占位代码；即使添加注解也不会产生调用约定变换。
 
 ## GEP偏移量混淆（延迟偏移加载）
 
-源代码：`src/aotu/delay_offset_loading`
+源代码：`crates/amice/src/aotu/delay_offset_loading`
 
 | 变量名                                   | 说明                                             | 默认值   |
 |---------------------------------------|------------------------------------------------|-------|
@@ -184,8 +223,26 @@ fixStack 和 optnone 配置已移除。支持范围、语义约束和测试方�
 
 ## 参数结构化混淆（PAO）
 
-源代码：`src/aotu/param_aggregate`
+源代码：`crates/amice/src/aotu/param_aggregate`
 
 | 变量名                   | 说明                                             | 默认值   |
 |-----------------------|------------------------------------------------|-------|
 | AMICE_PARAM_AGGREGATE | 是否开启：<br/>• `true` —— 启用；<br/>• `false` —— 关闭; | false |
+
+## 函数分片（Basic Block Outlining）
+
+源代码：`crates/amice/src/aotu/basic_block_outlining`
+
+| 变量名 | 说明 | 默认值 |
+| --- | --- | --- |
+| `AMICE_BASIC_BLOCK_OUTLINING` | 开启基本块外提 | false |
+| `AMICE_BASIC_BLOCK_OUTLINING_MAX_EXTRACTOR_SIZE` | 提取器规模参数，必须是非负整数；非法值会导致配置解析失败 | 16 |
+
+## 基本块重排（Shuffle Blocks）
+
+源代码：`crates/amice/src/aotu/shuffle_blocks`
+
+| 变量名 | 说明 | 默认值 |
+| --- | --- | --- |
+| `AMICE_SHUFFLE_BLOCKS` | 开启基本块重排 | false |
+| `AMICE_SHUFFLE_BLOCKS_FLAGS` | 逗号分隔的 `random`、`reverse`、`rotate`；至少选一个才能产生重排，环境 flags 与文件 flags 合并 | 空 |
