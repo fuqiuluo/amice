@@ -40,6 +40,26 @@ fn test_indirect_branch_basic() {
     assert_eq!(lines[1], "All tests completed. sink = 1");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn test_indirect_branch_lto_unused_function() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("indirect_branch", "lto_unused.c", Language::C),
+        "indirect_branch_lto_unused",
+    )
+    .config(indirect_branch_config())
+    .optimization("O2")
+    .arg("-flto")
+    .arg("-fuse-ld=lld")
+    .arg("-fvisibility=hidden")
+    .compile();
+
+    result.assert_success();
+    result.run().assert_success();
+}
+
 #[test]
 fn test_indirect_branch_chained() {
     ensure_plugin_built();
