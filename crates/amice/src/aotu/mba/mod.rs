@@ -26,7 +26,7 @@ impl AmicePass for Mba {
 
     fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
         let mut changed = false;
-        let mut added_volatile = false;
+        let mut changed_effects = false;
         for function in module.get_functions() {
             if function.is_undef_function()
                 || function.is_llvm_function()
@@ -40,17 +40,18 @@ impl AmicePass for Mba {
             if !cfg.enable {
                 continue;
             }
-            let (rewritten, volatile) = region::rewrite(module, function, &cfg)?;
-            added_volatile |= volatile;
+            let (rewritten, effects) = region::rewrite(module, function, &cfg)?;
+            changed_effects |= effects;
             if rewritten {
                 let attr = module.get_context().create_string_attribute("amice.mba.done", "1");
                 function.add_attribute(AttributeLoc::Function, attr);
                 changed = true;
             }
         }
-        if added_volatile {
+        if changed_effects {
             // Caller summaries and explicit call-site attributes can retain
-            // memory(none), including through indirect calls and aliases.
+            // memory(none), including through indirect calls and aliases. Both
+            // volatile guards and constrained FP access observable state.
             module.invalidate_memory_attrs_for_volatile();
         }
         Ok(if changed {

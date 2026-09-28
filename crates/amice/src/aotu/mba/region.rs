@@ -4,9 +4,15 @@ use amice_plugin::inkwell::{
     attributes::{Attribute, AttributeLoc},
     builder::Builder,
     context::ContextRef,
+    intrinsics::Intrinsic,
+    llvm_sys::core::LLVMAddCallSiteAttribute,
     module::{Linkage, Module},
-    values::{BasicValue, FunctionValue, InstructionOpcode as Op, InstructionValue, IntValue, PhiValue},
+    values::{
+        AsValueRef, BasicValue, FloatValue, FunctionValue, InstructionOpcode as Op, InstructionValue, IntValue,
+        PhiValue,
+    },
 };
+use anyhow::Context;
 use std::collections::{HashMap, HashSet};
 
 // Unbiased exponents -128..127 keep both carriers and their smallest nonzero
@@ -210,6 +216,7 @@ pub(super) fn rewrite<'ctx>(
         )
     };
     let mut emitter = Region {
+        module,
         ctx,
         builder,
         selected,
@@ -292,10 +299,28 @@ pub(super) fn rewrite<'ctx>(
     for (inst, _, _) in replacements {
         inst.erase_from_basic_block();
     }
-    Ok((changed, volatile))
+    if !emitter.selected.is_empty() {
+        // Exact scalar operations can still gain exceptional unused lanes when
+        // SLP vectorizes ordinary fadd/fsub. Constrained operations and their
+        // containing scope must preserve the caller's floating-point status.
+        let strict = ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("strictfp"), 0);
+        function.add_attribute(AttributeLoc::Function, strict);
+        function.remove_string_attribute(AttributeLoc::Function, "no-trapping-math");
+        for instruction in function.get_basic_blocks().iter().flat_map(|b| b.get_instructions()) {
+            if matches!(instruction.get_opcode(), Op::Call | Op::Invoke | Op::CallBr) {
+                // SAFETY: All three opcodes are CallBase instructions. The
+                // attribute belongs to the same live LLVM context.
+                unsafe {
+                    LLVMAddCallSiteAttribute(instruction.as_value_ref(), u32::MAX, strict.as_mut_ptr());
+                }
+            }
+        }
+    }
+    Ok((changed, volatile || !emitter.selected.is_empty()))
 }
 
-struct Region<'ctx> {
+struct Region<'ctx, 'module> {
+    module: &'module Module<'ctx>,
     ctx: ContextRef<'ctx>,
     builder: Builder<'ctx>,
     selected: HashSet<InstructionValue<'ctx>>,
@@ -305,7 +330,34 @@ struct Region<'ctx> {
     pre_expand: bool,
 }
 
-impl<'ctx> Region<'ctx> {
+impl<'ctx> Region<'ctx, '_> {
+    fn float_arithmetic(
+        &self,
+        intrinsic: &str,
+        left: FloatValue<'ctx>,
+        right: FloatValue<'ctx>,
+        name: &str,
+    ) -> anyhow::Result<FloatValue<'ctx>> {
+        let function = Intrinsic::find(intrinsic)
+            .and_then(|intrinsic| intrinsic.get_declaration(self.module, &[self.ctx.f64_type().into()]))
+            .context("declaring constrained binary64 arithmetic")?;
+        let call = self.builder.build_call(
+            function,
+            &[
+                left.into(),
+                right.into(),
+                self.ctx.metadata_string("round.dynamic").into(),
+                self.ctx.metadata_string("fpexcept.strict").into(),
+            ],
+            name,
+        )?;
+        Ok(call
+            .try_as_basic_value()
+            .basic()
+            .context("constrained arithmetic result")?
+            .into_float_value())
+    }
+
     fn input(&mut self, value: IntValue<'ctx>, anchor: InstructionValue<'ctx>) -> anyhow::Result<IntValue<'ctx>> {
         if let Some(inst) = value.as_instruction_value() {
             if self.selected.contains(&inst) {
@@ -384,11 +436,12 @@ impl<'ctx> Region<'ctx> {
                 let origin = b
                     .build_bit_cast(origin_bits, self.ctx.f64_type(), "mba.rhs.origin")?
                     .into_float_value();
-                let payload = b.build_float_sub(yf, origin, "mba.rhs.payload")?;
+                let payload =
+                    self.float_arithmetic("llvm.experimental.constrained.fsub", yf, origin, "mba.rhs.payload")?;
                 let result = if op == Op::Add {
-                    b.build_float_add(xf, payload, "mba.add")?
+                    self.float_arithmetic("llvm.experimental.constrained.fadd", xf, payload, "mba.add")?
                 } else {
-                    b.build_float_sub(xf, payload, "mba.sub")?
+                    self.float_arithmetic("llvm.experimental.constrained.fsub", xf, payload, "mba.sub")?
                 };
                 b.build_bit_cast(result, ty, "mba.bits")?.into_int_value()
             },

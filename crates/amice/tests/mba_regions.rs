@@ -174,7 +174,8 @@ int main(void) {
         if (sticky && feraiseexcept(sticky)) return 3;
         uint64_t actual=pairs[p].actual(x,y,z,w);
         if (actual!=expected || fetestexcept(FE_ALL_EXCEPT)!=sticky || fegetround()!=modes[m]) {
-          fprintf(stderr,"%s mode=%u case=%u expected=%llx actual=%llx\n",pairs[p].name,m,n,(unsigned long long)expected,(unsigned long long)actual); return 1;
+          fprintf(stderr,"%s mode=%u case=%u expected=%llx actual=%llx\n",pairs[p].name,m,n,(unsigned long long)expected,(unsigned long long)actual);
+          fprintf(stderr,"flags=%x expected-flags=%x round=%x expected-round=%x\n",fetestexcept(FE_ALL_EXCEPT),sticky,fegetround(),modes[m]); return 1;
         }
         ++checks;
       }
@@ -222,7 +223,7 @@ fn regions_match_original_before_and_after_o2() {
         assert!(!body(&ir, "soft_integer").contains("double"));
         if fp && supported {
             assert!(body(&ir, "region_loop").contains("phi i64"));
-            assert!(body(&ir, "region_loop").contains("fadd double"));
+            assert!(body(&ir, "region_loop").contains("@llvm.experimental.constrained.fadd.f64"));
             assert!(!body(&ir, "region_loop").contains("phi i32"));
             assert!(body(&ir, "region_branch").contains("select i1"));
         } else {
@@ -247,7 +248,7 @@ fn regions_match_original_before_and_after_o2() {
             if fp && supported {
                 let optimized_ir = std::fs::read_to_string(&optimized).unwrap();
                 assert!(
-                    body(&optimized_ir, "region_loop").contains("fadd double"),
+                    body(&optimized_ir, "region_loop").contains("@llvm.experimental.constrained.fadd.f64"),
                     "FP region vanished after {level}"
                 );
             }
@@ -343,7 +344,7 @@ define i32 @disabled_feature(i32 %x, i32 %y) "target-features"="-sse2" {
     for name in ["local_zero", "local_cost", "local_disabled"] {
         assert!(body(&out, name).contains("%a = add i32"), "{name} was rewritten");
     }
-    assert!(body(&out, "local_one").contains("fadd double"));
+    assert!(body(&out, "local_one").contains("@llvm.experimental.constrained.fadd.f64"));
     assert!(body(&out, "local_one").contains("%b = sub i32"));
     assert!(body(&out, "eh_boundary").contains("%q = phi i32"));
     assert!(body(&out, "eh_boundary").contains("%p = phi i32"));
@@ -522,7 +523,16 @@ fn preoptimized_ir_and_lto_preserve_results() {
     {
         let output = dir.join(format!("pipeline-{n}.ll"));
         transform_pipeline(&input, &output, true, 128, 2048, pipeline);
-        assert!(std::fs::read_to_string(&output).unwrap().contains("amice.mba.done"));
+        let ir = std::fs::read_to_string(&output).unwrap();
+        assert!(ir.contains("amice.mba.done"));
+        // LLVM 21 SLP can pack ordinary FP operations with unused poison lanes
+        // on this CFG, raising FE_INVALID without changing the integer result.
+        // Preserve exception semantics even for random variants that happen
+        // not to vectorize during this run.
+        let irreducible = body(&ir, "region_irreducible");
+        assert!(irreducible.contains("metadata !\"fpexcept.strict\""));
+        assert!(irreducible.contains("metadata !\"round.dynamic\""));
+        assert!(!irreducible.contains(" = fadd ") && !irreducible.contains(" = fsub "));
         let exe = dir.join(format!("check-{n}{}", std::env::consts::EXE_SUFFIX));
         let mut cmd = Command::new(tool("clang"));
         cmd.args(["-O3", "-flto", "-fuse-ld=lld"])
@@ -689,7 +699,8 @@ fn composite_modes_seed_extremes_and_threads() {
                 usize::from(guard)
             );
             let add = body(&ir, "op_add_32_0");
-            let fp_ops = add.matches("fadd double").count() + add.matches("fsub double").count();
+            let fp_ops = add.matches("@llvm.experimental.constrained.fadd.f64").count()
+                + add.matches("@llvm.experimental.constrained.fsub.f64").count();
             assert_eq!(fp_ops, if expand { 4 } else { 2 });
             // Every seed value is valid; the initializer is not an invariant
             // that the arithmetic is allowed to assume.
@@ -718,7 +729,7 @@ fn composite_modes_seed_extremes_and_threads() {
                     .arg("-o")
                     .arg(&optimized));
                 let optimized_ir = std::fs::read_to_string(&optimized).unwrap();
-                assert!(body(&optimized_ir, "region_loop").contains("fadd double"));
+                assert!(body(&optimized_ir, "region_loop").contains("@llvm.experimental.constrained.fadd.f64"));
                 assert_eq!(
                     body(&optimized_ir, "region_loop").matches("load volatile i32").count(),
                     usize::from(guard)
@@ -898,12 +909,14 @@ int main(void) {
         let mut operations = 0;
         for line in body.lines() {
             if let Some((_, operands)) = line
-                .split_once("fadd double ")
-                .or_else(|| line.split_once("fsub double "))
+                .split_once("@llvm.experimental.constrained.fadd.f64(")
+                .or_else(|| line.split_once("@llvm.experimental.constrained.fsub.f64("))
             {
-                let (a, b) = operands.split_once(',').unwrap();
+                let mut args = operands.split(',');
+                let a = args.next().unwrap();
+                let b = args.next().unwrap();
                 assert!(
-                    a.trim().starts_with('%') && b.trim().starts_with('%'),
+                    a.trim().starts_with("double %") && b.trim().starts_with("double %"),
                     "constant FP operand: {line}"
                 );
                 operations += 1;
@@ -967,15 +980,41 @@ attributes #1 = { memory(none) nosync nounwind willreturn }
     std::fs::write(&input, ir).unwrap();
     transform(&input, &output, true, 128, 2048);
     let result = std::fs::read_to_string(&output).unwrap();
-    for attr in ["memory(none)", "speculatable", "nosync"] {
-        assert!(!result.contains(attr), "stale {attr}");
+    // Intrinsic declarations retain LLVM's own contracts. Inspect the rewritten
+    // definitions and their call sites, including referenced attribute groups.
+    for name in [
+        "empty_phi",
+        "work",
+        "caller",
+        "outer",
+        "indirect",
+        "no_guard",
+        "no_expand",
+    ] {
+        let definition = body(&result, name);
+        let groups = definition
+            .split_ascii_whitespace()
+            .filter(|word| word.starts_with('#'))
+            .filter_map(|group| {
+                result
+                    .lines()
+                    .find(|line| line.starts_with(&format!("attributes {group} =")))
+            })
+            .collect::<Vec<_>>();
+        for attr in ["memory(none)", "speculatable", "nosync"] {
+            assert!(
+                !definition.contains(attr) && groups.iter().all(|group| !group.contains(attr)),
+                "stale {attr} in {name}"
+            );
+        }
     }
     assert!(!body(&result, "no_guard").contains("load volatile"));
     assert!(body(&result, "empty_phi").contains("%p = phi i32"));
     let plain = body(&result, "no_expand");
     assert!(plain.contains("load volatile"));
     assert_eq!(
-        plain.matches("fadd double").count() + plain.matches("fsub double").count(),
+        plain.matches("@llvm.experimental.constrained.fadd.f64").count()
+            + plain.matches("@llvm.experimental.constrained.fsub.f64").count(),
         2
     );
     let optimized = dir.join("o3.ll");
