@@ -245,6 +245,12 @@ cp -a "$PLUGIN" "$BUNDLE_DIR/amice/lib/libamice.$PLUGIN_EXT"
 echo "Copying LLVM runtime from: $LLVM_LIBDIR"
 while IFS= read -r -d '' file; do
     if [[ -L "$file" ]]; then
+        # Some AOSP distributions include an unused versioned libLLVM alias
+        # whose target is absent. Copy only runtime files that actually exist.
+        if [[ ! -e "$file" ]]; then
+            echo "Skipping dangling runtime symlink: $file"
+            continue
+        fi
         # CI can create absolute libLLVM symlinks; make the bundle relocatable.
         target="$(resolve_symlink_target "$file")"
         cp -a "$target" "$BUNDLE_DIR/amice/llvm-lib/"

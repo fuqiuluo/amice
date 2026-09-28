@@ -46,6 +46,7 @@ class BundlePackagingTests(unittest.TestCase):
         runtime = cls.llvm / "lib/libLLVM.so.21"
         runtime.write_bytes(elf_runtime())
         (cls.llvm / "lib/libLLVM.so").symlink_to(runtime)
+        (cls.llvm / "lib/libLLVM.so.19").symlink_to("libLLVM.so.19.0")
         cls.plugin = cls.root / "libamice.so"
         cls.plugin.write_bytes(b"test plugin")
         result = cls.package()
@@ -108,6 +109,11 @@ class BundlePackagingTests(unittest.TestCase):
         self.assertTrue(runtime.read_bytes().startswith(b"\x7fELF"))
         self.assertNotEqual(runtime.read_bytes(), elf_runtime())
         self.assertEqual((self.llvm / "lib/libLLVM.so").read_bytes(), elf_runtime())
+
+    def test_unused_dangling_runtime_alias_is_omitted(self):
+        alias = self.bundle / "amice/llvm-lib/libLLVM.so.19"
+        self.assertFalse(alias.is_symlink())
+        self.assertTrue((self.bundle / "amice/llvm-lib/libLLVM.so").is_file())
 
     def test_mismatched_clang_revision_is_rejected(self):
         result = self.package("--clang-revision", "r563880c")

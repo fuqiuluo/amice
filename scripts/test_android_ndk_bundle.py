@@ -111,7 +111,7 @@ def compile_suite(args):
                  "-fno-discard-value-names", bcf_source, "-o", ir],
                 env={**env, **PROFILES[profile], "AMICE_PASS_ORDER": "BogusControlFlow"})
             text = ir.read_text()
-            if '"amice.bcf.generated"' not in text or "bcf.digits" not in text:
+            if '"amice.bcf.done"' not in text or "bcf.digits" not in text:
                 raise RuntimeError(f"BCF integer regions were not generated: {ir}")
             cloned = '"amice.bcf.clone"' in text
             if cloned != (profile == "bcf-clone"):
