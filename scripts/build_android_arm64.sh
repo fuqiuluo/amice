@@ -14,9 +14,10 @@
 #
 # Obfuscation env vars (pass before the script or export them):
 #   AMICE_BOGUS_CONTROL_FLOW=true
-#   AMICE_BOGUS_CONTROL_FLOW_MODE=basic|polaris-primes
 #   AMICE_BOGUS_CONTROL_FLOW_PROB=80
-#   AMICE_BOGUS_CONTROL_FLOW_LOOPS=1
+#   AMICE_BOGUS_CONTROL_FLOW_MAX_REGIONS=2
+#   AMICE_BOGUS_CONTROL_FLOW_MAX_REGION_INSTRUCTIONS=8
+#   AMICE_BOGUS_CONTROL_FLOW_SEED=<u64>  # Optional; random when omitted
 #   AMICE_FLATTEN=true
 #   AMICE_STRING_ENCRYPTION=true
 #   ... (see docs/EnvConfig_en_US.md for all variables)

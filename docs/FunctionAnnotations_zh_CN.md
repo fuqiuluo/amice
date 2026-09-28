@@ -80,32 +80,20 @@ int excluded_function(int x) {
         - 默认值：16
         - 影响：数值越小，分片越保守；数值越大，可能提取更大的基础块为独立函数
 
-### 伪造控制流（Bogus Control Flow / BCF）
+### 虚假控制流（Bogus Control Flow / BCF）
 
-通过在基本块间插入无效或等价分支。
+以下注解用于逐函数启用 BCF、调整预算或覆盖全局配置。整函数克隆与强制内联可单独关闭，整数区域变换仍保留。支持范围与限制见 [环境变量配置](EnvConfig_zh_CN.md#虚假控制流混淆)。
 
-- 开关
-    - `+bogus_control_flow`（别名：`+bcf`）
-        - 功能：启用伪造控制流
-        - 默认值：false
+| 注解 | 别名 | 默认值与含义 |
+|---|---|---|
+| `+bogus_control_flow` | `+bcf`, `+boguscfg` | 默认关闭；`-bcf` 可逐函数关闭 |
+| `bogus_control_flow_prob=<n>` | `bcf_prob` | 80；整函数克隆及候选区域的选择概率，上限 100 |
+| `+bogus_control_flow_clone` | `+bcf_clone` | 默认启用；`-bcf_clone` 只关闭整函数克隆补充 |
+| `bogus_control_flow_max_regions=<n>` | `bcf_max_regions` | 2；每函数区域数，0 禁用，硬上限 16 |
+| `bogus_control_flow_max_region_instructions=<n>` | `bcf_max_region_instructions` | 8；每区域原始指令数，小于 2 不转换，硬上限 16 |
+| `bogus_control_flow_seed=<n>` | `bcf_seed` | 继承全局种子，未配置时随机生成；u64 十进制种子 |
 
-- 模式
-    - `bogus_control_flow_mode=<mode>`（别名：`bcf_mode`）
-        - 可选值：
-            - `basic`（别名：`v1`）
-            - `polaris-primes`（别名：`primes`, `v2`）
-        - 默认值：`basic`
-        - 说明：不同模式生成伪造路径的策略不同，可根据需求选择
-
-- 参数
-    - `bogus_control_flow_prob=<0..100>`（别名：`bcf_prob`）
-        - 功能：每个基本块被混淆（应用伪造分支）的概率，单位为百分比
-        - 默认值：80
-        - 范围与行为：0–100；超过上限将按 100 处理，非法值忽略并保留原值/默认值
-    - `bogus_control_flow_loops=<n>`（别名：`bcf_loops`）
-        - 功能：对同一函数重复执行该混淆 Pass 的次数
-        - 默认值：1
-        - 要求：n ≥ 1；小于 1 或非法值将忽略并保留原值/默认值
+例如：`__attribute__((annotate("+bcf bcf_prob=100 bcf_max_regions=1 bcf_max_region_instructions=6 bcf_seed=42")))`。
 
 ### 常参特化克隆（Clone Function）
 
@@ -214,7 +202,7 @@ int excluded_function(int x) {
 
 ### Switch 降级（Lower Switch / Switch→If-Else）
 
-将 switch 语句预先降级为 if-else 链，便于后续混淆变换（如扁平化、伪造控制流）。
+将 switch 语句预先降级为 if-else 链，便于后续混淆变换（如扁平化、虚假控制流）。
 
 - 开关
     - `+lower_switch`（别名：`+lowerswitch`, `+switch_to_if`）
@@ -263,13 +251,13 @@ int excluded_function(int x) {
         - 默认值：3
         - 建议：值越大，块数量与跳转增多，体积与编译/优化时间也会上升
 
-### 虚拟机扁平化（VM Flatten / VMF）
+### VM控制流平坦化（VM Flatten / VMF）
 
 将目标函数改写为由“虚拟机解释器 + 字节码/指令表”驱动的控制流形式。
 
 - 开关
     - `+vm_flatten`（别名：`+vmf`）
-        - 功能：启用基于虚拟机的控制流扁平化
+        - 功能：启用VM控制流平坦化
         - 默认值：false
 
 ### 指令级 VMP（VmVirtualize）

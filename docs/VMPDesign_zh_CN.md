@@ -1023,7 +1023,7 @@ int bar(int x) {
 
 与当前 `+vm_flatten` 的关系：
 
-- `vm_flatten` 保持现有含义：控制流虚拟化/扁平化。
+- `vm_flatten` 保持现有含义：VM控制流平坦化。
 - `vm_virtualize` 表示新 VMP pass：LLVM IR 指令级虚拟化。
 - 两者不能默认同时作用在同一个函数。若用户强制组合，必须通过 pass order 明确顺序。
 

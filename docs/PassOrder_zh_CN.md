@@ -123,13 +123,13 @@ StringEncryption = 1000
 | `IndirectCall` | 990 | `PipelineStart` |
 | `BasicBlockOutlining` | 979 | `PipelineStart` |
 | `ShuffleBlocks` | 970 | `PipelineStart` |
+| `BogusControlFlow` | 970 | `OptimizerLast, FullLtoLast` |
 | `LowerSwitch` | 961 | `PipelineStart` |
 | `VmFlatten` | 960 | `PipelineStart` |
 | `Flatten` | 959 | `PipelineStart` |
 | `SplitBasicBlock` | 958 | `PipelineStart, OptimizerLast` |
 | `Mba` | 955 | `OptimizerLast` |
 | `VmVirtualize` | 955 | `OptimizerLast` |
-| `BogusControlFlow` | 950 | `PipelineStart` |
 | `IndirectBranch` | 800 | `PipelineStart` |
 
 这张表对应当前源码中的注册信息。`CustomCallingConv` 目前是预留实现，不应当作为已生效的保护手段。开关及参数见 [环境变量](EnvConfig_zh_CN.md)，局部配置见 [函数注解](FunctionAnnotations_zh_CN.md)。

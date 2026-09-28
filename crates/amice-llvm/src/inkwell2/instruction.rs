@@ -7,11 +7,14 @@ mod switch_inst;
 pub use branch_inst::*;
 pub use call_inst::*;
 pub use gep_inst::*;
-use inkwell::values::InstructionValue;
+use inkwell::values::{AsValueRef, InstructionValue};
 pub use phi_inst::*;
 pub use switch_inst::*;
 
 pub trait InstructionExt<'ctx> {
+    /// Whether instruction flags can introduce poison beyond operand poison.
+    fn has_poison_generating_flags(self) -> bool;
+
     fn into_branch_inst(self) -> BranchInst<'ctx>;
 
     fn into_switch_inst(self) -> SwitchInst<'ctx>;
@@ -24,6 +27,11 @@ pub trait InstructionExt<'ctx> {
 }
 
 impl<'ctx> InstructionExt<'ctx> for InstructionValue<'ctx> {
+    fn has_poison_generating_flags(self) -> bool {
+        // SAFETY: InstructionValue represents a live LLVM instruction.
+        unsafe { crate::ffi::amice_instruction_has_poison_generating_flags(self.as_value_ref()) }
+    }
+
     fn into_branch_inst(self) -> BranchInst<'ctx> {
         self.into()
     }

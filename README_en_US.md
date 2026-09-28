@@ -14,7 +14,7 @@ Amice is a code-obfuscation tool that ships as an LLVM pass plugin. It provides 
 
 - **Plug-and-play** — loaded into clang as a shared library; no LLVM rebuild, and existing Clang-built projects only add one compile flag
 - **String encryption** — `xor` / `simd_xor` algorithms with lazy or startup decryption and stack/heap allocation
-- **Control-flow obfuscation** — control-flow flattening (`basic` / `dominator`), VM-style flattening, bogus control flow, indirect calls/branches, basic-block splitting and shuffling, and more
+- **Control-flow obfuscation** — control-flow flattening, VM control-flow flattening, [BCF](docs/EnvConfig_en_US.md#bogus-control-flow), indirect calls/branches, basic-block splitting and shuffling, and more
 - **Instruction-level VMP** — lifts functions into VM bytecode with a generated interpreting runtime
 - **MBA obfuscation** — mixed boolean-arithmetic rewriting covering integer and binary64 floating-point regions
 - **Per-function control** — choose obfuscation strategies per function with `__attribute__((annotate(...)))`

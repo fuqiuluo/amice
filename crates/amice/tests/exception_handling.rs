@@ -18,8 +18,7 @@ use common::{CppCompileBuilder, ObfuscationConfig, ensure_plugin_built, fixture_
 fn test_cpp_exception_with_bcf() {
     ensure_plugin_built();
 
-    // This is a CRITICAL test - BCF currently does NOT check for exception handling
-    // This test will likely FAIL or produce incorrect results
+    // Region BCF skips personality/EH functions and preserves unwinding behavior.
     let result = CppCompileBuilder::new(
         fixture_path("exception_handling", "cpp_exception_bcf.cpp", Language::Cpp),
         "cpp_exception_bcf",

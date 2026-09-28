@@ -374,7 +374,7 @@ fn collect_basic_block<'a>(funcs: &Vec<(FunctionValue<'a>, IndirectBranchConfig)
                 continue;
             }
 
-            // Skip blocks that end with unreachable (e.g., fake blocks from BCF)
+            // Skip blocks that end with unreachable.
             // if let Some(terminator) = bb.get_terminator() {
             //     if terminator.get_opcode() == InstructionOpcode::Unreachable {
             //         continue;

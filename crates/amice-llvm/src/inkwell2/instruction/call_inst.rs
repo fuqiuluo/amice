@@ -7,6 +7,25 @@ pub struct CallInst<'ctx> {
 }
 
 impl<'ctx> CallInst<'ctx> {
+    /// Resolve a statically known callee through pointer casts and aliases.
+    /// Indirect calls and ifunc resolvers return `None`.
+    pub fn resolve_called_function(self) -> Option<FunctionValue<'ctx>> {
+        // SAFETY: CallInst wraps a live CallBase. LLVM returns a Function or null.
+        unsafe { FunctionValue::new(crate::ffi::amice_call_resolve_function(self.inst.as_value_ref())) }
+    }
+
+    /// Inline this call using LLVM's value mapping and successor-PHI repair.
+    /// Returns false when LLVM declines to inline it.
+    ///
+    /// # Safety
+    /// On success the call instruction is deleted. The caller must not reuse
+    /// handles to it or rely on the previous block/instruction layout.
+    pub unsafe fn inline(self) -> bool {
+        // SAFETY: CallInst::new checks the opcode, so this is a CallBase.
+        // The caller promises not to reuse handles invalidated by inlining.
+        unsafe { crate::ffi::amice_call_inline(self.inst.as_value_ref()) }
+    }
+
     pub fn new(inst: InstructionValue<'ctx>) -> Self {
         assert_eq!(inst.get_opcode(), InstructionOpcode::Call);
         Self { inst }

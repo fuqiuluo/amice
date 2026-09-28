@@ -29,3 +29,6 @@ CLAUDE.md
 AGENTS.md
 .claude/
 /crates/amice/tests/rust/*/target/
+
+# Local workspace notes
+.local/

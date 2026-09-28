@@ -8,6 +8,12 @@ use inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
 use inkwell::values::{AsValueRef, InstructionOpcode, InstructionValue};
 
 pub trait BasicBlockExt<'ctx> {
+    /// Whether a blockaddress constant refers to this block.
+    fn has_address_taken(&self) -> bool;
+
+    /// Whether this block starts an exception-handling pad.
+    fn is_eh_pad(&self) -> bool;
+
     fn split_basic_block(&self, inst: InstructionValue<'ctx>, name: &str, before: bool) -> Option<BasicBlock<'ctx>>;
 
     fn get_first_insertion_pt(&self) -> InstructionValue<'ctx>;
@@ -22,6 +28,18 @@ pub trait BasicBlockExt<'ctx> {
 }
 
 impl<'ctx> BasicBlockExt<'ctx> for BasicBlock<'ctx> {
+    fn has_address_taken(&self) -> bool {
+        // SAFETY: The live BasicBlock handle supplies the pointer expected by
+        // LLVM's read-only hasAddressTaken query.
+        unsafe { crate::ffi::amice_basic_block_has_address_taken(self.as_mut_ptr()) }
+    }
+
+    fn is_eh_pad(&self) -> bool {
+        // SAFETY: The live BasicBlock handle supplies the pointer expected by
+        // LLVM's read-only isEHPad query.
+        unsafe { crate::ffi::amice_basic_block_is_eh_pad(self.as_mut_ptr()) }
+    }
+
     fn split_basic_block(&self, inst: InstructionValue<'ctx>, name: &str, before: bool) -> Option<BasicBlock<'ctx>> {
         let c_str_name = to_c_str(name);
         let new_block = unsafe {

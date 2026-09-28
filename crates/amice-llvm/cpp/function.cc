@@ -4,6 +4,7 @@
 
 #include <optional>
 
+#include <llvm/Analysis/InlineCost.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/Verifier.h>
@@ -11,6 +12,7 @@
 #include <llvm/Support/ModRef.h>
 #endif
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 #include <llvm/Transforms/Utils/Local.h>
 
 namespace {
@@ -42,6 +44,32 @@ bool isDemotableValueTy(llvm::Type *Ty) {
 } // namespace
 
 extern "C" {
+
+llvm::Function *amice_function_clone(llvm::Function *F) {
+    llvm::ValueToValueMapTy Map;
+    return llvm::CloneFunction(F, Map);
+}
+
+bool amice_function_is_inline_viable(llvm::Function *F) {
+    return llvm::isInlineViable(*F).isSuccess();
+}
+
+void amice_function_replace_body(llvm::Function *Dest, llvm::Function *Source) {
+    llvm::ValueToValueMapTy Map;
+    auto Arg = Dest->arg_begin();
+    for (auto &SourceArg : Source->args())
+        Map[&SourceArg] = &*Arg++;
+    auto Linkage = Dest->getLinkage();
+    Dest->deleteBody();
+    Dest->clearMetadata();
+    llvm::SmallVector<llvm::ReturnInst *, 8> Returns;
+#if LLVM_VERSION_MAJOR >= 13
+    llvm::CloneFunctionInto(Dest, Source, Map, llvm::CloneFunctionChangeType::LocalChangesOnly, Returns);
+#else
+    llvm::CloneFunctionInto(Dest, Source, Map, false, Returns);
+#endif
+    Dest->setLinkage(Linkage);
+}
 
 // https://bbs.kanxue.com/thread-268789-1.htm
 void amice_function_fix_stack(llvm::Function *f, int AtTerminator, int MaxIterations) {

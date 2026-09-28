@@ -15,11 +15,11 @@
 | Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | 将分支改写为 `indirectbr`，支持 dummy block、表重排、索引加密等 flags |
 | Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | 按配置切割基本块 |
 | Lower Switch | `AMICE_LOWER_SWITCH` | ✅ | ✅ | ❌ | 降级 LLVM `switch` 指令 |
-| VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM 风格控制流扁平化 |
+| VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM控制流平坦化 |
 | VM Virtualize | `AMICE_VM_VIRTUALIZE` | ✅ | ✅ | ❌ | 指令级 VMP 虚拟化，支持全局开启或通过函数注解按函数启用 |
 | Flatten | `AMICE_FLATTEN` | ✅ | ✅ | ❌ | 控制流平坦化，支持 `basic` / `dominator` 模式 |
 | MBA | `AMICE_MBA` | ✅ | ✅ | ❌ | 混合布尔算术表达式重写 |
-| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | 插入虚假控制流，支持 basic / polaris-primes 模式 |
+| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | 混淆程序控制流，增加逆向分析难度 |
 | Function Wrapper | `AMICE_FUNCTION_WRAPPER` | ✅ | ✅ | ❌ | 生成包装函数并替换调用点 |
 | Clone Function | `AMICE_CLONE_FUNCTION` | ✅ | ✅ | ❌ | 常量参数特化克隆 |
 | Alias Access | `AMICE_ALIAS_ACCESS` | ✅ | ✅ | ❌ | 基于指针链的别名访问混淆 |
@@ -111,7 +111,7 @@
 | AMICE_LOWER_SWITCH                     | 是否开启：<br/>• `true` —— 启用；<br/>• `false` —— 关闭; | false |
 | ~~AMICE_LOWER_SWITCH_WITH_DUMMY_CODE~~ | 是否开启降级后插入无效代码（开启可能无法通过模块校验导致`-O1`等编译失败）        | false |
 
-## 扁平化控制流 (VM)
+## VM控制流平坦化
 
 源代码：`crates/amice/src/aotu/vm_flatten`
 
@@ -164,14 +164,26 @@ fixStack 和 optnone 配置已移除。支持范围、语义约束和测试方�
 
 ## 虚假控制流混淆
 
-源代码：`crates/amice/src/aotu/bogus_control_flow`
+源代码：`crates/amice/src/aotu/bogus_control_flow`。
 
-| 变量名                            | 说明                                                                                                                                                                                                             | 默认值     |
-|--------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
-| AMICE_BOGUS_CONTROL_FLOW       | 是否开启：<br/>• `true` —— 启用；<br/>• `false` —— 关闭;                                                                                                                                                                 | false   |
-| AMICE_BOGUS_CONTROL_FLOW_MODE  | 混淆模式：<br/>• `basic` —— 默认的，基础版，甚至可能被优化；<br/>• `polaris-primes` —— 从[Polaris-Obfuscator](https://github.com/za233/Polaris-Obfuscator/blob/main/src/llvm/lib/Transforms/Obfuscation/BogusControlFlow.cpp)抄的一个变种； | `basic` | 
-| AMICE_BOGUS_CONTROL_FLOW_PROB  | 混淆概率                                                                                                                                                                                                           | `80`    |
-| AMICE_BOGUS_CONTROL_FLOW_LOOPS | 循环执行次数                                                                                                                                                                                                         | `1`     |
+BCF 混淆程序控制流，增加逆向分析难度，在 OptimizerLast / FullLtoLast 执行。默认启用完整原始函数的克隆与强制内联补充；可单独关闭此补充，继续使用整数区域变换。整数区域支持 i8/i16/i32/i64 的 add/sub/and/or/xor，跳过已有循环中的区域和异常处理函数。
+
+| 变量名 | 说明 | 默认值 |
+|---|---|---|
+| AMICE_BOGUS_CONTROL_FLOW | 启用 BCF | `false` |
+| AMICE_BOGUS_CONTROL_FLOW_PROB | 整函数克隆及候选区域的选择概率，0–100，超过 100 按 100 处理 | `80` |
+| AMICE_BOGUS_CONTROL_FLOW_CLONE | 启用完整原始函数克隆与强制内联；关闭后保留整数区域变换 | `true` |
+| AMICE_BOGUS_CONTROL_FLOW_MAX_REGIONS | 每函数最多转换的区域数；0 禁用，硬上限 16 | `2` |
+| AMICE_BOGUS_CONTROL_FLOW_MAX_REGION_INSTRUCTIONS | 每区域原始指令上限；小于 2 不转换，超过 16 按 16 处理 | `8` |
+| AMICE_BOGUS_CONTROL_FLOW_SEED | u64 十进制种子；未指定时随机生成，显式指定时可复现 | 随机数 |
+
+区域预算不限制整函数克隆的大小；`MAX_REGIONS=0` 或 `MAX_REGION_INSTRUCTIONS<2` 会禁用 BCF。变参、直接递归、异常处理、基本块地址逃逸及其他不满足内联条件的函数跳过克隆补充；内联失败时仍按整数区域规则处理。指针参数保持透传。整数参数仅在不破坏运算前提时扰动。后续优化可能合并等价分支，需检查最终产物中的保留情况。
+
+配置文件中的补充开关为 `bogus_control_flow.clone`。启用 BCF 会增加运行时间和代码体积，完整克隆的成本随函数大小增长，建议从少量目标函数开始。不要用于要求恒定执行时间的代码。逐函数配置见 [函数注解](FunctionAnnotations_zh_CN.md)。
+
+含 `llvm.localescape`、`llvm.gcroot` 或入口收敛令牌的函数保持原样，以保留 LLVM 对入口位置的要求。函数签名含当前绑定不支持的类型（如 Target Extension 类型），或调用具有 `noduplicate`、`convergent`、`returns_twice` 限制的函数（包括别名调用）时，跳过克隆补充；满足条件的整数区域仍可处理。含内联汇编的函数也跳过克隆补充，避免复制汇编标签和状态。
+
+`ExactMatch` / `SameSize` COMDAT 中的函数保持原样，避免不同编译单元的随机变换破坏链接器对副本内容或大小一致的要求。
 
 ## 函数包装
 

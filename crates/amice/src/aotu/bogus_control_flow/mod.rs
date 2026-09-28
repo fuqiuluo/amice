@@ -1,20 +1,38 @@
-mod basic;
-mod polaris_primes;
+//! BCF combines integer region rewriting with guarded whole-function copies.
+mod clone;
+mod region;
 
-use crate::aotu::bogus_control_flow::basic::BogusControlFlowBasic;
-use crate::aotu::bogus_control_flow::polaris_primes::BogusControlFlowPolarisPrimes;
-use crate::config::{BogusControlFlowConfig, BogusControlFlowMode, Config};
+use crate::config::{BogusControlFlowConfig, Config};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
-use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
+use amice_llvm::inkwell2::{FunctionExt, InstructionExt};
 use amice_macro::amice;
 use amice_plugin::PreservedAnalyses;
+use amice_plugin::inkwell::comdat::ComdatSelectionKind;
 use amice_plugin::inkwell::module::Module;
-use amice_plugin::inkwell::values::FunctionValue;
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
+use anyhow::Context;
+
+fn has_entry_block_intrinsics(function: FunctionValue<'_>) -> bool {
+    // Both transformations split the entry block. These intrinsics must stay
+    // there; moving their operands is not generally safe (escaped stack slots,
+    // GC registration or a convergence token).
+    function.get_first_basic_block().is_some_and(|entry| {
+        entry.get_instructions().any(|instruction| {
+            instruction.get_opcode() == InstructionOpcode::Call
+                && instruction.into_call_inst().get_call_function().is_some_and(|callee| {
+                    matches!(
+                        callee.get_name().to_bytes(),
+                        b"llvm.localescape" | b"llvm.gcroot" | b"llvm.experimental.convergence.entry"
+                    )
+                })
+        })
+    })
+}
 
 #[amice(
-    priority = 950,
+    priority = 970,
     name = "BogusControlFlow",
-    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    flag = AmicePassFlag::OptimizerLast | AmicePassFlag::FullLtoLast | AmicePassFlag::FunctionLevel,
     config = BogusControlFlowConfig,
 )]
 #[derive(Default)]
@@ -26,54 +44,46 @@ impl AmicePass for BogusControlFlow {
     }
 
     fn do_pass(&self, module: &mut Module<'_>) -> anyhow::Result<PreservedAnalyses> {
-        let mut executed = false;
-        for function in module.get_functions() {
-            if function.is_inline_marked() || function.is_llvm_function() || function.is_undef_function() {
+        let mut changed = false;
+        let functions = module.get_functions().collect::<Vec<_>>();
+        for function in functions {
+            if function.is_llvm_function() || function.is_undef_function() {
                 continue;
             }
-
+            // Independent translation units normally have different random
+            // seeds. These COMDAT kinds require matching bytes or size across
+            // definitions, so neither BCF transformation may change their body.
+            if function.as_global_value().get_comdat().is_some_and(|comdat| {
+                matches!(
+                    comdat.get_selection_kind(),
+                    ComdatSelectionKind::ExactMatch | ComdatSelectionKind::SameSize
+                )
+            }) {
+                continue;
+            }
             let cfg = self.parse_function_annotations(module, function)?;
-
             if !cfg.enable {
                 continue;
             }
-
-            let mut algo: Box<dyn BogusControlFlowAlgo> = match cfg.mode {
-                BogusControlFlowMode::Basic => Box::new(BogusControlFlowBasic::default()),
-                BogusControlFlowMode::PolarisPrimes => Box::new(BogusControlFlowPolarisPrimes::default()),
-            };
-
-            if let Err(err) = algo.initialize(&cfg, module) {
-                error!("initialize failed: {}", err);
-                continue;
-            }
-
-            if let Err(err) = algo.apply_bogus_control_flow(&cfg, module, function) {
-                error!("apply failed: {}", err);
-                continue;
-            }
-
-            executed = true;
-            if let VerifyResult::Broken(msg) = function.verify_function() {
-                error!("function {:?} is broken: {}", function.get_name(), msg);
-            }
+            let seed = function
+                .get_name()
+                .to_bytes()
+                .iter()
+                .fold(cfg.seed, |s, b| (s ^ u64::from(*b)).wrapping_mul(0x100000001b3));
+            changed |= (|| -> anyhow::Result<bool> {
+                // 成功路径内部已处理真实函数的整数区域，提交后无需再执行一次。
+                if clone::insert_bogus_branch(module, function, &cfg, seed)? {
+                    return Ok(true);
+                }
+                // 克隆补充未提交时，原函数体保持原状，回退到原有区域变换。
+                Ok(region::lower_to_digit_loops(module, function, &cfg, seed)? != 0)
+            })()
+            .with_context(|| format!("rewriting BCF in {}", function.get_name().to_string_lossy()))?;
         }
-
-        if !executed {
-            return Ok(PreservedAnalyses::All);
-        }
-
-        Ok(PreservedAnalyses::None)
+        Ok(if changed {
+            PreservedAnalyses::None
+        } else {
+            PreservedAnalyses::All
+        })
     }
-}
-
-pub(super) trait BogusControlFlowAlgo {
-    fn initialize(&mut self, cfg: &BogusControlFlowConfig, module: &mut Module<'_>) -> anyhow::Result<()>;
-
-    fn apply_bogus_control_flow(
-        &mut self,
-        cfg: &BogusControlFlowConfig,
-        module: &mut Module<'_>,
-        function: FunctionValue,
-    ) -> anyhow::Result<()>;
 }

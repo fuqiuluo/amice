@@ -17,7 +17,7 @@ static uint32_t mix(uint32_t a, uint32_t b) {
 }
 
 // The actual check: takes a 4-byte key, returns 1 if correct
-__attribute__((annotate("+bcf,bcf_prob=100,bcf_loops=2")))
+__attribute__((annotate("+bcf,bcf_prob=100,bcf_max_regions=2")))
 int check_key(const char *key) {
     if (strlen(key) != 8)
         return 0;

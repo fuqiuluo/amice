@@ -35,6 +35,9 @@ crates/amice/tests/
 ├── indirect_branch.rs          # 间接分支测试
 ├── indirect_call.rs            # 间接调用测试
 ├── control_flow.rs             # 控制流混淆测试 (BCF/Flatten/VM)
+├── bcf_regions.rs              # BCF 区域差分、优化/LTO、边界、配置与 MBA 组合
+├── bcf_clones.rs               # BCF 整函数克隆、强制内联、虚假路径与 ABI
+├── bcf_cpp.rs                  # BCF C++ 生命周期、协程、TLS、LTO 与跨目标 ABI
 ├── shuffle_blocks.rs           # 基本块重排测试
 ├── function_wrapper.rs         # 函数包装测试
 ├── mba.rs                      # MBA 混淆测试
@@ -106,11 +109,18 @@ cargo test --release --no-default-features --features llvm22-1
 | 字符串加密 | `string_encryption.rs` | XOR/SIMD XOR 算法、懒加载/全局解密、栈/堆分配 |
 | 间接分支  | `indirect_branch.rs`   | 基本间接分支、链式虚假块                   |
 | 间接调用  | `indirect_call.rs`     | 函数指针间接化                        |
-| 控制流   | `control_flow.rs`      | 虚假控制流(BCF)、控制流扁平化、VM扁平化        |
+| 控制流   | `control_flow.rs`      | 虚假控制流(BCF)、控制流扁平化、VM控制流平坦化        |
+| BCF | `bcf_regions.rs` | 整数差分、优化/LTO、PHI、poison/undef、预算、配置迁移与 MBA 组合 |
+| BCF | `bcf_clones.rs` | 完整函数克隆、强制内联、虚假路径、优化/LTO、ABI、生命周期与注解 |
+| BCF | `bcf_cpp.rs` | C++ 异常/RAII、协程、模板/COMDAT、TLS/原子操作、sanitizer、真实 LTO 链接，以及 Windows funclet/inalloca 和跨目标对象编译 |
 | 基本块重排 | `shuffle_blocks.rs`    | 随机/反转/旋转重排                     |
 | 函数包装  | `function_wrapper.rs`  | 函数包装器、常量参数特化                   |
 | MBA   | `mba.rs`               | 混合布尔算术混淆                       |
 | 综合测试  | `integration.rs`       | MD5 等实际算法验证                    |
+
+`bcf_cpp` 需要支持 C++20 的 Clang 和标准库；Linux 运行用例还需要同版本 LLD 与 compiler-rt（ASan/UBSan）。跨目标用例不需要目标 SDK，只生成对象文件；Clang 未编入对应后端时会输出跳过原因。这些用例不代表对应目标的运行时验证。
+
+`bcf_clones` 在 Linux 上还使用同版本 `lld-link` 验证 Windows COMDAT 的跨编译单元链接，并通过受限栈空间运行用例检查虚假副本的栈分配。
 
 ## 编写新测试
 

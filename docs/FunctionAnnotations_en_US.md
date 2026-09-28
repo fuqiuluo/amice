@@ -82,30 +82,18 @@ Extracts basic blocks from functions into independent sub-functions.
 
 ### Bogus Control Flow (BCF)
 
-Inserts invalid or equivalent branches between basic blocks.
+Use these annotations to enable BCF, adjust budgets, or override global settings per function. Whole-function cloning and forced inlining can be disabled independently while retaining integer region rewriting. See [Environment Configuration](EnvConfig_en_US.md#bogus-control-flow) for supported cases and limitations.
 
-- Switch
-    - `+bogus_control_flow` (alias: `+bcf`)
-        - Function: Enable bogus control flow
-        - Default: false
+| Annotation | Alias | Default and meaning |
+|---|---|---|
+| `+bogus_control_flow` | `+bcf`, `+boguscfg` | Disabled by default; `-bcf` disables per function |
+| `bogus_control_flow_prob=<n>` | `bcf_prob` | 80; selection percentage for whole-function cloning and candidate regions, capped at 100 |
+| `+bogus_control_flow_clone` | `+bcf_clone` | Enabled by default; `-bcf_clone` disables only the whole-function cloning addition |
+| `bogus_control_flow_max_regions=<n>` | `bcf_max_regions` | 2; regions per function, 0 disables, hard cap 16 |
+| `bogus_control_flow_max_region_instructions=<n>` | `bcf_max_region_instructions` | 8; original instructions per region, below 2 disables, hard cap 16 |
+| `bogus_control_flow_seed=<n>` | `bcf_seed` | Inherits the global seed, random when unconfigured; decimal u64 seed |
 
-- Mode
-    - `bogus_control_flow_mode=<mode>` (alias: `bcf_mode`)
-        - Options:
-            - `basic` (alias: `v1`)
-            - `polaris-primes` (alias: `primes`, `v2`)
-        - Default: `basic`
-        - Note: Different modes use different strategies for generating fake paths
-
-- Parameters
-    - `bogus_control_flow_prob=<0..100>` (alias: `bcf_prob`)
-        - Function: Probability (percentage) of each basic block being obfuscated
-        - Default: 80
-        - Range: 0-100; values above 100 are treated as 100
-    - `bogus_control_flow_loops=<n>` (alias: `bcf_loops`)
-        - Function: Number of times to repeat this obfuscation pass on the same function
-        - Default: 1
-        - Requirement: n >= 1
+Example: `__attribute__((annotate("+bcf bcf_prob=100 bcf_max_regions=1 bcf_max_region_instructions=6 bcf_seed=42")))`.
 
 ### Clone Function (Constant Argument Specialization)
 

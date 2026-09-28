@@ -139,7 +139,15 @@ fn parse_kv_map(input: &str) -> HashMap<String, i32> {
 // the parsers and serde helpers for sub-configs are defined in their own modules
 fn load_from_file_env() -> Option<Config> {
     let path = std::env::var("AMICE_CONFIG_PATH").ok()?;
-    load_from_file(Path::new(&path)).ok()
+    match load_from_file(Path::new(&path)) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            log::error!(
+                "Cannot load AMICE_CONFIG_PATH={path}: {error}; falling back to defaults and environment overrides"
+            );
+            None
+        },
+    }
 }
 
 fn load_from_file(path: &Path) -> anyhow::Result<Config> {

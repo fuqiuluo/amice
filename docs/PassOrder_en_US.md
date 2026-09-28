@@ -123,13 +123,13 @@ StringEncryption = 1000
 | `IndirectCall` | 990 | `PipelineStart` |
 | `BasicBlockOutlining` | 979 | `PipelineStart` |
 | `ShuffleBlocks` | 970 | `PipelineStart` |
+| `BogusControlFlow` | 970 | `OptimizerLast, FullLtoLast` |
 | `LowerSwitch` | 961 | `PipelineStart` |
 | `VmFlatten` | 960 | `PipelineStart` |
 | `Flatten` | 959 | `PipelineStart` |
 | `SplitBasicBlock` | 958 | `PipelineStart, OptimizerLast` |
 | `Mba` | 955 | `OptimizerLast` |
 | `VmVirtualize` | 955 | `OptimizerLast` |
-| `BogusControlFlow` | 950 | `PipelineStart` |
 | `IndirectBranch` | 800 | `PipelineStart` |
 
 This table reflects current source registrations. `CustomCallingConv` is currently a placeholder and should not be treated as effective protection. See [Environment Variables](EnvConfig_en_US.md) for switches and parameters, and [Function Annotations](FunctionAnnotations_en_US.md) for local overrides.

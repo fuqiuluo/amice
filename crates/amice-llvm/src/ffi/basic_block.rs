@@ -3,6 +3,10 @@ use std::ffi::{c_char, c_void};
 
 #[link(name = "amice-llvm-ffi")]
 unsafe extern "C" {
+    pub(crate) fn amice_basic_block_has_address_taken(block: LLVMBasicBlockRef) -> bool;
+
+    pub(crate) fn amice_basic_block_is_eh_pad(block: LLVMBasicBlockRef) -> bool;
+
     pub(crate) fn amice_basic_block_split(
         block: LLVMBasicBlockRef,
         inst: LLVMValueRef,

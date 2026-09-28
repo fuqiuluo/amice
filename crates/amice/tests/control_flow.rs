@@ -22,12 +22,12 @@ fn bcf_config() -> ObfuscationConfig {
 }
 
 #[test]
-fn test_bogus_control_flow_basic() {
+fn test_bogus_control_flow_regions() {
     ensure_plugin_built();
 
     let result = CppCompileBuilder::new(
         fixture_path("control_flow", "bogus_control_flow.c", Language::C),
-        "bcf_basic",
+        "bcf_regions",
     )
     .config(bcf_config())
     .compile();

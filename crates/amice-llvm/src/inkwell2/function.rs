@@ -7,6 +7,20 @@ use inkwell::values::{AsValueRef, FunctionValue};
 use std::ffi::{CStr, c_char};
 
 pub trait FunctionExt<'ctx> {
+    /// Clone this definition into its module, including local value mappings.
+    fn clone_definition(self) -> Option<FunctionValue<'ctx>>;
+
+    /// Check LLVM's structural inlining requirements without a size/cost threshold.
+    fn is_inline_viable(self) -> bool;
+
+    /// Replace this function's body using the source's parameters and metadata.
+    /// The function identity and linkage are retained; LLVM copies source attributes.
+    ///
+    /// # Safety
+    /// Functions must be distinct, in the same module, with identical types. The old
+    /// body must have no blockaddress users, and all handles to it are invalidated.
+    unsafe fn replace_body_from(self, source: FunctionValue<'ctx>);
+
     fn verify_function(self) -> VerifyResult;
 
     fn verify_function_bool(self) -> bool;
@@ -35,6 +49,21 @@ pub enum VerifyResult {
 }
 
 impl<'ctx> FunctionExt<'ctx> for FunctionValue<'ctx> {
+    fn is_inline_viable(self) -> bool {
+        // SAFETY: FunctionValue represents a live LLVM function.
+        unsafe { ffi::amice_function_is_inline_viable(self.as_value_ref()) }
+    }
+
+    fn clone_definition(self) -> Option<FunctionValue<'ctx>> {
+        // SAFETY: The live function supplies its parent module and LLVM owns the clone.
+        unsafe { FunctionValue::new(ffi::amice_function_clone(self.as_value_ref())) }
+    }
+
+    unsafe fn replace_body_from(self, source: FunctionValue<'ctx>) {
+        // SAFETY: The caller guarantees matching types and no escaping old blocks.
+        unsafe { ffi::amice_function_replace_body(self.as_value_ref(), source.as_value_ref()) };
+    }
+
     fn verify_function(self) -> VerifyResult {
         let mut errmsg: *const c_char = std::ptr::null();
         let broken = unsafe {

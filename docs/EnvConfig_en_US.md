@@ -15,11 +15,11 @@ Global precedence is **environment > config file > defaults**. Passes supporting
 | Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | Rewrites branches into `indirectbr`; supports dummy blocks, table shuffling, index encryption, and other flags |
 | Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | Splits basic blocks according to configuration |
 | Lower Switch | `AMICE_LOWER_SWITCH` | ✅ | ✅ | ❌ | Lowers LLVM `switch` instructions |
-| VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM-style control-flow flattening |
+| VM Flatten | `AMICE_VM_FLATTEN` | ✅ | ✅ | ❌ | VM control-flow flattening |
 | VM Virtualize | `AMICE_VM_VIRTUALIZE` | ✅ | ✅ | ❌ | Instruction-level VMP virtualization, enabled globally or per function with annotations |
 | Flatten | `AMICE_FLATTEN` | ✅ | ✅ | ❌ | Control-flow flattening with `basic` / `dominator` modes |
 | MBA | `AMICE_MBA` | ✅ | ✅ | ❌ | Mixed Boolean-arithmetic expression rewriting |
-| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | Inserts bogus control flow; supports basic / polaris-primes modes |
+| Bogus Control Flow | `AMICE_BOGUS_CONTROL_FLOW` | ✅ | ✅ | ❌ | Obfuscates control flow to make reverse engineering more difficult |
 | Function Wrapper | `AMICE_FUNCTION_WRAPPER` | ✅ | ✅ | ❌ | Creates wrapper functions and replaces call sites |
 | Clone Function | `AMICE_CLONE_FUNCTION` | ✅ | ✅ | ❌ | Constant-argument specialization by function cloning |
 | Alias Access | `AMICE_ALIAS_ACCESS` | ✅ | ✅ | ❌ | Pointer-chain based alias access obfuscation |
@@ -164,14 +164,26 @@ See [MBA region design](MbaRegions.md) for supported targets, semantic constrain
 
 ## Bogus Control Flow
 
-Source code: `crates/amice/src/aotu/bogus_control_flow`
+Source: `crates/amice/src/aotu/bogus_control_flow`.
 
-| Variable                       | Description                                                                                                                                                                                                                                             | Default |
-|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
-| AMICE_BOGUS_CONTROL_FLOW       | Enable BCF:<br/>- `true` — enabled<br/>- `false` — disabled                                                                                                                                                                                             | false   |
-| AMICE_BOGUS_CONTROL_FLOW_MODE  | Obfuscation mode:<br/>- `basic` — default, basic mode, may be optimized away<br/>- `polaris-primes` — variant from [Polaris-Obfuscator](https://github.com/za233/Polaris-Obfuscator/blob/main/src/llvm/lib/Transforms/Obfuscation/BogusControlFlow.cpp) | `basic` |
-| AMICE_BOGUS_CONTROL_FLOW_PROB  | Obfuscation probability                                                                                                                                                                                                                                 | `80`    |
-| AMICE_BOGUS_CONTROL_FLOW_LOOPS | Loop iterations                                                                                                                                                                                                                                         | `1`     |
+BCF obfuscates control flow to make reverse engineering more difficult and runs at OptimizerLast / FullLtoLast. It enables whole-original-function cloning and forced inlining by default; this addition can be disabled independently while retaining integer region rewriting. Integer regions support i8/i16/i32/i64 add/sub/and/or/xor, skipping regions in existing cycles and exception-handling functions.
+
+| Variable | Description | Default |
+|---|---|---|
+| AMICE_BOGUS_CONTROL_FLOW | Enable BCF | `false` |
+| AMICE_BOGUS_CONTROL_FLOW_PROB | Selection probability for whole-function cloning and candidate regions, 0–100; clamped to 100 | `80` |
+| AMICE_BOGUS_CONTROL_FLOW_CLONE | Enable whole-original-function cloning and forced inlining; disabling retains integer region rewriting | `true` |
+| AMICE_BOGUS_CONTROL_FLOW_MAX_REGIONS | Maximum regions per function; 0 disables, hard cap 16 | `2` |
+| AMICE_BOGUS_CONTROL_FLOW_MAX_REGION_INSTRUCTIONS | Original instructions per region; below 2 disables, clamped to 16 | `8` |
+| AMICE_BOGUS_CONTROL_FLOW_SEED | Decimal u64 seed; randomly generated when omitted, reproducible when explicitly set | Random |
+
+Region budgets do not limit the size of the whole-function copy; `MAX_REGIONS=0` or `MAX_REGION_INSTRUCTIONS<2` disables BCF. Variadic, directly recursive, exception-handling functions, escaping block addresses and other unsupported inlining cases skip the cloning addition. If inlining fails, integer region rewriting still applies. Pointer arguments are forwarded unchanged. Integer arguments are perturbed only when operation preconditions remain valid. Later optimization may merge equivalent branches; inspect the final artifact to check what remains.
+
+The configuration file switch is `bogus_control_flow.clone`. BCF increases runtime and code size, and copying a complete function costs more as the function grows. Start with a small set of selected functions. Do not enable it for code that requires constant-time execution. See [Function Annotations](FunctionAnnotations_en_US.md) for per-function configuration.
+
+Functions containing `llvm.localescape`, `llvm.gcroot`, or an entry convergence token remain unchanged to preserve LLVM's entry-position requirements. Signatures containing types unsupported by the current bindings (such as Target Extension types), or calls to functions with `noduplicate`, `convergent`, or `returns_twice` restrictions (including alias calls), skip the cloning addition; eligible integer regions may still be processed. Functions containing inline assembly also skip cloning to avoid duplicating assembler labels and state.
+
+Functions in `ExactMatch` / `SameSize` COMDAT groups remain unchanged so that independent randomized transformations across translation units cannot violate the linker's matching-content or matching-size requirements.
 
 ## Function Wrapper
 
