@@ -161,11 +161,13 @@ pub fn cxx_build(probe: &LlvmProbe) -> cc::Build {
         build.flag("-std=c++17");
     }
 
-    if probe.has_rtti() {
+    // LLVM subclasses instantiated by the shim (for example ValueMap's
+    // CallbackVH) must not reference typeinfo absent from a no-RTTI libLLVM.
+    if !probe.has_rtti() {
         if is_msvc() {
-            build.flag_if_supported("/GR-");
+            build.flag("/GR-");
         } else {
-            build.flag_if_supported("-fno-rtti");
+            build.flag("-fno-rtti");
         }
     }
 

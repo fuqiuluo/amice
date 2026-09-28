@@ -148,6 +148,7 @@ jobs:
       - name: Build libamice (Release)
         run: |
           set -euxo pipefail
+          "$LLVM_HOME/bin/llvm-config" --has-rtti
           cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }},android-ndk
           
           # Determine extension by OS
@@ -172,7 +173,6 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -v
 
       - name: Install Android NDK for bundle tests
-        if: matrix.llvm-version[3] == 'r29' || matrix.llvm-version[3] == 'r30'
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
@@ -180,7 +180,6 @@ jobs:
           add-to-path: false
 
       - name: Package and test Android NDK bundle
-        if: matrix.llvm-version[3] == 'r29' || matrix.llvm-version[3] == 'r30'
         shell: bash
         run: |
           set -euo pipefail
@@ -209,11 +208,11 @@ jobs:
             --clang-revision "${{ matrix.llvm-version[4] }}" \
             --output-dir "$RUNNER_TEMP/android-test-binaries"
 
-      - name: Upload r30 runtime fixtures
-        if: runner.os == 'Linux' && matrix.llvm-version[3] == 'r30'
+      - name: Upload Android runtime fixtures
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: ndk-r30-runtime-tests
+          name: ndk-${{ matrix.llvm-version[3] }}-runtime-tests
           path: ${{ runner.temp }}/android-test-binaries/
           if-no-files-found: error
           retention-days: 7
@@ -237,14 +236,18 @@ jobs:
           if-no-files-found: error
 
   android-runtime:
-    name: Run NDK r30 fixtures on Android
+    name: Run NDK ${{ matrix.ndk }} fixtures on Android
     needs: build
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ndk: [r27d, r28c, r29, r30]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: ndk-r30-runtime-tests
+          name: ndk-${{ matrix.ndk }}-runtime-tests
           path: android-test-binaries
       - name: Enable KVM
         run: |

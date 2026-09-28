@@ -23,9 +23,17 @@ TARGETS = {
     "x86": ("i686-linux-android", 3, 1, 21),
 }
 MODES = {"O0": ["-O0"], "O2": ["-O2"], "thin": ["-O2", "-flto=thin"], "full": ["-O2", "-flto"]}
-STRING_PROFILES = {
+PROFILES = {
     "lazy-xor": {"AMICE_STRING_DECRYPT_TIMING": "lazy", "AMICE_STRING_ALGORITHM": "xor"},
     "global-xor": {"AMICE_STRING_DECRYPT_TIMING": "global", "AMICE_STRING_ALGORITHM": "xor"},
+    **{
+        f"bcf-{name}": {
+            "AMICE_STRING_DECRYPT_TIMING": "lazy", "AMICE_STRING_ALGORITHM": "xor",
+            "AMICE_BOGUS_CONTROL_FLOW": "true", "AMICE_BOGUS_CONTROL_FLOW_PROB": "100",
+            "AMICE_BOGUS_CONTROL_FLOW_CLONE": clone, "AMICE_BOGUS_CONTROL_FLOW_SEED": "42",
+        }
+        for name, clone in (("clone", "true"), ("regions", "false"))
+    },
 }
 
 
@@ -88,13 +96,37 @@ def compile_suite(args):
         raise RuntimeError("ParamAggregate was enabled but did not create an Android aggregate ABI wrapper")
     print("PASS Android ParamAggregate creates an aggregate ABI wrapper", flush=True)
 
+    # Successful compilation alone can hide a disabled or skipped pass. Check
+    # both BCF paths independently before running the mixed-pass C/C++ fixtures.
+    bcf_source = args.output_dir / "bcf-probe.c"
+    bcf_source.write_text(
+        "unsigned bcf_probe(unsigned x, unsigned y) {\n"
+        "  x += y; x ^= 31; x *= 7; x -= y; return x;\n}\n"
+    )
+    for abi in args.abi:
+        triple, _, _, _ = TARGETS[abi]
+        for profile in ("bcf-clone", "bcf-regions"):
+            ir = args.output_dir / f"{abi}-{profile}.ll"
+            run([bundle / f"amice/bin/{triple}-clang", "-O2", "-S", "-emit-llvm",
+                 "-fno-discard-value-names", bcf_source, "-o", ir],
+                env={**env, **PROFILES[profile], "AMICE_PASS_ORDER": "BogusControlFlow"})
+            text = ir.read_text()
+            if '"amice.bcf.generated"' not in text or "bcf.digits" not in text:
+                raise RuntimeError(f"BCF integer regions were not generated: {ir}")
+            cloned = '"amice.bcf.clone"' in text
+            if cloned != (profile == "bcf-clone"):
+                raise RuntimeError(f"Unexpected BCF clone state: {ir}")
+            if "@__amice_bcf_snapshot" in text or "@__amice_bcf_staged" in text:
+                raise RuntimeError(f"BCF left a temporary function: {ir}")
+            print(f"PASS {abi}-{profile}: BCF IR structure", flush=True)
+
     records = []
     for abi in args.abi:
         triple, _, _, api = TARGETS[abi]
         for language, suffix in (("c", ""), ("cpp", "++")):
             source = FIXTURES / f"smoke.{language}"
             marker = f"AMICE_NDK_{language.upper()}_MARKER".encode()
-            for profile, profile_env in STRING_PROFILES.items():
+            for profile, profile_env in PROFILES.items():
                 for mode, flags in MODES.items():
                     stem = f"{abi}-{language}-{profile}-{mode}"
                     baseline = args.output_dir / f"{stem}-baseline"
