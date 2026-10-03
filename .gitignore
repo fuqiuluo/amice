@@ -26,9 +26,11 @@ crates/amice/tests/c/fixtures/issues/issue_61_cpp_fmt_strenc/fmt/
 
 # Claude Code & OpenCode
 CLAUDE.md
-AGENTS.md
 .claude/
 /crates/amice/tests/rust/*/target/
 
-# Local workspace notes
+#’GPT 6 Astra‘过于愚蠢，不添加电子围栏的前提下他会为了达成目标不择手段
+#AGENTS.md
+
+# Codex RSI Agent
 .local/
