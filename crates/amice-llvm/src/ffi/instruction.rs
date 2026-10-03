@@ -24,4 +24,11 @@ unsafe extern "C" {
         incoming: LLVMBasicBlockRef,
         new_block: LLVMBasicBlockRef,
     );
+
+    pub(crate) fn amice_phi_replace_incoming_blocks(
+        phi_node: LLVMValueRef,
+        incoming: LLVMBasicBlockRef,
+        new_blocks: *const LLVMBasicBlockRef,
+        count: u32,
+    );
 }

@@ -251,14 +251,21 @@ Splits a single basic block into multiple smaller basic blocks.
         - Default: 3
         - Note: Larger values increase block count and jumps, also increasing size and compile time
 
-### VM Flatten (VMF)
+### VM control-flow flattening (VMF)
 
-Rewrites the target function as a control flow driven by a "virtual machine interpreter + bytecode/instruction table".
+Obfuscates the target function's control flow to increase reverse-engineering difficulty.
 
 - Switch
     - `+vm_flatten` (alias: `+vmf`)
-        - Function: Enable VM-based control flow flattening
+        - Function: Enable VM control-flow flattening
         - Default: false
+
+- `+vm_flatten_distributed` (alias `+vmf_distributed`): enable the distributed transfer prototype; default false. Also requires `+vmf`.
+- `vm_flatten_max_ops=8` (alias `vmf_max_ops`): generate 1..n reversible index operations per transfer, including one S-box substitution, with n clamped to 1..32. Address decoding is separate.
+- `vm_flatten_program_variants=3` (alias `vmf_program_variants`): number of interleaved index programs per transfer, clamped to 1..3; larger values increase size and compile/optimization cost.
+- `vm_flatten_seed=42` (alias `vmf_seed`): distributed-mode seed; random by default, reproducible when specified, including 0.
+
+Example: `annotate("+vmf,+vmf_distributed,vmf_max_ops=8,vmf_program_variants=3,vmf_seed=42")`. VM control-flow flattening runs after BCF. See [environment configuration](EnvConfig_en_US.md#vm-control-flow-flattening) for PHI preservation, optimization and supported functions.
 
 ### Instruction-Level VMP (VmVirtualize)
 

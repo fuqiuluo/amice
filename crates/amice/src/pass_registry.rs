@@ -119,6 +119,20 @@ pub fn install_all(cfg: &Config, manager: &mut ModulePassManager, flag: AmicePas
         entries.sort_by_key(|e| -e.priority);
     }
 
+    // BCF must clone the function before VM flattening introduces blockaddress
+    // users and indirectbr. User priority/order overrides cannot invert this
+    // dependency; an explicit list still controls which passes are included.
+    if let (Some(vm), Some(bcf)) = (
+        entries.iter().position(|e| e.name == "VmFlatten"),
+        entries.iter().position(|e| e.name == "BogusControlFlow"),
+    ) {
+        if vm < bcf && flag.intersects(AmicePassFlag::OptimizerLast | AmicePassFlag::FullLtoLast) {
+            let entry = entries.remove(vm);
+            entries.insert(bcf, entry);
+            log::warn!("Pass order adjusted: BogusControlFlow must precede VmFlatten");
+        }
+    }
+
     for e in entries {
         if (e.add)(cfg, manager, flag) {
             //info!("pass_registry: install pass: {} \twith {:?}", e.name, flag);

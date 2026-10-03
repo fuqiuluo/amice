@@ -7,6 +7,7 @@ English | [简体中文](PassOrder_zh_CN.md)
 - Explicit `pass_order.order` / `AMICE_PASS_ORDER` is an allowlist: only listed passes are installed. Names are case-sensitive.
 - Ordering does not enable a pass. Enable it separately through configuration, environment variables or supported function annotations.
 - Explicit order overrides `priority_override`. Otherwise, passes are sorted by descending priority, using defaults for entries without an override.
+- `BogusControlFlow` must precede `VmFlatten`. Explicit orders and priority overrides cannot invert this dependency; conflicts are adjusted with a warning. The allowlist still controls which passes are installed.
 - Order applies within the same LLVM extension point. It cannot move an `OptimizerLast` pass ahead of `PipelineStart`. Do not rely on an ordering between equal-priority passes.
 - Duplicate list entries do not install a pass repeatedly; the last occurrence determines its position. A pass registered at multiple stages may still execute at multiple stages, so this is not a once-per-compilation guarantee.
 - Unknown names currently match nothing and do not report an error. Use the exact names in the table below.
@@ -125,7 +126,7 @@ StringEncryption = 1000
 | `ShuffleBlocks` | 970 | `PipelineStart` |
 | `BogusControlFlow` | 970 | `OptimizerLast, FullLtoLast` |
 | `LowerSwitch` | 961 | `PipelineStart` |
-| `VmFlatten` | 960 | `PipelineStart` |
+| `VmFlatten` | 960 | `OptimizerLast` / `FullLtoLast` |
 | `Flatten` | 959 | `PipelineStart` |
 | `SplitBasicBlock` | 958 | `PipelineStart, OptimizerLast` |
 | `Mba` | 955 | `OptimizerLast` |

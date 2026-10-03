@@ -118,6 +118,28 @@
 | 变量名              | 说明                                             | 默认值   |
 |------------------|------------------------------------------------|-------|
 | AMICE_VM_FLATTEN | 是否开启：<br/>• `true` —— 启用；<br/>• `false` —— 关闭; | false |
+| AMICE_VM_FLATTEN_DISTRIBUTED | 启用分散跳转原型；需要同时开启 `AMICE_VM_FLATTEN` | false |
+| AMICE_VM_FLATTEN_MAX_OPS | 分散模式每个跳转点生成 1～n 个可逆索引操作，其中必含一次 S-box 替换；n 限制在 1～32。单个操作可展开为多条 IR 指令，地址解码另计 | 8 |
+| AMICE_VM_FLATTEN_PROGRAM_VARIANTS | 每个跳转点交错生成的可逆索引程序数量；限制在 1～3。数量越大，体积和编译/优化开销越高 | 3 |
+| AMICE_VM_FLATTEN_SEED | 分散模式的 u64 十进制种子；显式指定（包括 0）时可复现 | 随机数 |
+
+VM控制流平坦化在优化末尾执行，顺序固定为虚假控制流（`BogusControlFlow`）之后的 `VmFlatten`，完整 LTO 末尾也采用此顺序。显式 Pass 顺序或优先级与此依赖冲突时会调整并输出警告；不会自动开启未启用的 Pass。
+
+分散模式在各跳转点生成索引计算、地址表加载和 `indirectbr`，通过网关块和 PHI 修复保持原程序语义，不生成集中字节码解释器。默认模式使用解释器，`random_none_node_opcode` 只作用于解释器模式。配置文件字段为 `vm_flatten.distributed`、`vm_flatten.max_ops`、`vm_flatten.program_variants` 和 `vm_flatten.seed`。
+
+每个跳转点生成 1～3 个等长的可逆索引程序，并按操作位置交错生成候选计算；`program_variants` 控制数量。程序选择值由调用状态和操作序号共同推进的 schedule 逐步产生，逆向编码和正向解码使用同一条 schedule。每个程序包含一次无表替换，替换网络组合加减、异或、奇数乘法及移位/旋转，由调用状态派生的运行时键参与计算。
+
+私有初始化函数物化目标地址，跳转点使用本次调用独立的稀疏整数表和状态相关解码。目标地址仍可从初始化和执行过程分析。索引程序使用整数计算和 LLVM `select` 选择候选；完整网关路径仍有条件分支，最终机器码是否包含分支取决于后端。运行时键和栈地址派生掩码不是保密密钥。
+
+```powershell
+$env:AMICE_VM_FLATTEN = "true"
+$env:AMICE_VM_FLATTEN_DISTRIBUTED = "true"
+$env:AMICE_VM_FLATTEN_MAX_OPS = "8"
+$env:AMICE_VM_FLATTEN_PROGRAM_VARIANTS = "3"
+$env:AMICE_VM_FLATTEN_SEED = "42"
+```
+
+分散模式仍暴露 IR 后继集合；单后继间接跳转可能被优化为直接跳转。volatile 访问用于阻止常量折叠，不保证防提取、阻止 switch 识别或不可还原，初始化和运行时解码过程仍可观察。异常处理、已有基本块地址引用、其他间接跳转、`naked` 及 `ExactMatch` / `SameSize` COMDAT 函数保持原样。地址编码要求代码、全局及栈使用默认地址空间的 32/64 位整数型指针；不支持的布局会输出警告并跳过。建议先对少量函数检查最终产物和性能。
 
 ## 指令级 VMP 虚拟化
 

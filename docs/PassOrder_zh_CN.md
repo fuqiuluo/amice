@@ -7,6 +7,7 @@
 - 显式 `pass_order.order` / `AMICE_PASS_ORDER` 是允许列表：只有列出的 Pass 会被安装，名称区分大小写。
 - 顺序配置不等于启用开关；仍需在配置文件、环境变量或支持的函数注解中启用对应功能。
 - 显式顺序优先于 `priority_override`。没有显式顺序时，按覆盖后的优先级从高到低排序，未覆盖的使用默认值。
+- `BogusControlFlow` 必须先于 `VmFlatten`；显式顺序或优先级覆盖不能倒置此依赖，冲突时调整并输出警告。允许列表仍决定安装哪些 Pass。
 - 顺序只作用于同一个 LLVM 执行阶段，不能把 `OptimizerLast` 的 Pass 移到 `PipelineStart` 之前。同优先级 Pass 不应被视为有固定先后关系。
 - 列表重复项不会使 Pass 重复安装；重复名称的位置以最后一次出现为准。一个 Pass 若注册多个阶段，仍可能在不同阶段运行，不能理解为整个编译只运行一次。
 - 未知名称不会匹配任何 Pass，且当前不报错。设置顺序时使用下表的准确名称。
@@ -125,7 +126,7 @@ StringEncryption = 1000
 | `ShuffleBlocks` | 970 | `PipelineStart` |
 | `BogusControlFlow` | 970 | `OptimizerLast, FullLtoLast` |
 | `LowerSwitch` | 961 | `PipelineStart` |
-| `VmFlatten` | 960 | `PipelineStart` |
+| `VmFlatten` | 960 | `OptimizerLast` / `FullLtoLast` |
 | `Flatten` | 959 | `PipelineStart` |
 | `SplitBasicBlock` | 958 | `PipelineStart, OptimizerLast` |
 | `Mba` | 955 | `OptimizerLast` |

@@ -1,3 +1,9 @@
+mod distributed;
+mod index_program;
+mod phi_transport;
+mod sbox;
+mod target_table;
+
 use crate::config::{Config, VmFlattenConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::const_array;
@@ -5,6 +11,7 @@ use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionEx
 
 use amice_llvm::ptr_type;
 use amice_macro::amice;
+use amice_plugin::inkwell::attributes::AttributeLoc;
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::module::{Linkage, Module};
 use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode, InstructionValue, IntValue};
@@ -18,10 +25,24 @@ use std::ptr::NonNull;
 
 const MAGIC_NUMBER: u32 = 0x7788ff;
 
+pub(super) fn done_attribute_name(function: FunctionValue<'_>) -> String {
+    done_attribute_name_bytes(function.get_name().to_bytes())
+}
+
+fn done_attribute_name_bytes(name: &[u8]) -> String {
+    let hash = name.iter().fold(0xcbf2_9ce4_8422_2325_u64, |state, byte| {
+        state
+            .wrapping_add(u64::from(*byte))
+            .rotate_left(13)
+            .wrapping_mul(0x1000_0000_01b3)
+    });
+    format!("a.{hash:016x}")
+}
+
 #[amice(
     priority = 960,
     name = "VmFlatten",
-    flag = AmicePassFlag::PipelineStart | AmicePassFlag::FunctionLevel,
+    flag = AmicePassFlag::OptimizerLast | AmicePassFlag::FullLtoLast | AmicePassFlag::FunctionLevel,
     config = VmFlattenConfig,
 )]
 #[derive(Default)]
@@ -40,12 +61,18 @@ impl AmicePass for VmFlatten {
             }
 
             let cfg = self.parse_function_annotations(module, function)?;
-            if !cfg.enable {
+            let done = done_attribute_name(function);
+            if !cfg.enable || function.get_string_attribute(AttributeLoc::Function, &done).is_some() {
+                continue;
+            }
+
+            if cfg.distributed {
+                has_executed |= distributed::lower(module, function, &cfg)?;
                 continue;
             }
 
             if let Err(err) = do_handle(&cfg, module, function) {
-                error!("failed to handle function: {:?}, err = {}", function.get_name(), err);
+                error!("failed to handle function: {:?}, err = {err:#}", function.get_name());
             }
             has_executed = true;
         }
@@ -204,6 +231,13 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
         // 跳过该函数，不做扁平化
         return Ok(());
     }
+
+    // The interpreter introduces new predecessors. Demote while the original
+    // CFG is still valid, so PHI edge values and loop-carried assignments are
+    // captured before their incoming blocks are replaced by dispatch paths.
+    // SAFETY: The function is live and still has its original, valid CFG.
+    unsafe { function.fix_stack() }
+    basic_blocks = function.get_basic_blocks();
 
     let Some(entry_block) = function.get_entry_block() else {
         return Err(anyhow::anyhow!("failed to get entry block"));
@@ -548,7 +582,6 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
     {
         builder.position_at_end(vm_switch);
         let label_size = left; // 有多少个label，这里的大小是case数量 + 1
-        //let default_label_value = right;
         let flag_value = builder
             .build_load2(i32_type, vm_flag, "__vm_br_flag__")?
             .into_int_value();
@@ -596,17 +629,32 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
 
     function.clear_stale_analysis_attrs_after_cfg_rewrite();
 
-    if function.verify_function_bool() {
-        warn!("function {:?} verify failed", function.get_name());
-    }
-
-    unsafe { function.fix_stack() }
-
     for node in all_nodes {
         node.free();
     }
 
+    if let amice_llvm::inkwell2::VerifyResult::Broken(message) = function.verify_function() {
+        anyhow::bail!("VM control-flow flattening verification failed: {message}");
+    }
+    let done = done_attribute_name(function);
+    function.add_attribute(AttributeLoc::Function, ctx.create_string_attribute(&done, "1"));
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::done_attribute_name_bytes;
+
+    #[test]
+    fn completion_attribute_is_stable_and_semantically_opaque() {
+        let first = done_attribute_name_bytes(b"diamond");
+        assert_eq!(first, done_attribute_name_bytes(b"diamond"));
+        assert_ne!(first, done_attribute_name_bytes(b"swap_loop"));
+        assert!(first.starts_with("a."));
+        assert_eq!(first.len(), 18);
+        assert!(!first.contains("vmf"));
+    }
 }
 
 fn generate_opcodes(

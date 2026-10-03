@@ -110,13 +110,35 @@ Source code: `crates/amice/src/aotu/lower_switch`
 | AMICE_LOWER_SWITCH                     | Enable switch lowering:<br/>- `true` — enabled<br/>- `false` — disabled                    | false   |
 | ~~AMICE_LOWER_SWITCH_WITH_DUMMY_CODE~~ | Insert dummy code after lowering (may fail module verification causing `-O1` etc. to fail) | false   |
 
-## VM Flatten
+## VM control-flow flattening
 
 Source code: `crates/amice/src/aotu/vm_flatten`
 
 | Variable         | Description                                                        | Default |
 |------------------|--------------------------------------------------------------------|---------|
 | AMICE_VM_FLATTEN | Enable VM flatten:<br/>- `true` — enabled<br/>- `false` — disabled | false   |
+| AMICE_VM_FLATTEN_DISTRIBUTED | Enable the distributed transfer prototype; also requires `AMICE_VM_FLATTEN` | false |
+| AMICE_VM_FLATTEN_MAX_OPS | Generate 1..n reversible index operations per transfer, including one S-box substitution; n is clamped to 1..32. Each operation may expand into multiple IR instructions; address decoding is separate | 8 |
+| AMICE_VM_FLATTEN_PROGRAM_VARIANTS | Number of interleaved reversible index programs per transfer; clamped to 1..3. Larger values increase size and compile/optimization cost | 3 |
+| AMICE_VM_FLATTEN_SEED | Decimal u64 seed for distributed mode; explicit values, including 0, are reproducible | Random |
+
+VM control-flow flattening runs at the optimizer's end, after `BogusControlFlow`. The same ordering applies at the end of full LTO. Conflicting explicit orders or priority overrides are adjusted with a warning; this does not enable disabled passes.
+
+Distributed mode emits index calculations, address-table loads and `indirectbr` at individual transfer sites, using gateway blocks and PHI repair to preserve program semantics without a central bytecode interpreter. The default mode uses the interpreter; `random_none_node_opcode` only applies to that mode. Configuration-file fields are `vm_flatten.distributed`, `vm_flatten.max_ops`, `vm_flatten.program_variants` and `vm_flatten.seed`.
+
+Each transfer generates 1..3 equal-length reversible index programs and interleaves their operation candidates; `program_variants` controls the count. A schedule advanced from invocation state and operation position produces the selector for each operation; the source inverse and decoder forward path use the same schedule. Each program includes one table-free substitution whose network combines addition/subtraction, XOR, odd multiplication and shifts/rotations, keyed by invocation state.
+
+Private initializers materialize target addresses, while transfer sites use invocation-local sparse integer tables and state-dependent decoding. Addresses remain analyzable through initialization and execution. Index programs choose candidates using integer calculations and LLVM `select`; the complete gateway path still contains conditional branches, and machine-level branching depends on the backend. Runtime keys and stack-derived masks are not secret keys.
+
+```powershell
+$env:AMICE_VM_FLATTEN = "true"
+$env:AMICE_VM_FLATTEN_DISTRIBUTED = "true"
+$env:AMICE_VM_FLATTEN_MAX_OPS = "8"
+$env:AMICE_VM_FLATTEN_PROGRAM_VARIANTS = "3"
+$env:AMICE_VM_FLATTEN_SEED = "42"
+```
+
+IR successor sets remain visible, and single-successor indirect branches may become direct branches during optimization. Volatile accesses resist constant folding; they do not guarantee resistance to extraction, switch recognition, or recovery. Initialization and runtime decoding remain observable. Functions with exception handling, existing blockaddress uses, other indirect transfers, `naked`, or `ExactMatch` / `SameSize` COMDAT are preserved. Address encoding requires integral 32/64-bit pointers in the default code, global and stack address spaces; unsupported layouts are skipped with a warning. Start with a small set of functions and inspect final artifacts and performance.
 
 ## VM Virtualize
 

@@ -1,5 +1,6 @@
 use crate::ffi::{
     amice_basic_block_first_insertion_pt, amice_basic_block_split, amice_phi_replace_incoming_block_with,
+    amice_phi_replace_incoming_blocks,
 };
 use crate::inkwell2::{InstructionExt, LLVMBasicBlockRefExt, LLVMValueRefExt};
 use crate::to_c_str;
@@ -22,6 +23,8 @@ pub trait BasicBlockExt<'ctx> {
     fn remove_predecessor(&self, pred: BasicBlock<'ctx>);
 
     fn fix_phi_node(&self, old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>);
+
+    fn fix_phi_node_edges(&self, old_pred: BasicBlock<'ctx>, new_preds: &[BasicBlock<'ctx>]);
 
     #[deprecated(since = "0.1.0", note = "no tested")]
     fn replace_phi_node(&self, old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>);
@@ -69,11 +72,10 @@ impl<'ctx> BasicBlockExt<'ctx> for BasicBlock<'ctx> {
     }
 
     fn fix_phi_node(&self, old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>) {
-        for phi in self.get_first_instruction().iter() {
-            if phi.get_opcode() != InstructionOpcode::Phi {
-                continue;
-            }
-
+        for phi in self
+            .get_instructions()
+            .take_while(|instruction| instruction.get_opcode() == InstructionOpcode::Phi)
+        {
             unsafe {
                 amice_phi_replace_incoming_block_with(
                     phi.as_value_ref() as LLVMValueRef,
@@ -84,12 +86,31 @@ impl<'ctx> BasicBlockExt<'ctx> for BasicBlock<'ctx> {
         }
     }
 
-    fn replace_phi_node(&self, old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>) {
-        for phi in self.get_first_instruction().iter() {
-            if phi.get_opcode() != InstructionOpcode::Phi {
-                continue;
+    fn fix_phi_node_edges(&self, old_pred: BasicBlock<'ctx>, new_preds: &[BasicBlock<'ctx>]) {
+        let new_preds = new_preds
+            .iter()
+            .map(|block| block.as_mut_ptr() as LLVMBasicBlockRef)
+            .collect::<Vec<_>>();
+        for phi in self
+            .get_instructions()
+            .take_while(|instruction| instruction.get_opcode() == InstructionOpcode::Phi)
+        {
+            unsafe {
+                amice_phi_replace_incoming_blocks(
+                    phi.as_value_ref() as LLVMValueRef,
+                    old_pred.as_mut_ptr() as LLVMBasicBlockRef,
+                    new_preds.as_ptr(),
+                    u32::try_from(new_preds.len()).expect("Phi gateway list exceeds u32"),
+                )
             }
+        }
+    }
 
+    fn replace_phi_node(&self, old_pred: BasicBlock<'ctx>, new_pred: BasicBlock<'ctx>) {
+        for phi in self
+            .get_instructions()
+            .take_while(|instruction| instruction.get_opcode() == InstructionOpcode::Phi)
+        {
             let phi = phi.into_phi_inst();
             unsafe {
                 amice_phi_replace_incoming_block_with(

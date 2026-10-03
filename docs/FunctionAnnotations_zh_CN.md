@@ -253,12 +253,19 @@ int excluded_function(int x) {
 
 ### VM控制流平坦化（VM Flatten / VMF）
 
-将目标函数改写为由“虚拟机解释器 + 字节码/指令表”驱动的控制流形式。
+混淆目标函数的控制流，增加逆向分析难度。
 
 - 开关
     - `+vm_flatten`（别名：`+vmf`）
         - 功能：启用VM控制流平坦化
         - 默认值：false
+
+- `+vm_flatten_distributed`（别名 `+vmf_distributed`）：启用分散跳转原型，默认 false；需同时启用 `+vmf`。
+- `vm_flatten_max_ops=8`（别名 `vmf_max_ops`）：分散模式每个跳转点生成 1～n 个可逆索引操作，必含一次 S-box 替换，n 限制在 1～32；地址解码另计。
+- `vm_flatten_program_variants=3`（别名 `vmf_program_variants`）：每个跳转点交错生成的索引程序数量，限制在 1～3；值越大，体积与编译/优化开销越高。
+- `vm_flatten_seed=42`（别名 `vmf_seed`）：分散模式随机种子；默认随机，显式指定（包括 0）可复现。
+
+示例：`annotate("+vmf,+vmf_distributed,vmf_max_ops=8,vmf_program_variants=3,vmf_seed=42")`。VM控制流平坦化在虚假控制流之后执行。分散模式的 PHI、优化和适用范围说明见[环境配置](EnvConfig_zh_CN.md#vm控制流平坦化)。
 
 ### 指令级 VMP（VmVirtualize）
 

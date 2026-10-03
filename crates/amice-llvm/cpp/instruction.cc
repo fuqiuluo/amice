@@ -75,4 +75,16 @@ void amice_phi_replace_incoming_block_with(llvm::PHINode *PHI, llvm::BasicBlock 
     PHI->replaceIncomingBlockWith(O, N);
 }
 
+void amice_phi_replace_incoming_blocks(
+    llvm::PHINode *PHI,
+    llvm::BasicBlock *O,
+    llvm::BasicBlock *const *N,
+    uint32_t Count) {
+    uint32_t occurrence = 0;
+    for (unsigned Index = 0; Index < PHI->getNumIncomingValues() && occurrence < Count; ++Index) {
+        if (PHI->getIncomingBlock(Index) == O)
+            PHI->setIncomingBlock(Index, N[occurrence++]);
+    }
+}
+
 }
