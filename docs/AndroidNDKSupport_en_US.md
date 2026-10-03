@@ -251,7 +251,25 @@ python3 scripts/test_android_ndk_bundle.py --runtime-only \
   --output-dir target/android-ndk-tests --adb-serial SERIAL
 ```
 
+The VM control-flow flattening shared-library regression uses a wide switch,
+loop-carried values and recursive calls. It builds 40 combinations across four
+ABIs, two seeds and O0/O2/O3/ThinLTO/full LTO. Each runnable library is compared
+against an unprotected reference for 4,608 inputs. NDK CI includes this suite;
+to run it manually:
+
+```bash
+python3 scripts/test_android_vmf_stress.py \
+  --bundle /path/to/amice-android-ndk-r30-linux-x86_64 \
+  --ndk-release r30 --output-dir target/android-vmf-stress
+python3 scripts/test_android_vmf_stress.py --runtime-only \
+  --output-dir target/android-vmf-stress --adb-serial SERIAL
+```
+
+Compilation runs on Linux/macOS. For device execution on Windows, copy the
+output directory and use `py` instead of `python3` with `--runtime-only`.
+
 ## References
+
 
 - Android NDK host tags and command-line usage: <https://developer.android.com/ndk/guides/other_build_systems>
 - Older manual setup article: <https://xtuly.cn/article/ndk-load-llvm-pass-plugin>

@@ -34,6 +34,13 @@ PROFILES = {
         }
         for name, clone in (("clone", "true"), ("regions", "false"))
     },
+    "bcf-vmf": {
+        "AMICE_STRING_DECRYPT_TIMING": "lazy", "AMICE_STRING_ALGORITHM": "xor",
+        "AMICE_BOGUS_CONTROL_FLOW": "true", "AMICE_BOGUS_CONTROL_FLOW_PROB": "100",
+        "AMICE_BOGUS_CONTROL_FLOW_CLONE": "true", "AMICE_BOGUS_CONTROL_FLOW_SEED": "42",
+        "AMICE_VM_FLATTEN": "true", "AMICE_VM_FLATTEN_DISTRIBUTED": "true",
+        "AMICE_VM_FLATTEN_SEED": "42", "AMICE_VM_FLATTEN_MAX_OPS": "8",
+    },
 }
 
 
@@ -105,19 +112,30 @@ def compile_suite(args):
     )
     for abi in args.abi:
         triple, _, _, _ = TARGETS[abi]
-        for profile in ("bcf-clone", "bcf-regions"):
+        for profile in ("bcf-clone", "bcf-regions", "bcf-vmf"):
             ir = args.output_dir / f"{abi}-{profile}.ll"
+            order = "VmFlatten,BogusControlFlow" if profile == "bcf-vmf" else "BogusControlFlow"
             run([bundle / f"amice/bin/{triple}-clang", "-O2", "-S", "-emit-llvm",
                  "-fno-discard-value-names", bcf_source, "-o", ir],
-                env={**env, **PROFILES[profile], "AMICE_PASS_ORDER": "BogusControlFlow"})
+                env={**env, **PROFILES[profile], "AMICE_PASS_ORDER": order})
             text = ir.read_text()
-            if '"amice.bcf.done"' not in text or "bcf.digits" not in text:
+            # VMF may merge the BCF helper's ``bcf.digits`` block while
+            # preserving the integer-region dataflow under ``bcf.input`` or
+            # ``bcf.position``.  LLVM 21 performs this merge more eagerly
+            # than LLVM 19, so test the stable markers instead of one block
+            # label that is allowed to disappear during VMF lowering.
+            bcf_markers = ("bcf.digits", "bcf.input", "bcf.position")
+            if '"amice.bcf.done"' not in text or not any(marker in text for marker in bcf_markers):
                 raise RuntimeError(f"BCF integer regions were not generated: {ir}")
             cloned = '"amice.bcf.clone"' in text
-            if cloned != (profile == "bcf-clone"):
+            if cloned != (profile != "bcf-regions"):
                 raise RuntimeError(f"Unexpected BCF clone state: {ir}")
             if "@__amice_bcf_snapshot" in text or "@__amice_bcf_staged" in text:
                 raise RuntimeError(f"BCF left a temporary function: {ir}")
+            if profile == "bcf-vmf" and (
+                "indirectbr" not in text or "vm_flatten_opcodes" in text
+            ):
+                raise RuntimeError(f"Distributed VM transfers were not generated after BCF: {ir}")
             print(f"PASS {abi}-{profile}: BCF IR structure", flush=True)
 
     records = []

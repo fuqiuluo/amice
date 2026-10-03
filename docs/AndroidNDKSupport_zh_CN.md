@@ -251,7 +251,24 @@ python3 scripts/test_android_ndk_bundle.py --runtime-only \
   --output-dir target/android-ndk-tests --adb-serial SERIAL
 ```
 
+VM控制流平坦化共享库回归覆盖多分支 switch、循环传递值和递归调用，
+在四种 ABI、两种 seed 和 O0/O2/O3/ThinLTO/完整 LTO 下构建 40 个组合。
+每个可运行的共享库都会与未混淆的参考实现对照 4,608 组输入。
+NDK CI 已包含这项测试，也可以手动运行：
+
+```bash
+python3 scripts/test_android_vmf_stress.py \
+  --bundle /path/to/amice-android-ndk-r30-linux-x86_64 \
+  --ndk-release r30 --output-dir target/android-vmf-stress
+python3 scripts/test_android_vmf_stress.py --runtime-only \
+  --output-dir target/android-vmf-stress --adb-serial SERIAL
+```
+
+编译步骤在 Linux/macOS 执行。Windows 可复制产物目录后，用 `py` 替换
+`python3`，通过 `--runtime-only` 执行设备测试。
+
 ## 参考
+
 
 - Android NDK host tag 和命令行用法：<https://developer.android.google.cn/ndk/guides/other_build_systems?hl=zh-cn>
 - 旧的手动方案说明：<https://xtuly.cn/article/ndk-load-llvm-pass-plugin>
