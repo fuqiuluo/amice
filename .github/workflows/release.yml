@@ -202,6 +202,14 @@ jobs:
         with:
           ref: ${{ inputs.tag_name || github.ref }}
 
+      - name: Skip LLVM 22 on Intel macOS
+        if: ${{ matrix.os == 'macos-15-intel' && matrix.llvm-version[0] == '22' }}
+        run: |
+          echo "Homebrew no longer builds x86_64 bottles, and the llvm@22 formula"
+          echo "has no Intel macOS bottle left, so it cannot be installed here."
+          echo "LLVM 22 assets remain available for Linux x86_64 and ARM macOS."
+          exit 78
+
       - name: Cache Homebrew downloads
         uses: actions/cache@v4
         with:
