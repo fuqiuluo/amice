@@ -8,7 +8,7 @@ English | [简体中文](README.md)
 
 Amice is a code-obfuscation tool that ships as an LLVM pass plugin. It provides string encryption, control-flow obfuscation and instruction-level VMP virtualization for C/C++, Rust and Android native code. With a prebuilt plugin, integration is a single `-fpass-plugin` flag on your existing build — no LLVM rebuild, no compiler changes, no source modifications.
 
-> **Status**: beta (v0.1.5-beta.4); configuration and behavior may change between releases. Prebuilt plugins cover LLVM/Clang 18–22 on Linux/macOS, plus Android NDK r27d–r30 (r29/r30 ship as complete bundles with the NDK and runtime libraries; r27d/r28c are plugin-only). No prebuilt Windows package yet; [build from source](docs/LLVMSetup_en_US.md) instead.
+> **Status**: beta (v0.1.5-beta.5); configuration and behavior may change between releases. Prebuilt plugins cover LLVM/Clang 18–22 on Linux/macOS, plus Android NDK r27d–r30 (r29/r30 ship as complete bundles with the NDK and runtime libraries; r27d/r28c are plugin-only). No prebuilt Windows package yet; [build from source](docs/LLVMSetup_en_US.md) instead.
 
 ## Features
 

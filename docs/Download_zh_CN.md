@@ -61,6 +61,6 @@ clang --version
 
 ## Windows 的下载情况
 
-[v0.1.5-beta.4](https://github.com/fuqiuluo/amice/releases/tag/v0.1.5-beta.4) 没有提供 Windows DLL 或 Windows NDK bundle，因此这个版本没有 Windows 下载即用的路径。其他版本请查看其 Assets；Linux `.so` 和 macOS `.dylib` 不能供 Windows 编译器加载。
+[v0.1.5-beta.5](https://github.com/fuqiuluo/amice/releases/tag/v0.1.5-beta.5) 没有提供 Windows DLL 或 Windows NDK bundle，因此这个版本没有 Windows 下载即用的路径。其他版本请查看其 Assets；Linux `.so` 和 macOS `.dylib` 不能供 Windows 编译器加载。
 
 需要在 Windows 上自行准备插件时，见 [Windows 源码构建](LLVMSetup_zh_CN.md#windows)。这是单独的进阶流程。

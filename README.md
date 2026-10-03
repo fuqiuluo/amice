@@ -8,7 +8,7 @@
 
 Amice 是一个以 LLVM Pass 插件形式工作的代码混淆工具，为 C/C++、Rust 和 Android 原生代码提供字符串加密、控制流混淆和指令级 VMP 虚拟化。下载预编译插件后，一条 `-fpass-plugin` 参数即可接入现有构建——不需要重新编译 LLVM，也不需要修改编译器或项目源码。
 
-> **状态**：当前为 beta（v0.1.5-beta.4），配置项和行为可能随版本调整。预编译插件覆盖 Linux/macOS 上的 LLVM/Clang 18–22，以及 Android NDK r27d–r30（其中 r29/r30 提供含 NDK 和运行库的完整 bundle，r27d/r28c 仅提供插件）；Windows 暂无预编译包，可[从源码构建](docs/LLVMSetup_zh_CN.md)。
+> **状态**：当前为 beta（v0.1.5-beta.5），配置项和行为可能随版本调整。预编译插件覆盖 Linux/macOS 上的 LLVM/Clang 18–22，以及 Android NDK r27d–r30（其中 r29/r30 提供含 NDK 和运行库的完整 bundle，r27d/r28c 仅提供插件）；Windows 暂无预编译包，可[从源码构建](docs/LLVMSetup_zh_CN.md)。
 
 ## 特性
 

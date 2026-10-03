@@ -61,6 +61,6 @@ Run `rustc -vV` and inspect `LLVM version`, then choose the corresponding plugin
 
 ## Windows Downloads
 
-[v0.1.5-beta.4](https://github.com/fuqiuluo/amice/releases/tag/v0.1.5-beta.4) does not provide a Windows DLL or Windows NDK bundle, so that version has no ready-to-use Windows download. Check Assets for other releases. Linux `.so` and macOS `.dylib` files cannot be loaded by Windows compilers.
+[v0.1.5-beta.5](https://github.com/fuqiuluo/amice/releases/tag/v0.1.5-beta.5) does not provide a Windows DLL or Windows NDK bundle, so that version has no ready-to-use Windows download. Check Assets for other releases. Linux `.so` and macOS `.dylib` files cannot be loaded by Windows compilers.
 
 To prepare your own Windows plugin, see [Windows Source Builds](LLVMSetup_en_US.md#windows). This is a separate advanced workflow.
