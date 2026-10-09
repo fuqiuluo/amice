@@ -491,6 +491,14 @@ define i32 @unsupported(i32 %x, i32 %y) { %a = mul i32 %x, %y
     }
 }
 
+/// Attach `attrs` to every definition of the generated fixture IR.
+///
+/// Every `define` in `fixture_widths` output carries `noinline`, so the
+/// marker is a reliable injection point (it never appears elsewhere).
+fn with_size_attributes(source: &str, attrs: &str) -> String {
+    source.replace(" noinline ", &format!(" noinline {attrs} "))
+}
+
 #[test]
 fn preoptimized_ir_and_lto_preserve_results() {
     ensure_plugin_built();
@@ -507,22 +515,37 @@ fn preoptimized_ir_and_lto_preserve_results() {
     for name in all_names {
         baseline = baseline.replace(&format!("@{name}("), &format!("@reference_{name}("));
     }
-    std::fs::write(&input, source).unwrap();
+    std::fs::write(&input, &source).unwrap();
     std::fs::write(&reference, baseline).unwrap();
     std::fs::write(&main, driver(&names)).unwrap();
-    for (n, pipeline) in [
-        "default<O1>",
-        "default<O2>",
-        "default<O3>",
-        "default<Os>",
-        "default<Oz>",
-        "default<O2>,lto<O2>",
+    // LLVM 23 removed the Os/Oz pipeline levels from `opt` ("use O2 in
+    // conjunction with the optsize attribute instead"), so on that version
+    // the size-flavoured rows run default<O2> over IR whose definitions
+    // carry the attributes clang attaches for -Os/-Oz.
+    #[cfg(not(feature = "llvm23-1"))]
+    let size_rows: Vec<(PathBuf, &str)> = [(input.clone(), "default<Os>"), (input.clone(), "default<Oz>")].into();
+    #[cfg(feature = "llvm23-1")]
+    let size_rows: Vec<(PathBuf, &str)> = {
+        let optsize = dir.join("input-optsize.ll");
+        let minsize = dir.join("input-minsize.ll");
+        std::fs::write(&optsize, with_size_attributes(&source, "optsize")).unwrap();
+        std::fs::write(&minsize, with_size_attributes(&source, "optsize minsize")).unwrap();
+        [(optsize, "default<O2>"), (minsize, "default<O2>")].into()
+    };
+
+    let pipelines: Vec<(PathBuf, &str)> = [
+        (input.clone(), "default<O1>"),
+        (input.clone(), "default<O2>"),
+        (input.clone(), "default<O3>"),
     ]
     .into_iter()
-    .enumerate()
-    {
+    .chain(size_rows)
+    .chain([(input.clone(), "default<O2>,lto<O2>")])
+    .collect();
+
+    for (n, (row_input, pipeline)) in pipelines.into_iter().enumerate() {
         let output = dir.join(format!("pipeline-{n}.ll"));
-        transform_pipeline(&input, &output, true, 128, 2048, pipeline);
+        transform_pipeline(&row_input, &output, true, 128, 2048, pipeline);
         let ir = std::fs::read_to_string(&output).unwrap();
         assert!(ir.contains("amice.mba.done"));
         // LLVM 21 SLP can pack ordinary FP operations with unused poison lanes
