@@ -1,6 +1,6 @@
 use crate::aotu::string_encryption::{
     EncryptedGlobalValue, InsertPointCollection, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo,
-    alloc_stack_string, array_as_const_string, collect_insert_points,
+    alloc_stack_string, array_as_const_string_bytes, collect_insert_points, is_const_string_array, rebuild_const_string,
 };
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};
@@ -83,7 +83,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
             match init {
                 // 情况 A: 传统的 C-style 字符串直接就是 ArrayValue
                 BasicValueEnum::ArrayValue(arr) => {
-                    if arr.is_const_string() && arr.get_type().len() > 1 {
+                    if is_const_string_array(&arr) && arr.get_type().len() > 1 {
                         string_fields.push((None, arr)); // None 表示不是结构体成员
                     }
                 },
@@ -92,7 +92,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
                     for i in 0..stru.count_fields() {
                         if let Some(field) = stru.get_field_at_index(i) {
                             if let BasicValueEnum::ArrayValue(arr) = field {
-                                if arr.is_const_string() && arr.get_type().len() > 1 {
+                                if is_const_string_array(&arr) && arr.get_type().len() > 1 {
                                     string_fields.push((Some(i), arr)); // 记录字段索引
                                 }
                             }
@@ -121,7 +121,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
                     return None;
                 }
 
-                if !arr.is_const_string() {
+                if !is_const_string_array(&arr) {
                     debug!(
                         "(strenc) skipping field in {:?}: is_const_string() false",
                         global.get_name()
@@ -148,8 +148,8 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
             // do nothing!
         })
         .filter_map(|(global, stru, field_idx, arr)| {
-            // we ignore non-UTF8 strings, since they are probably not human-readable
-            let s = array_as_const_string(&arr)?.to_vec();
+            // 按原始元素宽度取出字节流（[N x i8]、[N x i16]、[N x i32]）
+            let (s, elem_size) = array_as_const_string_bytes(&arr)?;
 
             if log_enabled!(Level::Debug) {
                 info!(
@@ -169,9 +169,9 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
                 |_| format!("ref_{:x}", global.as_value_ref() as usize),
                 |s| s.to_string(),
             );
-            Some((unique_name, global, stru, field_idx, encoded_str))
+            Some((unique_name, global, stru, field_idx, encoded_str, elem_size))
         })
-        .map(|(unique_name, global, stru, field_idx, encoded_str)| {
+        .map(|(unique_name, global, stru, field_idx, encoded_str, elem_size)| {
             let string_len = encoded_str.len() as u32;
             let mut should_use_stack = cfg.stack_alloc && string_len <= STACK_ALLOC_THRESHOLD;
 
@@ -255,7 +255,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
             if let Some(stru) = stru {
                 // Rust-like strings or C++ NTTP string
                 let mut values: Vec<_> = stru.get_fields().collect();
-                let new_const = ctx.const_string(&encoded_str, false);
+                let new_const = rebuild_const_string(ctx, elem_size, &encoded_str);
                 if let Some(field_idx) = field_idx {
                     is_array_string = false;
                     values[field_idx as usize] = BasicValueEnum::ArrayValue(new_const);
@@ -277,7 +277,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
                 }
             } else {
                 // C-like strings
-                let new_const = ctx.const_string(&encoded_str, false);
+                let new_const = rebuild_const_string(ctx, elem_size, &encoded_str);
                 global.set_initializer(&new_const);
             }
 

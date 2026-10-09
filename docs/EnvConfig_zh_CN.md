@@ -10,7 +10,7 @@
 
 | Pass | 环境变量开关 | C/C++ | Rust | ObjC | 说明 |
 |:---|:---|:---:|:---:|:---:|:---|
-| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | 字符串加密，支持 `xor` / `simd_xor`、lazy/global 解密、栈/堆解密配置 |
+| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | 字符串加密，支持 `xor` / `simd_xor`、lazy/global 解密、栈/堆解密配置，覆盖宽字符（UTF-16/UTF-32/wchar_t）字面量 |
 | Indirect Call | `AMICE_INDIRECT_CALL` | ✅ | ✅ | ❌ | 将直接调用改写为函数表/索引形式的间接调用 |
 | Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | 将分支改写为 `indirectbr`，支持 dummy block、表重排、索引加密等 flags |
 | Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | 按配置切割基本块 |

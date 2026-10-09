@@ -10,7 +10,7 @@ Global precedence is **environment > config file > defaults**. Passes supporting
 
 | Pass | Environment Variable | C/C++ | Rust | ObjC | Description |
 |:---|:---|:---:|:---:|:---:|:---|
-| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | String encryption with `xor` / `simd_xor`, lazy/global decryption, stack/heap allocation options |
+| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | String encryption with `xor` / `simd_xor`, lazy/global decryption, stack/heap allocation options, covers wide-character (UTF-16/UTF-32/wchar_t) literals |
 | Indirect Call | `AMICE_INDIRECT_CALL` | ✅ | ✅ | ❌ | Rewrites direct calls into table/index based indirect calls |
 | Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | Rewrites branches into `indirectbr`; supports dummy blocks, table shuffling, index encryption, and other flags |
 | Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | Splits basic blocks according to configuration |

@@ -264,3 +264,144 @@ fn test_const_strings_global_simd_xor() {
     let lines = run.stdout_lines();
     check_const_strings_output(&lines);
 }
+
+fn wide_strings_code_unit_lines() -> [String; 3] {
+    // Mirrors wide_strings.c: every code unit is printed as "%04x " by the
+    // fixture, so the expected output is independent of wchar_t's width.
+    // The fixture prints one "%04x " per code unit; stdout_lines trims the
+    // trailing space of each line.
+    let line = |text: &str| -> String {
+        text.chars()
+            .map(|c| format!("{:04x}", u32::from(c)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    [
+        line("Amice16\u{4F60}"),
+        line("Amice32\u{4F60}"),
+        line("AmiceWide"),
+    ]
+}
+
+fn check_wide_strings_output(lines: &[String]) {
+    let expected = wide_strings_code_unit_lines();
+    assert_eq!(lines.len(), 3, "expected 3 lines, got {}: {:?}", lines.len(), lines);
+    assert_eq!(lines[0], expected[0], "UTF-16 line mismatch");
+    assert_eq!(lines[1], expected[1], "UTF-32 line mismatch");
+    assert_eq!(lines[2], expected[2], "wchar_t line mismatch");
+}
+
+/// The encrypted globals must not keep the UTF-16LE / UTF-32LE plaintext bytes
+/// of the wide literals.
+fn check_wide_strings_plaintext_absent(binary: &[u8]) {
+    for (label, needle) in [
+        ("UTF-16", utf16_le_bytes("Amice16\u{4F60}")),
+        ("UTF-32", utf32_le_bytes("Amice32\u{4F60}")),
+    ] {
+        assert!(
+            !binary.windows(needle.len()).any(|window| window == needle),
+            "{label} literal remained in plaintext"
+        );
+    }
+}
+
+fn utf16_le_bytes(value: &str) -> Vec<u8> {
+    value.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+fn utf32_le_bytes(value: &str) -> Vec<u8> {
+    value
+        .chars()
+        .flat_map(|c| u32::from(c).to_le_bytes())
+        .collect()
+}
+
+fn wide_string_config(timing: &str, algorithm: &str) -> ObfuscationConfig {
+    ObfuscationConfig {
+        string_encryption: Some(true),
+        string_algorithm: Some(algorithm.to_string()),
+        string_decrypt_timing: Some(timing.to_string()),
+        // Clang names wide literals ".str" on Itanium targets but uses MSVC
+        // decorations elsewhere, so the ".str" name filter must be off.
+        string_only_llvm_string: Some(false),
+        ..ObfuscationConfig::disabled()
+    }
+}
+
+#[test]
+fn test_wide_strings_lazy_xor() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("string_encryption", "wide_strings.c", Language::C),
+        "wide_strings_lazy_xor",
+    )
+    .config(wide_string_config("lazy", "xor"))
+    .compile();
+
+    result.assert_success();
+    let run = result.run();
+    run.assert_success();
+
+    check_wide_strings_output(&run.stdout_lines());
+}
+
+#[test]
+fn test_wide_strings_global_xor() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("string_encryption", "wide_strings.c", Language::C),
+        "wide_strings_global_xor",
+    )
+    .config(wide_string_config("global", "xor"))
+    .optimization("O2")
+    .compile();
+
+    result.assert_success();
+    let binary = std::fs::read(&result.binary_path).expect("failed to read protected binary");
+    check_wide_strings_plaintext_absent(&binary);
+
+    let run = result.run();
+    run.assert_success();
+    check_wide_strings_output(&run.stdout_lines());
+}
+
+#[test]
+fn test_wide_strings_lazy_simd_xor() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("string_encryption", "wide_strings.c", Language::C),
+        "wide_strings_lazy_simd_xor",
+    )
+    .config(wide_string_config("lazy", "simd_xor"))
+    .compile();
+
+    result.assert_success();
+    let run = result.run();
+    run.assert_success();
+
+    check_wide_strings_output(&run.stdout_lines());
+}
+
+#[test]
+fn test_wide_strings_global_simd_xor() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("string_encryption", "wide_strings.c", Language::C),
+        "wide_strings_global_simd_xor",
+    )
+    .config(wide_string_config("global", "simd_xor"))
+    .optimization("O2")
+    .compile();
+
+    result.assert_success();
+    let binary = std::fs::read(&result.binary_path).expect("failed to read protected binary");
+    check_wide_strings_plaintext_absent(&binary);
+
+    let run = result.run();
+    run.assert_success();
+    check_wide_strings_output(&run.stdout_lines());
+}
