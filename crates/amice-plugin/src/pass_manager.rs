@@ -9,7 +9,7 @@ use super::{FunctionAnalysisManager, LlvmFunctionPass, LlvmModulePass, ModuleAna
 /// pipeline.
 pub struct ModulePassManager {
     inner: *mut c_void,
-    #[cfg(feature = "llvm22-1")]
+    #[cfg(any(feature = "llvm22-1", feature = "llvm23-1"))]
     owned: bool,
 }
 
@@ -18,13 +18,13 @@ impl ModulePassManager {
     pub unsafe fn from_raw(pass_manager: *mut c_void) -> Self {
         Self {
             inner: pass_manager,
-            #[cfg(feature = "llvm22-1")]
+            #[cfg(any(feature = "llvm22-1", feature = "llvm23-1"))]
             owned: false,
         }
     }
 
     /// Creates an empty module pass manager.
-    #[cfg(feature = "llvm22-1")]
+    #[cfg(any(feature = "llvm22-1", feature = "llvm23-1"))]
     pub fn new() -> Self {
         Self {
             inner: unsafe { super::modulePassManagerCreate() },
@@ -86,20 +86,21 @@ impl ModulePassManager {
         feature = "llvm19-1",
         feature = "llvm20-1",
         feature = "llvm21-1",
-        feature = "llvm22-1"
+        feature = "llvm22-1",
+        feature = "llvm23-1"
     ))]
     pub fn is_empty(&self) -> bool {
         unsafe { super::modulePassManagerIsEmpty(self.inner) }
     }
 
     /// Runs this pass manager on a module.
-    #[cfg(feature = "llvm22-1")]
+    #[cfg(any(feature = "llvm22-1", feature = "llvm23-1"))]
     pub fn run_on_module(&mut self, module: &mut Module<'_>) -> PreservedAnalyses {
         unsafe { super::modulePassManagerRun(self.inner, module.as_mut_ptr().cast()) }
     }
 }
 
-#[cfg(feature = "llvm22-1")]
+#[cfg(any(feature = "llvm22-1", feature = "llvm23-1"))]
 impl Drop for ModulePassManager {
     fn drop(&mut self) {
         if self.owned && !self.inner.is_null() {
@@ -175,7 +176,8 @@ impl FunctionPassManager {
         feature = "llvm19-1",
         feature = "llvm20-1",
         feature = "llvm21-1",
-        feature = "llvm22-1"
+        feature = "llvm22-1",
+        feature = "llvm23-1"
     ))]
     pub fn is_empty(&self) -> bool {
         unsafe { super::functionPassManagerIsEmpty(self.inner) }

@@ -7,7 +7,9 @@ mod target_table;
 use crate::config::{Config, VmFlattenConfig};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::const_array;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt};
+use amice_llvm::inkwell2::{
+    BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, ModuleExt, branch_opcode, is_branch_opcode,
+};
 
 use amice_llvm::ptr_type;
 use amice_macro::amice;
@@ -101,7 +103,7 @@ impl<'a> VmBranchNode<'a> {
             value: num,
             labels: NonNull::from(Box::leak(labels)),
             block,
-            opcode: InstructionOpcode::Br,
+            opcode: branch_opcode(),
         }
     }
 
@@ -113,7 +115,7 @@ impl<'a> VmBranchNode<'a> {
             value: num,
             labels: NonNull::from(Box::leak(labels)),
             block,
-            opcode: InstructionOpcode::Br,
+            opcode: branch_opcode(),
         }
     }
 
@@ -251,7 +253,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
     };
 
     let first_basic_block = match entry_terminator_inst.get_opcode() {
-        InstructionOpcode::Br => {
+        opcode if is_branch_opcode(opcode) => {
             if entry_terminator_inst.is_conditional()? || entry_terminator_inst.get_num_operands() > 1 {
                 split_entry_terminator_block(function, entry_block, entry_terminator_inst, ".no.conditional.br")?
             } else {
@@ -296,7 +298,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
 
     for node in &mut all_nodes {
         for inst in node.block.get_instructions() {
-            if inst.get_opcode() == InstructionOpcode::Br {
+            if is_branch_opcode(inst.get_opcode()) {
                 if inst.is_conditional()? || inst.get_num_operands() > 1 {
                     let branch_inst = inst.into_branch_inst();
                     let left = branch_inst.get_successor(0);
@@ -315,7 +317,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
 
                     node.set_left(left);
                 }
-                node.opcode = InstructionOpcode::Br;
+                node.opcode = branch_opcode();
                 break;
             } else if inst.get_opcode() == InstructionOpcode::Return {
                 node.opcode = InstructionOpcode::Return;
@@ -508,7 +510,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
                 .get_instructions()
                 .filter(|inst| {
                     let op = inst.get_opcode();
-                    op == InstructionOpcode::Br || op == InstructionOpcode::Return || op == InstructionOpcode::Switch
+                    is_branch_opcode(op) || op == InstructionOpcode::Return || op == InstructionOpcode::Switch
                 })
                 .collect::<Vec<_>>();
             for inst in branches {
@@ -517,7 +519,7 @@ fn do_handle<'a>(cfg: &VmFlattenConfig, module: &mut Module<'a>, function: Funct
                     continue;
                 }
 
-                if inst.get_opcode() == InstructionOpcode::Br {
+                if is_branch_opcode(inst.get_opcode()) {
                     builder.position_before(&inst);
                     let new_br = if inst.is_conditional()? && inst.get_num_operands() == 3 {
                         let result = inst
@@ -665,7 +667,7 @@ fn generate_opcodes(
     node: VmBranchNode<'_>,
     random_none_node_opcode: bool,
 ) -> anyhow::Result<()> {
-    if node.len() == 2 && node.opcode == InstructionOpcode::Br {
+    if node.len() == 2 && node.opcode == branch_opcode() {
         let left = node.left();
         let right = node.right();
 
@@ -734,7 +736,7 @@ fn generate_opcodes(
         opcodes[jmpif_index].1[1] = right_pc;
 
         return Ok(());
-    } else if node.len() == 1 && node.opcode == InstructionOpcode::Br {
+    } else if node.len() == 1 && node.opcode == branch_opcode() {
         let left = node.left();
         let left_value = *basic_block_value_map
             .get(&left)

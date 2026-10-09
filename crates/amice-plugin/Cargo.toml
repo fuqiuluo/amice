@@ -21,7 +21,6 @@ macros = ["amice-plugin-macros"]
 win-link-opt = []
 win-link-lld = []
 
-llvm11-0 = ["inkwell/llvm11-0-no-llvm-linking"]
 llvm12-0 = ["inkwell/llvm12-0-no-llvm-linking"]
 llvm13-0 = ["inkwell/llvm13-0-no-llvm-linking"]
 llvm14-0 = ["inkwell/llvm14-0-no-llvm-linking"]
@@ -33,6 +32,7 @@ llvm19-1 = ["inkwell/llvm19-1-no-llvm-linking"]
 llvm20-1 = ["inkwell/llvm20-1-no-llvm-linking"]
 llvm21-1 = ["inkwell/llvm21-1-no-llvm-linking"]
 llvm22-1 = ["inkwell/llvm22-1-no-llvm-linking"]
+llvm23-1 = ["inkwell/llvm23-1-no-llvm-linking"]
 
 target-x86 = ["inkwell/target-x86"]
 target-arm = ["inkwell/target-arm"]
@@ -53,7 +53,8 @@ target-riscv = ["inkwell/target-riscv"]
 target-all = ["inkwell/target-all"]
 
 [dependencies]
-inkwell = { version = "0.9", default-features = false }
+# See crates/amice-llvm/Cargo.toml: LLVM 23 support requires inkwell master.
+inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "c8234a0", default-features = false }
 amice-plugin-macros = { workspace = true, optional = true }
 
 [build-dependencies]

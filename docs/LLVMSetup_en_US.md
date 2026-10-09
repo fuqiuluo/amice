@@ -12,6 +12,7 @@ The default feature is `llvm21-1`. Setting an LLVM 22 prefix does not change Car
 
 | LLVM | Cargo feature | Environment variable |
 | --- | --- | --- |
+| 23.1 | `llvm23-1` | `LLVM_SYS_231_PREFIX` |
 | 22.1 | `llvm22-1` | `LLVM_SYS_221_PREFIX` |
 | 21.1 | `llvm21-1` | `LLVM_SYS_211_PREFIX` |
 | 20.1 | `llvm20-1` | `LLVM_SYS_201_PREFIX` |
@@ -23,9 +24,8 @@ The default feature is `llvm21-1`. Setting an LLVM 22 prefix does not change Car
 | 14.0 | `llvm14-0` | `LLVM_SYS_140_PREFIX` |
 | 13.0 | `llvm13-0` | `LLVM_SYS_130_PREFIX` |
 | 12.0 | `llvm12-0` | `LLVM_SYS_120_PREFIX` |
-| 11.0 | `llvm11-0` | `LLVM_SYS_110_PREFIX` |
 
-These are declared features, not a promise of equal validation across versions, platforms and passes. Linux/macOS CI currently configures LLVM 18–22; Windows build workflows configure LLVM 18–20.
+These are declared features, not a promise of equal validation across versions, platforms and passes. Linux/macOS CI currently configures LLVM 18–23; Windows build workflows configure LLVM 18–20.
 
 ## Prerequisites
 
@@ -95,6 +95,22 @@ cargo build --release --no-default-features --features llvm21-1
 ```
 
 Also use `"$LLVM_SYS_211_PREFIX/bin/clang"` to compile your application, avoiding an accidental switch to system Apple Clang. The plugin is `target/release/libamice.dylib`.
+
+## Switching to LLVM 23 (Linux / macOS)
+
+Install the corresponding LLVM 23 development packages, then choose the prefix for your platform:
+
+```bash
+# Debian / Ubuntu (after configuring the apt.llvm.org repository)
+export LLVM_SYS_231_PREFIX=/usr/lib/llvm-23
+# macOS instead: brew install llvm@23
+# export LLVM_SYS_231_PREFIX=$(brew --prefix llvm@23)
+# Fedora/RHEL: use the installed version's llvm-config --prefix
+
+"$LLVM_SYS_231_PREFIX/bin/llvm-config" --version
+"$LLVM_SYS_231_PREFIX/bin/clang" --version
+cargo build --release --no-default-features --features llvm23-1
+```
 
 ## Switching to LLVM 22 (Linux / macOS)
 

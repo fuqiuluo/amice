@@ -3,7 +3,9 @@ use crate::aotu::lower_switch::demote_switch_to_if;
 use crate::config::FlattenConfig;
 use amice_llvm::analysis::dominators::DominatorTree;
 use amice_llvm::const_array;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, LLVMValueRefExt, VerifyResult};
+use amice_llvm::inkwell2::{
+    BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, LLVMValueRefExt, VerifyResult, is_branch_opcode,
+};
 use amice_llvm::ptr_type;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use amice_plugin::inkwell::basic_block::BasicBlock;
@@ -305,7 +307,7 @@ fn do_handle(
         let Some(terminator) = bb.get_terminator() else {
             return Err(anyhow::anyhow!("block {:?} has no terminator", bb.get_name()));
         };
-        if terminator.get_opcode() != InstructionOpcode::Br {
+        if !is_branch_opcode(terminator.get_opcode()) {
             continue;
         }
 

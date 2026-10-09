@@ -138,6 +138,7 @@ impl AmicePass for IndirectCall {
         #[cfg(any(
             feature = "llvm21-1",
             feature = "llvm22-1",
+            feature = "llvm23-1",
             feature = "llvm20-1",
             feature = "llvm19-1",
             feature = "llvm18-1",
@@ -159,6 +160,7 @@ impl AmicePass for IndirectCall {
         #[cfg(not(any(
             feature = "llvm21-1",
             feature = "llvm22-1",
+            feature = "llvm23-1",
             feature = "llvm20-1",
             feature = "llvm19-1",
             feature = "llvm18-1",
@@ -191,6 +193,7 @@ fn random_non_zero_u32() -> u32 {
 #[cfg(any(
     feature = "llvm21-1",
     feature = "llvm22-1",
+    feature = "llvm23-1",
     feature = "llvm20-1",
     feature = "llvm19-1",
     feature = "llvm18-1",
@@ -259,6 +262,7 @@ fn do_handle<'a>(
         #[cfg(any(
             feature = "llvm21-1",
             feature = "llvm22-1",
+            feature = "llvm23-1",
             feature = "llvm20-1",
             feature = "llvm19-1",
             feature = "llvm18-1"

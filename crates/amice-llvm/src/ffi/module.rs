@@ -15,6 +15,7 @@ unsafe extern "C" {
         feature = "llvm20-1",
         feature = "llvm21-1",
         feature = "llvm22-1",
+        feature = "llvm23-1",
     ))]
     pub(crate) fn amice_module_append_to_global_ctors(module: LLVMModuleRef, function: LLVMValueRef, priority: i32);
 

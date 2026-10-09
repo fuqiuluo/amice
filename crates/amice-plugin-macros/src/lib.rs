@@ -120,7 +120,7 @@ fn plugin_impl(attrs: TokenStream, input: TokenStream) -> syn::Result<TokenStrea
                 plugin_name: #name.as_ptr(),
                 plugin_version: #version.as_ptr(),
                 plugin_registrar: #registrar_name_sys,
-                #[cfg(feature = "llvm22-1")]
+                #[cfg(any(feature = "llvm22-1", feature = "llvm23-1"))]
                 pre_code_gen_callback: #pre_code_gen_callback,
             }
         }

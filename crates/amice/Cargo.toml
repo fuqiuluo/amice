@@ -18,7 +18,6 @@ android-ndk = ["amice-llvm/android-ndk"]
 win-link-opt = ["amice-plugin/win-link-opt", "amice-llvm/win-link-opt"]
 win-link-lld = ["amice-plugin/win-link-lld", "amice-llvm/win-link-lld"]
 
-llvm11-0 = ["amice-plugin/llvm11-0", "amice-llvm/llvm11-0"]
 llvm12-0 = ["amice-plugin/llvm12-0", "amice-llvm/llvm12-0"]
 llvm13-0 = ["amice-plugin/llvm13-0", "amice-llvm/llvm13-0"]
 llvm14-0 = ["amice-plugin/llvm14-0", "amice-llvm/llvm14-0"]
@@ -30,6 +29,7 @@ llvm19-1 = ["amice-plugin/llvm19-1", "amice-llvm/llvm19-1"]
 llvm20-1 = ["amice-plugin/llvm20-1", "amice-llvm/llvm20-1"]
 llvm21-1 = ["amice-plugin/llvm21-1", "amice-llvm/llvm21-1"]
 llvm22-1 = ["amice-plugin/llvm22-1", "amice-llvm/llvm22-1"]
+llvm23-1 = ["amice-plugin/llvm23-1", "amice-llvm/llvm23-1"]
 
 [dependencies]
 amice-llvm.workspace = true

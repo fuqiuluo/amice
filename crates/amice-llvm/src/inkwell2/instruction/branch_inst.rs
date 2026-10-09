@@ -1,6 +1,8 @@
 use inkwell::basic_block::BasicBlock;
-use inkwell::values::{InstructionOpcode, InstructionValue};
+use inkwell::values::InstructionValue;
 use std::ops::{Deref, DerefMut};
+
+use super::is_branch_opcode;
 
 #[derive(Debug, Copy, Clone)]
 pub struct BranchInst<'ctx> {
@@ -9,7 +11,7 @@ pub struct BranchInst<'ctx> {
 
 impl<'ctx> BranchInst<'ctx> {
     pub fn new(inst: InstructionValue<'ctx>) -> Self {
-        assert_eq!(inst.get_opcode(), InstructionOpcode::Br);
+        assert!(is_branch_opcode(inst.get_opcode()));
         Self { inst }
     }
 
@@ -20,7 +22,16 @@ impl<'ctx> BranchInst<'ctx> {
 
         assert!(idx < 2);
 
-        self.inst.get_operand(2 - idx)?.block()
+        // Up to LLVM 22 the conditional-branch operands are laid out as
+        // [condition, false destination, true destination], the reverse of
+        // successor order.
+        #[cfg(not(feature = "llvm23-1"))]
+        return self.inst.get_operand(2 - idx)?.block();
+
+        // LLVM 23 reorders conditional-branch operands to match successor
+        // order: [condition, successor 0, successor 1].
+        #[cfg(feature = "llvm23-1")]
+        self.inst.get_operand(1 + idx)?.block()
     }
 }
 

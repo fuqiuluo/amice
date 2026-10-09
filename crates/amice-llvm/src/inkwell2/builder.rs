@@ -52,6 +52,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm20-1",
             feature = "llvm21-1",
             feature = "llvm22-1",
+            feature = "llvm23-1",
         )))]
         return unsafe { self.build_gep(ptr, ordered_indexes, name) };
 
@@ -64,6 +65,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm20-1",
             feature = "llvm21-1",
             feature = "llvm22-1",
+            feature = "llvm23-1",
         ))]
         return unsafe { self.build_gep(pointee_ty, ptr, ordered_indexes, name) };
     }
@@ -83,6 +85,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm20-1",
             feature = "llvm21-1",
             feature = "llvm22-1",
+            feature = "llvm23-1",
         )))]
         return self.build_load(ptr, name);
 
@@ -95,6 +98,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm20-1",
             feature = "llvm21-1",
             feature = "llvm22-1",
+            feature = "llvm23-1",
         ))]
         return self.build_load(pointee_ty, ptr, name);
     }
@@ -115,6 +119,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm20-1",
             feature = "llvm21-1",
             feature = "llvm22-1",
+            feature = "llvm23-1",
         )))]
         return unsafe { self.build_in_bounds_gep(ptr, ordered_indexes, name) };
 
@@ -127,6 +132,7 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
             feature = "llvm20-1",
             feature = "llvm21-1",
             feature = "llvm22-1",
+            feature = "llvm23-1",
         ))]
         return unsafe { self.build_in_bounds_gep(pointee_ty, ptr, ordered_indexes, name) };
     }
@@ -138,20 +144,10 @@ impl<'ctx> BuilderExt<'ctx> for Builder<'ctx> {
         index: u32,
         name: &str,
     ) -> Result<PointerValue<'ctx>, BuilderError> {
-        #[cfg(any(
-            feature = "llvm11-0",
-            feature = "llvm12-0",
-            feature = "llvm13-0",
-            feature = "llvm14-0"
-        ))]
+        #[cfg(any(feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0"))]
         return self.build_struct_gep(ptr, index, name);
 
-        #[cfg(not(any(
-            feature = "llvm11-0",
-            feature = "llvm12-0",
-            feature = "llvm13-0",
-            feature = "llvm14-0"
-        )))]
+        #[cfg(not(any(feature = "llvm12-0", feature = "llvm13-0", feature = "llvm14-0")))]
         return self.build_struct_gep(pointee_ty, ptr, index, name);
     }
 }

@@ -12,7 +12,16 @@ bool amice_basic_block_is_eh_pad(llvm::BasicBlock *BB) {
 }
 
 llvm::BasicBlock *amice_basic_block_split(llvm::BasicBlock *BB, llvm::Instruction *I, char *N, int B) {
+#if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR >= 23
+    // LLVM 23 drops the `Before` parameter; the split-before flavour moved
+    // to its own method.
+    if (B) {
+        return BB->splitBasicBlockBefore(I, N);
+    }
+    return BB->splitBasicBlock(I, N);
+#else
     return BB->splitBasicBlock(I, N, B);
+#endif
 }
 
 llvm::Instruction *amice_basic_block_first_insertion_pt(llvm::BasicBlock *bb) {

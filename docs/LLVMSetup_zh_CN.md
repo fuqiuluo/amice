@@ -12,6 +12,7 @@ AMICE 是宿主机加载的 LLVM 插件。Cargo feature、`LLVM_SYS_*_PREFIX`、
 
 | LLVM | Cargo feature | 环境变量 |
 | --- | --- | --- |
+| 23.1 | `llvm23-1` | `LLVM_SYS_231_PREFIX` |
 | 22.1 | `llvm22-1` | `LLVM_SYS_221_PREFIX` |
 | 21.1 | `llvm21-1` | `LLVM_SYS_211_PREFIX` |
 | 20.1 | `llvm20-1` | `LLVM_SYS_201_PREFIX` |
@@ -23,9 +24,8 @@ AMICE 是宿主机加载的 LLVM 插件。Cargo feature、`LLVM_SYS_*_PREFIX`、
 | 14.0 | `llvm14-0` | `LLVM_SYS_140_PREFIX` |
 | 13.0 | `llvm13-0` | `LLVM_SYS_130_PREFIX` |
 | 12.0 | `llvm12-0` | `LLVM_SYS_120_PREFIX` |
-| 11.0 | `llvm11-0` | `LLVM_SYS_110_PREFIX` |
 
-以上是代码声明的 feature，不代表每个版本、平台和 Pass 组合都有相同的验证覆盖。当前 Linux/macOS CI 配置 LLVM 18–22，Windows 构建工作流配置 LLVM 18–20。
+以上是代码声明的 feature，不代表每个版本、平台和 Pass 组合都有相同的验证覆盖。当前 Linux/macOS CI 配置 LLVM 18–23，Windows 构建工作流配置 LLVM 18–20。
 
 ## 通用前置条件
 
@@ -95,6 +95,22 @@ cargo build --release --no-default-features --features llvm21-1
 ```
 
 编译目标程序时也使用 `"$LLVM_SYS_211_PREFIX/bin/clang"`，避免误用系统 Apple Clang。产物为 `target/release/libamice.dylib`。
+
+## 切换到 LLVM 23（Linux / macOS）
+
+先安装对应的 LLVM 23 开发包，然后只执行适合当前系统的 prefix 设置：
+
+```bash
+# Debian / Ubuntu（按 apt.llvm.org 说明配置源后）
+export LLVM_SYS_231_PREFIX=/usr/lib/llvm-23
+# macOS 改用：brew install llvm@23
+# export LLVM_SYS_231_PREFIX=$(brew --prefix llvm@23)
+# Fedora/RHEL 按所安装版本的 llvm-config --prefix 设置
+
+"$LLVM_SYS_231_PREFIX/bin/llvm-config" --version
+"$LLVM_SYS_231_PREFIX/bin/clang" --version
+cargo build --release --no-default-features --features llvm23-1
+```
 
 ## 切换到 LLVM 22（Linux / macOS）
 

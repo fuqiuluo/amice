@@ -52,6 +52,7 @@ jobs:
           - ["20", "20-1", "201", "20.1"]
           - ["21", "21-1", "211", "21.1"]
           - ["22", "22-1", "221", "22.1"]
+          - ["23", "23-1", "231", "23.1"]
 
     steps:
       - name: Checkout Repo
@@ -161,8 +162,8 @@ jobs:
           file "${{ env.BUILD_OUTPUT_PATH }}/libamice.so"
           ldd "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" || true
 
-      - name: Test MBA regions (LLVM 21 and 22)
-        if: ${{ matrix.llvm-version[0] == '21' || matrix.llvm-version[0] == '22' }}
+      - name: Test MBA regions (LLVM 21 to 23)
+        if: ${{ matrix.llvm-version[0] == '21' || matrix.llvm-version[0] == '22' || matrix.llvm-version[0] == '23' }}
         timeout-minutes: 15
         run: |
           cargo test --release -p amice --no-default-features --features llvm${{ matrix.llvm-version[1] }} --lib every_identity

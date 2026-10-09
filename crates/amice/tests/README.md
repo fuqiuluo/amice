@@ -77,6 +77,9 @@ cargo test --no-default-features --features llvm21-1 --lib
 
 # LLVM 22 示例
 cargo test --release --no-default-features --features llvm22-1
+
+# LLVM 23 示例
+cargo test --release --no-default-features --features llvm23-1
 ```
 
 **注意：** 集成测试必须使用 `--release` 模式运行，因为测试依赖于 release 构建的 FFI 库。
@@ -237,6 +240,9 @@ cargo build --release --no-default-features --features llvm21-1
 
 # LLVM 22
 cargo build --release --no-default-features --features llvm22-1
+
+# LLVM 23
+cargo build --release --no-default-features --features llvm23-1
 ```
 
 或使用测试脚本的 `--build` 选项。
@@ -250,6 +256,9 @@ cargo build --release --no-default-features --features llvm21-1,win-link-lld
 
 # LLVM 22
 cargo build --release --no-default-features --features llvm22-1,win-link-lld
+
+# LLVM 23
+cargo build --release --no-default-features --features llvm23-1,win-link-lld
 ```
 
 ### Q: 如何只运行特定测试

@@ -128,6 +128,7 @@ pub fn llvm_config_from_env(env_var: &str, feature: &str) -> Option<LlvmConfig> 
 /// Returns the first matching LLVM installation found.
 pub fn detect_llvm_config() -> Option<LlvmConfig> {
     let llvm_versions = [
+        ("LLVM_SYS_231_PREFIX", "llvm23-1"),
         ("LLVM_SYS_211_PREFIX", "llvm21-1"),
         ("LLVM_SYS_221_PREFIX", "llvm22-1"),
         ("LLVM_SYS_201_PREFIX", "llvm20-1"),
@@ -139,7 +140,6 @@ pub fn detect_llvm_config() -> Option<LlvmConfig> {
         ("LLVM_SYS_140_PREFIX", "llvm14-0"),
         ("LLVM_SYS_130_PREFIX", "llvm13-0"),
         ("LLVM_SYS_120_PREFIX", "llvm12-0"),
-        ("LLVM_SYS_110_PREFIX", "llvm11-0"),
     ];
 
     for (env_var, feature) in &llvm_versions {

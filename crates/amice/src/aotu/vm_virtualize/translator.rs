@@ -15,13 +15,24 @@
 //! 因而这里宁可保守跳过，也不能生成不完整 VM IR。
 
 use amice_llvm::inkwell2::{
-    CallInst, FunctionExt, GepInst, InstructionExt, ModuleExt, PhiInst, SwitchInst, metadata_string_from_value_ref,
+    CallInst, FunctionExt, GepInst, InstructionExt, ModuleExt, PhiInst, SwitchInst, is_branch_opcode,
+    metadata_string_from_value_ref,
 };
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
 use amice_plugin::inkwell::basic_block::BasicBlock;
-#[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
+#[cfg(any(
+    feature = "llvm20-1",
+    feature = "llvm21-1",
+    feature = "llvm22-1",
+    feature = "llvm23-1"
+))]
 use amice_plugin::inkwell::llvm_sys::core::LLVMGetAtomicSyncScopeID;
-#[cfg(not(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1")))]
+#[cfg(not(any(
+    feature = "llvm20-1",
+    feature = "llvm21-1",
+    feature = "llvm22-1",
+    feature = "llvm23-1"
+)))]
 use amice_plugin::inkwell::llvm_sys::core::LLVMIsAtomicSingleThread;
 use amice_plugin::inkwell::llvm_sys::core::{
     LLVMConstIntGetSExtValue, LLVMCountStructElementTypes, LLVMGetAggregateElement, LLVMGetAlignment,
@@ -3139,7 +3150,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 InstructionOpcode::ShuffleVector => self.lower_shuffle_vector(instruction)?,
                 InstructionOpcode::InsertValue => self.lower_insert_value(instruction)?,
                 InstructionOpcode::ExtractValue => self.lower_extract_value(instruction)?,
-                InstructionOpcode::Br => self.lower_branch(block, instruction)?,
+                opcode if is_branch_opcode(opcode) => self.lower_branch(block, instruction)?,
                 InstructionOpcode::Switch => self.lower_switch(block, instruction)?,
                 InstructionOpcode::Unreachable => self.lower_unreachable()?,
                 InstructionOpcode::Return => self.lower_return(instruction)?,
@@ -18714,12 +18725,8 @@ fn instruction_result_width(instruction: InstructionValue<'_>) -> anyhow::Result
     }
 
     match instruction.get_opcode() {
-        InstructionOpcode::Br
-        | InstructionOpcode::Return
-        | InstructionOpcode::Store
-        | InstructionOpcode::InsertValue => {
-            return Ok(None);
-        },
+        opcode if is_branch_opcode(opcode) => return Ok(None),
+        InstructionOpcode::Return | InstructionOpcode::Store | InstructionOpcode::InsertValue => return Ok(None),
         _ => {},
     }
 
@@ -18889,7 +18896,12 @@ fn memory_is_volatile(instruction: InstructionValue<'_>, kind: &str) -> anyhow::
 }
 
 fn atomic_sync_scope(instruction: InstructionValue<'_>, kind: &str) -> anyhow::Result<u8> {
-    #[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
+    #[cfg(any(
+        feature = "llvm20-1",
+        feature = "llvm21-1",
+        feature = "llvm22-1",
+        feature = "llvm23-1"
+    ))]
     {
         // SAFETY: `instruction` 是当前 module 中的 live atomic/fence instruction；C API
         // 只读取 syncscope ID，不访问用户内存。LLVM 20+ 暴露通用 syncscope ID。
@@ -18899,7 +18911,12 @@ fn atomic_sync_scope(instruction: InstructionValue<'_>, kind: &str) -> anyhow::R
         );
     }
 
-    #[cfg(not(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1")))]
+    #[cfg(not(any(
+        feature = "llvm20-1",
+        feature = "llvm21-1",
+        feature = "llvm22-1",
+        feature = "llvm23-1"
+    )))]
     {
         // SAFETY: LLVM 20 之前的 C API 只能表示 system/singlethread；这正是 runtime 支持的边界。
         let scope = if unsafe { LLVMIsAtomicSingleThread(instruction.as_value_ref()) } != 0 {
@@ -19117,27 +19134,45 @@ fn map_atomic_rmw_op(op: AtomicRMWBinOp) -> anyhow::Result<AtomicRmwOp> {
         AtomicRMWBinOp::FSub => Ok(AtomicRmwOp::FSub),
         AtomicRMWBinOp::FMax => Ok(AtomicRmwOp::FMax),
         AtomicRMWBinOp::FMin => Ok(AtomicRmwOp::FMin),
-        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1"))]
+        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1", feature = "llvm23-1"))]
         AtomicRMWBinOp::FMaximum => Ok(AtomicRmwOp::FMaximum),
-        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1"))]
+        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1", feature = "llvm23-1"))]
         AtomicRMWBinOp::FMinimum => Ok(AtomicRmwOp::FMinimum),
+        // LLVM 23 adds the fmaximumnum/fminimumnum atomicrmw flavours; the VM
+        // runtime has no handler for them yet, so reject them explicitly.
+        #[cfg(feature = "llvm23-1")]
+        AtomicRMWBinOp::FMaximumNum | AtomicRMWBinOp::FMinimumNum => {
+            bail!("atomicrmw operation {op:?} is not supported by the VM runtime")
+        },
         #[cfg(any(
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
-            feature = "llvm22-1"
+            feature = "llvm22-1",
+            feature = "llvm23-1"
         ))]
         AtomicRMWBinOp::UIncWrap => Ok(AtomicRmwOp::UIncWrap),
         #[cfg(any(
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
-            feature = "llvm22-1"
+            feature = "llvm22-1",
+            feature = "llvm23-1"
         ))]
         AtomicRMWBinOp::UDecWrap => Ok(AtomicRmwOp::UDecWrap),
-        #[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
+        #[cfg(any(
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1",
+            feature = "llvm23-1"
+        ))]
         AtomicRMWBinOp::USubCond => Ok(AtomicRmwOp::USubCond),
-        #[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
+        #[cfg(any(
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1",
+            feature = "llvm23-1"
+        ))]
         AtomicRMWBinOp::USubSat => Ok(AtomicRmwOp::USubSat),
     }
 }
@@ -19839,12 +19874,19 @@ fn instruction_basic_operand(instruction: InstructionValue<'_>, index: u32) -> O
             return None;
         }
         match LLVMGetTypeKind(ty) {
+            #[cfg(feature = "llvm23-1")]
+            LLVMTypeKind::LLVMByteTypeKind => None,
             LLVMTypeKind::LLVMVoidTypeKind
             | LLVMTypeKind::LLVMLabelTypeKind
             | LLVMTypeKind::LLVMMetadataTypeKind
             | LLVMTypeKind::LLVMTokenTypeKind
             | LLVMTypeKind::LLVMFunctionTypeKind => None,
-            #[cfg(not(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1")))]
+            #[cfg(not(any(
+                feature = "llvm20-1",
+                feature = "llvm21-1",
+                feature = "llvm22-1",
+                feature = "llvm23-1"
+            )))]
             LLVMTypeKind::LLVMX86_MMXTypeKind => Some(BasicValueEnum::new(value)),
             LLVMTypeKind::LLVMHalfTypeKind
             | LLVMTypeKind::LLVMBFloatTypeKind

@@ -62,6 +62,7 @@ map_llvm_version() {
     local minor=${2:-0}
 
     case "$major" in
+        23) LLVM_FEATURE="llvm23-1"; LLVM_ENV_VAR="LLVM_SYS_231_PREFIX" ;;
         22) LLVM_FEATURE="llvm22-1"; LLVM_ENV_VAR="LLVM_SYS_221_PREFIX" ;;
         21) LLVM_FEATURE="llvm21-1"; LLVM_ENV_VAR="LLVM_SYS_211_PREFIX" ;;
         20) LLVM_FEATURE="llvm20-1"; LLVM_ENV_VAR="LLVM_SYS_201_PREFIX" ;;
@@ -73,7 +74,6 @@ map_llvm_version() {
         14) LLVM_FEATURE="llvm14-0"; LLVM_ENV_VAR="LLVM_SYS_140_PREFIX" ;;
         13) LLVM_FEATURE="llvm13-0"; LLVM_ENV_VAR="LLVM_SYS_130_PREFIX" ;;
         12) LLVM_FEATURE="llvm12-0"; LLVM_ENV_VAR="LLVM_SYS_120_PREFIX" ;;
-        11) LLVM_FEATURE="llvm11-0"; LLVM_ENV_VAR="LLVM_SYS_110_PREFIX" ;;
         *)
             error "Unsupported LLVM version: $major"
             return 1
@@ -149,6 +149,7 @@ detect_llvm_from_config() {
 # Detect LLVM version from environment variables
 detect_llvm_from_env() {
     local llvm_versions=(
+        "LLVM_SYS_231_PREFIX:llvm23-1"
         "LLVM_SYS_221_PREFIX:llvm22-1"
         "LLVM_SYS_211_PREFIX:llvm21-1"
         "LLVM_SYS_201_PREFIX:llvm20-1"
@@ -160,7 +161,6 @@ detect_llvm_from_env() {
         "LLVM_SYS_140_PREFIX:llvm14-0"
         "LLVM_SYS_130_PREFIX:llvm13-0"
         "LLVM_SYS_120_PREFIX:llvm12-0"
-        "LLVM_SYS_110_PREFIX:llvm11-0"
     )
 
     for pair in "${llvm_versions[@]}"; do

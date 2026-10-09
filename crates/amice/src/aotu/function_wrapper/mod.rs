@@ -297,6 +297,7 @@ fn copy_call_site_attributes<'a>(target: CallSiteValue<'a>, source: CallSiteValu
     #[cfg(any(
         feature = "llvm21-1",
         feature = "llvm22-1",
+        feature = "llvm23-1",
         feature = "llvm20-1",
         feature = "llvm19-1",
         feature = "llvm18-1"

@@ -36,7 +36,6 @@ pub use cc;
 ///
 /// Ordered low-to-high; the first enabled feature wins.
 const LLVM_FEATURES: &[((u32, u32), &str)] = &[
-    ((11, 0), "CARGO_FEATURE_LLVM11_0"),
     ((12, 0), "CARGO_FEATURE_LLVM12_0"),
     ((13, 0), "CARGO_FEATURE_LLVM13_0"),
     ((14, 0), "CARGO_FEATURE_LLVM14_0"),
@@ -48,6 +47,7 @@ const LLVM_FEATURES: &[((u32, u32), &str)] = &[
     ((20, 1), "CARGO_FEATURE_LLVM20_1"),
     ((21, 1), "CARGO_FEATURE_LLVM21_1"),
     ((22, 1), "CARGO_FEATURE_LLVM22_1"),
+    ((23, 1), "CARGO_FEATURE_LLVM23_1"),
 ];
 
 /// Determine the LLVM `(major, minor)` from the consuming crate's enabled
@@ -62,7 +62,7 @@ pub fn llvm_version_from_features() -> (u32, u32) {
     }
     panic!(
         "amice-build-support: the consuming crate has no `llvmXX-Y` feature enabled \
-         (expected exactly one of llvm11-0 .. llvm22-1)"
+         (expected exactly one of llvm12-0 .. llvm23-1)"
     );
 }
 

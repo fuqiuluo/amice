@@ -59,6 +59,7 @@ pub fn to_c_str(mut s: &str) -> Cow<'_, CStr> {
     feature = "llvm20-1",
     feature = "llvm21-1",
     feature = "llvm22-1",
+    feature = "llvm23-1",
 )))]
 #[macro_export]
 macro_rules! ptr_type {
@@ -74,6 +75,7 @@ macro_rules! ptr_type {
     feature = "llvm20-1",
     feature = "llvm21-1",
     feature = "llvm22-1",
+    feature = "llvm23-1",
 ))]
 #[macro_export]
 macro_rules! ptr_type {

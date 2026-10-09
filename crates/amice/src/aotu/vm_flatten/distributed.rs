@@ -6,7 +6,7 @@ use super::{
     target_table::{AddressProgram, DecodeMode, StateProgram, TARGET_VARIANTS, TargetResolverAbi, TargetTable},
 };
 use crate::config::VmFlattenConfig;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, VerifyResult};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, VerifyResult, is_branch_opcode};
 use amice_plugin::inkwell::{
     AddressSpace, IntPredicate,
     attributes::{Attribute, AttributeLoc},
@@ -683,15 +683,16 @@ fn eligible(function: FunctionValue<'_>) -> bool {
     function.get_basic_blocks().iter().all(|block| {
         !block.has_address_taken()
             && !block.is_eh_pad()
-            && block
-                .get_terminator()
-                .is_some_and(|term| matches!(term.get_opcode(), Op::Br | Op::Switch | Op::Return | Op::Unreachable))
+            && block.get_terminator().is_some_and(|term| {
+                let opcode = term.get_opcode();
+                is_branch_opcode(opcode) || matches!(opcode, Op::Switch | Op::Return | Op::Unreachable)
+            })
     })
 }
 
 fn successors(terminator: InstructionValue<'_>) -> anyhow::Result<Vec<BasicBlock<'_>>> {
     match terminator.get_opcode() {
-        Op::Br => {
+        opcode if is_branch_opcode(opcode) => {
             let branch = terminator.into_branch_inst();
             let mut result = vec![branch.get_successor(0).context("branch without destination")?];
             if terminator.is_conditional()? {
@@ -882,7 +883,7 @@ fn select_input<'ctx, const PROGRAM_VARIANTS: usize>(
     name: &str,
 ) -> anyhow::Result<IntValue<'ctx>> {
     match transfer.terminator.get_opcode() {
-        Op::Br if encoded.len() == 2 => {
+        opcode if is_branch_opcode(opcode) && encoded.len() == 2 => {
             let condition = transfer
                 .terminator
                 .get_operand(0)

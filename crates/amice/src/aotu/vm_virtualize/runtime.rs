@@ -6276,43 +6276,61 @@ fn atomic_rmw_op_for_llvm(op: AtomicRmwOp) -> anyhow::Result<AtomicRMWBinOp> {
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
-            feature = "llvm22-1"
+            feature = "llvm22-1",
+            feature = "llvm23-1"
         ))]
         AtomicRmwOp::UIncWrap => AtomicRMWBinOp::UIncWrap,
         #[cfg(any(
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
-            feature = "llvm22-1"
+            feature = "llvm22-1",
+            feature = "llvm23-1"
         ))]
         AtomicRmwOp::UDecWrap => AtomicRMWBinOp::UDecWrap,
         #[cfg(not(any(
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
-            feature = "llvm22-1"
+            feature = "llvm22-1",
+            feature = "llvm23-1"
         )))]
         AtomicRmwOp::UIncWrap | AtomicRmwOp::UDecWrap => return unsupported_atomic_rmw_op(op),
-        #[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
+        #[cfg(any(
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1",
+            feature = "llvm23-1"
+        ))]
         AtomicRmwOp::USubCond => AtomicRMWBinOp::USubCond,
-        #[cfg(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1"))]
+        #[cfg(any(
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1",
+            feature = "llvm23-1"
+        ))]
         AtomicRmwOp::USubSat => AtomicRMWBinOp::USubSat,
-        #[cfg(not(any(feature = "llvm20-1", feature = "llvm21-1", feature = "llvm22-1")))]
+        #[cfg(not(any(
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1",
+            feature = "llvm23-1"
+        )))]
         AtomicRmwOp::USubCond | AtomicRmwOp::USubSat => return unsupported_atomic_rmw_op(op),
         AtomicRmwOp::FAdd => AtomicRMWBinOp::FAdd,
         AtomicRmwOp::FSub => AtomicRMWBinOp::FSub,
         AtomicRmwOp::FMax => AtomicRMWBinOp::FMax,
         AtomicRmwOp::FMin => AtomicRMWBinOp::FMin,
-        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1"))]
+        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1", feature = "llvm23-1"))]
         AtomicRmwOp::FMaximum => AtomicRMWBinOp::FMaximum,
-        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1"))]
+        #[cfg(any(feature = "llvm21-1", feature = "llvm22-1", feature = "llvm23-1"))]
         AtomicRmwOp::FMinimum => AtomicRMWBinOp::FMinimum,
-        #[cfg(not(any(feature = "llvm21-1", feature = "llvm22-1")))]
+        #[cfg(not(any(feature = "llvm21-1", feature = "llvm22-1", feature = "llvm23-1")))]
         AtomicRmwOp::FMaximum | AtomicRmwOp::FMinimum => return unsupported_atomic_rmw_op(op),
     })
 }
 
-#[cfg(not(any(feature = "llvm21-1", feature = "llvm22-1")))]
+#[cfg(not(any(feature = "llvm21-1", feature = "llvm22-1", feature = "llvm23-1")))]
 fn unsupported_atomic_rmw_op<T>(op: AtomicRmwOp) -> anyhow::Result<T> {
     anyhow::bail!("atomicrmw operation {op:?} is not supported by the selected LLVM feature")
 }

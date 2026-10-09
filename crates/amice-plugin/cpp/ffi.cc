@@ -46,6 +46,23 @@ enum class ThinOrFullLTOPhaseFFI {
 };
 
 namespace {
+#if defined(LLVM_VERSION_MAJOR) && LLVM_VERSION_MAJOR >= 23
+auto getFFIOptimizationLevel(LlvmOptLevel Opt) -> OptimizationLevel {
+  // LLVM 23 collapses llvm::OptimizationLevel to a plain O0..O3 enum; the
+  // size-oriented flavours (Os/Oz) no longer reach these callbacks.
+  switch (Opt) {
+  case llvm::OptimizationLevel::O0:
+    return OptimizationLevel::kO0;
+  case llvm::OptimizationLevel::O1:
+    return OptimizationLevel::kO1;
+  case llvm::OptimizationLevel::O2:
+    return OptimizationLevel::kO2;
+  case llvm::OptimizationLevel::O3:
+    return OptimizationLevel::kO3;
+  }
+  return OptimizationLevel::kO3;
+}
+#else
 auto getFFIOptimizationLevel(LlvmOptLevel Opt) -> OptimizationLevel {
   // Starting from LLVM-11, llvm::OptimizationLevel::Ox is no longer
   // an enum but a global static. Using these global statics on Windows
@@ -71,6 +88,7 @@ auto getFFIOptimizationLevel(LlvmOptLevel Opt) -> OptimizationLevel {
   }
   return OptimizationLevel::kOz;
 }
+#endif
 
 #ifdef LLVM_HAS_THIN_OR_FULL_LTO_PHASE
 inline auto getFFIThinOrFullLTOPhase(llvm::ThinOrFullLTOPhase Phase)

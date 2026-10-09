@@ -9,7 +9,7 @@ Amice is an LLVM plugin written in Rust that provides code obfuscation transform
 - Target: LLVM plugin (libamice.so) for use with clang
 - Virtual Cargo workspace with all Rust crates under `crates/`
 - Configuration-driven with environment variable overrides
-- Supports LLVM versions 11.0 through 22.1 via feature flags
+- Supports LLVM versions 12.0 through 23.1 via feature flags
 
 ## Critical Build Requirements
 
@@ -18,7 +18,7 @@ Amice is an LLVM plugin written in Rust that provides code obfuscation transform
 export LLVM_SYS_211_PREFIX=/usr/lib64/llvm21
 ```
 
-The default Cargo feature is `llvm21-1`, matching the local LLVM 21.1 environment. LLVM 22.1 can be selected with `--no-default-features --features llvm22-1` and `LLVM_SYS_221_PREFIX`.
+The default Cargo feature is `llvm21-1`, matching the local LLVM 21.1 environment. LLVM 22.1 can be selected with `--no-default-features --features llvm22-1` and `LLVM_SYS_221_PREFIX`; LLVM 23.1 uses `--features llvm23-1` and `LLVM_SYS_231_PREFIX`.
 
 ## Build Instructions
 

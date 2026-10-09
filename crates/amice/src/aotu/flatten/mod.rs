@@ -5,7 +5,7 @@ use crate::aotu::flatten::cf_flatten_basic::FlattenBasic;
 use crate::aotu::flatten::cf_flatten_dominator::FlattenDominator;
 use crate::config::{Config, FlattenConfig, FlattenMode};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
-use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, VerifyResult};
+use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, VerifyResult, is_branch_opcode};
 use amice_macro::amice;
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::module::Module;
@@ -100,7 +100,7 @@ fn split_entry_block_for_flatten<'a>(
     };
 
     let first_basic_block = match entry_terminator.get_opcode() {
-        InstructionOpcode::Br => {
+        opcode if is_branch_opcode(opcode) => {
             if entry_terminator.is_conditional()? || entry_terminator.get_num_operands() > 1 {
                 split_entry_terminator_block(function, entry_block, entry_terminator, ".no.conditional.br")?
             } else {

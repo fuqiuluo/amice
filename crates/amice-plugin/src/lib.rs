@@ -147,7 +147,7 @@ pub trait LlvmFunctionAnalysis {
 }
 
 /// LLVM code generation output file kind.
-#[cfg(feature = "llvm22-1")]
+#[cfg(any(feature = "llvm22-1", feature = "llvm23-1"))]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CodeGenFileType {
@@ -162,7 +162,7 @@ pub enum CodeGenFileType {
 }
 
 /// Callback invoked by LLVM 22 before running backend code generation passes.
-#[cfg(feature = "llvm22-1")]
+#[cfg(any(feature = "llvm22-1", feature = "llvm23-1"))]
 pub type PreCodeGenCallback = extern "C" fn(
     module: *mut std::ffi::c_void,
     target_machine: *mut std::ffi::c_void,
@@ -177,7 +177,7 @@ pub struct PassPluginLibraryInfo {
     pub plugin_name: *const u8,
     pub plugin_version: *const u8,
     pub plugin_registrar: unsafe extern "C" fn(*mut std::ffi::c_void),
-    #[cfg(feature = "llvm22-1")]
+    #[cfg(any(feature = "llvm22-1", feature = "llvm23-1"))]
     pub pre_code_gen_callback: Option<PreCodeGenCallback>,
 }
 

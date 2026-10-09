@@ -1,7 +1,9 @@
 use crate::aotu::flatten::{Flatten, FlattenAlgo, split_entry_block_for_flatten};
 use crate::aotu::lower_switch::demote_switch_to_if;
 use crate::config::FlattenConfig;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, LLVMBasicBlockRefExt, PhiInst};
+use amice_llvm::inkwell2::{
+    BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, LLVMBasicBlockRefExt, PhiInst, is_branch_opcode,
+};
 use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 use amice_plugin::inkwell::module::Module;
@@ -167,7 +169,7 @@ fn do_handle(module: &mut Module<'_>, function: FunctionValue, demote_switch: bo
             .expect("failed to move basic block after dispatcher");
         if let Some(terminator) = bb.get_terminator() {
             match terminator.get_opcode() {
-                InstructionOpcode::Br => {
+                opcode if is_branch_opcode(opcode) => {
                     if terminator.is_conditional()? {
                         conditional_br.push(terminator.into_branch_inst());
                     } else {

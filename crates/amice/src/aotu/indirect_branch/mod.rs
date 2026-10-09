@@ -1,7 +1,7 @@
 use crate::config::{Config, IndirectBranchConfig, IndirectBranchFlags};
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::const_array;
-use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt};
+use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, FunctionExt, InstructionExt, is_branch_opcode};
 use amice_llvm::ptr_type;
 use amice_macro::amice;
 use amice_plugin::inkwell::basic_block::BasicBlock;
@@ -124,7 +124,7 @@ impl AmicePass for IndirectBranch {
             let mut branch_instructions = Vec::new();
             for basic_block in function.get_basic_blocks() {
                 for instruction in basic_block.get_instructions() {
-                    if instruction.get_opcode() == InstructionOpcode::Br {
+                    if is_branch_opcode(instruction.get_opcode()) {
                         branch_instructions.push(instruction.into_branch_inst());
                     }
                 }
