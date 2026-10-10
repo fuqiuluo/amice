@@ -537,14 +537,21 @@ fn llvm_stackrestore_intrinsic<'ctx>(module: &mut Module<'ctx>) -> FunctionValue
 }
 
 fn llvm_clear_cache_intrinsic<'ctx>(module: &mut Module<'ctx>) -> FunctionValue<'ctx> {
-    if let Some(function) = module.get_function("llvm.clear_cache") {
+    // LLVM 23 makes llvm.clear_cache an overloaded intrinsic; the declaration must
+    // carry the pointer type suffix (.p0) or the module verifier aborts the build.
+    #[cfg(feature = "llvm23-1")]
+    let intrinsic_name = "llvm.clear_cache.p0";
+    #[cfg(not(feature = "llvm23-1"))]
+    let intrinsic_name = "llvm.clear_cache";
+
+    if let Some(function) = module.get_function(intrinsic_name) {
         return function;
     }
 
     let ctx = module.get_context();
     let ptr_type = ctx.ptr_type(AddressSpace::default());
     let fn_type = ctx.void_type().fn_type(&[ptr_type.into(), ptr_type.into()], false);
-    module.add_function("llvm.clear_cache", fn_type, None)
+    module.add_function(intrinsic_name, fn_type, None)
 }
 
 fn llvm_prefetch_intrinsic<'ctx>(module: &mut Module<'ctx>) -> FunctionValue<'ctx> {

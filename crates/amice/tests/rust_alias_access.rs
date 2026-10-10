@@ -67,8 +67,6 @@ fn test_rust_alias_access_basic() {
 
 #[test]
 #[serial]
-// rustc (LLVM 20 backend) emits `icmp samesign` in this fixture rust IR; LLVM 19 opt cannot parse it. Toolchain skew, not an amice bug.
-#[cfg(not(feature = "llvm19-1"))]
 fn test_rust_alias_access_vs_baseline() {
     common::ensure_plugin_built();
 
@@ -125,7 +123,6 @@ fn test_rust_alias_access_without_plugin() {
 
 #[test]
 #[serial]
-#[cfg(not(feature = "llvm19-1"))]
 fn test_rust_alias_access_optimized() {
     common::ensure_plugin_built();
 

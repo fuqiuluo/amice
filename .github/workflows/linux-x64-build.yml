@@ -111,20 +111,19 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: '1.89.0'
+          # Rust fixture IR must match the opt tool generation: rustc 1.86 (LLVM 19)
+          # for LLVM 18/19, rustc 1.89 (LLVM 20) for LLVM 20+. Newer rustc emits
+          # constructs (e.g. icmp samesign) that older opt cannot parse.
+          toolchain: ${{ matrix.llvm-version[0] < 20 && '1.86.0' || '1.89.0' }}
 
       - name: Install Dependencies
         run: |
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
           sudo apt update && sudo apt install -y libtinfo6
-          # Prebuilt LLVM <= 18 clang links libtinfo.so.5; ubuntu 24.04 only ships v6
-          if [ ! -e /usr/lib/x86_64-linux-gnu/libtinfo.so.5 ]; then
-            sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
-          fi
 
-      - name: Install LLVM and Clang (LLVM >= 19.1)
-        if: ${{ matrix.llvm-version[0] >= 19 }}
+      - name: Install LLVM and Clang (LLVM >= 18)
+        if: ${{ matrix.llvm-version[0] >= 18 }}
         run: |
           sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
           wget https://apt.llvm.org/llvm.sh
@@ -140,9 +139,9 @@ jobs:
                                                       libpolly-${{ matrix.llvm-version[0] }}-dev
           sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-${{ matrix.llvm-version[0] }} 10
 
-      - name: Install LLVM and Clang (15 < LLVM <= 19)
+      - name: Install LLVM and Clang (15 < LLVM < 18)
         uses: KyleMayes/install-llvm-action@v2
-        if: ${{ matrix.llvm-version[0] > 15 && matrix.llvm-version[0] < 19 }}
+        if: ${{ matrix.llvm-version[0] > 15 && matrix.llvm-version[0] < 18 }}
         with:
           version: ${{ matrix.llvm-version[0] }}
 
