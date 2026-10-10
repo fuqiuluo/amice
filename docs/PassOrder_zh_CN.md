@@ -134,3 +134,24 @@ StringEncryption = 1000
 | `IndirectBranch` | 800 | `PipelineStart` |
 
 这张表对应当前源码中的注册信息。`CustomCallingConv` 目前是预留实现，不应当作为已生效的保护手段。开关及参数见 [环境变量](EnvConfig_zh_CN.md)，局部配置见 [函数注解](FunctionAnnotations_zh_CN.md)。
+
+## 编译时间与强度的权衡
+
+混淆的开销主要不是 Pass 自身，而是**膨胀后的 IR 让后续优化管线做更多工作**。在 300 个函数 / 约 5400 行的合成工程（`opt -passes=default<O2>`，LLVM 20.1.1，x86_64 Windows，数值随机器与工程形态变化，只看相对量级）实测：
+
+| 配置 | opt 耗时 | 相对无混淆 |
+| --- | --- | --- |
+| 无混淆 | 640 ms | 1.0× |
+| 轻量组合：StringEncryption + IndirectCall + IndirectBranch + SplitBasicBlock | 825 ms | ≈1.3× |
+| 仅 `Flatten` | 1517 ms | ≈2.4× |
+| 仅 `VmFlatten` | 1514 ms | ≈2.4× |
+| 仅 `StringEncryption` | 1142 ms | ≈1.8× |
+| 重混淆全开（BCF+Flatten+VmFlatten+MBA+IndirectCall+IndirectBranch+Split+StringEncryption） | 2484 ms | ≈3.9× |
+
+Pass 自身的执行时间只占小头（全开时合计约 300 ms，其中 IndirectBranch 约 107 ms）；其余都是后续优化管线在消化膨胀后的 IR。因此控制编译时间最有效的手段按顺序是：
+
+1. **少开重型 Pass**：`Flatten` / `VmFlatten` 单开就有 2.4×；仅需要字符串与调用混淆时用轻量组合（约 1.3×）。
+2. **按函数启用**：用 [函数注解](FunctionAnnotations_zh_CN.md) 只混淆安全敏感函数，混淆范围线性决定编译时间。
+3. **调低强度参数**：如 `AMICE_MBA_MAX_ADDED_INSTRUCTIONS`（默认 2048，对小函数接近无上限）、`AMICE_BOGUS_CONTROL_FLOW_MAX_REGIONS` 等，生成量减少会同时降低 Pass 内部与后续管线的成本。
+4. `SplitBasicBlock` 在 `PipelineStart` 与 `OptimizerLast` 各运行一次是有意设计（防止后续优化把切开的块重新合并），不要因为耗时移除其中一段。
+

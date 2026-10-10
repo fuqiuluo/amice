@@ -134,3 +134,24 @@ StringEncryption = 1000
 | `IndirectBranch` | 800 | `PipelineStart` |
 
 This table reflects current source registrations. `CustomCallingConv` is currently a placeholder and should not be treated as effective protection. See [Environment Variables](EnvConfig_en_US.md) for switches and parameters, and [Function Annotations](FunctionAnnotations_en_US.md) for local overrides.
+
+## Compile time vs. strength trade-off
+
+The dominant obfuscation cost is not the passes themselves but the **inflated IR making every later optimizer pass do more work**. Measured on a synthetic 300-function / ~5400-line project (`opt -passes=default<O2>`, LLVM 20.1.1, x86_64 Windows; absolute numbers vary by machine and project shape — read the relative column only):
+
+| Configuration | opt time | vs. no obfuscation |
+| --- | --- | --- |
+| none | 640 ms | 1.0× |
+| light: StringEncryption + IndirectCall + IndirectBranch + SplitBasicBlock | 825 ms | ≈1.3× |
+| `Flatten` only | 1517 ms | ≈2.4× |
+| `VmFlatten` only | 1514 ms | ≈2.4× |
+| `StringEncryption` only | 1142 ms | ≈1.8× |
+| heavy: BCF+Flatten+VmFlatten+MBA+IndirectCall+IndirectBranch+Split+StringEncryption | 2484 ms | ≈3.9× |
+
+The passes' own execution time is the smaller share (about 300 ms combined when fully enabled, of which IndirectBranch is ~107 ms); the rest is the optimizer digesting the inflated IR. The most effective levers, in order:
+
+1. **Enable fewer heavy passes**: `Flatten` / `VmFlatten` alone cost 2.4×; when only string and call obfuscation are needed, the light combination is about 1.3×.
+2. **Enable per function**: use [Function Annotations](FunctionAnnotations_en_US.md) to obfuscate only security-sensitive functions — obfuscation scope linearly determines compile time.
+3. **Lower strength parameters**: e.g. `AMICE_MBA_MAX_ADDED_INSTRUCTIONS` (default 2048, effectively unbounded for small functions), `AMICE_BOGUS_CONTROL_FLOW_MAX_REGIONS`; less generated IR reduces both the pass itself and the later pipeline.
+4. `SplitBasicBlock` intentionally runs in both `PipelineStart` and `OptimizerLast` (later optimizers would otherwise re-merge split blocks); do not remove one phase for speed.
+
