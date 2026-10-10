@@ -89,6 +89,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       BUILD_OUTPUT_PATH: target/release
+      # Rust fixtures compile with a rustc whose LLVM backend generation matches
+      # the opt tool (1.86 = LLVM 19 for the 18/19 matrix); the plugin itself
+      # always builds with the pinned default toolchain (let-chains need 1.88+).
+      AMICE_RUST_TOOLCHAIN: ${{ matrix.llvm-version[0] < 20 && '1.86.0' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -111,10 +115,13 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          # Rust fixture IR must match the opt tool generation: rustc 1.86 (LLVM 19)
-          # for LLVM 18/19, rustc 1.89 (LLVM 20) for LLVM 20+. Newer rustc emits
-          # constructs (e.g. icmp samesign) that older opt cannot parse.
-          toolchain: ${{ matrix.llvm-version[0] < 20 && '1.86.0' || '1.89.0' }}
+          toolchain: '1.89.0'
+
+      - name: Setup fixture Rust toolchain (LLVM 18/19)
+        if: ${{ matrix.llvm-version[0] < 20 }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.86.0'
 
       - name: Install Dependencies
         run: |
