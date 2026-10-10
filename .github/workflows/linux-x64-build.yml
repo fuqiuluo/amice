@@ -40,9 +40,51 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Resolves the matrix up front so a manual dispatch can restrict LLVM versions
+  # via the "llvm" input (e.g. "21,23"); filtered-out versions never spawn jobs.
+  matrix:
+    name: Resolve LLVM matrix
+    runs-on: ubuntu-latest
+    outputs:
+      llvm-version: ${{ steps.resolve.outputs.llvm-version }}
+    steps:
+      - name: Resolve requested LLVM versions
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          LLVM_INPUT: ${{ inputs.llvm }}
+        run: |
+          set -euo pipefail
+          # Tuple meaning: [<major>, <feature-suffix>, <llvm-sys env suffix>]
+          full='[["18","18-1","181"],["19","19-1","191"],["20","20-1","201"],["21","21-1","211"],["22","22-1","221"],["23","23-1","231"]]'
+          if [ "$EVENT" != "workflow_dispatch" ] || [ -z "$LLVM_INPUT" ] || [ "$LLVM_INPUT" = "all" ]; then
+            echo "llvm-version=$full" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          rows="["
+          first=1
+          IFS=','
+          for v in $LLVM_INPUT; do
+            v="$(echo "$v" | tr -d '[:space:]')"
+            case "$v" in
+              18) row='["18","18-1","181"]' ;;
+              19) row='["19","19-1","191"]' ;;
+              20) row='["20","20-1","201"]' ;;
+              21) row='["21","21-1","211"]' ;;
+              22) row='["22","22-1","221"]' ;;
+              23) row='["23","23-1","231"]' ;;
+              *) echo "Unknown LLVM version '$v' (supported: 18-23); falling back to full matrix"
+                 echo "llvm-version=$full" >> "$GITHUB_OUTPUT"
+                 exit 0 ;;
+            esac
+            if [ "$first" -eq 1 ]; then first=0; else rows="$rows,"; fi
+            rows="$rows$row"
+          done
+          rows="$rows]"
+          echo "llvm-version=$rows" >> "$GITHUB_OUTPUT"
+
   linux-build:
-    # On manual dispatch, optionally restrict the matrix via the "llvm" input (e.g. "21,23").
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.llvm == 'all' || contains(inputs.llvm, matrix.llvm-version[0]) }}
+    needs: [ matrix ]
     name: "LLVM/OPT ${{ matrix.llvm-version[0] }} Linux"
     runs-on: ubuntu-latest
     env:
@@ -50,20 +92,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # [<major>, <feature-suffix>, <llvm-sys env suffix>]
-        llvm-version:
-#          - ["12", "12-0", "120", "v12.0.1-rust-1.55/llvm-lld-12.0.1-rust-1.55-linux-x86_64.tar.gz"]
-#          - ["13", "13-0", "130", "v13.0.0-rust-1.59/llvm-lld-13.0.0-rust-1.59-linux-x86_64.tar.gz"]
-#          - ["14", "14-0", "140", "v14.0.6-rust-1.64/llvm-lld-14.0.6-rust-1.64-linux-x86_64.tar.gz"]
-#          - ["15", "15-0", "150", "v15.0.0-rust-1.65/llvm-lld-15.0.0-rust-1.65-linux-x86_64.tar.gz"]
-#          - ["16", "16-0", "160", "16.0"]
-#          - ["17", "17-0", "170", "17.0"]
-          - ["18", "18-1", "181", "18.1"]
-          - ["19", "19-1", "191", "19.1"]
-          - ["20", "20-1", "201", "20.1"]
-          - ["21", "21-1", "211", "21.1"]
-          - ["22", "22-1", "221", "22.1"]
-          - ["23", "23-1", "231", "23.1"]
+        llvm-version: ${{ fromJSON(needs.matrix.outputs.llvm-version) }}
 
     steps:
       - name: Checkout Repo
