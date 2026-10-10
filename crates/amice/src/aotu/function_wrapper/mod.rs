@@ -69,9 +69,19 @@ impl AmicePass for FunctionWrapper {
             for bb in function.get_basic_blocks() {
                 for inst in bb.get_instructions() {
                     if inst.get_opcode() == InstructionOpcode::Call {
-                        // Apply probability check
-                        if rand::random_range(0..100) < cfg.probability {
-                            if let Some(called_func) = get_called_function(&inst) {
+                        if let Some(called_func) = get_called_function(&inst) {
+                            // setjmp（returns_twice）的调用点不能被 wrapper 包裹：
+                            // longjmp 的第二次返回必须落回原函数帧，隔着一层
+                            // wrapper 帧会破坏恢复协议，产生静默数据错误（issue #104）
+                            if is_returns_twice_call(called_func) {
+                                debug!(
+                                    "skipping returns_twice call site: {:?}",
+                                    called_func.get_name()
+                                );
+                                continue;
+                            }
+                            // Apply probability check
+                            if rand::random_range(0..100) < cfg.probability {
                                 //debug!("adding call to function: {:?}", called_func.get_name());
                                 call_instructions.push((inst, called_func));
                             }
@@ -124,6 +134,26 @@ impl AmicePass for FunctionWrapper {
 
         Ok(PreservedAnalyses::None)
     }
+}
+
+/// setjmp 族（`returns_twice` 属性）的调用点不能被 wrapper 包裹。
+/// longjmp 的第二次返回必须落回调用 setjmp 的原始函数帧；隔着一层 wrapper
+/// 帧会让第二次返回走错路径，产生静默数据错误（issue #104）。
+fn is_returns_twice_call(called_func: FunctionValue) -> bool {
+    if let Ok(name) = called_func.get_name().to_str() {
+        if name.contains("setjmp") {
+            return true;
+        }
+    }
+    let kind_id = unsafe {
+        amice_plugin::inkwell::llvm_sys::core::LLVMGetEnumAttributeKindForName(
+            b"returns_twice".as_ptr() as *const core::ffi::c_char,
+            b"returns_twice".len(),
+        )
+    };
+    called_func
+        .get_enum_attribute(AttributeLoc::Function, kind_id)
+        .is_some()
 }
 
 /// Extract called function from a call instruction
