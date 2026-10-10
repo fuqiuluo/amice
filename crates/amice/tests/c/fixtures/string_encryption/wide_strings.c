@@ -3,6 +3,7 @@
 // 之前会被 StringEncryption 直接跳过，保持明文。
 #include <stdio.h>
 #include <uchar.h>
+#include <stddef.h>
 
 int main(void)
 {

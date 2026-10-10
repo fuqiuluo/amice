@@ -17,6 +17,7 @@
 //   PR #94: wide/mixed ALSO corrupted (wide detection extends the bug)
 #include <stdio.h>
 #include <uchar.h>
+#include <stddef.h>
 
 struct TwoWide {
     char16_t a[4];
