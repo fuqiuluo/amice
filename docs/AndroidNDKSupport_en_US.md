@@ -79,6 +79,8 @@ For C++:
 
 `amice/bin/amice-clang` and `amice/bin/amice-clang++` are generic wrappers. They set the runtime library path and inject the plugin, but they do not choose an Android ABI. Use them with an explicit target such as `--target=aarch64-linux-android23`. If you want a default Android target, use an ABI-named wrapper such as `aarch64-linux-android-clang`.
 
+> **Note**: `amice/lib/libamice.so` inside the bundle is built against and bound to the bundle's own LLVM, and is meant for the clang wrappers above. Do not pass it to rustc's `-Zllvm-plugins` to obfuscate Rust cross-compilation — not even with a matching LLVM major. Inside a rustc process the compiler uses its own Rust LLVM fork, so two LLVM runtimes would coexist and crash during codegen (see issue #86). To obfuscate Rust, build a plugin against rustc's LLVM as described in [Rust Usage](RustUsage_en_US.md).
+
 Effective obfuscation requires explicit enablement. Although `CustomCallingConv` defaults to true in configuration, it is currently a placeholder. Enable the desired features through environment variables or a config file; see [Runtime Environment Variables](EnvConfig_en_US.md).
 
 ## CMake/Gradle

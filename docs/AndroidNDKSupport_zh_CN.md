@@ -79,6 +79,8 @@ AMICE_ANDROID_API=21 ./amice/bin/aarch64-linux-android-clang hello.c -o hello
 
 `amice/bin/amice-clang` 和 `amice/bin/amice-clang++` 是通用 wrapper，只负责设置动态库路径并注入插件；它们不会自动选择 Android ABI。使用它们时要显式传 `--target=aarch64-linux-android23` 这类 target。想要默认 Android target，就用 `aarch64-linux-android-clang` 这类带 ABI 名的 wrapper。
 
+> **注意**：bundle 内的 `amice/lib/libamice.so` 按 bundle 自带 LLVM 构建并绑定其动态库，仅供上述 clang wrapper 使用。不要把它传给 rustc 的 `-Zllvm-plugins` 去混淆 Rust 交叉编译——即使 LLVM 主版本相同也不行，rustc 进程内是它自带的 Rust LLVM fork，两份 LLVM 会同时驻留并在 codegen 阶段崩溃（见 issue #86）。混淆 Rust 请按 [Rust 接入](RustUsage_zh_CN.md) 对 rustc 的 LLVM 单独构建插件。
+
 实际执行混淆的功能默认需要显式开启。`CustomCallingConv` 的配置默认值虽为 true，目前仍是预留实现。通过环境变量或配置文件启用所需功能，完整列表见 [运行时环境变量](EnvConfig_zh_CN.md)。
 
 ## 在 CMake/Gradle 里用
