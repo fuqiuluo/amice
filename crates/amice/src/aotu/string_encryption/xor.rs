@@ -1,6 +1,7 @@
 use crate::aotu::string_encryption::{
     EncryptedGlobalValue, InsertPointCollection, STACK_ALLOC_THRESHOLD, StringEncryption, StringEncryptionAlgo,
-    alloc_stack_string, array_as_const_string_bytes, collect_insert_points, is_const_string_array, rebuild_const_string,
+    alloc_stack_string, array_as_const_string_bytes, collect_insert_points, is_const_string_array,
+    rebuild_const_string,
 };
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};

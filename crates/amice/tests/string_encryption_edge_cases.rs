@@ -46,7 +46,16 @@ fn utf16_le_bytes(values: &[u16]) -> Vec<u8> {
 }
 
 fn check_edge_plaintext_absent(binary: &[u8]) {
-    let k_bytes = utf16_le_bytes(&[0x4E62, 0x4F60, b'A' as u16, b'B' as u16, b'C' as u16, b'D' as u16, b'E' as u16, 0]);
+    let k_bytes = utf16_le_bytes(&[
+        0x4E62,
+        0x4F60,
+        b'A' as u16,
+        b'B' as u16,
+        b'C' as u16,
+        b'D' as u16,
+        b'E' as u16,
+        0,
+    ]);
     let m2_bytes = utf16_le_bytes(&[0x4F60, 0]);
     for (label, needle) in [("K", k_bytes), ("M2", m2_bytes)] {
         assert!(

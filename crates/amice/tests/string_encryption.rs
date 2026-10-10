@@ -276,11 +276,7 @@ fn wide_strings_code_unit_lines() -> [String; 3] {
             .collect::<Vec<_>>()
             .join(" ")
     };
-    [
-        line("Amice16\u{4F60}"),
-        line("Amice32\u{4F60}"),
-        line("AmiceWide"),
-    ]
+    [line("Amice16\u{4F60}"), line("Amice32\u{4F60}"), line("AmiceWide")]
 }
 
 fn check_wide_strings_output(lines: &[String]) {
@@ -310,10 +306,7 @@ fn utf16_le_bytes(value: &str) -> Vec<u8> {
 }
 
 fn utf32_le_bytes(value: &str) -> Vec<u8> {
-    value
-        .chars()
-        .flat_map(|c| u32::from(c).to_le_bytes())
-        .collect()
+    value.chars().flat_map(|c| u32::from(c).to_le_bytes()).collect()
 }
 
 fn wide_string_config(timing: &str, algorithm: &str) -> ObfuscationConfig {
