@@ -93,6 +93,9 @@ jobs:
       # the opt tool (1.81 = LLVM 18, 1.86 = LLVM 19); the plugin itself always
       # builds with the pinned default toolchain (let-chains need 1.88+).
       AMICE_RUST_TOOLCHAIN: ${{ matrix.llvm-version[0] == 18 && '1.81.0' || matrix.llvm-version[0] == 19 && '1.86.0' || '' }}
+      # rustc's static LLVM plus the dynamically linked plugin in one process
+      # aborts on duplicate CommandLine options; run opt out-of-process instead.
+      AMICE_FORCE_OPT_FALLBACK: ${{ matrix.llvm-version[0] == 18 && '1' || '' }}
     strategy:
       fail-fast: false
       matrix:

@@ -146,6 +146,12 @@ impl RustCompileBuilder {
         if !(self.use_plugin && self.use_nightly) {
             return false;
         }
+        // Force switch to the out-of-process opt path. Needed when rustc's
+        // static LLVM and the dynamically linked plugin would coexist in one
+        // process and abort on duplicate CommandLine option registration.
+        if std::env::var("AMICE_FORCE_OPT_FALLBACK").is_ok_and(|v| !v.is_empty()) {
+            return true;
+        }
         let toolchain = rust_toolchain_override();
         rustc_llvm_major(toolchain.as_deref())
             .map(|major| major != llvm_major_from_feature(&config.feature))
