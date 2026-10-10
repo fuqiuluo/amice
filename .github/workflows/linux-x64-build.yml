@@ -112,16 +112,19 @@ jobs:
           key: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: '1.89.0'
-
+      # Install the fixture toolchain FIRST: dtolnay/rust-toolchain makes the
+      # toolchain it installs the rustup default, so the pinned 1.89 step must
+      # run last to stay default (the plugin and its deps need 1.88+).
       - name: Setup fixture Rust toolchain (LLVM 18/19)
         if: ${{ matrix.llvm-version[0] < 20 }}
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.86.0'
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
 
       - name: Install Dependencies
         run: |
