@@ -139,6 +139,11 @@ fn test_rust_promoted_static_slices() {
 
     let result = common::RustCompileBuilder::new(&project_dir, "string_encryption_promoted_test")
         .config(config)
+        // Emit at O0: the opt-fallback route compiles post-optimization IR, and
+        // at opt-level 3 rustc constant-folds the .len() loads before amice
+        // ever sees the relocation blobs, hiding the issue #96 shape. Debug IR
+        // keeps the blob encoding faithful to the -Zllvm-plugins flow.
+        .optimization("debug")
         .compile();
 
     result.assert_success();
