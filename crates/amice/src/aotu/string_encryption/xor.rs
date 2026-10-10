@@ -254,7 +254,15 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
             let mut is_array_string = true;
             if let Some(stru) = stru {
                 // Rust-like strings or C++ NTTP string
-                let mut values: Vec<_> = stru.get_fields().collect();
+                // 多字段结构体：每个可加密字段独立经过这个闭包。重建必须基于
+                // “当前”initializer（可能已含兄弟字段的密文），而不是收集阶段
+                // 捕获的原始快照——否则后处理的字段会把先处理字段的密文覆盖回
+                // 明文，而解密器对全部字段照常生成，运行期就会二次加密
+                // （issue #96 与多字符串字段结构体损坏的根因）。
+                let mut values: Vec<_> = global
+                    .get_initializer()
+                    .map(|cur| cur.into_struct_value().get_fields().collect())
+                    .unwrap_or_else(|| stru.get_fields().collect());
                 let new_const = rebuild_const_string(ctx, elem_size, &encoded_str);
                 if let Some(field_idx) = field_idx {
                     is_array_string = false;
