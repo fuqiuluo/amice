@@ -6,7 +6,7 @@ English | [简体中文](RustUsage_zh_CN.md)
 
 The direct-loading example below targets Linux/macOS and uses nightly's `-Zllvm-plugins`. This is an unstable compiler interface; adding AMICE as a normal application dependency does not load the plugin. See the [Rust Unstable Book](https://doc.rust-lang.org/unstable-book/compiler-flags/llvm-plugins.html).
 
-Choose an installed nightly, inspect its LLVM version, then build the corresponding plugin using [LLVM Setup](LLVMSetup_en_US.md). The LLVM major reported by `rustc -vV` must match `llvm-config --version`. This is necessary but not sufficient: Rust's LLVM fork, symbols and shared libraries must also be compatible. Renaming a plugin or changing a prefix variable does not fix an ABI mismatch.
+Choose an installed nightly, inspect its LLVM version, then build the corresponding plugin using [LLVM Setup](LLVMSetup_en_US.md). The LLVM major reported by `rustc -vV` must match `llvm-config --version`. This is necessary but not sufficient: Rust's LLVM fork, symbols and shared libraries must also be compatible. Renaming a plugin or changing a prefix variable does not fix an ABI mismatch. In particular, the prebuilt `libamice.so` shipped in the Android NDK bundle is built against the bundle's own LLVM (for the NDK clang) and must not be used with rustc's `-Zllvm-plugins`, even when the LLVM major matches.
 
 ```bash
 rustup toolchain list

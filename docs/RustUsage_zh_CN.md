@@ -6,7 +6,7 @@
 
 本文的直接加载示例适用于 Linux/macOS，使用 nightly 的 `-Zllvm-plugins`。它属于 Rust 的不稳定编译器接口，不能把插件当成普通 crate 加进应用的 `Cargo.toml`。接口说明见 [Rust Unstable Book](https://doc.rust-lang.org/unstable-book/compiler-flags/llvm-plugins.html)。
 
-先选择一个已安装的 nightly 工具链，核对它自带的 LLVM，再按 [LLVM 环境配置](LLVMSetup_zh_CN.md) 构建对应插件。`rustc -vV` 中的 LLVM 版本与 `llvm-config --version` 的主版本必须相同；这只是必要条件，Rust 的 LLVM fork、符号和动态库也需要兼容。不要通过重命名插件或修改 prefix 变量绕过不匹配。
+先选择一个已安装的 nightly 工具链，核对它自带的 LLVM，再按 [LLVM 环境配置](LLVMSetup_zh_CN.md) 构建对应插件。`rustc -vV` 中的 LLVM 版本与 `llvm-config --version` 的主版本必须相同；这只是必要条件，Rust 的 LLVM fork、符号和动态库也需要兼容。不要通过重命名插件或修改 prefix 变量绕过不匹配。特别注意：Android NDK bundle 里的预编译 `libamice.so` 是按 bundle 自带 LLVM（为 NDK clang）构建的，不能用于 rustc 的 `-Zllvm-plugins`，即使 LLVM 主版本相同。
 
 ```bash
 rustup toolchain list
