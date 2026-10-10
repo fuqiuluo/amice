@@ -66,6 +66,11 @@
 
 > `AMICE_STRING_ONLY_LLVM_STRING` 是 `AMICE_STRING_ONLY_DOT_STRING` 的兼容旧名；两者都设置时以后者为准。
 
+> **宽字符（UTF-16/UTF-32/wchar_t）判定说明**
+> - 宽字符串的判定与 `LLVMIsConstantString` 对 i8 的规则一致：全部元素为常量整数且末元素为 0；i16/i32 以外的宽度（如 `[N x i64]`）一律跳过。
+> - MSVC 命名目标（Windows）的宽字面量全局名形如 `??_C@...`，不含 `.str`，默认 `only_dot_str=true` 时不会命中，需要 `AMICE_STRING_ONLY_DOT_STRING=false`。
+> - `zeroinitializer`（如 `u""`）会因空值检查被跳过，而显式的 `[i16 0, i16 0, ...]` 会被加密——两种写法行为不一致，i8 路径同样如此。
+
 ## 间接调用混淆
 
 源代码：`crates/amice/src/aotu/indirect_call`
