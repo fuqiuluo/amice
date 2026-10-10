@@ -90,9 +90,9 @@ jobs:
     env:
       BUILD_OUTPUT_PATH: target/release
       # Rust fixtures compile with a rustc whose LLVM backend generation matches
-      # the opt tool (1.82 = LLVM 18, 1.86 = LLVM 19); the plugin itself always
+      # the opt tool (1.81 = LLVM 18, 1.86 = LLVM 19); the plugin itself always
       # builds with the pinned default toolchain (let-chains need 1.88+).
-      AMICE_RUST_TOOLCHAIN: ${{ matrix.llvm-version[0] == 18 && '1.82.0' || matrix.llvm-version[0] == 19 && '1.86.0' || '' }}
+      AMICE_RUST_TOOLCHAIN: ${{ matrix.llvm-version[0] == 18 && '1.81.0' || matrix.llvm-version[0] == 19 && '1.86.0' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -115,12 +115,12 @@ jobs:
       # Install the fixture toolchain FIRST: dtolnay/rust-toolchain makes the
       # toolchain it installs the rustup default, so the pinned 1.89 step must
       # run last to stay default (the plugin and its deps need 1.88+).
-      # rustc generations: 1.82 = LLVM 18, 1.86 = LLVM 19.
+      # rustc generations: 1.81 = LLVM 18, 1.86 = LLVM 19.
       - name: Setup fixture Rust toolchain (LLVM 18)
         if: ${{ matrix.llvm-version[0] == 18 }}
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: '1.82.0'
+          toolchain: '1.81.0'
 
       - name: Setup fixture Rust toolchain (LLVM 19)
         if: ${{ matrix.llvm-version[0] == 19 }}
