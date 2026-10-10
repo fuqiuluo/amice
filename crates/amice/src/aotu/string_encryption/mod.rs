@@ -7,6 +7,10 @@ use crate::config::{Config, StringAlgorithm, StringDecryptTiming, StringEncrypti
 use crate::pass_registry::{AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, LLVMValueRefExt, VerifyResult};
 use amice_macro::amice;
+use amice_plugin::inkwell::llvm_sys::core::{
+    LLVMConstIntGetZExtValue, LLVMGetAggregateElement, LLVMGetAsString, LLVMGetIntTypeWidth, LLVMIsAConstantInt,
+    LLVMIsPoison, LLVMIsUndef, LLVMTypeOf,
+};
 use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::values::{
@@ -14,7 +18,6 @@ use amice_plugin::inkwell::values::{
     StructValue,
 };
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
-use inkwell::llvm_sys::core::LLVMGetAsString;
 use std::ptr::NonNull;
 
 /// Stack allocation threshold: strings larger than this will use global timing
@@ -197,6 +200,97 @@ pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]>
     } else {
         unsafe { Some(std::slice::from_raw_parts(ptr.cast(), len)) }
     }
+}
+
+/// Whether `arr` holds an encryptable constant string: either a classical
+/// [N x i8] array accepted by LLVMIsConstantString, or a wide-character array
+/// ([N x i16] / [N x i32], see `wide_string_elem_size`).
+pub(crate) fn is_const_string_array(arr: &ArrayValue) -> bool {
+    arr.is_const_string() || wide_string_elem_size(arr).is_some()
+}
+
+/// Returns the element size in bytes when `arr` is a wide-character string:
+/// [N x i16] (char16_t, wchar_t on Windows) or [N x i32] (char32_t, wchar_t on
+/// Linux/macOS). Mirroring LLVMIsConstantString for [N x i8], every element
+/// must be a constant integer and the last one must be null.
+pub(crate) fn wide_string_elem_size(arr: &ArrayValue) -> Option<u32> {
+    let len = arr.get_type().len();
+    if len < 2 {
+        return None;
+    }
+
+    let mut elem_size: Option<u32> = None;
+    let mut last_value: u64 = 1;
+    for i in 0..len {
+        let elem = unsafe { LLVMGetAggregateElement(arr.as_value_ref(), i) };
+        if elem.is_null()
+            || unsafe { LLVMIsAConstantInt(elem) }.is_null()
+            || unsafe { LLVMIsUndef(elem) != 0 || LLVMIsPoison(elem) != 0 }
+        {
+            return None;
+        }
+        if i == 0 {
+            elem_size = match unsafe { LLVMGetIntTypeWidth(LLVMTypeOf(elem)) } {
+                16 => Some(2),
+                32 => Some(4),
+                _ => return None,
+            };
+        }
+        last_value = unsafe { LLVMConstIntGetZExtValue(elem) };
+    }
+
+    if last_value == 0 { elem_size } else { None }
+}
+
+/// Raw bytes of a constant string array regardless of the element width
+/// ([N x i8], [N x i16] or [N x i32]); wide elements are stored little-endian.
+/// Returns the byte string and the element size in bytes, or None when the
+/// array is not a constant null-terminated string.
+pub(crate) fn array_as_const_string_bytes(arr: &ArrayValue) -> Option<(Vec<u8>, u32)> {
+    // LLVMGetAsString hands out raw bytes for integer arrays of any width, so
+    // it must stay gated behind LLVMIsConstantString; otherwise wide arrays
+    // would be mistaken for [N x i8] strings.
+    if arr.is_const_string() {
+        return array_as_const_string(arr).map(|bytes| (bytes.to_vec(), 1));
+    }
+
+    let elem_size = wide_string_elem_size(arr)?;
+    let len = arr.get_type().len() as usize;
+    let mut bytes = Vec::with_capacity(len * elem_size as usize);
+    for i in 0..len {
+        let elem = unsafe { LLVMGetAggregateElement(arr.as_value_ref(), i as _) };
+        if elem.is_null() {
+            return None;
+        }
+        bytes.extend_from_slice(&unsafe { LLVMConstIntGetZExtValue(elem) }.to_le_bytes()[..elem_size as usize]);
+    }
+    Some((bytes, elem_size))
+}
+
+/// Rebuilds the encrypted initializer while keeping the original array type.
+/// Wide strings cannot go through `Context::const_string` because it always
+/// produces an [N x i8] array; their bytes are re-grouped per element instead.
+pub(crate) fn rebuild_const_string<'a>(
+    ctx: inkwell::context::ContextRef<'a>,
+    elem_size: u32,
+    bytes: &[u8],
+) -> ArrayValue<'a> {
+    if elem_size == 1 {
+        return ctx.const_string(bytes, false);
+    }
+
+    let elem_ty = ctx
+        .custom_width_int_type((elem_size * 8).try_into().expect("wide string element width"))
+        .expect("wide string element type");
+    let values: Vec<_> = bytes
+        .chunks_exact(elem_size as usize)
+        .map(|chunk| {
+            let mut buf = [0u8; 8];
+            buf[..elem_size as usize].copy_from_slice(chunk);
+            elem_ty.const_int(u64::from_le_bytes(buf), false)
+        })
+        .collect();
+    elem_ty.const_array(&values)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

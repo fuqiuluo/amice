@@ -10,7 +10,7 @@
 
 | Pass | 环境变量开关 | C/C++ | Rust | ObjC | 说明 |
 |:---|:---|:---:|:---:|:---:|:---|
-| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | 字符串加密，支持 `xor` / `simd_xor`、lazy/global 解密、栈/堆解密配置 |
+| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | 字符串加密，支持 `xor` / `simd_xor`、lazy/global 解密、栈/堆解密配置，覆盖宽字符（UTF-16/UTF-32/wchar_t）字面量 |
 | Indirect Call | `AMICE_INDIRECT_CALL` | ✅ | ✅ | ❌ | 将直接调用改写为函数表/索引形式的间接调用 |
 | Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | 将分支改写为 `indirectbr`，支持 dummy block、表重排、索引加密等 flags |
 | Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | 按配置切割基本块 |
@@ -65,6 +65,11 @@
 > ```
 
 > `AMICE_STRING_ONLY_LLVM_STRING` 是 `AMICE_STRING_ONLY_DOT_STRING` 的兼容旧名；两者都设置时以后者为准。
+
+> **宽字符（UTF-16/UTF-32/wchar_t）判定说明**
+> - 宽字符串的判定与 `LLVMIsConstantString` 对 i8 的规则一致：全部元素为常量整数且末元素为 0；i16/i32 以外的宽度（如 `[N x i64]`）一律跳过。
+> - MSVC 命名目标（Windows）的宽字面量全局名形如 `??_C@...`，不含 `.str`，默认 `only_dot_str=true` 时不会命中，需要 `AMICE_STRING_ONLY_DOT_STRING=false`。
+> - `zeroinitializer`（如 `u""`）会因空值检查被跳过，而显式的 `[i16 0, i16 0, ...]` 会被加密——两种写法行为不一致，i8 路径同样如此。
 
 ## 间接调用混淆
 

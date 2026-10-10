@@ -10,7 +10,7 @@ Global precedence is **environment > config file > defaults**. Passes supporting
 
 | Pass | Environment Variable | C/C++ | Rust | ObjC | Description |
 |:---|:---|:---:|:---:|:---:|:---|
-| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | String encryption with `xor` / `simd_xor`, lazy/global decryption, stack/heap allocation options |
+| String Encryption | `AMICE_STRING_ENCRYPTION` | ✅ | ✅ | ⏳ | String encryption with `xor` / `simd_xor`, lazy/global decryption, stack/heap allocation options, covers wide-character (UTF-16/UTF-32/wchar_t) literals |
 | Indirect Call | `AMICE_INDIRECT_CALL` | ✅ | ✅ | ❌ | Rewrites direct calls into table/index based indirect calls |
 | Indirect Branch | `AMICE_INDIRECT_BRANCH` | ✅ | ✅ | ❌ | Rewrites branches into `indirectbr`; supports dummy blocks, table shuffling, index encryption, and other flags |
 | Split Basic Block | `AMICE_SPLIT_BASIC_BLOCK` | ✅ | ✅ | ❌ | Splits basic blocks according to configuration |
@@ -65,6 +65,11 @@ Source code: `crates/amice/src/aotu/string_encryption`
 > ```
 
 > `AMICE_STRING_ONLY_LLVM_STRING` is a legacy alias of `AMICE_STRING_ONLY_DOT_STRING`; the latter wins if both are set.
+
+> **Wide-character (UTF-16/UTF-32/wchar_t) detection notes**
+> - A wide array is accepted under the same rule `LLVMIsConstantString` applies to i8: every element must be a constant integer and the last one must be null; widths other than i16/i32 (e.g. `[N x i64]`) are always skipped.
+> - On MSVC-named targets (Windows), wide literal globals are named like `??_C@...` without `.str`, so the default `only_dot_str=true` will not match them; set `AMICE_STRING_ONLY_DOT_STRING=false`.
+> - `zeroinitializer` (e.g. `u""`) is skipped by the null check, while an explicit `[i16 0, i16 0, ...]` is encrypted — the two spellings behave differently, as they already do on the i8 path.
 
 ## Indirect Call Obfuscation
 
