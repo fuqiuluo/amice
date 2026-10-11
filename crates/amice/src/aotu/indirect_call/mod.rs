@@ -66,6 +66,16 @@ impl AmicePass for IndirectCall {
         let mut likely_functions = Vec::new();
         let mut call_instructions = Vec::new();
         for function in &functions {
+            // 含异常处理构造的函数（invoke/landingpad/catchpad 等）不做间接化：
+            // 间接调用与栈展开的交互（invoke 落地垫、funclet 状态映射）未被
+            // 本 pass 建模，改写后首个异常即 terminate（issue #103）
+            if function_has_exception_handling(*function) {
+                debug!(
+                    "function {:?} has exception handling instructions, skipping",
+                    function.get_name()
+                );
+                continue;
+            }
             for bb in function.get_basic_blocks() {
                 for inst in bb.get_instructions() {
                     if inst.get_opcode() == InstructionOpcode::Call {
@@ -187,6 +197,30 @@ fn random_non_zero_u32() -> u32 {
             return key;
         }
     }
+}
+
+/// 含异常处理构造的函数不参与间接化（issue #103）
+fn function_has_exception_handling(function: FunctionValue<'_>) -> bool {
+    for bb in function.get_basic_blocks() {
+        for inst in bb.get_instructions() {
+            if matches!(
+                inst.get_opcode(),
+                InstructionOpcode::Invoke
+                    | InstructionOpcode::LandingPad
+                    | InstructionOpcode::Resume
+                    | InstructionOpcode::CatchSwitch
+                    | InstructionOpcode::CatchPad
+                    | InstructionOpcode::CatchRet
+                    | InstructionOpcode::CleanupPad
+                    | InstructionOpcode::CleanupRet
+                    | InstructionOpcode::CallBr
+            ) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 // Only handle type 1 and 3
