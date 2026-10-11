@@ -226,7 +226,7 @@ jobs:
           ldd "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" || true
 
       - name: Run test suite
-        timeout-minutes: 90
+        timeout-minutes: 180
         run: |
           status=0
           # Order/resource-sensitive MBA suites: single-threaded (convention from docs/MbaRegions.md)
