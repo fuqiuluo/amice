@@ -1,6 +1,6 @@
 use crate::aotu::string_encryption::{
     EncryptedGlobalValue, InsertPointCollection, STACK_ALLOC_THRESHOLD, StringEncryptionAlgo, alloc_stack_string,
-    array_as_const_string_bytes, collect_insert_points, is_const_string_array, rebuild_const_string,
+    array_as_const_string_bytes, collect_insert_points, global_has_unsupported_user, use_user_supported, is_const_string_array, rebuild_const_string,
 };
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
 use amice_llvm::const_array;
@@ -9,7 +9,7 @@ use amice_llvm::ptr_type;
 use amice_plugin::inkwell;
 use amice_plugin::inkwell::AtomicOrdering;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
-use amice_plugin::inkwell::comdat::Comdat;
+use amice_plugin::inkwell::llvm_sys::comdat::LLVMSetComdat;
 use amice_plugin::inkwell::module::{Linkage, Module};
 use amice_plugin::inkwell::values::{
     AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
@@ -88,6 +88,12 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
 
             if string_fields.is_empty() {
                 None
+            } else if global_has_unsupported_user(&global) {
+                // 使用者含 inkwell 不支持的值类别（如 MSVC catchpad 引用 RTTI
+                // typeinfo，issue #99）：整体跳过，这类全局并非机密字符串，
+                // 且逐使用点插入会在使用收集阶段崩溃
+                debug!("(strenc) skipping {:?}: user has unsupported value type", global.get_name());
+                None
             } else {
                 // 返回全局变量及其内部所有的待加密字符串信息
                 Some((global, struct_value, string_fields))
@@ -161,6 +167,15 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 let mut use_opt = global.get_first_use();
                 while let Some(u) = use_opt {
                     use_opt = u.get_next_use();
+
+                    // MSVC 按类型 catch 会让 RTTI typeinfo 全局的使用者变成 catchpad
+                    // （token 类型），inkwell 的 AnyValueEnum 不支持该类别，get_user()
+                    // 会直接 panic（issue #99）。这类使用退回全局构造回退。
+                    if !use_user_supported(&u) {
+                        users.clear();
+                        should_use_stack = false;
+                        break;
+                    }
 
                     let mut temp_user = Vec::new();
                     let collection = collect_insert_points(global, u.get_user(), &mut temp_user);
@@ -237,7 +252,9 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                     Linkage::LinkOnceAny | Linkage::LinkOnceODR | Linkage::WeakAny | Linkage::WeakODR
                 ) {
                     global.set_linkage(Linkage::Internal);
-                    global.set_comdat(unsafe { Comdat::new(null_mut()) });
+                    // 清空 comdat 必须走 LLVM-C：inkwell 的 Comdat::new(null_mut())
+                    // 是 UB，直接 SIGILL（issue #99 复现链的一环）
+                    unsafe { LLVMSetComdat(global.as_value_ref(), std::ptr::null_mut()) };
                     global.set_visibility(GlobalVisibility::Default);
                 }
             } else {

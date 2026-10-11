@@ -8,14 +8,15 @@ use crate::pass_registry::{AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, LLVMValueRefExt, VerifyResult};
 use amice_macro::amice;
 use amice_plugin::inkwell::llvm_sys::core::{
-    LLVMConstIntGetZExtValue, LLVMGetAggregateElement, LLVMGetAsString, LLVMGetIntTypeWidth, LLVMIsAConstantInt,
-    LLVMIsPoison, LLVMIsUndef, LLVMTypeOf,
+    LLVMConstIntGetZExtValue, LLVMGetAggregateElement, LLVMGetAsString, LLVMGetNumOperands, LLVMGetOperand,
+    LLVMGetTypeKind, LLVMGetUser, LLVMGetIntTypeWidth, LLVMIsAConstantInt, LLVMIsPoison, LLVMIsUndef, LLVMTypeOf,
 };
+use amice_plugin::inkwell::llvm_sys::LLVMTypeKind;
 use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::values::{
-    AnyValueEnum, ArrayValue, AsValueRef, BasicValue, GlobalValue, InstructionOpcode, InstructionValue, PointerValue,
-    StructValue,
+    AnyValueEnum, ArrayValue, AsValueRef, BasicValue, BasicValueUse, GlobalValue, InstructionOpcode, InstructionValue,
+    PointerValue, StructValue,
 };
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
 use std::ptr::NonNull;
@@ -202,6 +203,39 @@ pub(crate) fn array_as_const_string<'a>(arr: &'a ArrayValue) -> Option<&'a [u8]>
     }
 }
 
+/// inkwell 的 `AnyValueEnum` 不支持 token/label/metadata 类型的值（如 MSVC 按
+/// 类型 catch 时的 `catchpad`/`catchswitch`），`get_user()` 在这类值上会直接
+/// panic（issue #99）。遍历使用者前先按类型类别确认，不支持的返回 false，
+/// 让调用方走全局构造回退而不是逐使用点插入解密。
+pub(crate) fn use_user_supported(u: &BasicValueUse) -> bool {
+    unsafe {
+        let user = LLVMGetUser(u.as_mut_ptr());
+        if user.is_null() {
+            return false;
+        }
+        !matches!(
+            LLVMGetTypeKind(LLVMTypeOf(user)),
+            LLVMTypeKind::LLVMTokenTypeKind
+                | LLVMTypeKind::LLVMLabelTypeKind
+                | LLVMTypeKind::LLVMMetadataTypeKind
+        )
+    }
+}
+
+/// 该全局的任意使用者落在 inkwell 无法表达的值类别上（token/label/metadata，
+/// 如 MSVC `catchpad` 使用 RTTI typeinfo，issue #99）。这类全局应整体跳过
+/// 加密：typeinfo 并非机密字符串，且逐使用点插入会在使用收集阶段崩溃。
+pub(crate) fn global_has_unsupported_user(global: &GlobalValue) -> bool {
+    let mut use_opt = global.get_first_use();
+    while let Some(u) = use_opt {
+        use_opt = u.get_next_use();
+        if !use_user_supported(&u) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Whether `arr` holds an encryptable constant string: either a classical
 /// [N x i8] array accepted by LLVMIsConstantString, or a wide-character array
 /// ([N x i16] / [N x i32], see `wide_string_elem_size`).
@@ -324,13 +358,42 @@ pub(crate) fn collect_insert_points<'a>(
     };
 
     let original_len = output.len();
-    for i in 0..inst.get_num_operands() {
-        if let Some(op) = inst.get_operand(i)
-            && let Some(operand) = op.value()
-            && operand.as_value_ref() == string_global.as_value_ref()
-        {
-            output.push((inst.as_value_ref() as _, i));
+    // 注意：这里必须走 LLVM-C 原始遍历。inkwell 的 `get_operand` 会对操作数做
+    // 值枚举分类，遇到带 `"funclet"(token)` 操作数包的调用（MSVC catch/cleanup
+    // 区域内的调用，issue #99）或 label 操作数（invoke 的 unwind 目标）会直接
+    // panic。原始遍历按类型类别跳过这些操作数即可。
+    let inst_ref = inst.as_value_ref();
+    let global_ref = string_global.as_value_ref();
+    let num_operands = unsafe { LLVMGetNumOperands(inst_ref) };
+    // MSVC EH：funclet 区域（catch/cleanup）内的调用必须携带 "funclet"(token)
+    // 操作数包。懒加载模式往这类使用点插入的解密调用是不带包的裸 call，会破坏
+    // 展开器的状态映射，导致首次异常即 terminate（issue #99）。检测到 token
+    // 操作数（操作数包存在的唯一标志）时整串退回全局构造回退。
+    let mut carries_bundle = false;
+    for i in 0..num_operands {
+        let op = unsafe { LLVMGetOperand(inst_ref, i as u32) };
+        if op.is_null() {
+            continue;
         }
+        let kind = unsafe { LLVMGetTypeKind(LLVMTypeOf(op)) };
+        if matches!(
+            kind,
+            LLVMTypeKind::LLVMTokenTypeKind
+                | LLVMTypeKind::LLVMLabelTypeKind
+                | LLVMTypeKind::LLVMMetadataTypeKind
+        ) {
+            if kind == LLVMTypeKind::LLVMTokenTypeKind {
+                carries_bundle = true;
+            }
+            continue;
+        }
+        if op == global_ref {
+            output.push((inst_ref, i as u32));
+        }
+    }
+    if carries_bundle {
+        output.truncate(original_len);
+        return InsertPointCollection::RequiresGlobalFallback;
     }
 
     if output.len() == original_len {
