@@ -19194,9 +19194,15 @@ fn unsupported_control_flow_reason(opcode: InstructionOpcode) -> Option<&'static
 
 fn unsupported_stack_introspection_intrinsic_reason(callee: FunctionValue<'_>) -> Option<&'static str> {
     let name = callee.get_name().to_str().unwrap_or("");
+    // LLVM 23 起 returnaddress/localaddress 也是 anyptr 重载 intrinsic，解析器会把
+    // 未修饰调用自动修饰成 llvm.returnaddress.p0 等形态；按前缀匹配。
     match name {
-        "llvm.returnaddress" => Some("llvm.returnaddress is stack introspection and is not supported by vm_virtualize"),
-        "llvm.localaddress" => Some("llvm.localaddress is stack introspection and is not supported by vm_virtualize"),
+        _ if name.starts_with("llvm.returnaddress") => {
+            Some("llvm.returnaddress is stack introspection and is not supported by vm_virtualize")
+        },
+        _ if name.starts_with("llvm.localaddress") => {
+            Some("llvm.localaddress is stack introspection and is not supported by vm_virtualize")
+        },
         _ if name.starts_with("llvm.frameaddress") => {
             Some("llvm.frameaddress is stack introspection and is not supported by vm_virtualize")
         },
@@ -20003,7 +20009,9 @@ fn sideeffect_intrinsic(function: FunctionValue<'_>) -> bool {
 }
 
 fn clear_cache_intrinsic(function: FunctionValue<'_>) -> bool {
-    function.get_name().to_string_lossy().as_ref() == "llvm.clear_cache"
+    // LLVM 23 起 llvm.clear_cache 是 anyptr 重载 intrinsic，IR 解析器会把未修饰的
+    // 调用自动修饰成 llvm.clear_cache.p0；按前缀匹配两种形态。
+    function.get_name().to_string_lossy().as_ref().starts_with("llvm.clear_cache")
 }
 
 fn pseudoprobe_intrinsic(function: FunctionValue<'_>) -> bool {
