@@ -7713,9 +7713,7 @@ fn build_f16_unary_bits<'ctx>(
             let src = builder.build_float_ext(src_f16, f32_type, "funary.src.f16.f32")?;
             let result = match op {
                 FloatUnaryOp::Sqrt => build_float_unary_intrinsic_call(builder, ctx.sqrt_f32, src, "funary.f16.sqrt")?,
-                FloatUnaryOp::Canonicalize => {
-                    build_float_unary_intrinsic_call(builder, ctx.canonicalize_f32, src, "funary.f16.canonicalize")?
-                },
+                FloatUnaryOp::Canonicalize => build_canonicalize_value(builder, ctx, src, "funary.f16.canonicalize")?,
                 FloatUnaryOp::Floor => {
                     build_float_unary_intrinsic_call(builder, ctx.floor_f32, src, "funary.f16.floor")?
                 },
@@ -7790,9 +7788,7 @@ fn build_f32_unary_bits<'ctx>(
             let result = match op {
                 FloatUnaryOp::Neg => builder.build_float_neg(src, "funary.f32.neg")?,
                 FloatUnaryOp::Sqrt => build_float_unary_intrinsic_call(builder, ctx.sqrt_f32, src, "funary.f32.sqrt")?,
-                FloatUnaryOp::Canonicalize => {
-                    build_float_unary_intrinsic_call(builder, ctx.canonicalize_f32, src, "funary.f32.canonicalize")?
-                },
+                FloatUnaryOp::Canonicalize => build_canonicalize_value(builder, ctx, src, "funary.f32.canonicalize")?,
                 FloatUnaryOp::Floor => {
                     build_float_unary_intrinsic_call(builder, ctx.floor_f32, src, "funary.f32.floor")?
                 },
@@ -7867,9 +7863,7 @@ fn build_f64_unary_bits<'ctx>(
             let result = match op {
                 FloatUnaryOp::Neg => builder.build_float_neg(src, "funary.f64.neg")?,
                 FloatUnaryOp::Sqrt => build_float_unary_intrinsic_call(builder, ctx.sqrt_f64, src, "funary.f64.sqrt")?,
-                FloatUnaryOp::Canonicalize => {
-                    build_float_unary_intrinsic_call(builder, ctx.canonicalize_f64, src, "funary.f64.canonicalize")?
-                },
+                FloatUnaryOp::Canonicalize => build_canonicalize_value(builder, ctx, src, "funary.f64.canonicalize")?,
                 FloatUnaryOp::Floor => {
                     build_float_unary_intrinsic_call(builder, ctx.floor_f64, src, "funary.f64.floor")?
                 },
@@ -7917,6 +7911,67 @@ fn build_float_unary_intrinsic_call<'ctx>(
         .basic()
         .ok_or_else(|| anyhow::anyhow!("{name} should return a float"))?
         .into_float_value())
+}
+
+/// 物化 VM `fcanonicalize` handler 的浮点结果。
+///
+/// LLVM 18/19 的 X86/AArch64 后端没有 `ISD::FCANONICALIZE` 的 lowering，裸
+/// `llvm.canonicalize` 一进 ISel 就会 `Cannot select`。这些版本上按 LangRef 语义
+/// 显式展开：非 NaN 输入恒等返回，NaN（含 sNaN）归一为保留输入符号的 canonical
+/// quiet NaN；次正规数在默认非 FTZ 环境下保持不变，与 LLVM 20+ 后端行为一致。
+#[allow(clippy::too_many_lines)]
+fn build_canonicalize_value<'ctx>(
+    builder: &amice_plugin::inkwell::builder::Builder<'ctx>,
+    ctx: HandlerContext<'ctx, '_>,
+    src: FloatValue<'ctx>,
+    name: &str,
+) -> anyhow::Result<FloatValue<'ctx>> {
+    let llvm_ctx = ctx.function.get_type().get_context();
+
+    #[cfg(any(
+        feature = "llvm20-1",
+        feature = "llvm21-1",
+        feature = "llvm22-1",
+        feature = "llvm23-1"
+    ))]
+    {
+        let intrinsic = if src.get_type() == llvm_ctx.f32_type() {
+            ctx.canonicalize_f32
+        } else {
+            ctx.canonicalize_f64
+        };
+        return build_float_unary_intrinsic_call(builder, intrinsic, src, name);
+    }
+
+    #[cfg(not(any(
+        feature = "llvm20-1",
+        feature = "llvm21-1",
+        feature = "llvm22-1",
+        feature = "llvm23-1"
+    )))]
+    {
+        let float_type = src.get_type();
+        let (int_type, sign_mask, canonical_nan) = if float_type == llvm_ctx.f32_type() {
+            (llvm_ctx.i32_type(), 0x8000_0000u64, 0x7fc0_0000u64)
+        } else {
+            (llvm_ctx.i64_type(), 0x8000_0000_0000_0000u64, 0x7ff8_0000_0000_0000u64)
+        };
+        let is_nan = builder.build_float_compare(LlvmFloatPredicate::UNO, src, src, &format!("{name}.is.nan"))?;
+        let src_bits = builder
+            .build_bit_cast(src, int_type, &format!("{name}.src.bits"))?
+            .into_int_value();
+        let sign = builder.build_and(src_bits, int_type.const_int(sign_mask, false), &format!("{name}.sign"))?;
+        let canonical_bits = builder.build_or(
+            sign,
+            int_type.const_int(canonical_nan, false),
+            &format!("{name}.nan.bits"),
+        )?;
+        let canonical_nan_value = builder
+            .build_bit_cast(canonical_bits, float_type, &format!("{name}.nan"))?
+            .into_float_value();
+        let selected = builder.build_select(is_nan, canonical_nan_value, src, name)?;
+        Ok(selected.into_float_value())
+    }
 }
 
 fn emit_float_ternary_handler<'ctx>(
@@ -8256,6 +8311,23 @@ fn build_float_round_to_int_call<'ctx>(
     to_width: u64,
     op: FloatRoundToIntOp,
 ) -> anyhow::Result<IntValue<'ctx>> {
+    // LLVM 18/19 的 X86 后端没有 f16 源 round-to-int intrinsic 的类型合法化路径
+    // （`Cannot select: i32/i64 = lrint/lround`）。f16→f32 是精确转换，先 fpext
+    // 再走 f32 intrinsic，取整语义不变。
+    #[cfg(not(any(
+        feature = "llvm20-1",
+        feature = "llvm21-1",
+        feature = "llvm22-1",
+        feature = "llvm23-1"
+    )))]
+    let (source, from_width) = if from_width == 16 {
+        let f32_type = ctx.function.get_type().get_context().f32_type();
+        let extended = builder.build_float_ext(source, f32_type, "froundtoint.f16.f32")?;
+        (extended, 32)
+    } else {
+        (source, from_width)
+    };
+
     let intrinsic = match op {
         FloatRoundToIntOp::LRint => ctx.lrint,
         FloatRoundToIntOp::LLRint => ctx.llrint,

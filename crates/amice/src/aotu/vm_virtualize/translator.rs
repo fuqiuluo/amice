@@ -5009,20 +5009,18 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 );
             }
             checked_intrinsic_integer_width(result_info.width as u64)?;
-            let lhs_binding = lhs
-                .fields
-                .get(index)
-                .copied()
-                .flatten()
-                .map(|field| field.binding)
-                .with_context(|| format!("vector integer binop lhs lane {index} is undefined or unsupported"))?;
-            let rhs_binding = rhs
-                .fields
-                .get(index)
-                .copied()
-                .flatten()
-                .map(|field| field.binding)
-                .with_context(|| format!("vector integer binop rhs lane {index} is undefined or unsupported"))?;
+            let (Some(lhs_field), Some(rhs_field)) = (
+                lhs.fields.get(index).copied().flatten(),
+                rhs.fields.get(index).copied().flatten(),
+            ) else {
+                // instcombine 等会把横向归约改写成带 poison lane 的 shufflevector
+                // （如掩码 <i32 1, i32 poison>）再喂给向量 binop。poison 操作数按
+                // 语义传播为 poison 结果 lane；只有该 lane 后续被消费时才由消费点报错。
+                fields.push(None);
+                continue;
+            };
+            let lhs_binding = lhs_field.binding;
+            let rhs_binding = rhs_field.binding;
             if lhs_binding.width != result_info.width || rhs_binding.width != result_info.width {
                 bail!(
                     "vector integer binop lane {index} binding width mismatch: result i{}, lhs i{}, rhs i{}",
