@@ -20011,7 +20011,11 @@ fn sideeffect_intrinsic(function: FunctionValue<'_>) -> bool {
 fn clear_cache_intrinsic(function: FunctionValue<'_>) -> bool {
     // LLVM 23 起 llvm.clear_cache 是 anyptr 重载 intrinsic，IR 解析器会把未修饰的
     // 调用自动修饰成 llvm.clear_cache.p0；按前缀匹配两种形态。
-    function.get_name().to_string_lossy().as_ref().starts_with("llvm.clear_cache")
+    function
+        .get_name()
+        .to_string_lossy()
+        .as_ref()
+        .starts_with("llvm.clear_cache")
 }
 
 fn pseudoprobe_intrinsic(function: FunctionValue<'_>) -> bool {
