@@ -35,6 +35,12 @@ fn legacy_x86_round_to_int() -> bool {
     legacy_llvm_backend() && std::env::consts::ARCH == "x86_64"
 }
 
+/// fixture 依赖指定 LLVM 版本引入的 intrinsic / IR 形态或后端 lowering；低版本
+/// 工具链无法解析、链接或 codegen，相关测试直接跳过。
+fn llvm_supported(major: u32) -> bool {
+    llvm_major(&llvm_config()) >= major
+}
+
 fn llvm_config() -> LlvmConfig {
     detect_llvm_config().unwrap_or_else(|| LlvmConfig {
         env_var: "LLVM_SYS_211_PREFIX".to_owned(),
@@ -1640,8 +1646,14 @@ int main(void) {
 
     let mut config = vm_virtualize_config();
     config.vm_dump_bytecode = Some(true);
-    let (virtualized_ir, output) =
-        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_super_add_xor_no_fuse.ll", config);
+    // O1 在 LLVM 18 会把 add 的额外使用折叠掉，导致翻译器看到单一使用而合法融合
+    // iadd_xor；O0 保留原始使用计数，检验“额外使用不融合”约束本身。
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_super_add_xor_no_fuse.ll",
+        "default<O0>",
+        config,
+    );
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
     let dump = bytecode_dump_for_function(&stderr, "vm_add_xor_no_fuse");
@@ -4083,20 +4095,26 @@ int main(void) {
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
     let i1_dump = bytecode_dump_for_function(&stderr, "vm_integer_i1_intrinsics");
-    assert!(
-        i1_dump.contains("width: 1"),
-        "i1 integer intrinsic lowering should record width 1:\n{i1_dump}"
-    );
+    // LLVM 18 的 instcombine 在 O1 会把 i1 位计数 intrinsic 折叠成通用整数运算，
+    // bytecode 里不再出现 width: 1；19+ 保留原始形态。
+    if llvm_supported(19) {
+        assert!(
+            i1_dump.contains("width: 1"),
+            "i1 integer intrinsic lowering should record width 1:\n{i1_dump}"
+        );
+    }
     for function in [
         "vm_integer_i1_minmax_intrinsics",
         "vm_integer_i1_saturating_and_bit_intrinsics",
         "vm_integer_i1_overflow_intrinsics",
     ] {
         let dump = bytecode_dump_for_function(&stderr, function);
-        assert!(
-            dump.contains("width: 1"),
-            "{function} should record i1 intrinsic width in bytecode:\n{dump}"
-        );
+        if llvm_supported(19) {
+            assert!(
+                dump.contains("width: 1"),
+                "{function} should record i1 intrinsic width in bytecode:\n{dump}"
+            );
+        }
     }
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_integer_intrinsics");
     virtualized.assert_success();
@@ -4440,6 +4458,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_readcounter_intrinsics_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(19) {
+        eprintln!("skipping: fixture requires LLVM >= 19");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_readcounter_intrinsics.input.ll");
     std::fs::write(
@@ -4857,6 +4880,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_thread_pointer_intrinsic_matches_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(21) {
+        eprintln!("skipping: fixture requires LLVM >= 21");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_thread_pointer.input.ll");
     std::fs::write(
@@ -5838,6 +5866,11 @@ int main(void) {
 fn test_vm_virtualize_vector_extract_last_active_matches_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_vector_extract_last_active.input.ll");
     std::fs::write(
         &ir_source,
@@ -6549,6 +6582,11 @@ int main(void) {
 fn test_vm_virtualize_vp_vector_integer_minmax_saturating_match_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_minmax_saturating.input.ll");
     std::fs::write(
         &ir_source,
@@ -6695,6 +6733,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vp_vector_integer_unary_intrinsics_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_unary.input.ll");
     std::fs::write(
@@ -7568,6 +7611,11 @@ int main(void) {
 fn test_vm_virtualize_vp_cttz_elts_intrinsic_matches_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_vp_cttz_elts.input.ll");
     std::fs::write(
         &ir_source,
@@ -7674,6 +7722,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vp_cttz_elts_zero_is_poison_true_matches_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vp_cttz_elts_poison_true.input.ll");
     std::fs::write(
@@ -8144,6 +8197,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vp_float_reductions_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(19) {
+        eprintln!("skipping: fixture requires LLVM >= 19");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vp_float_reductions.input.ll");
     std::fs::write(
@@ -8833,6 +8891,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vp_vector_integer_ternary_intrinsics_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_ternary_intrinsics.input.ll");
     std::fs::write(
@@ -10934,6 +10997,11 @@ int main(void) {
 fn test_vm_virtualize_vector_reverse_splice_intrinsics_match_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(19) {
+        eprintln!("skipping: fixture requires LLVM >= 19");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_vector_reverse_splice.input.ll");
     std::fs::write(
         &ir_source,
@@ -11767,6 +11835,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vp_select_matches_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vp_select.input.ll");
     std::fs::write(
@@ -14310,6 +14383,11 @@ int main(void) {
 fn test_vm_virtualize_fake_use_intrinsic_matches_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_fake_use_intrinsic.input.ll");
     std::fs::write(
         &ir_source,
@@ -15204,6 +15282,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_runtime_check_gate_intrinsics_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(19) {
+        eprintln!("skipping: fixture requires LLVM >= 19");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_runtime_check_gates.input.ll");
     std::fs::write(
@@ -23910,6 +23993,11 @@ int main(void) {
 fn test_vm_virtualize_atomic_rmw_match_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_atomic_rmw.input.ll");
     std::fs::write(
         &ir_source,
@@ -24084,6 +24172,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_float_atomic_rmw_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(21) {
+        eprintln!("skipping: fixture requires LLVM >= 21");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_float_atomic_rmw.input.ll");
     std::fs::write(
@@ -24471,7 +24564,14 @@ entry:
     assert!(ir.contains("handler.atomic_rmw_add"));
     assert!(ir.contains("handler.cmpxchg"));
     assert!(ir.contains("syncscope(\"singlethread\")"));
-    assert!(!ir.contains(".amice.vm.bytecode.vm_custom_scope_atomic_load_skip"));
+    if llvm_supported(20) {
+        // LLVM 20+ 能通过 C API 读出命名 syncscope，自定义 scope 保守跳过。
+        assert!(!ir.contains(".amice.vm.bytecode.vm_custom_scope_atomic_load_skip"));
+    } else {
+        // LLVM < 20 的 C API 只能区分 system/singlethread，"agent" 等命名 scope
+        // 不可见；按 system 保守虚拟化（发出更强 ordering，语义安全）。
+        assert!(ir.contains(".amice.vm.bytecode.vm_custom_scope_atomic_load_skip"));
+    }
     assert!(!ir.contains(".amice.vm.bytecode.vm_underaligned_atomic_load"));
     assert!(!ir.contains(".amice.vm.bytecode.vm_underaligned_atomicrmw"));
     assert!(!ir.contains(".amice.vm.bytecode.vm_i128_cmpxchg_skip"));
@@ -24513,8 +24613,10 @@ entry:
     );
 
     assert!(stderr.contains("skip function"));
-    assert!(stderr.contains("vm_custom_scope_atomic_load_skip"));
-    assert!(stderr.contains("load atomic syncscope"));
+    if llvm_supported(20) {
+        assert!(stderr.contains("vm_custom_scope_atomic_load_skip"));
+        assert!(stderr.contains("load atomic syncscope"));
+    }
     assert!(stderr.contains("vm_underaligned_atomic_load"));
     assert!(stderr.contains("load atomic memory access requires natural alignment 4, got 1"));
     assert!(stderr.contains("vm_underaligned_atomicrmw"));
@@ -25816,8 +25918,14 @@ attributes #0 = { noinline optnone }
     )
     .expect("exception/control-flow LLVM IR fixture should be writable");
 
-    let (output_ir, output) =
-        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_exception_control.ll", vm_virtualize_config());
+    // O1 在 LLVM 18 会把 indirectbr 改写成其他控制流，pass 看不到原始形态；
+    // O0 让 invoke/callbr/indirectbr/va_arg 原样到达虚拟化 pass 以检验跳过逻辑。
+    let (output_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_exception_control.ll",
+        "default<O0>",
+        vm_virtualize_config(),
+    );
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
 
@@ -25838,7 +25946,16 @@ attributes #0 = { noinline optnone }
     assert!(stderr.contains("vm_callbr"));
     assert!(stderr.contains("callbr is not supported by vm_virtualize"));
     assert!(stderr.contains("vm_indirectbr"));
-    assert!(stderr.contains("indirectbr is not supported by vm_virtualize"));
+    if llvm_supported(20) {
+        assert!(stderr.contains("indirectbr is not supported by vm_virtualize"));
+    } else {
+        // LLVM 18/19 在指令级检查前，会先把 indirectbr 目标的 blockaddress 归为
+        // non-call address use 并按资格检查跳过；两种消息都表示函数被安全跳过。
+        assert!(
+            stderr.contains("indirectbr is not supported by vm_virtualize")
+                || stderr.contains("function has non-call address uses")
+        );
+    }
     assert!(stderr.contains("vm_va_arg"));
     assert!(stderr.contains("va_arg is not supported by vm_virtualize"));
 
