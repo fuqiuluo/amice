@@ -41,6 +41,36 @@ fn llvm_supported(major: u32) -> bool {
     llvm_major(&llvm_config()) >= major
 }
 
+/// 查询编译 clang 的默认 datalayout 行。
+///
+/// LLVM 23 起无 datalayout 的模块在 opt 中改用固定通用布局，不再隐式采用宿主
+/// 布局；对含聚合类型的 fixture，这与 clang 编译基线时的宿主布局不一致（结构体
+/// 字节偏移不同）。真实前端产物都会携带 datalayout，布局敏感的 fixture 显式
+/// 盖上编译器自身的布局，保证 opt 与基线两侧一致。
+fn host_datalayout_line() -> String {
+    let output = Command::new(clang_compiler_path(false))
+        .env("CCACHE_DISABLE", "1")
+        .arg("-emit-llvm")
+        .arg("-S")
+        .arg("-o")
+        .arg("-")
+        .arg("-x")
+        .arg("c")
+        .arg("/dev/null")
+        .output()
+        .expect("clang datalayout probe should run");
+    assert!(
+        output.status.success(),
+        "clang datalayout probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find(|line| line.trim().starts_with("target datalayout = "))
+        .map(|line| line.trim().to_owned())
+        .expect("clang -emit-llvm output should contain a target datalayout line")
+}
+
 fn llvm_config() -> LlvmConfig {
     detect_llvm_config().unwrap_or_else(|| LlvmConfig {
         env_var: "LLVM_SYS_211_PREFIX".to_owned(),
@@ -19658,8 +19688,11 @@ fn test_vm_virtualize_multi_dynamic_struct_array_gep_matches_baseline() {
     ensure_plugin_built();
 
     let ir_source = output_dir().join("vm_virtualize_multi_dynamic_struct_array_gep.input.ll");
-    std::fs::write(
-        &ir_source,
+    // 布局敏感 fixture：盖上编译 clang 的 datalayout（见 host_datalayout_line 注释），
+    // 避免 LLVM 23 对无 datalayout 模块使用通用默认布局导致偏移与基线不一致。
+    let datalayout = host_datalayout_line();
+    let fixture = format!(
+        "{datalayout}\n{}",
         r#"; ModuleID = 'vm_virtualize_multi_dynamic_struct_array_gep'
 source_filename = "vm_virtualize_multi_dynamic_struct_array_gep.ll"
 
@@ -19672,9 +19705,10 @@ entry:
   %value = load i32, ptr %ptr, align 4
   ret i32 %value
 }
-"#,
-    )
-    .expect("multi-dynamic struct-array GEP LLVM IR fixture should be writable");
+"#
+    );
+    std::fs::write(&ir_source, fixture)
+        .expect("multi-dynamic struct-array GEP LLVM IR fixture should be writable");
 
     let harness = output_dir().join("vm_virtualize_multi_dynamic_struct_array_gep_harness.c");
     std::fs::write(
