@@ -33,9 +33,7 @@ pub fn output_with_watchdog(command: Command) -> Output {
 /// 与 [`output_with_watchdog`] 相同，但借用已有的 `&mut Command`（如复用调用方
 /// 已配置好参数的命令）。
 pub fn output_with_watchdog_ref(command: &mut Command) -> Output {
-    let _ = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let _ = command.stdout(Stdio::piped()).stderr(Stdio::piped());
     run_with_watchdog_spawned(
         command
             .spawn()
