@@ -142,17 +142,15 @@ fn assert_mba_i1(float_regions: bool) {
     // Exercise function-scoped +mba with global MBA disabled, as in issue #89.
     config.mba = Some(false);
     config.apply_to_command(&mut cmd);
-    let output = cmd
-        .env_remove("AMICE_CONFIG_PATH")
+    cmd.env_remove("AMICE_CONFIG_PATH")
         .env("AMICE_PASS_ORDER", "Mba")
         .env("RUST_LOG", "warn")
         .arg(format!("--load-pass-plugin={}", plugin_path().display()))
         .args(["-passes=default<O0>", "-verify-each", "-S"])
         .arg(fixture_path("mba", "mba_i1.ll", Language::C))
         .arg("-o")
-        .arg(&output_ir)
-        .output()
-        .expect("failed to execute opt for i1 MBA");
+        .arg(&output_ir);
+    let output = common::output_with_watchdog(cmd);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "opt failed: {stderr}");
     assert!(stderr.trim().is_empty(), "unexpected MBA diagnostics: {stderr}");

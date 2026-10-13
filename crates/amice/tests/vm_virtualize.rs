@@ -1324,7 +1324,7 @@ fn remove_lowering_rule(source: &str, rule_name: &str) -> String {
 }
 
 fn command_output(command: &mut Command) -> Output {
-    command.output().expect("test command should run")
+    crate::common::output_with_watchdog_ref(command)
 }
 
 fn assert_success(output: Output) {
@@ -26737,14 +26737,12 @@ int main(int argc, char **argv) {
     virtualized_output.assert_success();
     assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
 
-    let baseline_trap = Command::new(&baseline.binary_path)
-        .arg("trap")
-        .output()
-        .expect("baseline trap binary should run");
-    let virtualized_trap = Command::new(&virtualized.binary_path)
-        .arg("trap")
-        .output()
-        .expect("virtualized trap binary should run");
+    let mut baseline_trap_cmd = Command::new(&baseline.binary_path);
+    baseline_trap_cmd.arg("trap");
+    let baseline_trap = command_output(&mut baseline_trap_cmd);
+    let mut virtualized_trap_cmd = Command::new(&virtualized.binary_path);
+    virtualized_trap_cmd.arg("trap");
+    let virtualized_trap = command_output(&mut virtualized_trap_cmd);
     assert!(
         !baseline_trap.status.success(),
         "baseline trap path should terminate abnormally"
@@ -26861,14 +26859,12 @@ int main(int argc, char **argv) {
     assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
 
     for arg in ["d", "u"] {
-        let baseline_trap = Command::new(&baseline.binary_path)
-            .arg(arg)
-            .output()
-            .expect("baseline debugtrap/ubsantrap binary should run");
-        let virtualized_trap = Command::new(&virtualized.binary_path)
-            .arg(arg)
-            .output()
-            .expect("virtualized debugtrap/ubsantrap binary should run");
+        let mut baseline_trap_cmd = Command::new(&baseline.binary_path);
+        baseline_trap_cmd.arg(arg);
+        let baseline_trap = command_output(&mut baseline_trap_cmd);
+        let mut virtualized_trap_cmd = Command::new(&virtualized.binary_path);
+        virtualized_trap_cmd.arg(arg);
+        let virtualized_trap = command_output(&mut virtualized_trap_cmd);
         assert!(
             !baseline_trap.status.success(),
             "baseline {arg} path should terminate abnormally"

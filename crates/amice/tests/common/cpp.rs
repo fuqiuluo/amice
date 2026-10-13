@@ -140,7 +140,7 @@ impl CppCompileBuilder {
         cmd.arg("-o");
         cmd.arg(&self.output);
 
-        let output = cmd.output().expect("Failed to execute compiler");
+        let output = crate::common::output_with_watchdog(cmd);
 
         CompileResult {
             output,
@@ -206,7 +206,7 @@ impl CppCompileBuilder {
             .arg(&self.source)
             .arg("-o")
             .arg(input_ir);
-        cmd.output().expect("Failed to execute compiler")
+        crate::common::output_with_watchdog(cmd)
     }
 
     fn run_opt(&self, config: &super::LlvmConfig, input_ir: &Path, optimized_ir: &Path) -> Output {
@@ -221,7 +221,7 @@ impl CppCompileBuilder {
             .arg("-o")
             .arg(optimized_ir);
         self.config.apply_to_command(&mut cmd);
-        cmd.output().expect("Failed to execute opt")
+        crate::common::output_with_watchdog(cmd)
     }
 
     fn link_optimized_ir(&self, optimized_ir: &Path) -> Output {
@@ -231,7 +231,7 @@ impl CppCompileBuilder {
             cmd.arg(arg);
         }
         cmd.arg(optimized_ir).arg("-o").arg(&self.output);
-        cmd.output().expect("Failed to execute compiler")
+        crate::common::output_with_watchdog(cmd)
     }
 
     fn requests_llvm_ir_output(&self) -> bool {
