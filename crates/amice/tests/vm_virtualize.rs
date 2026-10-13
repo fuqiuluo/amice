@@ -19707,8 +19707,7 @@ entry:
 }
 "#
     );
-    std::fs::write(&ir_source, fixture)
-        .expect("multi-dynamic struct-array GEP LLVM IR fixture should be writable");
+    std::fs::write(&ir_source, fixture).expect("multi-dynamic struct-array GEP LLVM IR fixture should be writable");
 
     let harness = output_dir().join("vm_virtualize_multi_dynamic_struct_array_gep_harness.c");
     std::fs::write(
