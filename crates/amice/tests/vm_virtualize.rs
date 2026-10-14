@@ -49,12 +49,12 @@ fn expand_round_to_int_calls_for_legacy_x86(fixture: &str) -> String {
             return None;
         }
         let (name, args) = after.split_once('(')?;
-        let base = name
-            .trim_start_matches('@')
-            .trim_start_matches("llvm.experimental.constrained.");
-        let rounding = if base.starts_with("llvm.lrint") || base.starts_with("llvm.llrint") {
+        let base = name.trim_start_matches('@');
+        let base = base.strip_prefix("llvm.experimental.constrained.").unwrap_or(base);
+        let base = base.strip_prefix("llvm.").unwrap_or(base);
+        let rounding = if base.starts_with("lrint") || base.starts_with("llrint") {
             "rint"
-        } else if base.starts_with("llvm.lround") || base.starts_with("llvm.llround") {
+        } else if base.starts_with("lround") || base.starts_with("llround") {
             "round"
         } else {
             return None;
@@ -131,6 +131,43 @@ fn expand_round_to_int_calls_for_legacy_x86(fixture: &str) -> String {
             out
         },
     }
+}
+
+#[test]
+fn expand_round_to_int_helper_rewrites_all_call_forms() {
+    let fixture = "\
+declare i32 @llvm.lrint.i32.f16(half)
+define i32 @f(half %h, float %x, double %d) {
+  %a = call i32 @llvm.lrint.i32.f16(half %h)
+  %b = call i64 @llvm.lrint.i64.f32(float %x)
+  %c = call i32 @llvm.experimental.constrained.lrint.i32.f64(double %d, metadata !\"round.tonearest\", metadata !\"fpexcept.ignore\")
+  %e = call i64 @llvm.experimental.constrained.llround.i64.f64(double %d, metadata !\"fpexcept.ignore\")
+  %r = add i32 %a, %c
+  ret i32 %r
+}
+";
+    let expanded = expand_round_to_int_calls_for_legacy_x86(fixture);
+    for needle in [
+        "%a.ext = fpext half %h to float",
+        "%a.ri = call float @llvm.rint.f32(float %a.ext)",
+        "%a = fptosi float %a.ri to i32",
+        "%b.ri = call float @llvm.rint.f32(float %x)",
+        "%c.ri = call double @llvm.rint.f64(double %d)",
+        "%e.ri = call double @llvm.round.f64(double %d)",
+        "declare float @llvm.rint.f32(float)",
+        "declare double @llvm.round.f64(double)",
+    ] {
+        assert!(expanded.contains(needle), "expansion should contain {needle}:\n{expanded}");
+    }
+    for original in [
+        "call i32 @llvm.lrint.i32.f16(",
+        "call i64 @llvm.lrint.i64.f32(",
+        "@llvm.experimental.constrained.lrint.i32.f64(double %d",
+    ] {
+        assert!(!expanded.contains(original), "expansion should drop {original}:\n{expanded}");
+    }
+    // 非调用行保持原样。
+    assert!(expanded.contains("%r = add i32 %a, %c"));
 }
 
 /// fixture 依赖指定 LLVM 版本引入的 intrinsic / IR 形态或后端 lowering；低版本
