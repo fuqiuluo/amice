@@ -1,6 +1,7 @@
 use crate::aotu::string_encryption::{
     EncryptedGlobalValue, InsertPointCollection, STACK_ALLOC_THRESHOLD, StringEncryptionAlgo, alloc_stack_string,
-    array_as_const_string_bytes, collect_insert_points, global_has_unsupported_user, use_user_supported, is_const_string_array, rebuild_const_string,
+    array_as_const_string_bytes, collect_insert_points, global_has_unsupported_user, is_const_string_array,
+    rebuild_const_string, use_user_supported,
 };
 use crate::config::{StringDecryptTiming as DecryptTiming, StringEncryptionConfig};
 use amice_llvm::const_array;
@@ -92,7 +93,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 // 使用者含 inkwell 不支持的值类别（如 MSVC catchpad 引用 RTTI
                 // typeinfo，issue #99）：整体跳过，这类全局并非机密字符串，
                 // 且逐使用点插入会在使用收集阶段崩溃
-                debug!("(strenc) skipping {:?}: user has unsupported value type", global.get_name());
+                debug!(
+                    "(strenc) skipping {:?}: user has unsupported value type",
+                    global.get_name()
+                );
                 None
             } else {
                 // 返回全局变量及其内部所有的待加密字符串信息
