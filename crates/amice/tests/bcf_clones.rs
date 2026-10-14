@@ -15,7 +15,7 @@ fn tool(name: &str) -> PathBuf {
 }
 
 fn run(command: &mut Command) -> String {
-    let output = command.output().expect("start test command");
+    let output = crate::common::output_with_watchdog_ref(command);
     assert!(
         output.status.success(),
         "{command:?}\n{}\n{}",

@@ -13,7 +13,7 @@ fn tool(name: &str) -> PathBuf {
         .unwrap_or_else(|| name.into())
 }
 fn run(cmd: &mut Command) -> String {
-    let out = cmd.output().expect("start LLVM tool");
+    let out = crate::common::output_with_watchdog_ref(cmd);
     assert!(
         out.status.success(),
         "{cmd:?}\n{}\n{}",
@@ -343,7 +343,7 @@ fn bcf_config_file_migration_is_diagnosed() {
             .arg(&input)
             .arg("-o")
             .arg(&output);
-        let result = cmd.output().unwrap();
+        let result = crate::common::output_with_watchdog(cmd);
         assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
         assert_eq!(loops(&std::fs::read_to_string(&output).unwrap()), usize::from(!old));
         if old {

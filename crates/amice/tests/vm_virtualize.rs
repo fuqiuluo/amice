@@ -22,6 +22,196 @@ fn compatible_clang_available() -> bool {
     clang_major() == Some(llvm_major(&llvm_config()))
 }
 
+/// LLVM 18/19 的 X86/AArch64 后端缺少 FCANONICALIZE lowering，`llvm.expect.with.probability`
+/// 的 SelectionDAG 兜底也到 LLVM 20 才补上。基线 fixture 里这些裸 intrinsic 在 O0
+/// 无法编译，相关测试需要按 LLVM 版本分流基线形态。
+fn legacy_llvm_backend() -> bool {
+    llvm_major(&llvm_config()) < 20
+}
+
+/// LLVM 18/19 的 X86 后端没有 f16 源与向量 round-to-int intrinsic 的类型合法化
+/// 路径（`Cannot select: i64 = lround` / `Do not know how to widen`）；20/21 的
+/// x86-64 codegen 对这些组合同样失败（CI 实测），22 起恢复可用。
+fn legacy_x86_round_to_int() -> bool {
+    llvm_major(&llvm_config()) < 22 && std::env::consts::ARCH == "x86_64"
+}
+
+/// x86-64 的 LLVM <22 无法编译任何 lrint/lround intrinsic（18/19 缺 f16/向量
+/// 路径，20/21 连标量 f32/f64 组合都 `Cannot select: i64 = lround`）。按语义
+/// 等价形式预展开基线调用：lrint/llrint → llvm.rint + fptosi（当前舍入模式），
+/// lround/llround → llvm.round + fptosi（半数远离零）；f16 源先 fpext 到 f32；
+/// constrained 形式取首个浮点参数（round.* metadata 与 rint 语义一致）。
+fn expand_round_to_int_calls_for_legacy_x86(fixture: &str) -> String {
+    fn expand_call(dst: &str, rest: &str) -> Option<Vec<String>> {
+        // rest 形如 `iN @llvm[.experimental.constrained].l…(ty %arg, …)`
+        let (ret_ty, after) = rest.split_once(' ')?;
+        if !ret_ty.starts_with('i') || !after.starts_with('@') {
+            return None;
+        }
+        let (name, args) = after.split_once('(')?;
+        let base = name.trim_start_matches('@');
+        let base = base.strip_prefix("llvm.experimental.constrained.").unwrap_or(base);
+        let base = base.strip_prefix("llvm.").unwrap_or(base);
+        let rounding = if base.starts_with("lrint") || base.starts_with("llrint") {
+            "rint"
+        } else if base.starts_with("lround") || base.starts_with("llround") {
+            "round"
+        } else {
+            return None;
+        };
+        let first_arg = args.split(',').next()?.trim().trim_end_matches(')');
+        let (src_ty, src_val) = first_arg.split_once(' ')?;
+        let (round_ty, intrinsic_ty, mut lines) = match src_ty {
+            "half" => (
+                "float",
+                "f32",
+                vec![format!("%{dst}.ext = fpext half {src_val} to float")],
+            ),
+            "float" => ("float", "f32", Vec::new()),
+            "double" => ("double", "f64", Vec::new()),
+            _ => return None,
+        };
+        let rounded_src = if src_ty == "half" {
+            format!("%{dst}.ext")
+        } else {
+            src_val.to_owned()
+        };
+        lines.push(format!(
+            "%{dst}.ri = call {round_ty} @llvm.{rounding}.{intrinsic_ty}({round_ty} {rounded_src})"
+        ));
+        lines.push(format!("%{dst} = fptosi {round_ty} %{dst}.ri to {ret_ty}"));
+        Some(lines)
+    }
+
+    let mut out = String::with_capacity(fixture.len() + 512);
+    for line in fixture.lines() {
+        let trimmed = line.trim_start();
+        let expanded = trimmed
+            .strip_prefix('%')
+            .and_then(|rest| rest.split_once(" = call "))
+            .and_then(|(dst, call_rest)| expand_call(dst, call_rest));
+        if let Some(lines) = expanded {
+            for expanded_line in lines {
+                out.push_str("  ");
+                out.push_str(&expanded_line);
+                out.push('\n');
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    // 补齐被展开代码需要的 rint/round 声明（去重）。
+    let mut declares = String::new();
+    for (declare, call_marker) in [
+        ("declare float @llvm.rint.f32(float)", "call float @llvm.rint.f32("),
+        ("declare double @llvm.rint.f64(double)", "call double @llvm.rint.f64("),
+        ("declare float @llvm.round.f32(float)", "call float @llvm.round.f32("),
+        ("declare double @llvm.round.f64(double)", "call double @llvm.round.f64("),
+    ] {
+        if out.contains(call_marker) && !out.contains(declare) {
+            declares.push_str(declare);
+            declares.push('\n');
+        }
+    }
+    if declares.is_empty() {
+        return out;
+    }
+    match out.find("\ndefine") {
+        Some(position) => {
+            let mut expanded = String::with_capacity(out.len() + declares.len());
+            expanded.push_str(&out[..=position]);
+            expanded.push_str(&declares);
+            expanded.push_str(&out[position + 1..]);
+            expanded
+        },
+        None => {
+            out.push_str(&declares);
+            out
+        },
+    }
+}
+
+#[test]
+fn expand_round_to_int_helper_rewrites_all_call_forms() {
+    let fixture = "\
+declare i32 @llvm.lrint.i32.f16(half)
+define i32 @f(half %h, float %x, double %d) {
+  %a = call i32 @llvm.lrint.i32.f16(half %h)
+  %b = call i64 @llvm.lrint.i64.f32(float %x)
+  %c = call i32 @llvm.experimental.constrained.lrint.i32.f64(double %d, metadata !\"round.tonearest\", metadata !\"fpexcept.ignore\")
+  %e = call i64 @llvm.experimental.constrained.llround.i64.f64(double %d, metadata !\"fpexcept.ignore\")
+  %r = add i32 %a, %c
+  ret i32 %r
+}
+";
+    let expanded = expand_round_to_int_calls_for_legacy_x86(fixture);
+    for needle in [
+        "%a.ext = fpext half %h to float",
+        "%a.ri = call float @llvm.rint.f32(float %a.ext)",
+        "%a = fptosi float %a.ri to i32",
+        "%b.ri = call float @llvm.rint.f32(float %x)",
+        "%c.ri = call double @llvm.rint.f64(double %d)",
+        "%e.ri = call double @llvm.round.f64(double %d)",
+        "declare float @llvm.rint.f32(float)",
+        "declare double @llvm.round.f64(double)",
+    ] {
+        assert!(
+            expanded.contains(needle),
+            "expansion should contain {needle}:\n{expanded}"
+        );
+    }
+    for original in [
+        "call i32 @llvm.lrint.i32.f16(",
+        "call i64 @llvm.lrint.i64.f32(",
+        "@llvm.experimental.constrained.lrint.i32.f64(double %d",
+    ] {
+        assert!(
+            !expanded.contains(original),
+            "expansion should drop {original}:\n{expanded}"
+        );
+    }
+    // 非调用行保持原样。
+    assert!(expanded.contains("%r = add i32 %a, %c"));
+}
+
+/// fixture 依赖指定 LLVM 版本引入的 intrinsic / IR 形态或后端 lowering；低版本
+/// 工具链无法解析、链接或 codegen，相关测试直接跳过。
+fn llvm_supported(major: u32) -> bool {
+    llvm_major(&llvm_config()) >= major
+}
+
+/// 查询编译 clang 的默认 datalayout 行。
+///
+/// LLVM 23 起无 datalayout 的模块在 opt 中改用固定通用布局，不再隐式采用宿主
+/// 布局；对含聚合类型的 fixture，这与 clang 编译基线时的宿主布局不一致（结构体
+/// 字节偏移不同）。真实前端产物都会携带 datalayout，布局敏感的 fixture 显式
+/// 盖上编译器自身的布局，保证 opt 与基线两侧一致。
+fn host_datalayout_line() -> String {
+    let output = Command::new(clang_compiler_path(false))
+        .env("CCACHE_DISABLE", "1")
+        .arg("-emit-llvm")
+        .arg("-S")
+        .arg("-o")
+        .arg("-")
+        .arg("-x")
+        .arg("c")
+        .arg("/dev/null")
+        .output()
+        .expect("clang datalayout probe should run");
+    assert!(
+        output.status.success(),
+        "clang datalayout probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find(|line| line.trim().starts_with("target datalayout = "))
+        .map(|line| line.trim().to_owned())
+        .expect("clang -emit-llvm output should contain a target datalayout line")
+}
+
 fn llvm_config() -> LlvmConfig {
     detect_llvm_config().unwrap_or_else(|| LlvmConfig {
         env_var: "LLVM_SYS_211_PREFIX".to_owned(),
@@ -1275,7 +1465,7 @@ fn remove_lowering_rule(source: &str, rule_name: &str) -> String {
 }
 
 fn command_output(command: &mut Command) -> Output {
-    command.output().expect("test command should run")
+    crate::common::output_with_watchdog_ref(command)
 }
 
 fn assert_success(output: Output) {
@@ -1627,8 +1817,14 @@ int main(void) {
 
     let mut config = vm_virtualize_config();
     config.vm_dump_bytecode = Some(true);
-    let (virtualized_ir, output) =
-        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_super_add_xor_no_fuse.ll", config);
+    // O1 在 LLVM 18 会把 add 的额外使用折叠掉，导致翻译器看到单一使用而合法融合
+    // iadd_xor；O0 保留原始使用计数，检验“额外使用不融合”约束本身。
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_super_add_xor_no_fuse.ll",
+        "default<O0>",
+        config,
+    );
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
     let dump = bytecode_dump_for_function(&stderr, "vm_add_xor_no_fuse");
@@ -4070,20 +4266,26 @@ int main(void) {
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
     let i1_dump = bytecode_dump_for_function(&stderr, "vm_integer_i1_intrinsics");
-    assert!(
-        i1_dump.contains("width: 1"),
-        "i1 integer intrinsic lowering should record width 1:\n{i1_dump}"
-    );
+    // LLVM 18 的 instcombine 在 O1 会把 i1 位计数 intrinsic 折叠成通用整数运算，
+    // bytecode 里不再出现 width: 1；19+ 保留原始形态。
+    if llvm_supported(19) {
+        assert!(
+            i1_dump.contains("width: 1"),
+            "i1 integer intrinsic lowering should record width 1:\n{i1_dump}"
+        );
+    }
     for function in [
         "vm_integer_i1_minmax_intrinsics",
         "vm_integer_i1_saturating_and_bit_intrinsics",
         "vm_integer_i1_overflow_intrinsics",
     ] {
         let dump = bytecode_dump_for_function(&stderr, function);
-        assert!(
-            dump.contains("width: 1"),
-            "{function} should record i1 intrinsic width in bytecode:\n{dump}"
-        );
+        if llvm_supported(19) {
+            assert!(
+                dump.contains("width: 1"),
+                "{function} should record i1 intrinsic width in bytecode:\n{dump}"
+            );
+        }
     }
     let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_integer_intrinsics");
     virtualized.assert_success();
@@ -4427,6 +4629,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_readcounter_intrinsics_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(19) {
+        eprintln!("skipping: fixture requires LLVM >= 19");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_readcounter_intrinsics.input.ll");
     std::fs::write(
@@ -4845,6 +5052,11 @@ int main(void) {
 fn test_vm_virtualize_thread_pointer_intrinsic_matches_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(21) {
+        eprintln!("skipping: fixture requires LLVM >= 21");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_thread_pointer.input.ll");
     std::fs::write(
         &ir_source,
@@ -5151,9 +5363,7 @@ fn test_vm_virtualize_expect_intrinsics_match_baseline() {
     ensure_plugin_built();
 
     let ir_source = output_dir().join("vm_virtualize_expect_intrinsics.input.ll");
-    std::fs::write(
-        &ir_source,
-        r#"; ModuleID = 'vm_virtualize_expect_intrinsics'
+    let fixture = r#"; ModuleID = 'vm_virtualize_expect_intrinsics
 source_filename = "vm_virtualize_expect_intrinsics.ll"
 
 declare i1 @llvm.expect.i1(i1, i1)
@@ -5177,9 +5387,26 @@ negative:
   %mixed_neg = add i32 %hinted_neg, 17
   ret i32 %mixed_neg
 }
-"#,
-    )
-    .expect("expect intrinsic LLVM IR fixture should be writable");
+"#;
+    std::fs::write(&ir_source, fixture).expect("expect intrinsic LLVM IR fixture should be writable");
+
+    // LLVM 18/19 的 O0 管线既没有 LowerExpect，SelectionDAGBuilder 也只认不带概率
+    // 的 llvm.expect；基线改用等价的普通 expect（两者都只返回第一个操作数）。
+    let baseline_source =
+        if legacy_llvm_backend() {
+            let legacy = fixture
+            .replace("declare i32 @llvm.expect.with.probability.i32(i32, i32, double immarg)\n", "")
+            .replace(
+                "%hinted = call i32 @llvm.expect.with.probability.i32(i32 %seed, i32 305419896, double 8.750000e-01)",
+                "%hinted = call i32 @llvm.expect.i32(i32 %seed, i32 305419896)",
+            );
+            assert_ne!(legacy, fixture, "legacy expect baseline rewrite should apply");
+            let path = output_dir().join("vm_virtualize_expect_intrinsics_baseline_legacy.ll");
+            std::fs::write(&path, legacy).expect("legacy expect baseline LLVM IR fixture should be writable");
+            path
+        } else {
+            ir_source.clone()
+        };
 
     let harness = output_dir().join("vm_virtualize_expect_intrinsics_harness.c");
     std::fs::write(
@@ -5196,7 +5423,7 @@ int main(void) {
     )
     .expect("expect intrinsic C harness should be writable");
 
-    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_expect_intrinsics_baseline");
+    let baseline = compile_ir_with_c_harness(&baseline_source, &harness, "vm_virtualize_expect_intrinsics_baseline");
     baseline.assert_success();
     let baseline_output = baseline.run();
     baseline_output.assert_success();
@@ -5220,9 +5447,7 @@ fn test_vm_virtualize_vector_expect_intrinsics_match_baseline() {
     ensure_plugin_built();
 
     let ir_source = output_dir().join("vm_virtualize_vector_expect_intrinsics.input.ll");
-    std::fs::write(
-        &ir_source,
-        r#"; ModuleID = 'vm_virtualize_vector_expect_intrinsics'
+    let fixture = r#"; ModuleID = 'vm_virtualize_vector_expect_intrinsics
 source_filename = "vm_virtualize_vector_expect_intrinsics.ll"
 
 declare <2 x i32> @llvm.expect.v2i32(<2 x i32>, <2 x i32>)
@@ -5244,9 +5469,27 @@ entry:
   %mix1 = xor i64 %mix0, %z1
   ret i64 %mix1
 }
-"#,
-    )
-    .expect("vector expect intrinsic LLVM IR fixture should be writable");
+"#;
+    std::fs::write(&ir_source, fixture).expect("vector expect intrinsic LLVM IR fixture should be writable");
+
+    // 同标量 expect 测试：LLVM 18/19 基线改用普通 llvm.expect 变体。
+    let baseline_source = if legacy_llvm_backend() {
+        let legacy = fixture
+            .replace(
+                "declare <2 x i32> @llvm.expect.with.probability.v2i32(<2 x i32>, <2 x i32>, double immarg)\n",
+                "",
+            )
+            .replace(
+                "%prob = call <2 x i32> @llvm.expect.with.probability.v2i32(<2 x i32> %hinted, <2 x i32> %e1, double 7.500000e-01)",
+                "%prob = call <2 x i32> @llvm.expect.v2i32(<2 x i32> %hinted, <2 x i32> %e1)",
+            );
+        assert_ne!(legacy, fixture, "legacy vector expect baseline rewrite should apply");
+        let path = output_dir().join("vm_virtualize_vector_expect_intrinsics_baseline_legacy.ll");
+        std::fs::write(&path, legacy).expect("legacy vector expect baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        ir_source.clone()
+    };
 
     let harness = output_dir().join("vm_virtualize_vector_expect_intrinsics_harness.c");
     std::fs::write(
@@ -5264,7 +5507,11 @@ int main(void) {
     )
     .expect("vector expect intrinsic C harness should be writable");
 
-    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_vector_expect_intrinsics_baseline");
+    let baseline = compile_ir_with_c_harness(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_vector_expect_intrinsics_baseline",
+    );
     baseline.assert_success();
     let baseline_output = baseline.run();
     baseline_output.assert_success();
@@ -5789,6 +6036,14 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vector_extract_last_active_matches_baseline() {
     ensure_plugin_built();
+
+    // llvm.vector.extract.last.active 需要 LLVM 20 才能解析，但 clang 20/21 的
+    // X86 codegen 编译该 intrinsic 时死循环（CI 实测基线编译被看门狗击杀），
+    // 22 起恢复可用。
+    if !llvm_supported(22) {
+        eprintln!("skipping: fixture requires LLVM >= 22");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vector_extract_last_active.input.ll");
     std::fs::write(
@@ -6501,6 +6756,11 @@ int main(void) {
 fn test_vm_virtualize_vp_vector_integer_minmax_saturating_match_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_minmax_saturating.input.ll");
     std::fs::write(
         &ir_source,
@@ -6647,6 +6907,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vp_vector_integer_unary_intrinsics_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_unary.input.ll");
     std::fs::write(
@@ -7520,6 +7785,11 @@ int main(void) {
 fn test_vm_virtualize_vp_cttz_elts_intrinsic_matches_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_vp_cttz_elts.input.ll");
     std::fs::write(
         &ir_source,
@@ -7626,6 +7896,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vp_cttz_elts_zero_is_poison_true_matches_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vp_cttz_elts_poison_true.input.ll");
     std::fs::write(
@@ -8096,6 +8371,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vp_float_reductions_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(19) {
+        eprintln!("skipping: fixture requires LLVM >= 19");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vp_float_reductions.input.ll");
     std::fs::write(
@@ -8785,6 +9065,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vp_vector_integer_ternary_intrinsics_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vp_vector_integer_ternary_intrinsics.input.ll");
     std::fs::write(
@@ -9603,9 +9888,7 @@ fn test_vm_virtualize_vector_float_unary_intrinsics_match_baseline() {
     ensure_plugin_built();
 
     let ir_source = output_dir().join("vm_virtualize_vector_float_unary_intrinsics.input.ll");
-    std::fs::write(
-        &ir_source,
-        r#"; ModuleID = 'vm_virtualize_vector_float_unary_intrinsics'
+    let fixture = r#"; ModuleID = 'vm_virtualize_vector_float_unary_intrinsics'
 source_filename = "vm_virtualize_vector_float_unary_intrinsics.ll"
 
 declare <2 x double> @llvm.fabs.v2f64(<2 x double>)
@@ -9696,9 +9979,28 @@ entry:
   %result = xor i64 %m17, %roundeven1_bits
   ret i64 %result
 }
-"#,
-    )
-    .expect("vector float unary intrinsics LLVM IR fixture should be writable");
+"#;
+    std::fs::write(&ir_source, fixture).expect("vector float unary intrinsics LLVM IR fixture should be writable");
+
+    // LLVM 18/19 的后端没有 FCANONICALIZE lowering，基线把向量 canonicalize
+    // 逐 lane 预展开为 select + 位运算（非 NaN 恒等，NaN 归一保留符号）。
+    let baseline_source = if legacy_llvm_backend() {
+        let legacy = fixture
+            .replace("declare <2 x double> @llvm.canonicalize.v2f64(<2 x double>)\n", "")
+            .replace(
+                "  %canon = call <2 x double> @llvm.canonicalize.v2f64(<2 x double> %sqrt)",
+                "  %can_x0 = extractelement <2 x double> %sqrt, i32 0\n  %can_x1 = extractelement <2 x double> %sqrt, i32 1\n  %can_n0 = fcmp uno double %can_x0, %can_x0\n  %can_b0 = bitcast double %can_x0 to i64\n  %can_s0 = and i64 %can_b0, -9223372036854775808\n  %can_q0 = or i64 %can_s0, 9221120237041098752\n  %can_f0 = bitcast i64 %can_q0 to double\n  %can_r0 = select i1 %can_n0, double %can_f0, double %can_x0\n  %can_n1 = fcmp uno double %can_x1, %can_x1\n  %can_b1 = bitcast double %can_x1 to i64\n  %can_s1 = and i64 %can_b1, -9223372036854775808\n  %can_q1 = or i64 %can_s1, 9221120237041098752\n  %can_f1 = bitcast i64 %can_q1 to double\n  %can_r1 = select i1 %can_n1, double %can_f1, double %can_x1\n  %canon_ins = insertelement <2 x double> poison, double %can_r0, i32 0\n  %canon = insertelement <2 x double> %canon_ins, double %can_r1, i32 1",
+            );
+        assert_ne!(
+            legacy, fixture,
+            "legacy vector canonicalize baseline rewrite should apply"
+        );
+        let path = output_dir().join("vm_virtualize_vector_float_unary_intrinsics_baseline_legacy.ll");
+        std::fs::write(&path, legacy).expect("legacy vector canonicalize baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        ir_source.clone()
+    };
 
     let harness = output_dir().join("vm_virtualize_vector_float_unary_intrinsics_harness.c");
     std::fs::write(
@@ -9717,7 +10019,7 @@ int main(void) {
     .expect("vector float unary intrinsics C harness should be writable");
 
     let baseline = compile_ir_with_c_harness_and_args(
-        &ir_source,
+        &baseline_source,
         &harness,
         "vm_virtualize_vector_float_unary_intrinsics_baseline",
         &["-lm"],
@@ -10869,6 +11171,11 @@ int main(void) {
 fn test_vm_virtualize_vector_reverse_splice_intrinsics_match_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(19) {
+        eprintln!("skipping: fixture requires LLVM >= 19");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_vector_reverse_splice.input.ll");
     std::fs::write(
         &ir_source,
@@ -11702,6 +12009,13 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_vp_select_matches_baseline() {
     ensure_plugin_built();
+
+    // llvm.vp.select 自 20 可解析，但 20/21 的 x86 codegen 无法合法化
+    // （"Do not know how to promote this operator's operand!"），22 起恢复。
+    if !llvm_supported(22) {
+        eprintln!("skipping: fixture requires LLVM >= 22");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_vp_select.input.ll");
     std::fs::write(
@@ -13011,9 +13325,7 @@ attributes #0 = { noinline optnone }
     .expect("VP vector float unary LLVM IR fixture should be writable");
 
     let baseline_ir_source = output_dir().join("vm_virtualize_vp_vector_float_unary_baseline.input.ll");
-    std::fs::write(
-        &baseline_ir_source,
-        r#"; ModuleID = 'vm_virtualize_vp_vector_float_unary_baseline'
+    let baseline_fixture = r#"; ModuleID = 'vm_virtualize_vp_vector_float_unary_baseline'
 source_filename = "vm_virtualize_vp_vector_float_unary_baseline.ll"
 
 declare float @llvm.fabs.f32(float)
@@ -13122,9 +13434,29 @@ entry:
 }
 
 attributes #0 = { noinline optnone }
-"#,
-    )
-    .expect("VP vector float unary scalar baseline LLVM IR fixture should be writable");
+"#;
+    // LLVM 18/19 没有后端 FCANONICALIZE lowering，基线的标量 canonicalize 按
+    // LangRef 语义预展开（非 NaN 恒等，NaN 归一保留符号）。
+    let baseline_for_compile = if legacy_llvm_backend() {
+        let legacy = baseline_fixture
+            .replace("declare float @llvm.canonicalize.f32(float)\n", "")
+            .replace(
+                "  %canonicalize0 = call float @llvm.canonicalize.f32(float %a)",
+                "  %can_n = fcmp uno float %a, %a\n  %can_b = bitcast float %a to i32\n  %can_s = and i32 %can_b, -2147483648\n  %can_q = or i32 %can_s, 2143289344\n  %can_f = bitcast i32 %can_q to float\n  %canonicalize0 = select i1 %can_n, float %can_f, float %a",
+            );
+        assert_ne!(
+            legacy, baseline_fixture,
+            "legacy VP canonicalize baseline rewrite should apply"
+        );
+        let path = output_dir().join("vm_virtualize_vp_vector_float_unary_baseline_legacy.ll");
+        std::fs::write(&path, legacy)
+            .expect("legacy VP vector float unary baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        baseline_ir_source.clone()
+    };
+    std::fs::write(&baseline_ir_source, baseline_fixture)
+        .expect("VP vector float unary scalar baseline LLVM IR fixture should be writable");
 
     let harness = output_dir().join("vm_virtualize_vp_vector_float_unary_harness.c");
     std::fs::write(
@@ -13143,7 +13475,7 @@ int main(void) {
     .expect("VP vector float unary C harness should be writable");
 
     let baseline = compile_ir_with_c_harness_and_args(
-        &baseline_ir_source,
+        &baseline_for_compile,
         &harness,
         "vm_virtualize_vp_vector_float_unary_baseline",
         &["-lm"],
@@ -14227,6 +14559,11 @@ int main(void) {
 fn test_vm_virtualize_fake_use_intrinsic_matches_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_fake_use_intrinsic.input.ll");
     std::fs::write(
         &ir_source,
@@ -15121,6 +15458,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_runtime_check_gate_intrinsics_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(19) {
+        eprintln!("skipping: fixture requires LLVM >= 19");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_runtime_check_gates.input.ll");
     std::fs::write(
@@ -16165,9 +16507,7 @@ fn test_vm_virtualize_canonicalize_intrinsic_matches_baseline() {
     ensure_plugin_built();
 
     let ir_source = output_dir().join("vm_virtualize_canonicalize_intrinsic.input.ll");
-    std::fs::write(
-        &ir_source,
-        r#"; ModuleID = 'vm_virtualize_canonicalize_intrinsic'
+    let fixture = r#"; ModuleID = 'vm_virtualize_canonicalize_intrinsic'
 source_filename = "vm_virtualize_canonicalize_intrinsic.ll"
 
 declare float @llvm.canonicalize.f32(float)
@@ -16189,9 +16529,36 @@ entry:
   %mix = xor i64 %hf, %dhigh
   ret i64 %mix
 }
-"#,
-    )
-    .expect("llvm.canonicalize intrinsic LLVM IR fixture should be writable");
+"#;
+    std::fs::write(&ir_source, fixture).expect("llvm.canonicalize intrinsic LLVM IR fixture should be writable");
+
+    // LLVM 18/19 的后端没有 FCANONICALIZE lowering，基线按 LangRef 语义预展开：
+    // 非 NaN 恒等返回，NaN（含 sNaN）归一为保留输入符号的 canonical quiet NaN；
+    // f16 经 f32 中转（fpext/fptrunc 精确无损）。
+    let baseline_source = if legacy_llvm_backend() {
+        let legacy = fixture
+            .replace("declare float @llvm.canonicalize.f32(float)\n", "")
+            .replace("declare double @llvm.canonicalize.f64(double)\n", "")
+            .replace("declare half @llvm.canonicalize.f16(half)\n", "")
+            .replace(
+                "  %ch = call half @llvm.canonicalize.f16(half %h)",
+                "  %hext = fpext half %h to float\n  %hn = fcmp uno float %hext, %hext\n  %hb = bitcast float %hext to i32\n  %hs = and i32 %hb, -2147483648\n  %hq = or i32 %hs, 2143289344\n  %hcn = bitcast i32 %hq to float\n  %hr = select i1 %hn, float %hcn, float %hext\n  %ch = fptrunc float %hr to half",
+            )
+            .replace(
+                "  %cf = call float @llvm.canonicalize.f32(float %f)",
+                "  %fn = fcmp uno float %f, %f\n  %fb = bitcast float %f to i32\n  %fs = and i32 %fb, -2147483648\n  %fq = or i32 %fs, 2143289344\n  %fcn = bitcast i32 %fq to float\n  %cf = select i1 %fn, float %fcn, float %f",
+            )
+            .replace(
+                "  %cd = call double @llvm.canonicalize.f64(double %d)",
+                "  %dn = fcmp uno double %d, %d\n  %db = bitcast double %d to i64\n  %ds = and i64 %db, -9223372036854775808\n  %dq = or i64 %ds, 9221120237041098752\n  %dcn = bitcast i64 %dq to double\n  %cd = select i1 %dn, double %dcn, double %d",
+            );
+        assert_ne!(legacy, fixture, "legacy canonicalize baseline rewrite should apply");
+        let path = output_dir().join("vm_virtualize_canonicalize_intrinsic_baseline_legacy.ll");
+        std::fs::write(&path, legacy).expect("legacy canonicalize baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        ir_source.clone()
+    };
 
     let harness = output_dir().join("vm_virtualize_canonicalize_intrinsic_harness.c");
     std::fs::write(
@@ -16216,7 +16583,11 @@ int main(void) {
     )
     .expect("llvm.canonicalize intrinsic C harness should be writable");
 
-    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_canonicalize_intrinsic_baseline");
+    let baseline = compile_ir_with_c_harness(
+        &baseline_source,
+        &harness,
+        "vm_virtualize_canonicalize_intrinsic_baseline",
+    );
     baseline.assert_success();
     let baseline_output = baseline.run();
     baseline_output.assert_success();
@@ -19463,8 +19834,11 @@ fn test_vm_virtualize_multi_dynamic_struct_array_gep_matches_baseline() {
     ensure_plugin_built();
 
     let ir_source = output_dir().join("vm_virtualize_multi_dynamic_struct_array_gep.input.ll");
-    std::fs::write(
-        &ir_source,
+    // 布局敏感 fixture：盖上编译 clang 的 datalayout（见 host_datalayout_line 注释），
+    // 避免 LLVM 23 对无 datalayout 模块使用通用默认布局导致偏移与基线不一致。
+    let datalayout = host_datalayout_line();
+    let fixture = format!(
+        "{datalayout}\n{}",
         r#"; ModuleID = 'vm_virtualize_multi_dynamic_struct_array_gep'
 source_filename = "vm_virtualize_multi_dynamic_struct_array_gep.ll"
 
@@ -19477,9 +19851,9 @@ entry:
   %value = load i32, ptr %ptr, align 4
   ret i32 %value
 }
-"#,
-    )
-    .expect("multi-dynamic struct-array GEP LLVM IR fixture should be writable");
+"#
+    );
+    std::fs::write(&ir_source, fixture).expect("multi-dynamic struct-array GEP LLVM IR fixture should be writable");
 
     let harness = output_dir().join("vm_virtualize_multi_dynamic_struct_array_gep_harness.c");
     std::fs::write(
@@ -23798,6 +24172,11 @@ int main(void) {
 fn test_vm_virtualize_atomic_rmw_match_baseline() {
     ensure_plugin_built();
 
+    if !llvm_supported(20) {
+        eprintln!("skipping: fixture requires LLVM >= 20");
+        return;
+    }
+
     let ir_source = output_dir().join("vm_virtualize_atomic_rmw.input.ll");
     std::fs::write(
         &ir_source,
@@ -23972,6 +24351,11 @@ int main(void) {
 #[serial]
 fn test_vm_virtualize_float_atomic_rmw_match_baseline() {
     ensure_plugin_built();
+
+    if !llvm_supported(21) {
+        eprintln!("skipping: fixture requires LLVM >= 21");
+        return;
+    }
 
     let ir_source = output_dir().join("vm_virtualize_float_atomic_rmw.input.ll");
     std::fs::write(
@@ -24359,7 +24743,14 @@ entry:
     assert!(ir.contains("handler.atomic_rmw_add"));
     assert!(ir.contains("handler.cmpxchg"));
     assert!(ir.contains("syncscope(\"singlethread\")"));
-    assert!(!ir.contains(".amice.vm.bytecode.vm_custom_scope_atomic_load_skip"));
+    if llvm_supported(20) {
+        // LLVM 20+ 能通过 C API 读出命名 syncscope，自定义 scope 保守跳过。
+        assert!(!ir.contains(".amice.vm.bytecode.vm_custom_scope_atomic_load_skip"));
+    } else {
+        // LLVM < 20 的 C API 只能区分 system/singlethread，"agent" 等命名 scope
+        // 不可见；按 system 保守虚拟化（发出更强 ordering，语义安全）。
+        assert!(ir.contains(".amice.vm.bytecode.vm_custom_scope_atomic_load_skip"));
+    }
     assert!(!ir.contains(".amice.vm.bytecode.vm_underaligned_atomic_load"));
     assert!(!ir.contains(".amice.vm.bytecode.vm_underaligned_atomicrmw"));
     assert!(!ir.contains(".amice.vm.bytecode.vm_i128_cmpxchg_skip"));
@@ -24401,8 +24792,10 @@ entry:
     );
 
     assert!(stderr.contains("skip function"));
-    assert!(stderr.contains("vm_custom_scope_atomic_load_skip"));
-    assert!(stderr.contains("load atomic syncscope"));
+    if llvm_supported(20) {
+        assert!(stderr.contains("vm_custom_scope_atomic_load_skip"));
+        assert!(stderr.contains("load atomic syncscope"));
+    }
     assert!(stderr.contains("vm_underaligned_atomic_load"));
     assert!(stderr.contains("load atomic memory access requires natural alignment 4, got 1"));
     assert!(stderr.contains("vm_underaligned_atomicrmw"));
@@ -25704,8 +26097,14 @@ attributes #0 = { noinline optnone }
     )
     .expect("exception/control-flow LLVM IR fixture should be writable");
 
-    let (output_ir, output) =
-        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_exception_control.ll", vm_virtualize_config());
+    // O1 在 LLVM 18 会把 indirectbr 改写成其他控制流，pass 看不到原始形态；
+    // O0 让 invoke/callbr/indirectbr/va_arg 原样到达虚拟化 pass 以检验跳过逻辑。
+    let (output_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm_virtualize_exception_control.ll",
+        "default<O0>",
+        vm_virtualize_config(),
+    );
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
 
@@ -25726,7 +26125,12 @@ attributes #0 = { noinline optnone }
     assert!(stderr.contains("vm_callbr"));
     assert!(stderr.contains("callbr is not supported by vm_virtualize"));
     assert!(stderr.contains("vm_indirectbr"));
-    assert!(stderr.contains("indirectbr is not supported by vm_virtualize"));
+    // 18/19/20 会先把 indirectbr 目标的 blockaddress 归为 non-call address use
+    // 并按资格检查跳过，21+ 才到达指令级检查；两种消息都表示函数被安全跳过。
+    assert!(
+        stderr.contains("indirectbr is not supported by vm_virtualize")
+            || stderr.contains("function has non-call address uses")
+    );
     assert!(stderr.contains("vm_va_arg"));
     assert!(stderr.contains("va_arg is not supported by vm_virtualize"));
 
@@ -26475,14 +26879,12 @@ int main(int argc, char **argv) {
     virtualized_output.assert_success();
     assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
 
-    let baseline_trap = Command::new(&baseline.binary_path)
-        .arg("trap")
-        .output()
-        .expect("baseline trap binary should run");
-    let virtualized_trap = Command::new(&virtualized.binary_path)
-        .arg("trap")
-        .output()
-        .expect("virtualized trap binary should run");
+    let mut baseline_trap_cmd = Command::new(&baseline.binary_path);
+    baseline_trap_cmd.arg("trap");
+    let baseline_trap = command_output(&mut baseline_trap_cmd);
+    let mut virtualized_trap_cmd = Command::new(&virtualized.binary_path);
+    virtualized_trap_cmd.arg("trap");
+    let virtualized_trap = command_output(&mut virtualized_trap_cmd);
     assert!(
         !baseline_trap.status.success(),
         "baseline trap path should terminate abnormally"
@@ -26599,14 +27001,12 @@ int main(int argc, char **argv) {
     assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
 
     for arg in ["d", "u"] {
-        let baseline_trap = Command::new(&baseline.binary_path)
-            .arg(arg)
-            .output()
-            .expect("baseline debugtrap/ubsantrap binary should run");
-        let virtualized_trap = Command::new(&virtualized.binary_path)
-            .arg(arg)
-            .output()
-            .expect("virtualized debugtrap/ubsantrap binary should run");
+        let mut baseline_trap_cmd = Command::new(&baseline.binary_path);
+        baseline_trap_cmd.arg(arg);
+        let baseline_trap = command_output(&mut baseline_trap_cmd);
+        let mut virtualized_trap_cmd = Command::new(&virtualized.binary_path);
+        virtualized_trap_cmd.arg(arg);
+        let virtualized_trap = command_output(&mut virtualized_trap_cmd);
         assert!(
             !baseline_trap.status.success(),
             "baseline {arg} path should terminate abnormally"
@@ -28601,9 +29001,7 @@ fn test_vm_virtualize_round_to_int_intrinsics_match_baseline() {
     ensure_plugin_built();
 
     let ir_source = output_dir().join("vm_virtualize_round_to_int_intrinsics.input.ll");
-    std::fs::write(
-        &ir_source,
-        r#"; ModuleID = 'vm_virtualize_round_to_int_intrinsics'
+    let fixture = r#"; ModuleID = 'vm_virtualize_round_to_int_intrinsics'
 source_filename = "vm_virtualize_round_to_int_intrinsics.ll"
 
 declare i32 @llvm.lrint.i32.f16(half)
@@ -28644,9 +29042,20 @@ entry:
   %r = xor i64 %x5, %s7
   ret i64 %r
 }
-"#,
-    )
-    .expect("round-to-int intrinsic LLVM IR fixture should be writable");
+"#;
+    std::fs::write(&ir_source, fixture).expect("round-to-int intrinsic LLVM IR fixture should be writable");
+
+    // x86-64 的 LLVM <22 无法编译 lrint/lround 家族（18/19 缺 f16 路径，20/21
+    // 连标量都拒选），基线按语义等价形式预展开。
+    let baseline_source = if legacy_x86_round_to_int() {
+        let legacy = expand_round_to_int_calls_for_legacy_x86(&fixture);
+        assert_ne!(legacy, fixture, "legacy round-to-int baseline rewrite should apply");
+        let path = output_dir().join("vm_virtualize_round_to_int_intrinsics_baseline_legacy.ll");
+        std::fs::write(&path, legacy).expect("legacy round-to-int baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        ir_source.clone()
+    };
 
     let harness = output_dir().join("vm_virtualize_round_to_int_intrinsics_harness.c");
     std::fs::write(
@@ -28668,7 +29077,7 @@ int main(void) {
     .expect("round-to-int intrinsic C harness should be writable");
 
     let baseline = compile_ir_with_c_harness_and_args(
-        &ir_source,
+        &baseline_source,
         &harness,
         "vm_virtualize_round_to_int_intrinsics_baseline",
         &["-lm"],
@@ -28689,15 +29098,18 @@ int main(void) {
     assert_success(output);
 
     let dump = bytecode_dump_for_function(&stderr, "vm_round_to_int_intrinsics");
-    for needle in [
+    let mut needles = vec![
         "FloatRoundToInt { op: LRint",
         "FloatRoundToInt { op: LLRint",
         "FloatRoundToInt { op: LRound",
         "FloatRoundToInt { op: LLRound",
-        "from_width: 16, to_width: 32",
         "from_width: 32, to_width: 64",
         "from_width: 64, to_width: 64",
-    ] {
+    ];
+    if !legacy_x86_round_to_int() {
+        needles.push("from_width: 16, to_width: 32");
+    }
+    for needle in needles {
         assert!(
             dump.contains(needle),
             "round-to-int intrinsics should encode {needle} through profile handlers:\n{dump}"
@@ -28730,9 +29142,7 @@ fn test_vm_virtualize_vector_round_to_int_intrinsics_match_baseline() {
     ensure_plugin_built();
 
     let ir_source = output_dir().join("vm_virtualize_vector_round_to_int_intrinsics.input.ll");
-    std::fs::write(
-        &ir_source,
-        r#"; ModuleID = 'vm_virtualize_vector_round_to_int_intrinsics'
+    let fixture = r#"; ModuleID = 'vm_virtualize_vector_round_to_int_intrinsics'
 source_filename = "vm_virtualize_vector_round_to_int_intrinsics.ll"
 
 declare <2 x i32> @llvm.lrint.v2i32.v2f32(<2 x float>)
@@ -28774,9 +29184,69 @@ entry:
   %result = xor i64 %m5, %llrd1
   ret i64 %result
 }
-"#,
-    )
-    .expect("vector round-to-int intrinsic LLVM IR fixture should be writable");
+"#;
+    std::fs::write(&ir_source, fixture).expect("vector round-to-int intrinsic LLVM IR fixture should be writable");
+
+    // LLVM 18/19 的 `llvm.lrint/lround` 只接受标量浮点重载（向量重载是 LLVM 20
+    // 加入的），向量调用连 LLParser/verifier 都过不去；20/21 的 x86-64 codegen
+    // 对向量 round-to-int 同样失败（CI 实测），22 起恢复可用。这些版本把基线与
+    // 虚拟化输入都换成逐 lane 标量变体，语义与向量形式逐 lane 等价。
+    let module_source = if legacy_llvm_backend() || legacy_x86_round_to_int() {
+        let legacy = fixture
+            .replace(
+                "declare <2 x i32> @llvm.lrint.v2i32.v2f32(<2 x float>)", "declare i32 @llvm.lrint.i32.f32(float)",
+            )
+            .replace(
+                "declare <2 x i64> @llvm.llrint.v2i64.v2f64(<2 x double>)",
+                "declare i64 @llvm.llrint.i64.f64(double)",
+            )
+            .replace(
+                "declare <2 x i32> @llvm.lround.v2i32.v2f32(<2 x float>)", "declare i32 @llvm.lround.i32.f32(float)",
+            )
+            .replace(
+                "declare <2 x i64> @llvm.llround.v2i64.v2f64(<2 x double>)",
+                "declare i64 @llvm.llround.i64.f64(double)",
+            )
+            .replace(
+                "  %lr = call <2 x i32> @llvm.lrint.v2i32.v2f32(<2 x float> %vf1)",
+                "  %lr_a = call i32 @llvm.lrint.i32.f32(float %a)\n  %lr_b = call i32 @llvm.lrint.i32.f32(float %b)\n  %lr_x = insertelement <2 x i32> poison, i32 %lr_a, i32 0\n  %lr = insertelement <2 x i32> %lr_x, i32 %lr_b, i32 1",
+            )
+            .replace(
+                "  %llr = call <2 x i64> @llvm.llrint.v2i64.v2f64(<2 x double> %vd1)",
+                "  %llr_a = call i64 @llvm.llrint.i64.f64(double %c)\n  %llr_b = call i64 @llvm.llrint.i64.f64(double %d)\n  %llr_x = insertelement <2 x i64> poison, i64 %llr_a, i32 0\n  %llr = insertelement <2 x i64> %llr_x, i64 %llr_b, i32 1",
+            )
+            .replace(
+                "  %lrd = call <2 x i32> @llvm.lround.v2i32.v2f32(<2 x float> %vf1)",
+                "  %lrd_a = call i32 @llvm.lround.i32.f32(float %a)\n  %lrd_b = call i32 @llvm.lround.i32.f32(float %b)\n  %lrd_x = insertelement <2 x i32> poison, i32 %lrd_a, i32 0\n  %lrd = insertelement <2 x i32> %lrd_x, i32 %lrd_b, i32 1",
+            )
+            .replace(
+                "  %llrd = call <2 x i64> @llvm.llround.v2i64.v2f64(<2 x double> %vd1)",
+                "  %llrd_a = call i64 @llvm.llround.i64.f64(double %c)\n  %llrd_b = call i64 @llvm.llround.i64.f64(double %d)\n  %llrd_x = insertelement <2 x i64> poison, i64 %llrd_a, i32 0\n  %llrd = insertelement <2 x i64> %llrd_x, i64 %llrd_b, i32 1",
+            );
+        assert_ne!(
+            legacy, fixture,
+            "legacy vector round-to-int baseline rewrite should apply"
+        );
+        let path = output_dir().join("vm_virtualize_vector_round_to_int_intrinsics_baseline_legacy.ll");
+        std::fs::write(&path, legacy).expect("legacy vector round-to-int baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        ir_source.clone()
+    };
+
+    // 插件输入保持逐 lane intrinsic 形态以覆盖 FloatRoundToInt 虚拟化；只有基线
+    // 在 x86 <22 上才需要把标量调用再预展开为 rint/round + fptosi。
+    let baseline_source = if legacy_x86_round_to_int() {
+        let module_fixture =
+            std::fs::read_to_string(&module_source).expect("legacy vector round-to-int module should be readable");
+        let expanded = expand_round_to_int_calls_for_legacy_x86(&module_fixture);
+        let path = output_dir().join("vm_virtualize_vector_round_to_int_intrinsics_baseline_legacy_x86.ll");
+        std::fs::write(&path, expanded)
+            .expect("x86 legacy vector round-to-int baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        module_source.clone()
+    };
 
     let harness = output_dir().join("vm_virtualize_vector_round_to_int_intrinsics_harness.c");
     std::fs::write(
@@ -28798,7 +29268,7 @@ int main(void) {
     .expect("vector round-to-int intrinsic C harness should be writable");
 
     let baseline = compile_ir_with_c_harness_and_args(
-        &ir_source,
+        &baseline_source,
         &harness,
         "vm_virtualize_vector_round_to_int_intrinsics_baseline",
         &["-lm"],
@@ -28810,7 +29280,7 @@ int main(void) {
     let mut config = vm_virtualize_config();
     config.vm_dump_bytecode = Some(true);
     let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
-        &ir_source,
+        &module_source,
         "vm_virtualize_vector_round_to_int_intrinsics.ll",
         "default<O0>",
         config,
@@ -28919,6 +29389,23 @@ entry:
     )
     .expect("VP vector round-to-int scalar baseline LLVM IR fixture should be writable");
 
+    // 20/21 的 x86 连标量 lrint/lround 都拒选，x86 <22 基线按语义等价形式预展开。
+    let baseline_for_compile = if legacy_x86_round_to_int() {
+        let baseline_fixture = std::fs::read_to_string(&baseline_ir_source)
+            .expect("VP vector round-to-int scalar baseline LLVM IR should be readable");
+        let legacy = expand_round_to_int_calls_for_legacy_x86(&baseline_fixture);
+        assert_ne!(
+            legacy, baseline_fixture,
+            "legacy VP vector round-to-int baseline rewrite should apply"
+        );
+        let path = output_dir().join("vm_virtualize_vp_vector_round_to_int_baseline_legacy.ll");
+        std::fs::write(&path, legacy)
+            .expect("legacy VP vector round-to-int baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        baseline_ir_source.clone()
+    };
+
     let harness = output_dir().join("vm_virtualize_vp_vector_round_to_int_intrinsics_harness.c");
     std::fs::write(
         &harness,
@@ -28939,7 +29426,7 @@ int main(void) {
     .expect("VP vector round-to-int C harness should be writable");
 
     let baseline = compile_ir_with_c_harness_and_args(
-        &baseline_ir_source,
+        &baseline_for_compile,
         &harness,
         "vm_virtualize_vp_vector_round_to_int_baseline",
         &["-lm"],
@@ -30383,8 +30870,22 @@ int main(void) {
     )
     .expect("constrained floating math C harness should be writable");
 
+    // 20/21 的 x86 连标量 lrint/lround 都拒选；constrained 形式取首个浮点参数，
+    // 按语义等价的 rint/round + fptosi 预展开基线。
+    let baseline_source = if legacy_x86_round_to_int() {
+        let fixture =
+            std::fs::read_to_string(&ir_source).expect("constrained floating math LLVM IR fixture should be readable");
+        let legacy = expand_round_to_int_calls_for_legacy_x86(&fixture);
+        assert_ne!(legacy, fixture, "legacy constrained math baseline rewrite should apply");
+        let path = output_dir().join("vm_virtualize_constrained_float_math_baseline_legacy.ll");
+        std::fs::write(&path, legacy).expect("legacy constrained math baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        ir_source.clone()
+    };
+
     let baseline = compile_ir_with_c_harness_and_args(
-        &ir_source,
+        &baseline_source,
         &harness,
         "vm_virtualize_constrained_float_math_baseline",
         &["-lm"],
