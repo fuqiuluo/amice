@@ -5009,20 +5009,18 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 );
             }
             checked_intrinsic_integer_width(result_info.width as u64)?;
-            let lhs_binding = lhs
-                .fields
-                .get(index)
-                .copied()
-                .flatten()
-                .map(|field| field.binding)
-                .with_context(|| format!("vector integer binop lhs lane {index} is undefined or unsupported"))?;
-            let rhs_binding = rhs
-                .fields
-                .get(index)
-                .copied()
-                .flatten()
-                .map(|field| field.binding)
-                .with_context(|| format!("vector integer binop rhs lane {index} is undefined or unsupported"))?;
+            let (Some(lhs_field), Some(rhs_field)) = (
+                lhs.fields.get(index).copied().flatten(),
+                rhs.fields.get(index).copied().flatten(),
+            ) else {
+                // instcombine 等会把横向归约改写成带 poison lane 的 shufflevector
+                // （如掩码 <i32 1, i32 poison>）再喂给向量 binop。poison 操作数按
+                // 语义传播为 poison 结果 lane；只有该 lane 后续被消费时才由消费点报错。
+                fields.push(None);
+                continue;
+            };
+            let lhs_binding = lhs_field.binding;
+            let rhs_binding = rhs_field.binding;
             if lhs_binding.width != result_info.width || rhs_binding.width != result_info.width {
                 bail!(
                     "vector integer binop lane {index} binding width mismatch: result i{}, lhs i{}, rhs i{}",
@@ -19196,9 +19194,15 @@ fn unsupported_control_flow_reason(opcode: InstructionOpcode) -> Option<&'static
 
 fn unsupported_stack_introspection_intrinsic_reason(callee: FunctionValue<'_>) -> Option<&'static str> {
     let name = callee.get_name().to_str().unwrap_or("");
+    // LLVM 23 起 returnaddress/localaddress 也是 anyptr 重载 intrinsic，解析器会把
+    // 未修饰调用自动修饰成 llvm.returnaddress.p0 等形态；按前缀匹配。
     match name {
-        "llvm.returnaddress" => Some("llvm.returnaddress is stack introspection and is not supported by vm_virtualize"),
-        "llvm.localaddress" => Some("llvm.localaddress is stack introspection and is not supported by vm_virtualize"),
+        _ if name.starts_with("llvm.returnaddress") => {
+            Some("llvm.returnaddress is stack introspection and is not supported by vm_virtualize")
+        },
+        _ if name.starts_with("llvm.localaddress") => {
+            Some("llvm.localaddress is stack introspection and is not supported by vm_virtualize")
+        },
         _ if name.starts_with("llvm.frameaddress") => {
             Some("llvm.frameaddress is stack introspection and is not supported by vm_virtualize")
         },
@@ -20005,7 +20009,13 @@ fn sideeffect_intrinsic(function: FunctionValue<'_>) -> bool {
 }
 
 fn clear_cache_intrinsic(function: FunctionValue<'_>) -> bool {
-    function.get_name().to_string_lossy().as_ref() == "llvm.clear_cache"
+    // LLVM 23 起 llvm.clear_cache 是 anyptr 重载 intrinsic，IR 解析器会把未修饰的
+    // 调用自动修饰成 llvm.clear_cache.p0；按前缀匹配两种形态。
+    function
+        .get_name()
+        .to_string_lossy()
+        .as_ref()
+        .starts_with("llvm.clear_cache")
 }
 
 fn pseudoprobe_intrinsic(function: FunctionValue<'_>) -> bool {

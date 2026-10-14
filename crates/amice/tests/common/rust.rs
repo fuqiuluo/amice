@@ -131,7 +131,7 @@ impl RustCompileBuilder {
         }
 
         cmd.current_dir(&self.project_dir);
-        cmd.output().expect("Failed to execute cargo rustc")
+        crate::common::output_with_watchdog(cmd)
     }
 
     fn add_cargo_toolchain(&self, cmd: &mut Command) {
@@ -201,7 +201,7 @@ impl RustCompileBuilder {
         self.config.apply_to_command(&mut cmd);
         cmd.arg("--").arg("--emit=llvm-ir");
         cmd.current_dir(&self.project_dir);
-        cmd.output().expect("Failed to emit Rust LLVM IR")
+        crate::common::output_with_watchdog(cmd)
     }
 
     fn locate_emitted_ir(&self, target_dir: &Path) -> PathBuf {
@@ -240,21 +240,20 @@ impl RustCompileBuilder {
             .arg("-o")
             .arg(optimized_ir);
         self.config.apply_to_command(&mut cmd);
-        cmd.output().expect("Failed to execute opt")
+        crate::common::output_with_watchdog(cmd)
     }
 
     fn run_llc(&self, config: &LlvmConfig, optimized_ir: &Path, object: &Path) -> Output {
         let llc = Path::new(&config.prefix).join("bin").join("llc");
-        Command::new(llc)
-            .env("CCACHE_DISABLE", "1")
+        let mut cmd = Command::new(llc);
+        cmd.env("CCACHE_DISABLE", "1")
             .env(&config.env_var, &config.prefix)
             .arg("-relocation-model=pic")
             .arg("-filetype=obj")
             .arg(optimized_ir)
             .arg("-o")
-            .arg(object)
-            .output()
-            .expect("Failed to execute llc")
+            .arg(object);
+        crate::common::output_with_watchdog(cmd)
     }
 
     fn link_pic_object(&self, config: &LlvmConfig, object: &Path, binary_path: &Path) -> Output {
@@ -278,7 +277,7 @@ impl RustCompileBuilder {
             .arg(format!("link-arg={}", object.display()))
             .arg("-o")
             .arg(binary_path);
-        cmd.output().expect("Failed to link Rust object")
+        crate::common::output_with_watchdog(cmd)
     }
 
     fn opt_pipeline_level(profile: &str) -> &'static str {

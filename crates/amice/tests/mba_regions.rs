@@ -15,7 +15,7 @@ fn tool(name: &str) -> PathBuf {
 }
 
 fn run(cmd: &mut Command) -> String {
-    let out = cmd.output().expect("failed to start LLVM tool");
+    let out = crate::common::output_with_watchdog_ref(cmd);
     assert!(
         out.status.success(),
         "{cmd:?}\n{}\n{}",
