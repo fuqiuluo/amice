@@ -8327,25 +8327,28 @@ fn build_float_round_to_int_call<'ctx>(
         };
         let rounding_intrinsic = match op {
             FloatRoundToIntOp::LRint | FloatRoundToIntOp::LLRint => {
-                if is_f32 { ctx.rint_f32 } else { ctx.rint_f64 }
+                if is_f32 {
+                    ctx.rint_f32
+                } else {
+                    ctx.rint_f64
+                }
             },
             FloatRoundToIntOp::LRound | FloatRoundToIntOp::LLRound => {
-                if is_f32 { ctx.round_f32 } else { ctx.round_f64 }
+                if is_f32 {
+                    ctx.round_f32
+                } else {
+                    ctx.round_f64
+                }
             },
         };
-        let rounded = build_float_unary_intrinsic_call(
-            builder,
-            rounding_intrinsic,
-            source,
-            "froundtoint.degraded.round",
-        )?;
+        let rounded =
+            build_float_unary_intrinsic_call(builder, rounding_intrinsic, source, "froundtoint.degraded.round")?;
         let target_type = match to_width {
             32 => ctx.i32_type,
             64 => ctx.i64_type,
             other => anyhow::bail!("unsupported round-to-int target width i{other}"),
         };
-        let value =
-            builder.build_float_to_signed_int(rounded, target_type, "froundtoint.degraded")?;
+        let value = builder.build_float_to_signed_int(rounded, target_type, "froundtoint.degraded")?;
         return Ok(if to_width == 32 {
             builder.build_int_z_extend(value, ctx.i64_type, "froundtoint.zext")?
         } else {

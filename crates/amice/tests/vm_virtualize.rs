@@ -62,7 +62,11 @@ fn expand_round_to_int_calls_for_legacy_x86(fixture: &str) -> String {
         let first_arg = args.split(',').next()?.trim().trim_end_matches(')');
         let (src_ty, src_val) = first_arg.split_once(' ')?;
         let (round_ty, intrinsic_ty, mut lines) = match src_ty {
-            "half" => ("float", "f32", vec![format!("%{dst}.ext = fpext half {src_val} to float")]),
+            "half" => (
+                "float",
+                "f32",
+                vec![format!("%{dst}.ext = fpext half {src_val} to float")],
+            ),
             "float" => ("float", "f32", Vec::new()),
             "double" => ("double", "f64", Vec::new()),
             _ => return None,
@@ -29190,8 +29194,8 @@ entry:
     // 插件输入保持逐 lane intrinsic 形态以覆盖 FloatRoundToInt 虚拟化；只有基线
     // 在 x86 <22 上才需要把标量调用再预展开为 rint/round + fptosi。
     let baseline_source = if legacy_x86_round_to_int() {
-        let module_fixture = std::fs::read_to_string(&module_source)
-            .expect("legacy vector round-to-int module should be readable");
+        let module_fixture =
+            std::fs::read_to_string(&module_source).expect("legacy vector round-to-int module should be readable");
         let expanded = expand_round_to_int_calls_for_legacy_x86(&module_fixture);
         let path = output_dir().join("vm_virtualize_vector_round_to_int_intrinsics_baseline_legacy_x86.ll");
         std::fs::write(&path, expanded)
@@ -30826,13 +30830,12 @@ int main(void) {
     // 20/21 的 x86 连标量 lrint/lround 都拒选；constrained 形式取首个浮点参数，
     // 按语义等价的 rint/round + fptosi 预展开基线。
     let baseline_source = if legacy_x86_round_to_int() {
-        let fixture = std::fs::read_to_string(&ir_source)
-            .expect("constrained floating math LLVM IR fixture should be readable");
+        let fixture =
+            std::fs::read_to_string(&ir_source).expect("constrained floating math LLVM IR fixture should be readable");
         let legacy = expand_round_to_int_calls_for_legacy_x86(&fixture);
         assert_ne!(legacy, fixture, "legacy constrained math baseline rewrite should apply");
         let path = output_dir().join("vm_virtualize_constrained_float_math_baseline_legacy.ll");
-        std::fs::write(&path, legacy)
-            .expect("legacy constrained math baseline LLVM IR fixture should be writable");
+        std::fs::write(&path, legacy).expect("legacy constrained math baseline LLVM IR fixture should be writable");
         path
     } else {
         ir_source.clone()
