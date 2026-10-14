@@ -11,12 +11,74 @@ pub mod cpp;
 pub mod rust;
 
 use std::env;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 // Re-export for convenience
 pub use cpp::CppCompileBuilder;
 pub use rust::RustCompileBuilder;
+
+/// 单条测试命令的看门狗上限。CI 的 LLVM 20/21 腿曾出现测试子进程挂死并耗尽
+/// 180 分钟的步骤超时；正常命令都在秒级完成，超时在这里 kill 并把命令写进
+/// panic 消息，让 CI 日志直接指认卡住的测试与命令。
+pub const TEST_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// 带看门狗地执行命令：超时 kill 子进程并以包含命令行的错误 panic。
+pub fn output_with_watchdog(mut command: Command) -> Output {
+    watchdog(&mut command)
+}
+
+/// 与 [`output_with_watchdog`] 相同，但借用已有的 `&mut Command`（如复用调用方
+/// 已配置好参数的命令）。
+pub fn output_with_watchdog_ref(command: &mut Command) -> Output {
+    watchdog(command)
+}
+
+fn watchdog(command: &mut Command) -> Output {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .unwrap_or_else(|err| panic!("failed to spawn {command:?}: {err}"));
+
+    // 必须与等待循环并发排空管道：子进程输出超过管道缓冲（64KB）后会阻塞在
+    // 写入上，若只在退出后才读，编译/cargo 这类大输出命令会死锁到看门狗误杀。
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || read_pipe_to_end(stdout_pipe));
+    let stderr_reader = std::thread::spawn(move || read_pipe_to_end(stderr_pipe));
+
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() > TEST_COMMAND_TIMEOUT {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "command exceeded {:?} watchdog timeout and was killed: {command:?}",
+                        TEST_COMMAND_TIMEOUT
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            },
+            Err(err) => panic!("failed to wait for {command:?}: {err}"),
+        }
+    };
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    Output { status, stdout, stderr }
+}
+
+fn read_pipe_to_end<R: std::io::Read>(mut pipe: Option<R>) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    if let Some(pipe) = pipe.as_mut() {
+        let _ = pipe.read_to_end(&mut buffer);
+    }
+    buffer
+}
 
 /// Target programming language for compilation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,7 +271,7 @@ fn run_amice_build(config: Option<&LlvmConfig>) {
         cmd.arg("--no-default-features").arg("--features").arg(features);
     }
 
-    let output = cmd.output().expect("Failed to execute cargo build");
+    let output = crate::common::output_with_watchdog(cmd);
 
     if !output.status.success() {
         eprintln!("=== Cargo build failed ===");
@@ -487,9 +549,7 @@ impl CompileResult {
     pub fn run(&self) -> RunResult {
         self.assert_success();
 
-        let output = Command::new(&self.binary_path)
-            .output()
-            .expect("Failed to execute compiled binary");
+        let output = output_with_watchdog(Command::new(&self.binary_path));
 
         RunResult { output }
     }
