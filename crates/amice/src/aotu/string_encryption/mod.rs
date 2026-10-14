@@ -8,17 +8,21 @@ use crate::pass_registry::{AmicePass, AmicePassFlag};
 use amice_llvm::inkwell2::{BasicBlockExt, FunctionExt, LLVMValueRefExt, VerifyResult};
 use amice_macro::amice;
 use amice_plugin::inkwell::llvm_sys::core::{
-    LLVMConstIntGetZExtValue, LLVMGetAggregateElement, LLVMGetAsString, LLVMGetNumOperands, LLVMGetOperand,
-    LLVMGetTypeKind, LLVMGetUser, LLVMGetIntTypeWidth, LLVMIsAConstantInt, LLVMIsPoison, LLVMIsUndef, LLVMTypeOf,
+    LLVMConstIntGetZExtValue, LLVMGetAggregateElement, LLVMGetAsString, LLVMGetBasicBlockParent,
+    LLVMGetBasicBlockTerminator, LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetInstructionOpcode,
+    LLVMGetInstructionParent, LLVMGetIntTypeWidth, LLVMGetNextBasicBlock, LLVMGetNextInstruction, LLVMGetNumOperands,
+    LLVMGetNumSuccessors, LLVMGetOperand, LLVMGetSuccessor, LLVMGetTypeKind, LLVMGetUser, LLVMIsAConstantInt,
+    LLVMIsPoison, LLVMIsUndef, LLVMTypeOf,
 };
-use amice_plugin::inkwell::llvm_sys::LLVMTypeKind;
-use amice_plugin::inkwell::llvm_sys::prelude::LLVMValueRef;
+use amice_plugin::inkwell::llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
+use amice_plugin::inkwell::llvm_sys::{LLVMOpcode, LLVMTypeKind};
 use amice_plugin::inkwell::module::Module;
 use amice_plugin::inkwell::values::{
     AnyValueEnum, ArrayValue, AsValueRef, BasicValue, BasicValueUse, GlobalValue, InstructionOpcode, InstructionValue,
     PointerValue, StructValue,
 };
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses, inkwell};
+use std::collections::HashSet;
 use std::ptr::NonNull;
 
 /// Stack allocation threshold: strings larger than this will use global timing
@@ -215,9 +219,7 @@ pub(crate) fn use_user_supported(u: &BasicValueUse) -> bool {
         }
         !matches!(
             LLVMGetTypeKind(LLVMTypeOf(user)),
-            LLVMTypeKind::LLVMTokenTypeKind
-                | LLVMTypeKind::LLVMLabelTypeKind
-                | LLVMTypeKind::LLVMMetadataTypeKind
+            LLVMTypeKind::LLVMTokenTypeKind | LLVMTypeKind::LLVMLabelTypeKind | LLVMTypeKind::LLVMMetadataTypeKind
         )
     }
 }
@@ -234,6 +236,73 @@ pub(crate) fn global_has_unsupported_user(global: &GlobalValue) -> bool {
         }
     }
     false
+}
+
+/// MSVC WinEH 下 `inst` 是否落在 funclet 区域内（issue #99 的残留场景）。
+///
+/// 携带 `"funclet"(token)` 操作数包的 call/invoke 已由操作数扫描识别，但
+/// funclet 区域内的其余指令（如把字符串指针存进局部/全局的 store）同样不能
+/// 作为懒解密插入点：插入的裸 call 缺少 funclet 包，会破坏展开器状态映射，
+/// 首次进入 handler 即崩溃。这里从函数内每个 EH pad 入口块（第一条非 PHI
+/// 指令为 catchpad/cleanuppad 的块）沿后继可达性传播；catchret 的恢复目标
+/// 属于父函数区域，会被保守地一并覆盖。全程走 LLVM-C 原始遍历，避免对
+/// 值做 inkwell 分类。
+pub(crate) fn instruction_in_funclet_region(inst: LLVMValueRef) -> bool {
+    // SAFETY: inst 来自 use 链上的合法指令引用；所有句柄使用前判空，遍历
+    // 只读不改 IR。
+    unsafe {
+        let block = LLVMGetInstructionParent(inst);
+        if block.is_null() {
+            return false;
+        }
+        let function = LLVMGetBasicBlockParent(block);
+        if function.is_null() {
+            return false;
+        }
+
+        let mut eh_pad_blocks: Vec<LLVMBasicBlockRef> = Vec::new();
+        let mut bb = LLVMGetFirstBasicBlock(function);
+        while !bb.is_null() {
+            let mut first = LLVMGetFirstInstruction(bb);
+            while !first.is_null() && LLVMGetInstructionOpcode(first) == LLVMOpcode::LLVMPHI {
+                first = LLVMGetNextInstruction(first);
+            }
+            if !first.is_null()
+                && matches!(
+                    LLVMGetInstructionOpcode(first),
+                    LLVMOpcode::LLVMCatchPad | LLVMOpcode::LLVMCleanupPad
+                )
+            {
+                eh_pad_blocks.push(bb);
+            }
+            bb = LLVMGetNextBasicBlock(bb);
+        }
+        if eh_pad_blocks.is_empty() {
+            return false;
+        }
+
+        let mut visited: HashSet<usize> = HashSet::new();
+        let mut worklist = eh_pad_blocks;
+        while let Some(current) = worklist.pop() {
+            if !visited.insert(current as usize) {
+                continue;
+            }
+            if current == block {
+                return true;
+            }
+            let terminator = LLVMGetBasicBlockTerminator(current);
+            if terminator.is_null() {
+                continue;
+            }
+            for i in 0..LLVMGetNumSuccessors(terminator) {
+                let successor = LLVMGetSuccessor(terminator, i);
+                if !successor.is_null() {
+                    worklist.push(successor);
+                }
+            }
+        }
+        false
+    }
 }
 
 /// Whether `arr` holds an encryptable constant string: either a classical
@@ -378,9 +447,7 @@ pub(crate) fn collect_insert_points<'a>(
         let kind = unsafe { LLVMGetTypeKind(LLVMTypeOf(op)) };
         if matches!(
             kind,
-            LLVMTypeKind::LLVMTokenTypeKind
-                | LLVMTypeKind::LLVMLabelTypeKind
-                | LLVMTypeKind::LLVMMetadataTypeKind
+            LLVMTypeKind::LLVMTokenTypeKind | LLVMTypeKind::LLVMLabelTypeKind | LLVMTypeKind::LLVMMetadataTypeKind
         ) {
             if kind == LLVMTypeKind::LLVMTokenTypeKind {
                 carries_bundle = true;
@@ -391,7 +458,9 @@ pub(crate) fn collect_insert_points<'a>(
             output.push((inst_ref, i as u32));
         }
     }
-    if carries_bundle {
+    // token 检测只覆盖带操作数包的 call/invoke；funclet 区域内的其余使用点
+    // （store 等）没有 token 操作数，按区块可达性整串退回全局构造回退。
+    if carries_bundle || instruction_in_funclet_region(inst_ref) {
         output.truncate(original_len);
         return InsertPointCollection::RequiresGlobalFallback;
     }
