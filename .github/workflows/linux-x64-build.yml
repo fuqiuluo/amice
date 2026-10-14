@@ -244,12 +244,11 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             # step summary 不进 check-runs API；::error 注解会出现在公开的
-            # annotations 接口里，最多 10 条，这里逐个点名失败测试。
-            grep -E "^    test_" "$1" | head -10 | while read -r test; do
-              echo "::error::LLVM${{ matrix.llvm-version[0] }} failing test: ${test#    }"
-            done
-            grep -m1 -B1 -A3 "watchdog timeout" "$1" | while read -r line; do
-              echo "::error::LLVM${{ matrix.llvm-version[0] }} watchdog: $line"
+            # annotations 接口里（每步限 10 条）。对每个失败测试输出第一条
+            # panic/编译错误细节行，带上测试名。
+            awk '/^---- /{name=$2} /panicked at|^ *left:|^ *right:|watchdog timeout and was killed|Cannot select|Do not know how|error in backend|undefined reference/{if(name!=""){print "LLVM${{ matrix.llvm-version[0] }} " name ": " $0; name=""}}' "$1" \
+              | head -10 | while IFS= read -r line; do
+              echo "::error::$line"
             done
           }
           # Order/resource-sensitive MBA suites: single-threaded (convention from docs/MbaRegions.md)

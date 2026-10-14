@@ -30,9 +30,10 @@ fn legacy_llvm_backend() -> bool {
 }
 
 /// LLVM 18/19 的 X86 后端没有 f16 源与向量 round-to-int intrinsic 的类型合法化
-/// 路径（`Cannot select: i64 = lround` / `Do not know how to widen`）。
+/// 路径（`Cannot select: i64 = lround` / `Do not know how to widen`）；20/21 的
+/// x86-64 codegen 对这些组合同样失败（CI 实测），22 起恢复可用。
 fn legacy_x86_round_to_int() -> bool {
-    legacy_llvm_backend() && std::env::consts::ARCH == "x86_64"
+    llvm_major(&llvm_config()) < 22 && std::env::consts::ARCH == "x86_64"
 }
 
 /// fixture 依赖指定 LLVM 版本引入的 intrinsic / IR 形态或后端 lowering；低版本
@@ -5896,8 +5897,11 @@ int main(void) {
 fn test_vm_virtualize_vector_extract_last_active_matches_baseline() {
     ensure_plugin_built();
 
-    if !llvm_supported(20) {
-        eprintln!("skipping: fixture requires LLVM >= 20");
+    // llvm.vector.extract.last.active 需要 LLVM 20 才能解析，但 clang 20/21 的
+    // X86 codegen 编译该 intrinsic 时死循环（CI 实测基线编译被看门狗击杀），
+    // 22 起恢复可用。
+    if !llvm_supported(22) {
+        eprintln!("skipping: fixture requires LLVM >= 22");
         return;
     }
 
@@ -29059,10 +29063,10 @@ entry:
     std::fs::write(&ir_source, fixture).expect("vector round-to-int intrinsic LLVM IR fixture should be writable");
 
     // LLVM 18/19 的 `llvm.lrint/lround` 只接受标量浮点重载（向量重载是 LLVM 20
-    // 加入的），向量调用连 LLParser/verifier 都过不去；同时后端也没有向量
-    // round-to-int 的合法化路径。这些版本把基线与虚拟化输入都换成逐 lane 标量
-    // 变体，语义与向量形式逐 lane 等价。
-    let module_source = if legacy_llvm_backend() {
+    // 加入的），向量调用连 LLParser/verifier 都过不去；20/21 的 x86-64 codegen
+    // 对向量 round-to-int 同样失败（CI 实测），22 起恢复可用。这些版本把基线与
+    // 虚拟化输入都换成逐 lane 标量变体，语义与向量形式逐 lane 等价。
+    let module_source = if legacy_llvm_backend() || legacy_x86_round_to_int() {
         let legacy = fixture
             .replace(
                 "declare <2 x i32> @llvm.lrint.v2i32.v2f32(<2 x float>)", "declare i32 @llvm.lrint.i32.f32(float)",
