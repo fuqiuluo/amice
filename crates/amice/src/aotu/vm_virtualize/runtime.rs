@@ -8311,6 +8311,48 @@ fn build_float_round_to_int_call<'ctx>(
     to_width: u64,
     op: FloatRoundToIntOp,
 ) -> anyhow::Result<IntValue<'ctx>> {
+    // LLVM 20/21 的后端移除了 lrint/lround 家族的 ISel 支持（x86 上任何标量/
+    // 向量组合都 `Cannot select: i64 = lround`，18/19 与 22+ 正常）。这些版本
+    // 统一降级为语义等价序列：lrint → llvm.rint（当前舍入模式）+ fptosi；
+    // lround → llvm.round（半数远离零）+ fptosi。越界值为 poison，与 intrinsic
+    // 的 UB 语义一致。f16 源先 fpext 到 f32（精确转换）。
+    #[cfg(any(feature = "llvm20-1", feature = "llvm21-1"))]
+    {
+        let llvm_ctx = ctx.function.get_type().get_context();
+        let f32_type = llvm_ctx.f32_type();
+        let (source, is_f32) = if from_width == 16 {
+            (builder.build_float_ext(source, f32_type, "froundtoint.f16.f32")?, true)
+        } else {
+            (source, from_width == 32)
+        };
+        let rounding_intrinsic = match op {
+            FloatRoundToIntOp::LRint | FloatRoundToIntOp::LLRint => {
+                if is_f32 { ctx.rint_f32 } else { ctx.rint_f64 }
+            },
+            FloatRoundToIntOp::LRound | FloatRoundToIntOp::LLRound => {
+                if is_f32 { ctx.round_f32 } else { ctx.round_f64 }
+            },
+        };
+        let rounded = build_float_unary_intrinsic_call(
+            builder,
+            rounding_intrinsic,
+            source,
+            "froundtoint.degraded.round",
+        )?;
+        let target_type = match to_width {
+            32 => ctx.i32_type,
+            64 => ctx.i64_type,
+            other => anyhow::bail!("unsupported round-to-int target width i{other}"),
+        };
+        let value =
+            builder.build_float_to_signed_int(rounded, target_type, "froundtoint.degraded")?;
+        return Ok(if to_width == 32 {
+            builder.build_int_z_extend(value, ctx.i64_type, "froundtoint.zext")?
+        } else {
+            value
+        });
+    }
+
     // LLVM 18/19 的 X86 后端没有 f16 源 round-to-int intrinsic 的类型合法化路径
     // （`Cannot select: i32/i64 = lrint/lround`）。f16→f32 是精确转换，先 fpext
     // 再走 f32 intrinsic，取整语义不变。

@@ -36,6 +36,99 @@ fn legacy_x86_round_to_int() -> bool {
     llvm_major(&llvm_config()) < 22 && std::env::consts::ARCH == "x86_64"
 }
 
+/// x86-64 的 LLVM <22 无法编译任何 lrint/lround intrinsic（18/19 缺 f16/向量
+/// 路径，20/21 连标量 f32/f64 组合都 `Cannot select: i64 = lround`）。按语义
+/// 等价形式预展开基线调用：lrint/llrint → llvm.rint + fptosi（当前舍入模式），
+/// lround/llround → llvm.round + fptosi（半数远离零）；f16 源先 fpext 到 f32；
+/// constrained 形式取首个浮点参数（round.* metadata 与 rint 语义一致）。
+fn expand_round_to_int_calls_for_legacy_x86(fixture: &str) -> String {
+    fn expand_call(dst: &str, rest: &str) -> Option<Vec<String>> {
+        // rest 形如 `iN @llvm[.experimental.constrained].l…(ty %arg, …)`
+        let (ret_ty, after) = rest.split_once(' ')?;
+        if !ret_ty.starts_with('i') || !after.starts_with('@') {
+            return None;
+        }
+        let (name, args) = after.split_once('(')?;
+        let base = name
+            .trim_start_matches('@')
+            .trim_start_matches("llvm.experimental.constrained.");
+        let rounding = if base.starts_with("llvm.lrint") || base.starts_with("llvm.llrint") {
+            "rint"
+        } else if base.starts_with("llvm.lround") || base.starts_with("llvm.llround") {
+            "round"
+        } else {
+            return None;
+        };
+        let first_arg = args.split(',').next()?.trim().trim_end_matches(')');
+        let (src_ty, src_val) = first_arg.split_once(' ')?;
+        let (round_ty, intrinsic_ty, mut lines) = match src_ty {
+            "half" => ("float", "f32", vec![format!("%{dst}.ext = fpext half {src_val} to float")]),
+            "float" => ("float", "f32", Vec::new()),
+            "double" => ("double", "f64", Vec::new()),
+            _ => return None,
+        };
+        let rounded_src = if src_ty == "half" {
+            format!("%{dst}.ext")
+        } else {
+            src_val.to_owned()
+        };
+        lines.push(format!(
+            "%{dst}.ri = call {round_ty} @llvm.{rounding}.{intrinsic_ty}({round_ty} {rounded_src})"
+        ));
+        lines.push(format!("%{dst} = fptosi {round_ty} %{dst}.ri to {ret_ty}"));
+        Some(lines)
+    }
+
+    let mut out = String::with_capacity(fixture.len() + 512);
+    for line in fixture.lines() {
+        let trimmed = line.trim_start();
+        let expanded = trimmed
+            .strip_prefix('%')
+            .and_then(|rest| rest.split_once(" = call "))
+            .and_then(|(dst, call_rest)| expand_call(dst, call_rest));
+        if let Some(lines) = expanded {
+            for expanded_line in lines {
+                out.push_str("  ");
+                out.push_str(&expanded_line);
+                out.push('\n');
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    // 补齐被展开代码需要的 rint/round 声明（去重）。
+    let mut declares = String::new();
+    for (declare, call_marker) in [
+        ("declare float @llvm.rint.f32(float)", "call float @llvm.rint.f32("),
+        ("declare double @llvm.rint.f64(double)", "call double @llvm.rint.f64("),
+        ("declare float @llvm.round.f32(float)", "call float @llvm.round.f32("),
+        ("declare double @llvm.round.f64(double)", "call double @llvm.round.f64("),
+    ] {
+        if out.contains(call_marker) && !out.contains(declare) {
+            declares.push_str(declare);
+            declares.push('\n');
+        }
+    }
+    if declares.is_empty() {
+        return out;
+    }
+    match out.find("\ndefine") {
+        Some(position) => {
+            let mut expanded = String::with_capacity(out.len() + declares.len());
+            expanded.push_str(&out[..=position]);
+            expanded.push_str(&declares);
+            expanded.push_str(&out[position + 1..]);
+            expanded
+        },
+        None => {
+            out.push_str(&declares);
+            out
+        },
+    }
+}
+
 /// fixture 依赖指定 LLVM 版本引入的 intrinsic / IR 形态或后端 lowering；低版本
 /// 工具链无法解析、链接或 codegen，相关测试直接跳过。
 fn llvm_supported(major: u32) -> bool {
@@ -11870,8 +11963,10 @@ int main(void) {
 fn test_vm_virtualize_vp_select_matches_baseline() {
     ensure_plugin_built();
 
-    if !llvm_supported(20) {
-        eprintln!("skipping: fixture requires LLVM >= 20");
+    // llvm.vp.select 自 20 可解析，但 20/21 的 x86 codegen 无法合法化
+    // （"Do not know how to promote this operator's operand!"），22 起恢复。
+    if !llvm_supported(22) {
+        eprintln!("skipping: fixture requires LLVM >= 22");
         return;
     }
 
@@ -25983,16 +26078,12 @@ attributes #0 = { noinline optnone }
     assert!(stderr.contains("vm_callbr"));
     assert!(stderr.contains("callbr is not supported by vm_virtualize"));
     assert!(stderr.contains("vm_indirectbr"));
-    if llvm_supported(20) {
-        assert!(stderr.contains("indirectbr is not supported by vm_virtualize"));
-    } else {
-        // LLVM 18/19 在指令级检查前，会先把 indirectbr 目标的 blockaddress 归为
-        // non-call address use 并按资格检查跳过；两种消息都表示函数被安全跳过。
-        assert!(
-            stderr.contains("indirectbr is not supported by vm_virtualize")
-                || stderr.contains("function has non-call address uses")
-        );
-    }
+    // 18/19/20 会先把 indirectbr 目标的 blockaddress 归为 non-call address use
+    // 并按资格检查跳过，21+ 才到达指令级检查；两种消息都表示函数被安全跳过。
+    assert!(
+        stderr.contains("indirectbr is not supported by vm_virtualize")
+            || stderr.contains("function has non-call address uses")
+    );
     assert!(stderr.contains("vm_va_arg"));
     assert!(stderr.contains("va_arg is not supported by vm_virtualize"));
 
@@ -28907,23 +28998,10 @@ entry:
 "#;
     std::fs::write(&ir_source, fixture).expect("round-to-int intrinsic LLVM IR fixture should be writable");
 
-    // LLVM 18/19 的 X86 后端没有 f16 源 round-to-int 的合法化路径，基线把两个 f16
-    // 调用预展开为 fpext + f32 intrinsic；f16→f32 精确无损，取整语义不变。
+    // x86-64 的 LLVM <22 无法编译 lrint/lround 家族（18/19 缺 f16 路径，20/21
+    // 连标量都拒选），基线按语义等价形式预展开。
     let baseline_source = if legacy_x86_round_to_int() {
-        let legacy = fixture
-            .replace(
-                "declare i32 @llvm.lrint.i32.f16(half)\n",
-                "declare i32 @llvm.lrint.i32.f32(float)\n",
-            )
-            .replace("declare i64 @llvm.llround.i64.f16(half)\n", "")
-            .replace(
-                "  %a = call i32 @llvm.lrint.i32.f16(half %h)",
-                "  %he = fpext half %h to float\n  %a = call i32 @llvm.lrint.i32.f32(float %he)",
-            )
-            .replace(
-                "  %j = call i64 @llvm.llround.i64.f16(half %h)",
-                "  %j = call i64 @llvm.llround.i64.f32(float %he)",
-            );
+        let legacy = expand_round_to_int_calls_for_legacy_x86(&fixture);
         assert_ne!(legacy, fixture, "legacy round-to-int baseline rewrite should apply");
         let path = output_dir().join("vm_virtualize_round_to_int_intrinsics_baseline_legacy.ll");
         std::fs::write(&path, legacy).expect("legacy round-to-int baseline LLVM IR fixture should be writable");
@@ -29109,6 +29187,20 @@ entry:
         ir_source.clone()
     };
 
+    // 插件输入保持逐 lane intrinsic 形态以覆盖 FloatRoundToInt 虚拟化；只有基线
+    // 在 x86 <22 上才需要把标量调用再预展开为 rint/round + fptosi。
+    let baseline_source = if legacy_x86_round_to_int() {
+        let module_fixture = std::fs::read_to_string(&module_source)
+            .expect("legacy vector round-to-int module should be readable");
+        let expanded = expand_round_to_int_calls_for_legacy_x86(&module_fixture);
+        let path = output_dir().join("vm_virtualize_vector_round_to_int_intrinsics_baseline_legacy_x86.ll");
+        std::fs::write(&path, expanded)
+            .expect("x86 legacy vector round-to-int baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        module_source.clone()
+    };
+
     let harness = output_dir().join("vm_virtualize_vector_round_to_int_intrinsics_harness.c");
     std::fs::write(
         &harness,
@@ -29129,7 +29221,7 @@ int main(void) {
     .expect("vector round-to-int intrinsic C harness should be writable");
 
     let baseline = compile_ir_with_c_harness_and_args(
-        &module_source,
+        &baseline_source,
         &harness,
         "vm_virtualize_vector_round_to_int_intrinsics_baseline",
         &["-lm"],
@@ -29250,6 +29342,23 @@ entry:
     )
     .expect("VP vector round-to-int scalar baseline LLVM IR fixture should be writable");
 
+    // 20/21 的 x86 连标量 lrint/lround 都拒选，x86 <22 基线按语义等价形式预展开。
+    let baseline_for_compile = if legacy_x86_round_to_int() {
+        let baseline_fixture = std::fs::read_to_string(&baseline_ir_source)
+            .expect("VP vector round-to-int scalar baseline LLVM IR should be readable");
+        let legacy = expand_round_to_int_calls_for_legacy_x86(&baseline_fixture);
+        assert_ne!(
+            legacy, baseline_fixture,
+            "legacy VP vector round-to-int baseline rewrite should apply"
+        );
+        let path = output_dir().join("vm_virtualize_vp_vector_round_to_int_baseline_legacy.ll");
+        std::fs::write(&path, legacy)
+            .expect("legacy VP vector round-to-int baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        baseline_ir_source.clone()
+    };
+
     let harness = output_dir().join("vm_virtualize_vp_vector_round_to_int_intrinsics_harness.c");
     std::fs::write(
         &harness,
@@ -29270,7 +29379,7 @@ int main(void) {
     .expect("VP vector round-to-int C harness should be writable");
 
     let baseline = compile_ir_with_c_harness_and_args(
-        &baseline_ir_source,
+        &baseline_for_compile,
         &harness,
         "vm_virtualize_vp_vector_round_to_int_baseline",
         &["-lm"],
@@ -30714,8 +30823,23 @@ int main(void) {
     )
     .expect("constrained floating math C harness should be writable");
 
+    // 20/21 的 x86 连标量 lrint/lround 都拒选；constrained 形式取首个浮点参数，
+    // 按语义等价的 rint/round + fptosi 预展开基线。
+    let baseline_source = if legacy_x86_round_to_int() {
+        let fixture = std::fs::read_to_string(&ir_source)
+            .expect("constrained floating math LLVM IR fixture should be readable");
+        let legacy = expand_round_to_int_calls_for_legacy_x86(&fixture);
+        assert_ne!(legacy, fixture, "legacy constrained math baseline rewrite should apply");
+        let path = output_dir().join("vm_virtualize_constrained_float_math_baseline_legacy.ll");
+        std::fs::write(&path, legacy)
+            .expect("legacy constrained math baseline LLVM IR fixture should be writable");
+        path
+    } else {
+        ir_source.clone()
+    };
+
     let baseline = compile_ir_with_c_harness_and_args(
-        &ir_source,
+        &baseline_source,
         &harness,
         "vm_virtualize_constrained_float_math_baseline",
         &["-lm"],
