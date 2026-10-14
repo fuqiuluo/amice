@@ -26,28 +26,29 @@ pub use rust::RustCompileBuilder;
 pub const TEST_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// 带看门狗地执行命令：超时 kill 子进程并以包含命令行的错误 panic。
-pub fn output_with_watchdog(command: Command) -> Output {
-    run_with_watchdog(command)
+pub fn output_with_watchdog(mut command: Command) -> Output {
+    watchdog(&mut command)
 }
 
 /// 与 [`output_with_watchdog`] 相同，但借用已有的 `&mut Command`（如复用调用方
 /// 已配置好参数的命令）。
 pub fn output_with_watchdog_ref(command: &mut Command) -> Output {
-    let _ = command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    run_with_watchdog_spawned(
-        command
-            .spawn()
-            .unwrap_or_else(|err| panic!("failed to spawn {command:?}: {err}")),
-        command,
-    )
+    watchdog(command)
 }
 
-fn run_with_watchdog(command: Command) -> Output {
-    let mut command = command;
+fn watchdog(command: &mut Command) -> Output {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .unwrap_or_else(|err| panic!("failed to spawn {command:?}: {err}"));
+
+    // 必须与等待循环并发排空管道：子进程输出超过管道缓冲（64KB）后会阻塞在
+    // 写入上，若只在退出后才读，编译/cargo 这类大输出命令会死锁到看门狗误杀。
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || read_pipe_to_end(stdout_pipe));
+    let stderr_reader = std::thread::spawn(move || read_pipe_to_end(stderr_pipe));
+
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -66,41 +67,17 @@ fn run_with_watchdog(command: Command) -> Output {
             Err(err) => panic!("failed to wait for {command:?}: {err}"),
         }
     };
-    finish_output(child, status)
-}
-
-fn run_with_watchdog_spawned(mut child: std::process::Child, command: &Command) -> Output {
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if started.elapsed() > TEST_COMMAND_TIMEOUT {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!(
-                        "command exceeded {:?} watchdog timeout and was killed: {command:?}",
-                        TEST_COMMAND_TIMEOUT
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            },
-            Err(err) => panic!("failed to wait for {command:?}: {err}"),
-        }
-    };
-    finish_output(child, status)
-}
-
-fn finish_output(mut child: std::process::Child, status: std::process::ExitStatus) -> Output {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_end(&mut stdout);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_end(&mut stderr);
-    }
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
     Output { status, stdout, stderr }
+}
+
+fn read_pipe_to_end<R: std::io::Read>(mut pipe: Option<R>) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    if let Some(pipe) = pipe.as_mut() {
+        let _ = pipe.read_to_end(&mut buffer);
+    }
+    buffer
 }
 
 /// Target programming language for compilation
