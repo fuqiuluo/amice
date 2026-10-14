@@ -157,14 +157,20 @@ define i32 @f(half %h, float %x, double %d) {
         "declare float @llvm.rint.f32(float)",
         "declare double @llvm.round.f64(double)",
     ] {
-        assert!(expanded.contains(needle), "expansion should contain {needle}:\n{expanded}");
+        assert!(
+            expanded.contains(needle),
+            "expansion should contain {needle}:\n{expanded}"
+        );
     }
     for original in [
         "call i32 @llvm.lrint.i32.f16(",
         "call i64 @llvm.lrint.i64.f32(",
         "@llvm.experimental.constrained.lrint.i32.f64(double %d",
     ] {
-        assert!(!expanded.contains(original), "expansion should drop {original}:\n{expanded}");
+        assert!(
+            !expanded.contains(original),
+            "expansion should drop {original}:\n{expanded}"
+        );
     }
     // 非调用行保持原样。
     assert!(expanded.contains("%r = add i32 %a, %c"));
