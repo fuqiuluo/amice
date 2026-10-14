@@ -229,14 +229,33 @@ jobs:
         timeout-minutes: 180
         run: |
           status=0
+          summarize_failures() {
+            # 把失败测试名与 panic 上下文写进 step summary；check-runs API 可匿名
+            # 读取 summary，无需仓库权限即可离线定位失败清单。
+            {
+              echo "## Failing tests (LLVM ${{ matrix.llvm-version[0] }})"
+              echo '```'
+              grep -hE "^failures:$|^    test_|panicked at|watchdog timeout" "$1" \
+                | grep -vE "test result|note: run with" | head -80
+              echo '```'
+              echo "Last lines of output:"
+              echo '```'
+              tail -30 "$1"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
           # Order/resource-sensitive MBA suites: single-threaded (convention from docs/MbaRegions.md)
           cargo test --release -p amice --no-default-features --features llvm${{ matrix.llvm-version[1] }} \
-            --test mba --test mba_regions --test rust_mba -- --test-threads=1 || status=1
+            --test mba --test mba_regions --test rust_mba -- --test-threads=1 2>&1 | tee /tmp/mba-suite.log
+          mba_rc=${PIPESTATUS[0]}
+          [ "$mba_rc" -ne 0 ] && { status=1; summarize_failures /tmp/mba-suite.log; }
           # Full regression suite: lib units + every integration target, on all LLVM matrix versions.
           # Runs even when the MBA step failed, so one broken cluster does not mask the rest.
           # Single-threaded: tests compile shared C/C++/Rust fixtures into common build dirs and race if parallel.
           cargo test --release -p amice --no-default-features --features llvm${{ matrix.llvm-version[1] }} \
-            --tests -- --test-threads=1 || status=1
+            --tests -- --test-threads=1 2>&1 | tee /tmp/full-suite.log
+          full_rc=${PIPESTATUS[0]}
+          [ "$full_rc" -ne 0 ] && { status=1; summarize_failures /tmp/full-suite.log; }
           exit $status
 
       - name: Upload Build Artifact
