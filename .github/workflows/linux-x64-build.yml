@@ -243,6 +243,14 @@ jobs:
               tail -30 "$1"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # step summary 不进 check-runs API；::error 注解会出现在公开的
+            # annotations 接口里，最多 10 条，这里逐个点名失败测试。
+            grep -E "^    test_" "$1" | head -10 | while read -r test; do
+              echo "::error::LLVM${{ matrix.llvm-version[0] }} failing test: ${test#    }"
+            done
+            grep -m1 -B1 -A3 "watchdog timeout" "$1" | while read -r line; do
+              echo "::error::LLVM${{ matrix.llvm-version[0] }} watchdog: $line"
+            done
           }
           # Order/resource-sensitive MBA suites: single-threaded (convention from docs/MbaRegions.md)
           cargo test --release -p amice --no-default-features --features llvm${{ matrix.llvm-version[1] }} \
