@@ -1,0 +1,258 @@
+name: Linux Arm64 Build
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - 'crates/amice-llvm/cpp/**'
+      - 'crates/amice/tests/**'
+      - 'scripts/test_mba_cross_runtime.py'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+      - '.github/workflows/linux-arm64-build.yml'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '**/*.rs'
+      - 'crates/amice-llvm/cpp/**'
+      - 'crates/amice/tests/**'
+      - 'scripts/test_mba_cross_runtime.py'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - 'rust-toolchain*'
+      - '.github/workflows/linux-arm64-build.yml'
+  workflow_dispatch:
+    inputs:
+      llvm:
+        description: 'LLVM versions to build and test, comma-separated (e.g. "18,21,23"), or "all"'
+        required: false
+        default: 'all'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Resolves the matrix up front so a manual dispatch can restrict LLVM versions
+  # via the "llvm" input (e.g. "21,23"); filtered-out versions never spawn jobs.
+  matrix:
+    name: Resolve LLVM matrix
+    runs-on: ubuntu-latest
+    outputs:
+      llvm-version: ${{ steps.resolve.outputs.llvm-version }}
+    steps:
+      - name: Resolve requested LLVM versions
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          LLVM_INPUT: ${{ inputs.llvm }}
+        run: |
+          set -euo pipefail
+          # Tuple meaning: [<major>, <feature-suffix>, <llvm-sys env suffix>]
+          full='[["18","18-1","181"],["19","19-1","191"],["20","20-1","201"],["21","21-1","211"],["22","22-1","221"],["23","23-1","231"]]'
+          if [ "$EVENT" != "workflow_dispatch" ] || [ -z "$LLVM_INPUT" ] || [ "$LLVM_INPUT" = "all" ]; then
+            echo "llvm-version=$full" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          rows="["
+          first=1
+          IFS=','
+          for v in $LLVM_INPUT; do
+            v="$(echo "$v" | tr -d '[:space:]')"
+            case "$v" in
+              18) row='["18","18-1","181"]' ;;
+              19) row='["19","19-1","191"]' ;;
+              20) row='["20","20-1","201"]' ;;
+              21) row='["21","21-1","211"]' ;;
+              22) row='["22","22-1","221"]' ;;
+              23) row='["23","23-1","231"]' ;;
+              *) echo "Unknown LLVM version '$v' (supported: 18-23); falling back to full matrix"
+                 echo "llvm-version=$full" >> "$GITHUB_OUTPUT"
+                 exit 0 ;;
+            esac
+            if [ "$first" -eq 1 ]; then first=0; else rows="$rows,"; fi
+            rows="$rows$row"
+          done
+          rows="$rows]"
+          echo "llvm-version=$rows" >> "$GITHUB_OUTPUT"
+
+  linux-arm64-build:
+    needs: [ matrix ]
+    name: "LLVM/OPT ${{ matrix.llvm-version[0] }} Linux ARM64"
+    # Native ARM64 runner (free for public repos); everything below installs
+    # aarch64 LLVM packages from apt.llvm.org, so no QEMU or cross toolchain.
+    runs-on: ubuntu-24.04-arm
+    env:
+      BUILD_OUTPUT_PATH: target/release
+      # Rust fixtures compile with a rustc whose LLVM backend generation matches
+      # the opt tool (1.81 = LLVM 18, 1.86 = LLVM 19); the plugin itself always
+      # builds with the pinned default toolchain (let-chains need 1.88+).
+      AMICE_RUST_TOOLCHAIN: ${{ matrix.llvm-version[0] == 18 && '1.81.0' || matrix.llvm-version[0] == 19 && '1.86.0' || '' }}
+      # rustc's static LLVM plus the dynamically linked plugin in one process
+      # aborts on duplicate CommandLine options; run opt out-of-process instead.
+      AMICE_FORCE_OPT_FALLBACK: ${{ matrix.llvm-version[0] == 18 && '1' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version: ${{ fromJSON(needs.matrix.outputs.llvm-version) }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Cache Rust Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # Install the fixture toolchain FIRST: dtolnay/rust-toolchain makes the
+      # toolchain it installs the rustup default, so the pinned 1.89 step must
+      # run last to stay default (the plugin and its deps need 1.88+).
+      # rustc generations: 1.81 = LLVM 18, 1.86 = LLVM 19.
+      - name: Setup fixture Rust toolchain (LLVM 18)
+        if: ${{ matrix.llvm-version[0] == 18 }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.81.0'
+
+      - name: Setup fixture Rust toolchain (LLVM 19)
+        if: ${{ matrix.llvm-version[0] == 19 }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.86.0'
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
+
+      - name: Install Dependencies
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt update && sudo apt install -y libtinfo6
+
+      # apt.llvm.org publishes aarch64 packages for every supported LLVM
+      # version on noble; llvm.sh picks up the host architecture on its own.
+      - name: Install LLVM and Clang (LLVM >= 18)
+        if: ${{ matrix.llvm-version[0] >= 18 }}
+        run: |
+          sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh ${{ matrix.llvm-version[0] }}
+          sudo apt-get update
+          sudo apt install --no-install-recommends -y libllvm${{ matrix.llvm-version[0] }} \
+                                                      llvm-${{ matrix.llvm-version[0] }} \
+                                                      llvm-${{ matrix.llvm-version[0] }}-dev \
+                                                      llvm-${{ matrix.llvm-version[0] }}-runtime \
+                                                      clang-${{ matrix.llvm-version[0] }} \
+                                                      lld-${{ matrix.llvm-version[0] }} \
+                                                      libpolly-${{ matrix.llvm-version[0] }}-dev
+          sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-${{ matrix.llvm-version[0] }} 10
+
+      - name: Symlink libLLVM.so (LLVM >= 16)
+        if: ${{ matrix.llvm-version[0] >= 16 }}
+        run: |
+          set -euxo pipefail
+          ver=${{ matrix.llvm-version[0] }}
+
+          prefix="/usr/lib/llvm-${ver}"
+          echo "Using LLVM prefix: ${prefix}"
+
+          env_name="LLVM_SYS_${{ matrix.llvm-version[2] }}_PREFIX"
+          echo "${env_name}=${prefix}" >> "$GITHUB_ENV"
+
+          if [ ! -e "${prefix}/lib/libLLVM.so" ]; then
+            if [ -e "${prefix}/lib/libLLVM-${ver}.so" ]; then
+              sudo ln -s "libLLVM-${ver}.so" "${prefix}/lib/libLLVM.so"
+            elif [ -e "/usr/lib/aarch64-linux-gnu/libLLVM-${ver}.so.1" ]; then
+              sudo ln -s "../../aarch64-linux-gnu/libLLVM-${ver}.so.1" "${prefix}/lib/libLLVM.so"
+            fi
+          fi
+
+      - name: Check LLVM/Clang ${{ matrix.llvm-version[0] }}
+        run: |
+          set -euxo pipefail
+
+          if ldconfig -p | grep -q 'libLLVM\.so'; then
+            ldconfig -p | grep 'libLLVM\.so' || true
+          else
+            echo "libLLVM.so NOT found in ldconfig cache."
+          fi
+
+      - name: Build libamice.so (Release)
+        run: |
+          set -euxo pipefail
+          cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+
+          # Verify the built library exists
+          if [ ! -f "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" ]; then
+            echo "Error: libamice.so not found in expected location"
+            ls -la ${{ env.BUILD_OUTPUT_PATH }}/
+            exit 1
+          fi
+
+          # Show library info
+          file "${{ env.BUILD_OUTPUT_PATH }}/libamice.so"
+          ldd "${{ env.BUILD_OUTPUT_PATH }}/libamice.so" || true
+
+      - name: Run test suite
+        timeout-minutes: 180
+        run: |
+          status=0
+          summarize_failures() {
+            # 把失败测试名与 panic 上下文写进 step summary；check-runs API 可匿名
+            # 读取 summary，无需仓库权限即可离线定位失败清单。
+            {
+              echo "## Failing tests (LLVM ${{ matrix.llvm-version[0] }})"
+              echo '```'
+              grep -hE "^failures:$|^    test_|panicked at|watchdog timeout" "$1" \
+                | grep -vE "test result|note: run with" | head -80
+              echo '```'
+              echo "Last lines of output:"
+              echo '```'
+              tail -30 "$1"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            # step summary 不进 check-runs API；::error 注解会出现在公开的
+            # annotations 接口里（每步限 10 条）。对每个失败测试输出第一条
+            # panic/编译错误细节行，带上测试名。
+            awk '/^---- /{name=$2} /panicked at|^ *left:|^ *right:|watchdog timeout and was killed|Cannot select|Do not know how|error in backend|undefined reference/{if(name!=""){print "LLVM${{ matrix.llvm-version[0] }} " name ": " $0; name=""}}' "$1" \
+              | head -10 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          }
+          # Order/resource-sensitive MBA suites: single-threaded (convention from docs/MbaRegions.md)
+          cargo test --release -p amice --no-default-features --features llvm${{ matrix.llvm-version[1] }} \
+            --test mba --test mba_regions --test rust_mba -- --test-threads=1 2>&1 | tee /tmp/mba-suite.log
+          mba_rc=${PIPESTATUS[0]}
+          [ "$mba_rc" -ne 0 ] && { status=1; summarize_failures /tmp/mba-suite.log; }
+          # Full regression suite: lib units + every integration target, on all LLVM matrix versions.
+          # Runs even when the MBA step failed, so one broken cluster does not mask the rest.
+          # Single-threaded: tests compile shared C/C++/Rust fixtures into common build dirs and race if parallel.
+          cargo test --release -p amice --no-default-features --features llvm${{ matrix.llvm-version[1] }} \
+            --tests -- --test-threads=1 2>&1 | tee /tmp/full-suite.log
+          full_rc=${PIPESTATUS[0]}
+          [ "$full_rc" -ne 0 ] && { status=1; summarize_failures /tmp/full-suite.log; }
+          exit $status
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libamice-llvm${{ matrix.llvm-version[0] }}-linux-arm64
+          path: ${{ env.BUILD_OUTPUT_PATH }}/libamice.so
+          retention-days: 30
+          if-no-files-found: error

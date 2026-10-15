@@ -181,6 +181,106 @@ jobs:
             dist/libamice-llvm${{ matrix.llvm-version[0] }}-linux-x86_64.so
             dist/libamice-llvm${{ matrix.llvm-version[0] }}-linux-x86_64.so.sha256
 
+  # Native ARM64 runner (free for public repos). Every LLVM version here uses
+  # apt.llvm.org, which publishes aarch64 packages for LLVM >= 18 on noble, so
+  # the x86_64-only KyleMayes/install-llvm-action and jamesmth tarball paths
+  # from the linux job are not used.
+  linux-arm64:
+    name: "Release LLVM ${{ matrix.llvm-version[0] }} Linux ARM64"
+    needs: create-release
+    runs-on: ubuntu-24.04-arm
+    env:
+      BUILD_OUTPUT_PATH: target/release
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version:
+          - ["18", "18-1", "181"]
+          - ["19", "19-1", "191"]
+          - ["20", "20-1", "201"]
+          - ["21", "21-1", "211"]
+          - ["22", "22-1", "221"]
+          - ["23", "23-1", "231"]
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
+
+      - name: Cache Rust Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ runner.os }}-${{ runner.arch }}-cargo-llvm${{ matrix.llvm-version[0] }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-${{ runner.os }}-${{ runner.arch }}-cargo-llvm${{ matrix.llvm-version[0] }}-
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89.0'
+
+      - name: Install Dependencies
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt update
+          sudo apt install --no-install-recommends -y libtinfo6
+
+      - name: Install LLVM and Clang (LLVM >= 18)
+        if: ${{ matrix.llvm-version[0] >= 18 }}
+        run: |
+          set -euxo pipefail
+          major=${{ matrix.llvm-version[0] }}
+          suffix=${{ matrix.llvm-version[2] }}
+          sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "${major}"
+          sudo apt-get update
+          sudo apt install --no-install-recommends -y \
+            "libllvm${major}" \
+            "llvm-${major}" \
+            "llvm-${major}-dev" \
+            "llvm-${major}-runtime" \
+            "libpolly-${major}-dev"
+          prefix="/usr/lib/llvm-${major}"
+          echo "LLVM_SYS_${suffix}_PREFIX=${prefix}" >> "$GITHUB_ENV"
+          echo "${prefix}/bin" >> "$GITHUB_PATH"
+          if [ ! -e "${prefix}/lib/libLLVM.so" ]; then
+            if [ -e "${prefix}/lib/libLLVM-${major}.so" ]; then
+              sudo ln -s "libLLVM-${major}.so" "${prefix}/lib/libLLVM.so"
+            elif [ -e "/usr/lib/aarch64-linux-gnu/libLLVM-${major}.so.1" ]; then
+              sudo ln -s "../../aarch64-linux-gnu/libLLVM-${major}.so.1" "${prefix}/lib/libLLVM.so"
+            fi
+          fi
+
+      - name: Build libamice.so
+        run: |
+          set -euxo pipefail
+          cargo build --release --no-default-features --features llvm${{ matrix.llvm-version[1] }}
+          file "${BUILD_OUTPUT_PATH}/libamice.so"
+          ldd "${BUILD_OUTPUT_PATH}/libamice.so" || true
+
+      - name: Prepare release assets
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          asset="libamice-llvm${{ matrix.llvm-version[0] }}-linux-arm64.so"
+          cp "${BUILD_OUTPUT_PATH}/libamice.so" "dist/${asset}"
+          sha256sum "dist/${asset}" > "dist/${asset}.sha256"
+          ls -lh dist
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          files: |
+            dist/libamice-llvm${{ matrix.llvm-version[0] }}-linux-arm64.so
+            dist/libamice-llvm${{ matrix.llvm-version[0] }}-linux-arm64.so.sha256
+
   macos:
     name: "Release LLVM ${{ matrix.llvm-version[0] }} ${{ matrix.os }}"
     needs: create-release
