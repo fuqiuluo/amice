@@ -274,9 +274,17 @@ impl RustCompileBuilder {
             .arg("amice_rust_link")
             .arg(&stub)
             .arg("-C")
-            .arg(format!("link-arg={}", object.display()))
-            .arg("-o")
-            .arg(binary_path);
+            .arg(format!("link-arg={}", object.display()));
+        // The object is appended after rustc's rlibs and default libraries, so
+        // libcalls it makes cannot be resolved by them. LLVM 21+ AArch64
+        // codegen lowers atomics to outline-atomics helpers (`__aarch64_cas*`)
+        // that only libgcc_s provides; rustc's own earlier `-lgcc_s` is already
+        // dropped by `--as-needed` at that point, so link the provider again
+        // after the object. LLVM <= 20 inlines the atomics and never needs it.
+        if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+            cmd.arg("-C").arg("link-arg=-lgcc_s");
+        }
+        cmd.arg("-o").arg(binary_path);
         crate::common::output_with_watchdog(cmd)
     }
 

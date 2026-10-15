@@ -144,10 +144,28 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           sudo apt update && sudo apt install -y libtinfo6
 
+      # apt.llvm.org's noble arm64 pocket rebuilt libllvm18 (1:18.1.8~++…) with
+      # `Breaks: llvm-18-dev (< 1:18.1.8-8)`, and the `~++` rebuild suffix
+      # sorts below `-8` in Debian version ordering, so the clause also matches
+      # its own llvm-18-dev and the package is un-installable. Ubuntu noble
+      # ships its own arm64 LLVM 18.1.3, which covers the LLVM 18 leg instead.
+      - name: Install LLVM and Clang (LLVM 18, Ubuntu archive)
+        if: ${{ matrix.llvm-version[0] == 18 }}
+        run: |
+          sudo apt-get update
+          sudo apt install --no-install-recommends -y libllvm18 \
+                                                      llvm-18 \
+                                                      llvm-18-dev \
+                                                      llvm-18-runtime \
+                                                      clang-18 \
+                                                      lld-18 \
+                                                      libpolly-18-dev
+          sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-18 10
+
       # apt.llvm.org publishes aarch64 packages for every supported LLVM
       # version on noble; llvm.sh picks up the host architecture on its own.
-      - name: Install LLVM and Clang (LLVM >= 18)
-        if: ${{ matrix.llvm-version[0] >= 18 }}
+      - name: Install LLVM and Clang (LLVM >= 19)
+        if: ${{ matrix.llvm-version[0] >= 19 }}
         run: |
           sudo apt install --no-install-recommends -y lsb-release wget software-properties-common gnupg
           wget https://apt.llvm.org/llvm.sh

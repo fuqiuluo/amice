@@ -229,8 +229,35 @@ jobs:
           sudo apt update
           sudo apt install --no-install-recommends -y libtinfo6
 
-      - name: Install LLVM and Clang (LLVM >= 18)
-        if: ${{ matrix.llvm-version[0] >= 18 }}
+      # apt.llvm.org's noble arm64 pocket cannot install llvm-18-dev (its
+      # libllvm18 rebuild declares a Breaks clause that matches its own
+      # llvm-18-dev); Ubuntu noble's own arm64 LLVM 18.1.3 covers this leg.
+      - name: Install LLVM and Clang (LLVM 18, Ubuntu archive)
+        if: ${{ matrix.llvm-version[0] == 18 }}
+        run: |
+          set -euxo pipefail
+          major=${{ matrix.llvm-version[0] }}
+          suffix=${{ matrix.llvm-version[2] }}
+          sudo apt-get update
+          sudo apt install --no-install-recommends -y \
+            "libllvm${major}" \
+            "llvm-${major}" \
+            "llvm-${major}-dev" \
+            "llvm-${major}-runtime" \
+            "libpolly-${major}-dev"
+          prefix="/usr/lib/llvm-${major}"
+          echo "LLVM_SYS_${suffix}_PREFIX=${prefix}" >> "$GITHUB_ENV"
+          echo "${prefix}/bin" >> "$GITHUB_PATH"
+          if [ ! -e "${prefix}/lib/libLLVM.so" ]; then
+            if [ -e "${prefix}/lib/libLLVM-${major}.so" ]; then
+              sudo ln -s "libLLVM-${major}.so" "${prefix}/lib/libLLVM.so"
+            elif [ -e "/usr/lib/aarch64-linux-gnu/libLLVM-${major}.so.1" ]; then
+              sudo ln -s "../../aarch64-linux-gnu/libLLVM-${major}.so.1" "${prefix}/lib/libLLVM.so"
+            fi
+          fi
+
+      - name: Install LLVM and Clang (LLVM >= 19)
+        if: ${{ matrix.llvm-version[0] >= 19 }}
         run: |
           set -euxo pipefail
           major=${{ matrix.llvm-version[0] }}
