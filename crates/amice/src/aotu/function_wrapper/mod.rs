@@ -74,10 +74,7 @@ impl AmicePass for FunctionWrapper {
                             // longjmp 的第二次返回必须落回原函数帧，隔着一层
                             // wrapper 帧会破坏恢复协议，产生静默数据错误（issue #104）
                             if is_returns_twice_call(called_func) {
-                                debug!(
-                                    "skipping returns_twice call site: {:?}",
-                                    called_func.get_name()
-                                );
+                                debug!("skipping returns_twice call site: {:?}", called_func.get_name());
                                 continue;
                             }
                             // Apply probability check
