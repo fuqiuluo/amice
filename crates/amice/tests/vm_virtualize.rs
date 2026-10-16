@@ -220,6 +220,13 @@ fn llvm_config() -> LlvmConfig {
     })
 }
 
+/// 测试宿主是否为 AArch64。部分 fixture 依赖 x86-64 专属的 C ABI/IR 形态
+/// （`byval` 聚合参数、IR 级 `va_arg` 指令），AArch64 上 clang 的真实降级
+/// 形态不同，相关测试按宿主架构分流体或放宽对应断言。
+fn host_is_aarch64() -> bool {
+    std::env::consts::ARCH == "aarch64"
+}
+
 fn llvm_major(config: &LlvmConfig) -> u32 {
     config
         .feature
@@ -4917,9 +4924,35 @@ int main(void) {
 fn test_vm_virtualize_fp_environment_intrinsics_match_baseline() {
     ensure_plugin_built();
 
+    // AArch64 上该 intrinsic 组合有两处上游问题：glibc 的 fenv_t 为 8 字节，
+    // `llvm.get.fpenv.i32` 只留 4 字节缓冲，fegetenv 越界写会砸掉栈上返回地址
+    // （baseline 直接段错误）；fpmode 的 i64 读取含未初始化高位，跨构建不确定。
+    // AArch64 只保留安全且确定的子集：rounding、fpenv.i64、reset.fpenv。
     let ir_source = output_dir().join("vm_virtualize_fp_environment.input.ll");
-    std::fs::write(
-        &ir_source,
+    let ir_fixture = if host_is_aarch64() {
+        r#"; ModuleID = 'vm_virtualize_fp_environment'
+source_filename = "vm_virtualize_fp_environment.ll"
+
+declare i32 @llvm.get.rounding()
+declare void @llvm.set.rounding(i32)
+declare i64 @llvm.get.fpenv.i64()
+declare void @llvm.set.fpenv.i64(i64)
+declare void @llvm.reset.fpenv()
+
+define i64 @vm_fp_environment(i64 %seed) {
+entry:
+  %round = call i32 @llvm.get.rounding()
+  call void @llvm.set.rounding(i32 %round)
+  %env64 = call i64 @llvm.get.fpenv.i64()
+  call void @llvm.set.fpenv.i64(i64 %env64)
+  call void @llvm.reset.fpenv()
+  %round64 = zext i32 %round to i64
+  %mix0 = xor i64 %seed, %round64
+  %mix1 = xor i64 %mix0, %env64
+  ret i64 %mix1
+}
+"#
+    } else {
         r#"; ModuleID = 'vm_virtualize_fp_environment'
 source_filename = "vm_virtualize_fp_environment.ll"
 
@@ -4960,9 +4993,9 @@ entry:
   %mix4 = xor i64 %mix3, %mode64
   ret i64 %mix4
 }
-"#,
-    )
-    .expect("fp environment LLVM IR fixture should be writable");
+"#
+    };
+    std::fs::write(&ir_source, ir_fixture).expect("fp environment LLVM IR fixture should be writable");
 
     let harness = output_dir().join("vm_virtualize_fp_environment_harness.c");
     std::fs::write(
@@ -4995,16 +5028,27 @@ int main(void) {
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_success(output);
     let dump = bytecode_dump_for_function(&stderr, "vm_fp_environment");
-    for needle in [
-        ": read_rounding ",
-        ": write_rounding ",
-        ": read_fpenv ",
-        ": write_fpenv ",
-        ": reset_fpenv ",
-        ": read_fpmode ",
-        ": write_fpmode ",
-        ": reset_fpmode ",
-    ] {
+    let dump_needles: &[&str] = if host_is_aarch64() {
+        &[
+            ": read_rounding ",
+            ": write_rounding ",
+            ": read_fpenv ",
+            ": write_fpenv ",
+            ": reset_fpenv ",
+        ]
+    } else {
+        &[
+            ": read_rounding ",
+            ": write_rounding ",
+            ": read_fpenv ",
+            ": write_fpenv ",
+            ": reset_fpenv ",
+            ": read_fpmode ",
+            ": write_fpmode ",
+            ": reset_fpmode ",
+        ]
+    };
+    for needle in dump_needles {
         assert!(
             dump.contains(needle),
             "FP environment intrinsic should lower through profile handler {needle}:\n{dump}"
@@ -5019,27 +5063,42 @@ int main(void) {
     assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
 
     let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized FP environment LLVM IR should be readable");
-    for needle in [
-        ".amice.vm.bytecode.vm_fp_environment",
-        "handler.write_rounding",
-        "handler.read_fpenv",
-        "handler.write_fpenv",
-        "handler.reset_fpenv",
-        "handler.read_fpmode",
-        "handler.write_fpmode",
-        "handler.reset_fpmode",
-        "@llvm.set.rounding",
-        "@llvm.get.fpenv.i32",
-        "@llvm.get.fpenv.i64",
-        "@llvm.set.fpenv.i32",
-        "@llvm.set.fpenv.i64",
-        "@llvm.reset.fpenv",
-        "@llvm.get.fpmode.i32",
-        "@llvm.get.fpmode.i64",
-        "@llvm.set.fpmode.i32",
-        "@llvm.set.fpmode.i64",
-        "@llvm.reset.fpmode",
-    ] {
+    let ir_needles: &[&str] = if host_is_aarch64() {
+        &[
+            ".amice.vm.bytecode.vm_fp_environment",
+            "handler.write_rounding",
+            "handler.read_fpenv",
+            "handler.write_fpenv",
+            "handler.reset_fpenv",
+            "@llvm.set.rounding",
+            "@llvm.get.fpenv.i64",
+            "@llvm.set.fpenv.i64",
+            "@llvm.reset.fpenv",
+        ]
+    } else {
+        &[
+            ".amice.vm.bytecode.vm_fp_environment",
+            "handler.write_rounding",
+            "handler.read_fpenv",
+            "handler.write_fpenv",
+            "handler.reset_fpenv",
+            "handler.read_fpmode",
+            "handler.write_fpmode",
+            "handler.reset_fpmode",
+            "@llvm.set.rounding",
+            "@llvm.get.fpenv.i32",
+            "@llvm.get.fpenv.i64",
+            "@llvm.set.fpenv.i32",
+            "@llvm.set.fpenv.i64",
+            "@llvm.reset.fpenv",
+            "@llvm.get.fpmode.i32",
+            "@llvm.get.fpmode.i64",
+            "@llvm.set.fpmode.i32",
+            "@llvm.set.fpmode.i64",
+            "@llvm.reset.fpmode",
+        ]
+    };
+    for needle in ir_needles {
         assert!(
             ir.contains(needle),
             "virtualized FP environment IR should contain {needle}"
@@ -24296,7 +24355,21 @@ int main(void) {
     .expect("atomicrmw C harness should be writable");
 
     let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_atomic_rmw_baseline");
-    baseline.assert_success();
+    if !baseline.success() {
+        // LLVM 20/21 的 AArch64 后端在默认 outline-atomics 路径下没有
+        // uinc_wrap/udec_wrap/usub_cond/usub_sat 的降级（加 LSE 或 CAS 循环兜底
+        // 均缺失，LLVM 22 修复），裸 clang 连基线都编不过。若某天基线编译成功
+        // （上游修复或发行版回灌），此处自动落回完整比对，无需改回本门控。
+        if host_is_aarch64() && matches!(llvm_major(&llvm_config()), 20 | 21) {
+            eprintln!(
+                "skip: LLVM {} on AArch64 cannot lower atomicrmw usub_cond/usub_sat \
+                 (upstream outline-atomics gap, fixed in LLVM 22); baseline compile failed",
+                llvm_major(&llvm_config())
+            );
+            return;
+        }
+        baseline.assert_success();
+    }
     let baseline_output = baseline.run();
     baseline_output.assert_success();
 
@@ -25158,10 +25231,21 @@ int main(void) {
     )
     .expect("atomic float C harness should be writable");
 
-    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_atomic_float_memory_baseline");
-    baseline.assert_success();
-    let baseline_output = baseline.run();
-    baseline_output.assert_success();
+    // LLVM ≤21 的 AArch64 后端把 `store atomic half` 误编译为存 NZCV 标志寄存器
+    // （LLVM 22 才修正为正确的 fmov 传送），baseline 是坏 oracle；amice 虚拟化
+    // 经整数位宽 atomic handler 不经过该坏路径，输出仍正确。坏腿上改为对期望
+    // 值断言：该值已与 LLVM ≥22 的正确编译输出逐字节核对一致（纯确定性
+    // IEEE/整数运算，架构无关；fixture 变更时需同步更新）。
+    let broken_half_baseline = host_is_aarch64() && llvm_major(&llvm_config()) < 22;
+    let baseline_stdout = if broken_half_baseline {
+        "2231402895 3.25 -8.50 -77.25\n".to_owned()
+    } else {
+        let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_atomic_float_memory_baseline");
+        baseline.assert_success();
+        let baseline_output = baseline.run();
+        baseline_output.assert_success();
+        baseline_output.stdout()
+    };
 
     let mut config = vm_virtualize_config();
     config.vm_dump_bytecode = Some(true);
@@ -25183,7 +25267,7 @@ int main(void) {
     virtualized.assert_success();
     let virtualized_output = virtualized.run();
     virtualized_output.assert_success();
-    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+    assert_eq!(baseline_stdout, virtualized_output.stdout());
 
     let ir = std::fs::read_to_string(virtualized_ir).expect("virtualized atomic float IR should be readable");
     assert!(ir.contains(".amice.vm.bytecode.vm_atomic_float_memory"));
@@ -25546,9 +25630,48 @@ int main(void) {
 fn test_vm_virtualize_byval_native_calls_match_baseline() {
     ensure_plugin_built();
 
+    // x86-64 SysV 的 C 大聚合参数就是 LLVM `byval`，fixture 直接声明 byval 调用点。
+    // AArch64 的 AAPCS64 对 >16 字节聚合按“调用方本地拷贝 + 传指针”传参，clang
+    // 从不生成 byval（C 定义端是普通 ptr），fixture 改用 clang 的真实产出形态：
+    // 每次调用前构造独立拷贝、以普通指针传参，保证与 C harness 的 ABI 一致。
     let ir_source = output_dir().join("vm_virtualize_byval_native_calls.input.ll");
-    std::fs::write(
-        &ir_source,
+    let ir_fixture = if host_is_aarch64() {
+        r#"; ModuleID = 'vm_virtualize_byval_native_calls'
+source_filename = "vm_virtualize_byval_native_calls.ll"
+
+%ByVal = type { i64, i64, i64 }
+
+declare i64 @native_byval(ptr, i64)
+
+define i64 @vm_byval_native_calls(ptr %callee, i64 %seed) #0 {
+entry:
+  %direct_copy = alloca %ByVal, align 8
+  %da_ptr = getelementptr inbounds %ByVal, ptr %direct_copy, i32 0, i32 0
+  %db_ptr = getelementptr inbounds %ByVal, ptr %direct_copy, i32 0, i32 1
+  %dc_ptr = getelementptr inbounds %ByVal, ptr %direct_copy, i32 0, i32 2
+  %a = add i64 %seed, 17
+  %b = xor i64 %seed, 305419896
+  %c = sub i64 %seed, 91
+  store i64 %a, ptr %da_ptr, align 8
+  store i64 %b, ptr %db_ptr, align 8
+  store i64 %c, ptr %dc_ptr, align 8
+  %direct = call i64 @native_byval(ptr %direct_copy, i64 %seed)
+  %indirect_copy = alloca %ByVal, align 8
+  %ia_ptr = getelementptr inbounds %ByVal, ptr %indirect_copy, i32 0, i32 0
+  %ib_ptr = getelementptr inbounds %ByVal, ptr %indirect_copy, i32 0, i32 1
+  %ic_ptr = getelementptr inbounds %ByVal, ptr %indirect_copy, i32 0, i32 2
+  store i64 %a, ptr %ia_ptr, align 8
+  store i64 %b, ptr %ib_ptr, align 8
+  store i64 %c, ptr %ic_ptr, align 8
+  %indirect = call i64 %callee(ptr %indirect_copy, i64 %direct)
+  %mixed = xor i64 %indirect, %direct
+  %ret = add i64 %mixed, %seed
+  ret i64 %ret
+}
+
+attributes #0 = { noinline optnone }
+"#
+    } else {
         r#"; ModuleID = 'vm_virtualize_byval_native_calls'
 source_filename = "vm_virtualize_byval_native_calls.ll"
 
@@ -25576,9 +25699,9 @@ entry:
 }
 
 attributes #0 = { noinline optnone }
-"#,
-    )
-    .expect("byval native call LLVM IR fixture should be writable");
+"#
+    };
+    std::fs::write(&ir_source, ir_fixture).expect("byval native call LLVM IR fixture should be writable");
 
     let harness = output_dir().join("vm_virtualize_byval_native_calls_harness.c");
     std::fs::write(
@@ -25643,31 +25766,39 @@ int main(void) {
     assert!(ir.contains("handler.call_native"));
     assert!(ir.contains(".amice.vm.native_thunk.vm_byval_native_calls"));
     assert!(ir.contains(".amice.vm.indirect_adapter.vm_byval_native_calls"));
-    assert!(
-        ir.lines()
-            .any(|line| line.contains("call i64 @native_byval(") && line.contains("byval(%ByVal)")),
-        "direct native thunk call must preserve byval ABI attribute"
-    );
-    assert!(
-        ir.lines()
-            .find(
-                |line| line.starts_with("define ") && line.contains(".amice.vm.indirect_adapter.vm_byval_native_calls")
-            )
-            .is_some_and(|line| line.contains("byval(%ByVal)")),
-        "indirect adapter signature must preserve shifted byval parameter attribute"
-    );
-    assert!(
-        ir.lines()
-            .any(|line| line.contains("call i64 %") && line.contains("byval(%ByVal)")),
-        "indirect adapter target call must preserve original byval call-site attribute"
-    );
-    assert!(
-        ir.lines().any(
-            |line| line.contains("call i64 @.amice.vm.indirect_adapter.vm_byval_native_calls")
-                && line.contains("byval(%ByVal)")
-        ),
-        "native thunk call into indirect adapter must preserve byval ABI attribute"
-    );
+    if host_is_aarch64() {
+        // AArch64 上 C 大聚合参数没有 byval 形态；断言 thunk 以普通指针透传
+        // 聚合拷贝的地址。
+        assert!(
+            ir.lines().any(|line| line.contains("call i64 @native_byval(ptr")),
+            "direct native thunk call must preserve plain aggregate pointer ABI"
+        );
+    } else {
+        assert!(
+            ir.lines()
+                .any(|line| line.contains("call i64 @native_byval(") && line.contains("byval(%ByVal)")),
+            "direct native thunk call must preserve byval ABI attribute"
+        );
+        assert!(
+            ir.lines()
+                .find(|line| line.starts_with("define ")
+                    && line.contains(".amice.vm.indirect_adapter.vm_byval_native_calls"))
+                .is_some_and(|line| line.contains("byval(%ByVal)")),
+            "indirect adapter signature must preserve shifted byval parameter attribute"
+        );
+        assert!(
+            ir.lines()
+                .any(|line| line.contains("call i64 %") && line.contains("byval(%ByVal)")),
+            "indirect adapter target call must preserve original byval call-site attribute"
+        );
+        assert!(
+            ir.lines().any(
+                |line| line.contains("call i64 @.amice.vm.indirect_adapter.vm_byval_native_calls")
+                    && line.contains("byval(%ByVal)")
+            ),
+            "native thunk call into indirect adapter must preserve byval ABI attribute"
+        );
+    }
 }
 
 #[test]
@@ -26724,7 +26855,18 @@ int main(void) {
     virtualized.assert_success();
     let virtualized_output = virtualized.run();
     virtualized_output.assert_success();
-    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+    if host_is_aarch64() {
+        // AArch64 后端不展开 IR 级 `va_arg` 指令（clang 前端预先展开为对
+        // %struct.__va_list 的显式存取），通用“指针游标”降级读未定义内存，
+        // baseline 与虚拟化两侧输出均为随机值，无 oracle 可比。safe-skip 的
+        // 语义已由上方 stderr 报告与下方 IR 断言覆盖。
+        eprintln!(
+            "skip stdout comparison: the IR-level va_arg instruction has no defined \
+             AArch64 lowering; both sides read uninitialized memory"
+        );
+    } else {
+        assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+    }
 
     let ir = std::fs::read_to_string(output_ir).expect("va_arg output IR should be readable");
     assert!(!ir.contains(".amice.vm.bytecode.vm_va_arg_reader"));

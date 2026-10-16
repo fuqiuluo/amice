@@ -76,6 +76,12 @@ impl AmicePass for CloneFunction {
                                     debug!("skipping varargs function: {:?}", called_func.get_name());
                                     continue;
                                 }
+                                // 克隆无函数体的声明没有意义：特化只能折叠函数体内的
+                                // 常量，声明克隆只会复制出一份属性错位的空壳（issue #100）
+                                if called_func.count_basic_blocks() == 0 {
+                                    debug!("skipping callee without body: {:?}", called_func.get_name());
+                                    continue;
+                                }
 
                                 //debug!("(clone-function) adding call to function: {:?}",called_func.get_name());
                                 call_instructions.push((inst, called_func));
@@ -162,6 +168,24 @@ fn do_replace_call_with_call_to_specialized_function<'a>(
             } else if attr.is_string() {
                 special_function
                     .remove_string_attribute(AttributeLoc::Param(arg_index), attr.get_string_kind_id().to_str()?)
+            }
+        }
+    }
+
+    // 折叠定参后，克隆体复制来的参数属性索引不会随参数移位重排，残留的
+    // 高位索引会触发 "Attribute after last parameter" 校验失败（issue #100）。
+    // 参数属性（nocapture/readonly 等）仅是优化提示，整体清空不影响正确性；
+    // 函数级属性（nounwind 等）保留。
+    let param_count = special_function.get_params().len() as u32;
+    for idx in 0..=param_count {
+        for attr in special_function.attributes(AttributeLoc::Param(idx)) {
+            if attr.is_enum() {
+                special_function.remove_enum_attribute(AttributeLoc::Param(idx), attr.get_enum_kind_id());
+            } else if attr.is_string() {
+                match attr.get_string_kind_id().to_str() {
+                    Ok(kind) => special_function.remove_string_attribute(AttributeLoc::Param(idx), kind),
+                    Err(e) => return Err(anyhow!("failed to read string attribute kind: {}", e)),
+                }
             }
         }
     }
