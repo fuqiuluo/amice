@@ -79,10 +79,7 @@ impl AmicePass for CloneFunction {
                                 // 克隆无函数体的声明没有意义：特化只能折叠函数体内的
                                 // 常量，声明克隆只会复制出一份属性错位的空壳（issue #100）
                                 if called_func.count_basic_blocks() == 0 {
-                                    debug!(
-                                        "skipping callee without body: {:?}",
-                                        called_func.get_name()
-                                    );
+                                    debug!("skipping callee without body: {:?}", called_func.get_name());
                                     continue;
                                 }
 
