@@ -1670,6 +1670,370 @@ int main(void) {
     assert!(ir.contains(".amice.vm.bytecode.vm_register_reuse_long_chain"));
 }
 
+// issue #95：跨 block pinned 活跃集 + 带多个常量实参的 native call。旧的 Call 编组会同时
+// 持有每个常量实参的临时寄存器与每个保存候选的 scratch 寄存器，与 pinned 值叠加后超出
+// x0..x31。顺序编组后同一时刻至多占用一个临时寄存器。
+#[test]
+#[serial]
+fn test_vm_virtualize_call_with_wide_pinned_live_set_matches_baseline() {
+    ensure_plugin_built();
+
+    let mut body = String::new();
+    for index in 0..11 {
+        let line = match index % 3 {
+            0 => format!("  %v{index} = mul i64 %seed, {}\n", index * 3 + 1),
+            1 => format!("  %v{index} = add i64 %seed, {}\n", index * 7 + 2),
+            _ => format!("  %v{index} = xor i64 %seed, {}\n", index * 13 + 3),
+        };
+        body.push_str(&line);
+    }
+    body.push_str("  %flag = and i64 %seed, 1\n");
+    body.push_str("  %cond = icmp eq i64 %flag, 0\n");
+    body.push_str("  br i1 %cond, label %then, label %else\n");
+    body.push_str("then:\n");
+    body.push_str(
+        "  %sa = call i64 @vm95_helper8(i64 %v0, i64 101, i64 %v2, i64 202, i64 %v4, i64 303, i64 %v6, i64 404)\n",
+    );
+    body.push_str("  br label %join\n");
+    body.push_str("else:\n");
+    body.push_str(
+        "  %sb = call i64 @vm95_helper8(i64 %v1, i64 505, i64 %v3, i64 606, i64 %v5, i64 707, i64 %v7, i64 808)\n",
+    );
+    body.push_str("  br label %join\n");
+    body.push_str("join:\n");
+    body.push_str("  %s = phi i64 [ %sa, %then ], [ %sb, %else ]\n");
+    let mut combined = String::from("  %c0 = mul i64 %s, 3\n");
+    for index in 0..11 {
+        let line = match index % 2 {
+            0 => format!("  %c{} = xor i64 %c{index}, %v{index}\n", index + 1),
+            _ => format!("  %c{} = add i64 %c{index}, %v{index}\n", index + 1),
+        };
+        combined.push_str(&line);
+    }
+    let ir_source = output_dir().join("vm95_pinned_live_call.input.ll");
+    std::fs::write(
+        &ir_source,
+        format!(
+            r#"; ModuleID = 'vm95_pinned_live_call'
+source_filename = "vm95_pinned_live_call.ll"
+
+declare i64 @vm95_helper8(i64, i64, i64, i64, i64, i64, i64, i64)
+
+define i64 @vm95_pinned_live_call(i64 %seed) {{
+entry:
+{body}{combined}  ret i64 %c11
+}}
+"#
+        ),
+    )
+    .expect("pinned live call IR fixture should be writable");
+
+    let harness = output_dir().join("vm95_pinned_live_call_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm95_helper8(uint64_t a, uint64_t b, uint64_t c, uint64_t d,
+                      uint64_t e, uint64_t f, uint64_t g, uint64_t h) {
+    return (a * 3u) ^ (b + 5u) ^ (c * 7u) ^ (d + 11u) ^ (e * 13u) ^ (f + 17u) ^ (g * 19u) ^ (h + 23u);
+}
+
+uint64_t vm95_pinned_live_call(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm95_pinned_live_call(0x123456789abcdef0ULL);
+    uint64_t b = vm95_pinned_live_call(0x0fedcba987654321ULL);
+    printf("%016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n", a, b, a ^ b);
+    return 0;
+}
+"#,
+    )
+    .expect("pinned live call C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm95_pinned_live_call_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm95_pinned_live_call.ll",
+        "default<O0>",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        !stderr.contains("VM x-register budget exceeded"),
+        "sequential native-call marshalling should keep transient temps at O(1):\n{stderr}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm95_pinned_live_call");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+}
+
+// issue #95：无调用函数不再预留 native_call ABI 跨度。旧的构造函数无条件预留
+// x0..x15，纯计算函数只剩 16 个可分配寄存器；24 个同时活跃的 block-local 值即可触墙。
+#[test]
+#[serial]
+fn test_vm_virtualize_pure_function_without_calls_uses_unreserved_native_span() {
+    ensure_plugin_built();
+
+    let mut body = String::new();
+    for index in 0..24_u64 {
+        let line = match index % 3 {
+            0 => format!("  %v{index} = mul i64 %seed, {}\n", index * 3 + 1),
+            1 => format!("  %v{index} = add i64 %seed, {}\n", index * 7 + 1000003),
+            _ => format!("  %v{index} = xor i64 %seed, {}\n", index * 131 + 7),
+        };
+        body.push_str(&line);
+    }
+    let mut combined = String::from("  %c0 = add i64 %v0, %v1\n");
+    for index in 2..24 {
+        combined.push_str(&format!(
+            "  %c{index_minus} = add i64 %c{prev}, %v{index}\n",
+            index_minus = index - 1,
+            prev = index - 2
+        ));
+    }
+    let ir_source = output_dir().join("vm95_pure_wide_live.input.ll");
+    std::fs::write(
+        &ir_source,
+        format!(
+            r#"; ModuleID = 'vm95_pure_wide_live'
+source_filename = "vm95_pure_wide_live.ll"
+
+define i64 @vm95_pure_wide_live(i64 %seed) {{
+entry:
+{body}{combined}  ret i64 %c22
+}}
+"#
+        ),
+    )
+    .expect("pure wide live IR fixture should be writable");
+
+    let harness = output_dir().join("vm95_pure_wide_live_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm95_pure_wide_live(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm95_pure_wide_live(0x123456789abcdef0ULL);
+    uint64_t b = vm95_pure_wide_live(0x0fedcba987654321ULL);
+    printf("%016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n", a, b, a ^ b);
+    return 0;
+}
+"#,
+    )
+    .expect("pure wide live C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm95_pure_wide_live_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let (virtualized_ir, output) = optimize_ir_with_plugin_debug_pipeline(
+        &ir_source,
+        "vm95_pure_wide_live.ll",
+        "default<O0>",
+        vm_virtualize_config(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        !stderr.contains("VM x-register budget exceeded"),
+        "functions without native calls should not reserve the native_call ABI span:\n{stderr}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm95_pure_wide_live");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+}
+
+// issue #95：block-local 值的寄存器不够时溢出到 translator 帧并在使用点回载。
+// 28 个同时活跃的值远超 native_call 预留后的 16 个可分配寄存器，只有溢出能救回。
+#[test]
+#[serial]
+fn test_vm_virtualize_spills_block_local_values_across_native_call() {
+    ensure_plugin_built();
+
+    let mut body = String::new();
+    for index in 0..28 {
+        let line = match index % 4 {
+            0 => format!("  %v{index} = mul i64 %seed, {}\n", index * 3 + 1),
+            1 => format!("  %v{index} = add i64 %seed, {}\n", index * 5 + 2),
+            2 => format!("  %v{index} = xor i64 %seed, {}\n", index * 7 + 3),
+            _ => format!("  %v{index} = sub i64 %seed, {}\n", index * 11 + 4),
+        };
+        body.push_str(&line);
+    }
+    body.push_str("  %c = call i64 @vm95_spill_helper(i64 %v0)\n");
+    let mut combined = String::from("  %w0 = add i64 %c, %v27\n");
+    for index in 1..28 {
+        let source = 27 - index;
+        combined.push_str(&format!(
+            "  %w{index} = add i64 %w{prev}, %v{source}\n",
+            prev = index - 1
+        ));
+    }
+    let ir_source = output_dir().join("vm95_spill_live_call.input.ll");
+    std::fs::write(
+        &ir_source,
+        format!(
+            r#"; ModuleID = 'vm95_spill_live_call'
+source_filename = "vm95_spill_live_call.ll"
+
+declare i64 @vm95_spill_helper(i64)
+
+define i64 @vm95_spill_live_call(i64 %seed) {{
+entry:
+{body}{combined}  ret i64 %w27
+}}
+"#
+        ),
+    )
+    .expect("spill live call IR fixture should be writable");
+
+    let harness = output_dir().join("vm95_spill_live_call_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm95_spill_helper(uint64_t x) {
+    return (x * 2654435761u) ^ 0x9e3779b97f4a7c15ull;
+}
+
+uint64_t vm95_spill_live_call(uint64_t seed);
+
+int main(void) {
+    uint64_t a = vm95_spill_live_call(0x123456789abcdef0ULL);
+    uint64_t b = vm95_spill_live_call(0x0fedcba987654321ULL);
+    printf("%016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n", a, b, a ^ b);
+    return 0;
+}
+"#,
+    )
+    .expect("spill live call C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm95_spill_live_call_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm95_spill_live_call.ll", "default<O0>", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        !stderr.contains("VM x-register budget exceeded"),
+        "block-local values should spill to the translator frame instead of skipping:\n{stderr}"
+    );
+    let dump = bytecode_dump_for_function(&stderr, "vm95_spill_live_call");
+    assert!(
+        dump.contains(": alloca "),
+        "spilling should allocate a VM frame:\n{dump}"
+    );
+    assert!(
+        dump.contains(": load "),
+        "spilled values should reload through VM loads:\n{dump}"
+    );
+    assert!(
+        dump.contains(": store "),
+        "spilling should store values into the frame:\n{dump}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm95_spill_live_call");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+}
+
+// issue #95：借用参数既是调用实参又是环（g(b, a)），且调用后仍然活跃。顺序编组经帧槽
+// 中转打断环，保存/恢复同样经帧完成。
+#[test]
+#[serial]
+fn test_vm_virtualize_call_swaps_borrowed_parameter_arguments() {
+    ensure_plugin_built();
+
+    let ir_source = output_dir().join("vm95_swap_args.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm95_swap_args'
+source_filename = "vm95_swap_args.ll"
+
+declare i64 @vm95_swap_helper(i64, i64)
+
+define i64 @vm95_swap_args(i64 %a, i64 %b) {
+entry:
+  %s = call i64 @vm95_swap_helper(i64 %b, i64 %a)
+  %t = xor i64 %s, %a
+  %u = add i64 %t, %b
+  ret i64 %u
+}
+"#,
+    )
+    .expect("swap args IR fixture should be writable");
+
+    let harness = output_dir().join("vm95_swap_args_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t vm95_swap_helper(uint64_t x, uint64_t y) {
+    return (x * 3u + 7u) ^ (y + 11u);
+}
+
+uint64_t vm95_swap_args(uint64_t a, uint64_t b);
+
+int main(void) {
+    uint64_t a = vm95_swap_args(0x123456789abcdef0ULL, 0x0fedcba987654321ULL);
+    uint64_t b = vm95_swap_args(0x1111222233334444ULL, 0x5555666677778888ULL);
+    printf("%016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n", a, b, a ^ b);
+    return 0;
+}
+"#,
+    )
+    .expect("swap args C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm95_swap_args_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug_pipeline(&ir_source, "vm95_swap_args.ll", "default<O0>", vm_virtualize_config());
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+    assert!(
+        !stderr.contains("VM x-register budget exceeded"),
+        "swapped borrowed parameters should marshal through spill slots:\n{stderr}"
+    );
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm95_swap_args");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+}
+
 #[test]
 #[serial]
 fn test_vm_virtualize_integer_div_rem_matches_baseline() {

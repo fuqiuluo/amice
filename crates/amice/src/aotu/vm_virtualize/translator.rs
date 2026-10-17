@@ -82,6 +82,10 @@ const MAX_MEMORY_INTRINSIC_INLINE_BYTES: u64 = 64;
 const LLVM_SINGLETHREAD_SYNC_SCOPE_ID: u32 = 0;
 const LLVM_SYSTEM_SYNC_SCOPE_ID: u32 = 1;
 const FPCLASS_ALL_FLAGS: u64 = 0x03ff;
+// translator 溢出帧容量：每槽 8 字节保存一个完整 VM x 寄存器（含高位），耗尽时按寄存器预算
+// 同样的安全跳过路径处理。帧 alloca 首次溢出时前插到函数入口，只分配一次。
+const SPILL_FRAME_SLOTS: usize = 64;
+const SPILL_SLOT_BYTES: u64 = 8;
 const DEFAULT_X86_64_DATA_LAYOUT: &str =
     "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128";
 
@@ -90,6 +94,13 @@ struct ValueBinding {
     // VM x 寄存器编号。
     reg: u8,
     // 该寄存器当前承载的 LLVM 标量位宽；runtime 统一用 i64 存储，handler 按 width 截断。
+    width: u8,
+}
+
+// 已溢出到帧槽的 SSA 值：寄存器已释放，后续 materialize 时按 8 字节 load 回临时寄存器。
+#[derive(Debug, Clone, Copy)]
+struct SpilledBinding {
+    slot: u32,
     width: u8,
 }
 
@@ -2286,6 +2297,21 @@ struct FunctionLowerer<'m, 'ctx, 'profile> {
     reuse_plan: Option<ReusePlan>,
     // 单条 lowering 过程中申请的 scratch 寄存器，指令结束后统一释放。
     temporary_regs: Vec<u8>,
+    // 函数是否包含 native call；无调用函数不再预留 native_call ABI 寄存器跨度。
+    has_native_calls: bool,
+    // translator 溢出帧：分配失败时把 block-local 值按 8 字节槽存入帧并释放寄存器，
+    // 使用点经 materialize_value load 回临时。帧 alloca 首次溢出时前插到函数入口。
+    spill_frame_base: Option<u8>,
+    // 溢出帧槽位寻址专用寄存器（base + offset），避免存取过程中再申请 scratch。
+    spill_frame_scratch: Option<u8>,
+    spill_slots_used: Vec<bool>,
+    spilled_values: HashMap<ValueKey, SpilledBinding>,
+    // 当前指令的操作数与结果在 lowering 期间以原始寄存器形式被持有，不能选作溢出受害者。
+    spill_protected_values: HashSet<ValueKey>,
+    // native call 编组期间以裸寄存器形式持有的值（结果/实参/保存候选），同样不可溢出。
+    spill_protected_regs: HashSet<u8>,
+    // 分配失败诊断用：当前正在 lowering 的 LLVM opcode。
+    current_opcode: Option<InstructionOpcode>,
 }
 
 #[derive(Debug, Clone)]
@@ -2610,12 +2636,23 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     .with_context(|| format!("profile ABI does not map argument {index}"))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
+        // native_call ABI 槽只在函数真的可能发起 native call 时才预留；纯计算函数
+        // 预留这 16 个寄存器只会无谓收紧 x 寄存器预算。
+        let has_native_calls = function_contains_native_call(function);
+        let native_span = has_native_calls
+            .then(|| {
+                native_arg_registers
+                    .iter()
+                    .copied()
+                    .chain(native_return_registers.iter().copied())
+            })
+            .into_iter()
+            .flatten();
         let reserved_vregs = param_regs
             .iter()
             .copied()
             .chain(return_registers.iter().copied())
-            .chain(native_arg_registers.iter().copied())
-            .chain(native_return_registers.iter().copied())
+            .chain(native_span)
             .max()
             .map(|reg| reg + 1)
             .unwrap_or(0);
@@ -2728,6 +2765,14 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             defined_values,
             reuse_plan: None,
             temporary_regs: Vec::new(),
+            has_native_calls,
+            spill_frame_base: None,
+            spill_frame_scratch: None,
+            spill_slots_used: vec![false; SPILL_FRAME_SLOTS],
+            spilled_values: HashMap::new(),
+            spill_protected_values: HashSet::new(),
+            spill_protected_regs: HashSet::new(),
+            current_opcode: None,
         })
     }
 
@@ -2777,7 +2822,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 {
                     let width = instruction_result_width(instruction)?
                         .context("pinned VM value must have a scalar register width")?;
-                    let reg = self.builder.alloc_vreg()?;
+                    let reg = self.alloc_vreg_or_spill()?;
                     self.values.insert(key, ValueBinding { reg, width });
                 }
                 if instruction.get_opcode() == InstructionOpcode::Phi
@@ -2888,7 +2933,16 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         })
     }
 
-    fn begin_instruction(&mut self, _instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+    fn begin_instruction(&mut self, instruction: InstructionValue<'ctx>) -> anyhow::Result<()> {
+        self.current_opcode = Some(instruction.get_opcode());
+        // 当前指令的操作数与结果在整个 lowering 期间以原始寄存器形式被 emit 路径持有，
+        // 把它们排除出溢出受害者候选，避免寄存器中途被复用。
+        let mut protected = instruction_value_operands(instruction)
+            .into_iter()
+            .map(value_key)
+            .collect::<HashSet<_>>();
+        protected.insert(instruction_key(instruction));
+        self.spill_protected_values = protected;
         Ok(())
     }
 
@@ -2900,7 +2954,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
 
         let width =
             instruction_result_width(instruction)?.context("instruction has no scalar result register width")?;
-        let reg = self.builder.alloc_vreg()?;
+        let reg = self.alloc_vreg_or_spill()?;
         let binding = ValueBinding { reg, width };
         self.values.insert(key, binding);
         Ok(binding)
@@ -2926,7 +2980,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             .into_iter()
             .map(|info| {
                 Ok(Some(AggregateField::owned(ValueBinding {
-                    reg: self.builder.alloc_vreg()?,
+                    reg: self.alloc_vreg_or_spill()?,
                     width: info.width,
                 })))
             })
@@ -2943,6 +2997,9 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         }
         self.release_after_instruction(instruction)?;
         self.advance_reuse_plan();
+        self.spill_protected_values.clear();
+        self.spill_protected_regs.clear();
+        self.current_opcode = None;
         Ok(())
     }
 
@@ -3006,6 +3063,9 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             if let Some(binding) = self.values.get(&key).copied() {
                 self.builder.release_vreg(binding.reg);
             }
+            if let Some(spilled) = self.spilled_values.remove(&key) {
+                self.free_spill_slot(spilled.slot);
+            }
             self.defined_values.remove(&key);
             self.values.remove(&key);
         }
@@ -3023,15 +3083,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     }
 
     fn alloc_temporary_vreg(&mut self) -> anyhow::Result<u8> {
-        let reg = self.builder.alloc_vreg()?;
-        if self.reuse_plan.is_some() {
-            self.temporary_regs.push(reg);
-        }
-        Ok(reg)
-    }
-
-    fn alloc_temporary_vreg_excluding(&mut self, excluded: &HashSet<u8>) -> anyhow::Result<u8> {
-        let reg = self.builder.alloc_vreg_excluding(excluded)?;
+        let reg = self.alloc_vreg_or_spill()?;
         if self.reuse_plan.is_some() {
             self.temporary_regs.push(reg);
         }
@@ -3042,6 +3094,214 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         for reg in self.temporary_regs.drain(..) {
             self.builder.release_vreg(reg);
         }
+    }
+
+    // 分配失败时先尝试把 block-local 值溢出到帧槽再重试。跨 block 值的 reload 点不一定
+    // 被 spill 点支配（phi 结果还会被每条前驱边重写），因此只有 reuse plan 判定非 pinned
+    // 的值可作为受害者。
+    fn alloc_vreg_or_spill(&mut self) -> anyhow::Result<u8> {
+        self.alloc_vreg_with_spill(None)
+    }
+
+    fn alloc_vreg_or_spill_excluding(&mut self, excluded: &HashSet<u8>) -> anyhow::Result<u8> {
+        self.alloc_vreg_with_spill(Some(excluded))
+    }
+
+    fn alloc_vreg_with_spill(&mut self, excluded: Option<&HashSet<u8>>) -> anyhow::Result<u8> {
+        loop {
+            let attempt = match excluded {
+                None => self.builder.alloc_vreg(),
+                Some(set) => self.builder.alloc_vreg_excluding(set),
+            };
+            let error = match attempt {
+                Ok(reg) => {
+                    self.reserve_spill_frame_under_pressure()?;
+                    return Ok(reg);
+                },
+                Err(error) => error,
+            };
+            let Some((key, _)) = self.pick_spill_victim(excluded) else {
+                return Err(error.context(self.register_pressure_context()));
+            };
+            self.spill_value(key)?;
+        }
+    }
+
+    // 建帧本身需要两个寄存器，而腾出寄存器又依赖已存在的帧。帧寄存器只取从未分配过的
+    // 新寄存器：空闲列表里的寄存器可能已被更早发射的指令写入，而帧 alloca 前插在指令流
+    // 头部，复用它们会让帧基址在 alloca 与首次使用之间被旧值定义覆盖。在这样可用的
+    // 新寄存器恰好剩两个（再分配就必然要溢出）、且当前确实存在可溢出的 block-local 值时，
+    // 立刻固定帧基址与寻址寄存器。没有可溢出候选（例如只剩 pinned 值与聚合）时建帧只会
+    // 白白收紧预算，此时不预留，行为与不溢出的基线一致。
+    fn reserve_spill_frame_under_pressure(&mut self) -> anyhow::Result<()> {
+        if self.spill_frame_base.is_some() {
+            return Ok(());
+        }
+        let excluded: HashSet<u8> = if self.has_native_calls {
+            self.native_touched_registers.clone()
+        } else {
+            HashSet::new()
+        };
+        if self.builder.fresh_available_excluding(&excluded) != 2 || self.pick_spill_victim(Some(&excluded)).is_none() {
+            return Ok(());
+        }
+        self.ensure_spill_frame()
+    }
+
+    fn pick_spill_victim(&self, excluded: Option<&HashSet<u8>>) -> Option<(ValueKey, ValueBinding)> {
+        let plan = self.reuse_plan.as_ref()?;
+        let mut victim: Option<(ValueKey, ValueBinding)> = None;
+        for (key, binding) in &self.values {
+            if plan.pinned_values.contains(key)
+                || self.spill_protected_values.contains(key)
+                || self.spill_protected_regs.contains(&binding.reg)
+                || !self.defined_values.contains(key)
+                || self.dynamic_allocas.contains_key(key)
+                || self.dynamic_alloca_geps.contains_key(key)
+                || self.dynamic_static_geps.contains_key(key)
+                || self.aggregate_reg_refs.contains_key(&binding.reg)
+                || excluded.is_some_and(|set| set.contains(&binding.reg))
+            {
+                continue;
+            }
+            // 取寄存器号最小的候选（通常是最早分配的值），保证 bytecode 生成可复现。
+            if victim.map_or(true, |(_, current)| binding.reg < current.reg) {
+                victim = Some((*key, *binding));
+            }
+        }
+        victim
+    }
+
+    fn spill_value(&mut self, key: ValueKey) -> anyhow::Result<()> {
+        let binding = self
+            .values
+            .remove(&key)
+            .with_context(|| format!("spill victim {key:?} has no register binding"))?;
+        self.ensure_spill_frame()?;
+        let slot = self.alloc_spill_slot()?;
+        self.store_reg_to_spill_slot(binding.reg, slot)?;
+        self.builder.release_vreg(binding.reg);
+        self.spilled_values.insert(
+            key,
+            SpilledBinding {
+                slot,
+                width: binding.width,
+            },
+        );
+        Ok(())
+    }
+
+    fn ensure_spill_frame(&mut self) -> anyhow::Result<()> {
+        if self.spill_frame_base.is_some() {
+            return Ok(());
+        }
+        // 帧基址与寻址 scratch 必须跨 native call 存活；无调用函数没有寄存器会被 clobber。
+        // 这里刻意只取从未分配过的新寄存器而非空闲列表：帧 alloca 前插在指令流头部，
+        // 空闲列表里的寄存器可能在 alloca 与首次帧使用之间被更早发射的旧值定义覆盖。
+        // 建帧也不能依赖帧本身，低水位预警已保证溢出发生前帧已就绪；若仍分配失败，
+        // 说明连帧都放不下，按寄存器预算耗尽安全跳过。
+        let excluded: HashSet<u8> = if self.has_native_calls {
+            self.native_touched_registers.clone()
+        } else {
+            HashSet::new()
+        };
+        let base = self.builder.alloc_fresh_vreg_excluding(&excluded).context(
+            "no never-allocated register outside native_call clobbers is available for the VM spill frame base",
+        )?;
+        let scratch = self.builder.alloc_fresh_vreg_excluding(&excluded).context(
+            "no never-allocated register outside native_call clobbers is available for the VM spill frame scratch",
+        )?;
+        self.builder.prepend_instruction(
+            VmInstruction::Alloca {
+                dst: base,
+                bytes: SPILL_FRAME_SLOTS as u64 * SPILL_SLOT_BYTES,
+                align: 8,
+            },
+            "alloca",
+        );
+        self.spill_frame_base = Some(base);
+        self.spill_frame_scratch = Some(scratch);
+        Ok(())
+    }
+
+    fn alloc_spill_slot(&mut self) -> anyhow::Result<u32> {
+        let slot = self
+            .spill_slots_used
+            .iter()
+            .position(|used| !used)
+            .map(|index| index as u32)
+            .with_context(|| format!("VM spill frame exhausted: {SPILL_FRAME_SLOTS} slots are available"))?;
+        self.spill_slots_used[slot as usize] = true;
+        Ok(slot)
+    }
+
+    fn free_spill_slot(&mut self, slot: u32) {
+        let index = slot as usize;
+        if index < self.spill_slots_used.len() {
+            self.spill_slots_used[index] = false;
+        }
+    }
+
+    // 计算 `frame_base + slot * 8`，写入专用寻址寄存器并返回；全程不占用额外寄存器。
+    fn emit_spill_slot_address(&mut self, slot: u32) -> anyhow::Result<u8> {
+        let base = self.spill_frame_base.context("spill frame base is not allocated")?;
+        let scratch = self
+            .spill_frame_scratch
+            .context("spill frame scratch is not allocated")?;
+        let offset = u64::from(slot) * SPILL_SLOT_BYTES;
+        self.emit_profile_mov_imm(scratch, offset, 64)?;
+        self.emit_profile_iadd_direct(scratch, base, scratch, 64)?;
+        Ok(scratch)
+    }
+
+    fn store_reg_to_spill_slot(&mut self, src: u8, slot: u32) -> anyhow::Result<()> {
+        let ptr = self.emit_spill_slot_address(slot)?;
+        let desc = self.instruction_desc_for_semantic(&HandlerSemantic::Store)?;
+        let args = ProfileInstructionArgs::from_values([
+            (
+                "src".to_owned(),
+                LoweringValue::Reg(ValueBinding { reg: src, width: 64 }),
+            ),
+            (
+                "ptr".to_owned(),
+                LoweringValue::Reg(ValueBinding { reg: ptr, width: 64 }),
+            ),
+            ("width".to_owned(), LoweringValue::Imm(64)),
+        ]);
+        self.emit_profile_instruction(&desc, args)
+    }
+
+    fn load_reg_from_spill_slot(&mut self, dst: u8, slot: u32) -> anyhow::Result<()> {
+        let ptr = self.emit_spill_slot_address(slot)?;
+        let desc = self.instruction_desc_for_semantic(&HandlerSemantic::Load)?;
+        let args = ProfileInstructionArgs::from_values([
+            (
+                "dst".to_owned(),
+                LoweringValue::Reg(ValueBinding { reg: dst, width: 64 }),
+            ),
+            (
+                "ptr".to_owned(),
+                LoweringValue::Reg(ValueBinding { reg: ptr, width: 64 }),
+            ),
+            ("width".to_owned(), LoweringValue::Imm(64)),
+        ]);
+        self.emit_profile_instruction(&desc, args)
+    }
+
+    fn register_pressure_context(&self) -> String {
+        let (vreg_count, free) = self.builder.register_state();
+        let used_slots = self.spill_slots_used.iter().filter(|used| **used).count();
+        format!(
+            "register pressure while lowering {:?}: values={} aggregates={} temps={} spilled={} used_spill_slots={} vregs={} free={}",
+            self.current_opcode,
+            self.values.len(),
+            self.aggregates.len(),
+            self.temporary_regs.len(),
+            self.spilled_values.len(),
+            used_slots,
+            vreg_count,
+            free
+        )
     }
 
     fn insert_aggregate_value(&mut self, key: ValueKey, binding: AggregateBinding) {
@@ -3499,7 +3759,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                     if env.get(target).is_ok() {
                         continue;
                     }
-                    let reg = self.builder.alloc_vreg()?;
+                    let reg = self.alloc_vreg_or_spill()?;
                     let width = width_from_lowering_value_type(value_type, &env)?;
                     env.insert(target.clone(), LoweringValue::Reg(ValueBinding { reg, width }));
                 },
@@ -4620,9 +4880,21 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         self.emit_profile_instruction(&desc, args)
     }
 
+    // 溢出帧槽位寻址使用的 i64 加法；语义唯一映射到 profile 的 iadd 指令。
+    fn emit_profile_iadd_direct(&mut self, dst: u8, lhs: u8, rhs: u8, width: u8) -> anyhow::Result<()> {
+        let desc = self.instruction_desc_for_semantic(&HandlerSemantic::Bin(BinOp::Add))?;
+        let args = ProfileInstructionArgs::from_values([
+            ("dst".to_owned(), LoweringValue::Reg(ValueBinding { reg: dst, width })),
+            ("lhs".to_owned(), LoweringValue::Reg(ValueBinding { reg: lhs, width })),
+            ("rhs".to_owned(), LoweringValue::Reg(ValueBinding { reg: rhs, width })),
+            ("width".to_owned(), LoweringValue::Imm(width as u64)),
+        ]);
+        self.emit_profile_instruction(&desc, args)
+    }
+
     fn retain_dynamic_alloca_count(&mut self, count: ValueBinding) -> anyhow::Result<ValueBinding> {
         let stable = ValueBinding {
-            reg: self.builder.alloc_vreg()?,
+            reg: self.alloc_vreg_or_spill()?,
             width: count.width,
         };
         self.emit_profile_mov_direct(stable.reg, count.reg, count.width)?;
@@ -4636,7 +4908,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         byte_offset: u64,
     ) -> anyhow::Result<()> {
         let offset = ValueBinding {
-            reg: self.builder.alloc_vreg()?,
+            reg: self.alloc_vreg_or_spill()?,
             width: 64,
         };
         self.push_constant(offset.reg, byte_offset, 64)?;
@@ -4653,7 +4925,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         base: ValueBinding,
     ) -> anyhow::Result<()> {
         let offset = ValueBinding {
-            reg: self.builder.alloc_vreg()?,
+            reg: self.alloc_vreg_or_spill()?,
             width: 64,
         };
         let action = self.emit_action_for_shape(
@@ -4696,7 +4968,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         self.emit_profile_action(&delta_action, &delta_env)?;
 
         let offset = ValueBinding {
-            reg: self.builder.alloc_vreg()?,
+            reg: self.alloc_vreg_or_spill()?,
             width: 64,
         };
         let accumulate_action = self.emit_action_for_shape(
@@ -4734,7 +5006,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             return Ok(());
         }
         let offset = ValueBinding {
-            reg: self.builder.alloc_vreg()?,
+            reg: self.alloc_vreg_or_spill()?,
             width: 64,
         };
         self.push_constant(offset.reg, total_offset, 64)?;
@@ -4761,7 +5033,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
 
         let delta = ValueBinding {
             reg: if object.base_offset == 0 {
-                self.builder.alloc_vreg()?
+                self.alloc_vreg_or_spill()?
             } else {
                 self.alloc_temporary_vreg()?
             },
@@ -4788,7 +5060,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             };
             self.push_constant(base_offset.reg, object.base_offset, 64)?;
             let offset = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: 64,
             };
             self.emit_static_gep_offset_accumulate(base_offset, delta, offset)?;
@@ -4829,7 +5101,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         self.emit_profile_action(&delta_action, &delta_env)?;
 
         let offset = ValueBinding {
-            reg: self.builder.alloc_vreg()?,
+            reg: self.alloc_vreg_or_spill()?,
             width: 64,
         };
         self.emit_static_gep_offset_accumulate(object.offset, delta, offset)?;
@@ -5787,7 +6059,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             self.emit_profile_action(load_action, &load_env)?;
 
             let stable = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: field.info.width,
             };
             let mov_env = LoweringEnv::new()
@@ -5956,7 +6228,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             self.emit_profile_action(load_action, &load_env)?;
 
             let stable = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: field.info.width,
             };
             let mov_env = LoweringEnv::new()
@@ -6134,7 +6406,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         let mut loaded = Vec::with_capacity(fields.len());
         for (index, field) in fields.into_iter().enumerate() {
             let stable = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: field.info.width,
             };
             if mask[index] {
@@ -6236,7 +6508,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 continue;
             }
             let stable = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: field.info.width,
             };
             let tmp = ValueBinding {
@@ -6329,7 +6601,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 continue;
             }
             let stable = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: field.width,
             };
             let tmp = ValueBinding {
@@ -6688,7 +6960,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         let mut loaded = Vec::with_capacity(fields.len());
         for (index, field) in fields.into_iter().enumerate() {
             let stable = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: field.info.width,
             };
             if mask[index] {
@@ -6905,7 +7177,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         let mut loaded = Vec::with_capacity(fields.len());
         for (index, field) in fields.into_iter().enumerate() {
             let stable = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: field.width,
             };
             if mask[index] {
@@ -7026,7 +7298,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             }
 
             let stable = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: field.width,
             };
             let tmp = ValueBinding {
@@ -8056,8 +8328,11 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         }
         // `native_call` 是 profile 声明的 ABI 边界。把参数移动到 call register 可能覆盖无关的
         // VM SSA 值，因此 translator 会保存 profile 声明 native bridge 可能触碰的所有已定义 x
-        // 寄存器，但排除此调用结果值拥有的寄存器。
+        // 寄存器，但排除此调用结果值拥有的寄存器。实参与结果寄存器在编组期间以裸形式被
+        // 持有，一并排除出溢出受害者候选。
         let saved = self.save_native_touched_registers(&result_regs)?;
+        self.spill_protected_regs.extend(args.iter().map(|value| value.reg));
+        self.spill_protected_regs.extend(result_regs.iter().copied());
 
         let arg_moves = args
             .iter()
@@ -8067,7 +8342,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 src: *value,
             })
             .collect::<Vec<_>>();
-        self.emit_parallel_register_moves(arg_moves)?;
+        self.emit_sequential_arg_moves(arg_moves)?;
 
         let call_id = u16::try_from(self.native_calls.len()).context("native call table has too many entries")?;
         // `call_native` handler 的 record 已经携带 retN 目标寄存器。这里直接把 native thunk
@@ -9895,7 +10170,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             }
 
             let dst = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: info.width,
             };
             let then_label = self.builder.new_label();
@@ -10068,7 +10343,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 width: 1,
             };
             let dst = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: info.width,
             };
             let pivot_label = self.builder.new_label();
@@ -10994,7 +11269,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 );
             }
             let stable = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: field.width,
             };
             let env = LoweringEnv::new()
@@ -11052,7 +11327,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 width: index_width,
             };
             let active = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: 1,
             };
             let env = LoweringEnv::new()
@@ -11120,7 +11395,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
 
         let actions = self.count_trailing_zero_elements_actions()?;
         let result = ValueBinding {
-            reg: self.builder.alloc_vreg()?,
+            reg: self.alloc_vreg_or_spill()?,
             width: result_width,
         };
         let default_env = LoweringEnv::new()
@@ -11231,7 +11506,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             width: result_width,
         };
         let result = ValueBinding {
-            reg: self.builder.alloc_vreg()?,
+            reg: self.alloc_vreg_or_spill()?,
             width: result_width,
         };
 
@@ -11324,7 +11599,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
 
         let actions = self.vp_count_trailing_zero_elements_actions()?;
         let result = ValueBinding {
-            reg: self.builder.alloc_vreg()?,
+            reg: self.alloc_vreg_or_spill()?,
             width: result_width,
         };
         let default_env = LoweringEnv::new()
@@ -14525,14 +14800,14 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         }
 
         if target.return_is_aggregate {
+            let touched = self.native_touched_registers.clone();
             return target
                 .return_fields
                 .iter()
                 .enumerate()
                 .map(|(index, field)| {
                     let reg = self
-                        .builder
-                        .alloc_vreg_excluding(&self.native_touched_registers)
+                        .alloc_vreg_or_spill_excluding(&touched)
                         .with_context(|| format!("native aggregate return field {index}"))?;
                     Ok(ValueBinding {
                         reg,
@@ -14561,10 +14836,12 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
         )
     }
 
-    fn save_native_touched_registers(&mut self, result_regs: &HashSet<u8>) -> anyhow::Result<Vec<(u8, u8)>> {
+    // native call 会 clobber 掉 touched 范围内仍被后续指令使用的值。逐个把候选寄存器
+    // 存入溢出帧槽并立刻释放寻址资源，调用结束后再逐个 load 回原寄存器；相比为每个
+    // 保存候选同时持有一个 scratch 寄存器，寄存器峰值从 O(候选数) 降到 O(1)。
+    fn save_native_touched_registers(&mut self, result_regs: &HashSet<u8>) -> anyhow::Result<Vec<(u8, u32)>> {
         let touched = self.native_touched_registers.clone();
         let mut seen = HashSet::new();
-        let mut saves = Vec::new();
         let mut candidates = Vec::new();
         for (key, binding) in &self.values {
             if self.defined_values.contains(key)
@@ -14583,57 +14860,72 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 }
             }
         }
-
-        for reg in candidates {
-            let scratch = self.alloc_temporary_vreg_excluding(&touched)?;
-            self.emit_profile_mov_direct(scratch, reg, 64)?;
-            saves.push((reg, scratch));
+        if candidates.is_empty() {
+            return Ok(Vec::new());
         }
 
+        // 编组期间这些寄存器以裸形式被引用，禁止选作溢出受害者。
+        self.spill_protected_regs.extend(candidates.iter().copied());
+        self.ensure_spill_frame()?;
+        // 排序保证槽位分配顺序确定，bytecode 生成可复现。
+        candidates.sort_unstable();
+        let mut saves = Vec::with_capacity(candidates.len());
+        for reg in candidates {
+            let slot = self.alloc_spill_slot()?;
+            self.store_reg_to_spill_slot(reg, slot)?;
+            saves.push((reg, slot));
+        }
         Ok(saves)
     }
 
-    fn emit_parallel_register_moves(&mut self, moves: Vec<RegisterMove>) -> anyhow::Result<()> {
-        // 参数搬运可能形成 x1->x2、x2->x1 这种环。先把会被覆盖的源寄存器复制到 scratch，
-        // 再执行目标写入，避免 native_call 参数准备阶段破坏尚未移动的源值。
-        let clobbered = moves
-            .iter()
-            .filter(|mov| mov.dst != mov.src.reg)
-            .map(|mov| mov.dst)
-            .collect::<HashSet<_>>();
-        let mut prepared = Vec::new();
+    // 实参搬运的目标寄存器彼此可能形成 x1->x2、x2->x1 的环。把源位于参数目标集合或
+    // 本就属于临时寄存器的实参先逐个存入溢出帧槽（存完即释放临时），再按序 load 到
+    // 目标 ABI 寄存器；源在参数目标集合之外的值由后续 mov 直接搬运。全流程同一时刻
+    // 至多占用一个临时寄存器，环冲突经由内存槽自然打断。
+    fn emit_sequential_arg_moves(&mut self, moves: Vec<RegisterMove>) -> anyhow::Result<()> {
+        let arg_dsts: HashSet<u8> = moves.iter().map(|mov| mov.dst).collect();
+        let mut staged = Vec::new();
+        let mut deferred = Vec::new();
 
         for mov in moves {
             if mov.dst == mov.src.reg {
                 continue;
             }
-
-            let src = if clobbered.contains(&mov.src.reg) {
-                let scratch = self.alloc_temporary_vreg_excluding(&clobbered)?;
-                self.emit_profile_mov_direct(scratch, mov.src.reg, mov.src.width)?;
-                scratch
+            let needs_staging = arg_dsts.contains(&mov.src.reg) || self.temporary_regs.contains(&mov.src.reg);
+            if needs_staging {
+                self.ensure_spill_frame()?;
+                let slot = self.alloc_spill_slot()?;
+                self.store_reg_to_spill_slot(mov.src.reg, slot)?;
+                if self.temporary_regs.contains(&mov.src.reg) {
+                    self.temporary_regs.retain(|reg| *reg != mov.src.reg);
+                    self.builder.release_vreg(mov.src.reg);
+                }
+                staged.push((mov.dst, slot));
             } else {
-                mov.src.reg
-            };
-            prepared.push((mov.dst, src, mov.src.width));
+                deferred.push(mov);
+            }
         }
 
-        for (dst, src, width) in prepared {
-            self.emit_profile_mov_direct(dst, src, width)?;
+        for (dst, slot) in staged {
+            self.load_reg_from_spill_slot(dst, slot)?;
+            self.free_spill_slot(slot);
         }
-
+        for mov in deferred {
+            self.emit_profile_mov_direct(mov.dst, mov.src.reg, mov.src.width)?;
+        }
         Ok(())
     }
 
     fn restore_native_touched_registers(
         &mut self,
-        saves: Vec<(u8, u8)>,
+        saves: Vec<(u8, u32)>,
         result_regs: &HashSet<u8>,
     ) -> anyhow::Result<()> {
-        for (reg, scratch) in saves {
+        for (reg, slot) in saves {
             if !result_regs.contains(&reg) {
-                self.emit_profile_mov_direct(reg, scratch, 64)?;
+                self.load_reg_from_spill_slot(reg, slot)?;
             }
+            self.free_spill_slot(slot);
         }
         Ok(())
     }
@@ -15518,7 +15810,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             }
 
             let dst = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: info.width,
             };
             field_moves.push((info, dst, then_field.binding, else_field.binding));
@@ -15620,7 +15912,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             }
 
             let dst = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: info.width,
             };
             lane_moves.push((info, dst, then_field.binding, else_field.binding));
@@ -15735,7 +16027,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             }
 
             let dst = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: info.width,
             };
             let then_label = self.builder.new_label();
@@ -16056,7 +16348,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
             }
 
             let dst = ValueBinding {
-                reg: self.builder.alloc_vreg()?,
+                reg: self.alloc_vreg_or_spill()?,
                 width: field.width,
             };
             let inserted_label = self.builder.new_label();
@@ -17349,7 +17641,7 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
                 .iter()
                 .map(|field| {
                     let reg = if stable_lanes {
-                        self.builder.alloc_vreg()?
+                        self.alloc_vreg_or_spill()?
                     } else {
                         self.alloc_temporary_vreg()?
                     };
@@ -17413,6 +17705,18 @@ impl<'m, 'ctx, 'profile> FunctionLowerer<'m, 'ctx, 'profile> {
     fn materialize_value(&mut self, value: BasicValueEnum<'ctx>) -> anyhow::Result<ValueBinding> {
         if let Some(binding) = self.values.get(&value_key(value)).copied() {
             return Ok(binding);
+        }
+        if let Some(spilled) = self.spilled_values.get(&value_key(value)).copied() {
+            // 已溢出的 SSA 值在使用点按 8 字节 load 回临时寄存器；槽位保留到全局最后使用。
+            let reg = self.alloc_vreg_or_spill()?;
+            self.load_reg_from_spill_slot(reg, spilled.slot)?;
+            if self.reuse_plan.is_some() {
+                self.temporary_regs.push(reg);
+            }
+            return Ok(ValueBinding {
+                reg,
+                width: spilled.width,
+            });
         }
 
         if is_undef_or_poison_value(value) {
@@ -19830,6 +20134,20 @@ fn instruction_value_operands(instruction: InstructionValue<'_>) -> Vec<BasicVal
 
 fn instruction_operand_value(instruction: InstructionValue<'_>, index: u32) -> anyhow::Result<BasicValueEnum<'_>> {
     instruction_basic_operand(instruction, index).with_context(|| format!("missing value operand {index}"))
+}
+
+// 是否存在会走 native bridge 的调用指令；用于决定是否预留 native_call ABI 寄存器跨度。
+// 保守地把所有 Call/Invoke/CallBr 都算作 native call，即使后续 lowering 会把其中一部分
+// 分发为 intrinsic，也只是多预留，不会破坏正确性。
+fn function_contains_native_call(function: FunctionValue<'_>) -> bool {
+    function.get_basic_blocks().iter().any(|block| {
+        block.get_instructions().any(|instruction| {
+            matches!(
+                instruction.get_opcode(),
+                InstructionOpcode::Call | InstructionOpcode::Invoke | InstructionOpcode::CallBr
+            )
+        })
+    })
 }
 
 fn metadata_string_operand(instruction: InstructionValue<'_>, index: u32, name: &str) -> anyhow::Result<String> {

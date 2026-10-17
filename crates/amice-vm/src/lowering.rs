@@ -3348,6 +3348,30 @@ impl VmFunctionBuilder {
         anyhow::bail!("VM x-register budget exceeded: no register outside native_call clobbers is available");
     }
 
+    /// 分配一个从未分配过、且不在 `excluded` 集合内的寄存器，跳过空闲列表。
+    ///
+    /// 空闲列表中的寄存器可能已被先前发射的指令写入；调用方若把此类寄存器用于
+    /// 在指令流头部前插、且此后不允许被覆盖的值（例如 translator 溢出帧基址），
+    /// 会在前插点与首次使用之间被旧值定义覆盖。只接受全新寄存器可杜绝该冲突。
+    pub fn alloc_fresh_vreg_excluding(&mut self, excluded: &HashSet<u8>) -> anyhow::Result<u8> {
+        while self.vreg_count < 32 {
+            let reg = self.vreg_count;
+            self.vreg_count += 1;
+            if !excluded.contains(&reg) {
+                return Ok(reg);
+            }
+        }
+
+        anyhow::bail!(
+            "VM x-register budget exceeded: no never-allocated register outside native_call clobbers is available"
+        );
+    }
+
+    /// 还未分配过且不在 `excluded` 集合内的寄存器数量。
+    pub fn fresh_available_excluding(&self, excluded: &HashSet<u8>) -> usize {
+        (self.vreg_count..32).filter(|reg| !excluded.contains(reg)).count()
+    }
+
     /// 记录预分配寄存器已经被使用。
     pub fn reserve_vregs(&mut self, count: u8) -> anyhow::Result<()> {
         if count > 32 {
@@ -3356,6 +3380,23 @@ impl VmFunctionBuilder {
         self.vreg_count = self.vreg_count.max(count);
         self.free_vregs.retain(|reg| *reg < count);
         Ok(())
+    }
+
+    /// 在指令流头部插入指令，并同步平移已绑定 label 的 PC。
+    ///
+    /// 用于 translator 在首次需要溢出时把帧 `alloca` 补到函数入口：溢出点可能在循环内，
+    /// 直接在当前位置分配会随迭代反复增长 VM 栈，而头部插入保证帧只分配一次。
+    pub fn prepend_instruction(&mut self, instruction: VmInstruction, profile_instruction: impl Into<String>) {
+        self.instructions.insert(0, instruction);
+        self.profile_instructions.insert(0, profile_instruction.into());
+        for pc in self.label_pcs.values_mut() {
+            *pc += 1;
+        }
+    }
+
+    /// 当前 `x` 寄存器分配水位与空闲数量，用于分配失败的诊断输出。
+    pub fn register_state(&self) -> (u8, usize) {
+        (self.vreg_count, self.free_vregs.len())
     }
 
     /// 在最后一次 SSA 使用已生成后，把 VM 寄存器标记为可复用。
