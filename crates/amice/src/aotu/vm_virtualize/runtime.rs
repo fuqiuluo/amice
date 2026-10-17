@@ -3410,6 +3410,8 @@ fn atomic_rmw_template(statements: &[SemanticStmt]) -> Option<AtomicRmwOp> {
         (SemanticAtomicRmwOp::FMin, AtomicRmwOp::FMin),
         (SemanticAtomicRmwOp::FMaximum, AtomicRmwOp::FMaximum),
         (SemanticAtomicRmwOp::FMinimum, AtomicRmwOp::FMinimum),
+        (SemanticAtomicRmwOp::FMaximumNum, AtomicRmwOp::FMaximumNum),
+        (SemanticAtomicRmwOp::FMinimumNum, AtomicRmwOp::FMinimumNum),
     ]
     .into_iter()
     .find_map(|(semantic_op, runtime_op)| {
@@ -3453,6 +3455,8 @@ fn volatile_atomic_rmw_template(statements: &[SemanticStmt]) -> Option<AtomicRmw
         (SemanticAtomicRmwOp::FMin, AtomicRmwOp::FMin),
         (SemanticAtomicRmwOp::FMaximum, AtomicRmwOp::FMaximum),
         (SemanticAtomicRmwOp::FMinimum, AtomicRmwOp::FMinimum),
+        (SemanticAtomicRmwOp::FMaximumNum, AtomicRmwOp::FMaximumNum),
+        (SemanticAtomicRmwOp::FMinimumNum, AtomicRmwOp::FMinimumNum),
     ]
     .into_iter()
     .find_map(|(semantic_op, runtime_op)| {
@@ -6334,10 +6338,16 @@ fn atomic_rmw_op_for_llvm(op: AtomicRmwOp) -> anyhow::Result<AtomicRMWBinOp> {
         AtomicRmwOp::FMinimum => AtomicRMWBinOp::FMinimum,
         #[cfg(not(any(feature = "llvm21-1", feature = "llvm22-1", feature = "llvm23-1")))]
         AtomicRmwOp::FMaximum | AtomicRmwOp::FMinimum => return unsupported_atomic_rmw_op(op),
+        #[cfg(feature = "llvm23-1")]
+        AtomicRmwOp::FMaximumNum => AtomicRMWBinOp::FMaximumNum,
+        #[cfg(feature = "llvm23-1")]
+        AtomicRmwOp::FMinimumNum => AtomicRMWBinOp::FMinimumNum,
+        #[cfg(not(feature = "llvm23-1"))]
+        AtomicRmwOp::FMaximumNum | AtomicRmwOp::FMinimumNum => return unsupported_atomic_rmw_op(op),
     })
 }
 
-#[cfg(not(any(feature = "llvm21-1", feature = "llvm22-1", feature = "llvm23-1")))]
+#[cfg(not(feature = "llvm23-1"))]
 fn unsupported_atomic_rmw_op<T>(op: AtomicRmwOp) -> anyhow::Result<T> {
     anyhow::bail!("atomicrmw operation {op:?} is not supported by the selected LLVM feature")
 }

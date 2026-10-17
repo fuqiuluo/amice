@@ -452,6 +452,10 @@ pub enum AtomicRmwOp {
     FMaximum,
     /// LLVM `atomicrmw fminimum`。
     FMinimum,
+    /// LLVM `atomicrmw fmaximumnum`。
+    FMaximumNum,
+    /// LLVM `atomicrmw fminimumnum`。
+    FMinimumNum,
 }
 
 impl AtomicRmwOp {
@@ -459,7 +463,14 @@ impl AtomicRmwOp {
     pub fn is_floating_point(self) -> bool {
         matches!(
             self,
-            Self::FAdd | Self::FSub | Self::FMax | Self::FMin | Self::FMaximum | Self::FMinimum
+            Self::FAdd
+                | Self::FSub
+                | Self::FMax
+                | Self::FMin
+                | Self::FMaximum
+                | Self::FMinimum
+                | Self::FMaximumNum
+                | Self::FMinimumNum
         )
     }
 }
@@ -1428,6 +1439,10 @@ pub enum SemanticAtomicRmwOp {
     FMaximum,
     /// 原子浮点 minimum 风格最小值。
     FMinimum,
+    /// 原子浮点 maximumnum 风格最大值。
+    FMaximumNum,
+    /// 原子浮点 minimumnum 风格最小值。
+    FMinimumNum,
 }
 
 /// `pc = ...` 赋值中接受的 program-counter 表达式。

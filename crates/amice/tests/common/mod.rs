@@ -243,11 +243,28 @@ pub fn sanitize_ir_for_llvm21(path: &Path) {
     }
 }
 
+/// LLVM bin 目录下工具的可执行路径；Windows 发行版的可执行文件带 `.exe` 后缀。
+pub fn llvm_tool_path(prefix: &str, tool: &str) -> PathBuf {
+    let bin = PathBuf::from(prefix).join("bin");
+    let candidate = bin.join(tool);
+    if candidate.exists() {
+        return candidate;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let with_exe = bin.join(format!("{tool}.exe"));
+        if with_exe.exists() {
+            return with_exe;
+        }
+    }
+    candidate
+}
+
 /// Returns the clang executable that matches the detected LLVM prefix when it exists.
 pub fn clang_compiler_path(is_cpp: bool) -> PathBuf {
     let compiler = if is_cpp { "clang++" } else { "clang" };
     if let Some(config) = detect_llvm_config() {
-        let candidate = PathBuf::from(config.prefix).join("bin").join(compiler);
+        let candidate = llvm_tool_path(&config.prefix, compiler);
         if candidate.exists() {
             return candidate;
         }

@@ -4,7 +4,8 @@ mod common;
 
 use common::{
     CompileResult, CppCompileBuilder, Language, LlvmConfig, ObfuscationConfig, clang_compiler_path, detect_llvm_config,
-    ensure_plugin_built, fixture_path, output_dir, plugin_path, rust_fixture_project_path, sanitize_ir_for_llvm21,
+    ensure_plugin_built, fixture_path, llvm_tool_path, output_dir, plugin_path, rust_fixture_project_path,
+    sanitize_ir_for_llvm21,
 };
 use serial_test::serial;
 use std::fmt::Write as _;
@@ -414,7 +415,7 @@ fn optimize_ir_with_plugin(input_ir: &Path, output_name: &str, config: Obfuscati
 
     let llvm = llvm_config();
     let output_ir = output_dir().join(output_name);
-    let opt = Path::new(&llvm.prefix).join("bin").join("opt");
+    let opt = llvm_tool_path(&llvm.prefix, "opt");
     assert!(opt.exists(), "configured LLVM opt does not exist at {}", opt.display());
 
     let mut opt_command = Command::new(opt);
@@ -446,7 +447,7 @@ fn optimize_ir_with_plugin_debug_pipeline(
 
     let llvm = llvm_config();
     let output_ir = output_dir().join(output_name);
-    let opt = Path::new(&llvm.prefix).join("bin").join("opt");
+    let opt = llvm_tool_path(&llvm.prefix, "opt");
     assert!(opt.exists(), "configured LLVM opt does not exist at {}", opt.display());
 
     let mut opt_command = Command::new(opt);
@@ -24574,6 +24575,150 @@ int main(void) {
     assert!(ir.contains("handler.atomic_rmw_fmaximum"));
     assert!(ir.contains("handler.atomic_rmw_fminimum"));
     assert!(ir.contains("handler.volatile_atomic_rmw_fadd"));
+}
+
+#[test]
+#[serial]
+fn test_vm_virtualize_float_atomic_rmw_num_match_baseline() {
+    ensure_plugin_built();
+
+    if !llvm_supported(23) {
+        eprintln!("skipping: fixture requires LLVM >= 23");
+        return;
+    }
+
+    let ir_source = output_dir().join("vm_virtualize_float_atomic_rmw_num.input.ll");
+    std::fs::write(
+        &ir_source,
+        r#"; ModuleID = 'vm_virtualize_float_atomic_rmw_num'
+source_filename = "vm_virtualize_float_atomic_rmw_num.ll"
+
+define i32 @vm_float_atomicrmw_num_mix(ptr %hp, ptr %fp, ptr %dp, ptr %np) {
+entry:
+  %old_hnmax_nan = atomicrmw fmaximumnum ptr %hp, half 0xH7E00 monotonic, align 2
+  %old_hnmax_vol = atomicrmw volatile fmaximumnum ptr %hp, half 0xH5000 release, align 2
+  %old_fnmax_nan = atomicrmw fmaximumnum ptr %fp, float 0x7FF8000000000000 monotonic, align 4
+  %old_fnmin_nan = atomicrmw fminimumnum ptr %fp, float 0x7FF8000000000000 acquire, align 4
+  %old_fnmax = atomicrmw fmaximumnum ptr %fp, float 8.000000e+00 release, align 4
+  %old_nnmax_nan = atomicrmw fmaximumnum ptr %np, float 0x7FF8000000000000 acq_rel, align 4
+  %old_dnmax = atomicrmw fmaximumnum ptr %dp, double 1.600000e+01 seq_cst, align 8
+  %old_dnmin = atomicrmw fminimumnum ptr %dp, double 1.250000e+01 monotonic, align 8
+  %old_dnmin_vol = atomicrmw volatile fminimumnum ptr %dp, double 2.500000e+00 acquire, align 8
+  %hnmax_nan_bits = bitcast half %old_hnmax_nan to i16
+  %hnmax_vol_bits = bitcast half %old_hnmax_vol to i16
+  %hnmax_nan_i32 = zext i16 %hnmax_nan_bits to i32
+  %hnmax_vol_i32 = zext i16 %hnmax_vol_bits to i32
+  %fnmax_nan_bits = bitcast float %old_fnmax_nan to i32
+  %fnmin_nan_bits = bitcast float %old_fnmin_nan to i32
+  %fnmax_bits = bitcast float %old_fnmax to i32
+  %nnmax_nan_bits = bitcast float %old_nnmax_nan to i32
+  %dnmax_bits = bitcast double %old_dnmax to i64
+  %dnmin_bits = bitcast double %old_dnmin to i64
+  %dnmin_vol_bits = bitcast double %old_dnmin_vol to i64
+  %dxor0 = xor i64 %dnmax_bits, %dnmin_bits
+  %dxor1 = xor i64 %dxor0, %dnmin_vol_bits
+  %dxor_i32 = trunc i64 %dxor1 to i32
+  %fxor0 = xor i32 %fnmax_nan_bits, %fnmin_nan_bits
+  %fxor1 = xor i32 %fxor0, %fnmax_bits
+  %fxor2 = xor i32 %fxor1, %nnmax_nan_bits
+  %hxor0 = xor i32 %hnmax_nan_i32, %hnmax_vol_i32
+  %sum0 = add i32 %hxor0, %fxor2
+  %sum1 = add i32 %sum0, %dxor_i32
+  %final_h = load atomic half, ptr %hp monotonic, align 2
+  %final_f = load atomic float, ptr %fp monotonic, align 4
+  %final_n = load atomic float, ptr %np monotonic, align 4
+  %final_d = load atomic double, ptr %dp monotonic, align 8
+  %final_h_bits = bitcast half %final_h to i16
+  %final_n_bits = bitcast float %final_n to i32
+  %final_hi = zext i16 %final_h_bits to i32
+  %final_f_scaled = fmul float %final_f, 1.000000e+02
+  %final_d_scaled = fmul double %final_d, 1.000000e+02
+  %final_fi = fptosi float %final_f_scaled to i32
+  %final_di = fptosi double %final_d_scaled to i32
+  %sum2 = add i32 %sum1, %final_hi
+  %sum3 = add i32 %sum2, %final_fi
+  %sum4 = add i32 %sum3, %final_di
+  %sum5 = add i32 %sum4, %final_n_bits
+  ret i32 %sum5
+}
+"#,
+    )
+    .expect("float atomicrmw num LLVM IR fixture should be writable");
+
+    let harness = output_dir().join("vm_virtualize_float_atomic_rmw_num_harness.c");
+    std::fs::write(
+        &harness,
+        r#"#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+int32_t vm_float_atomicrmw_num_mix(_Float16 *hp, float *fp, double *dp, float *np);
+
+int main(void) {
+    _Float16 h = (_Float16)3.0;
+    float f = 4.0f;
+    double d = 10.0;
+    float n;
+    uint32_t nan_bits = 0x7FC00000u;
+    memcpy(&n, &nan_bits, sizeof n);
+    int32_t result = vm_float_atomicrmw_num_mix(&h, &f, &d, &n);
+    uint32_t n_out;
+    memcpy(&n_out, &n, sizeof n_out);
+    printf(
+        "%d:%d:%d:%d:%d\n",
+        result,
+        (int)((float)h * 100.0f),
+        (int)(f * 100.0f),
+        (int)(d * 100.0f),
+        (int32_t)n_out);
+    return 0;
+}
+"#,
+    )
+    .expect("float atomicrmw num C harness should be writable");
+
+    let baseline = compile_ir_with_c_harness(&ir_source, &harness, "vm_virtualize_float_atomic_rmw_num_baseline");
+    baseline.assert_success();
+    let baseline_output = baseline.run();
+    baseline_output.assert_success();
+
+    let mut config = vm_virtualize_config();
+    config.vm_dump_bytecode = Some(true);
+    let (virtualized_ir, output) =
+        optimize_ir_with_plugin_debug(&ir_source, "vm_virtualize_float_atomic_rmw_num.ll", config);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_success(output);
+
+    let dump = bytecode_dump_for_function(&stderr, "vm_float_atomicrmw_num_mix");
+    assert!(
+        dump.contains("width: 16") && dump.contains("width: 64"),
+        "half/double fmaximumnum/fminimumnum should lower through profile handlers with the right widths:\n{dump}"
+    );
+    for expected in [
+        ": atomic_rmw_fmaximumnum ",
+        ": atomic_rmw_fminimumnum ",
+        ": volatile_atomic_rmw_fmaximumnum ",
+        ": volatile_atomic_rmw_fminimumnum ",
+    ] {
+        assert!(
+            dump.contains(expected),
+            "float atomicrmw num should lower through profile handler {expected}:\n{dump}"
+        );
+    }
+
+    let virtualized = compile_ir_with_c_harness(&virtualized_ir, &harness, "vm_virtualize_float_atomic_rmw_num");
+    virtualized.assert_success();
+    let virtualized_output = virtualized.run();
+    virtualized_output.assert_success();
+    assert_eq!(baseline_output.stdout(), virtualized_output.stdout());
+
+    let ir =
+        std::fs::read_to_string(virtualized_ir).expect("virtualized float atomicrmw num LLVM IR should be readable");
+    assert!(ir.contains(".amice.vm.bytecode.vm_float_atomicrmw_num_mix"));
+    assert!(ir.contains("handler.atomic_rmw_fmaximumnum"));
+    assert!(ir.contains("handler.atomic_rmw_fminimumnum"));
+    assert!(ir.contains("handler.volatile_atomic_rmw_fmaximumnum"));
+    assert!(ir.contains("handler.volatile_atomic_rmw_fminimumnum"));
 }
 
 #[test]

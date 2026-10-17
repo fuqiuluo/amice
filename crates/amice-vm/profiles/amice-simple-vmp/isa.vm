@@ -36,7 +36,6 @@ instr tls_addr(dst: vreg<i64>, src: vreg<i64>, width: imm<u7>) { # 线程本地�
   opcode alias [0x13b, 0x13c] # tls_addr 使用独立多字节 opcode，避免和普通 mov 混成同一指令身份
   opcode alias [0x809] # tls_addr 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x80a] # tls_addr 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x80b] # tls_addr 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # tls_addr 的 opcode 和三个短操作数固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[dst] = trunc_width(reg[src], width) # threadlocal.address 返回同一运行时指针 bit
@@ -48,7 +47,6 @@ instr global_addr(dst: vreg<i64>, src: vreg<i64>, width: imm<u7>) { # 普通全�
   opcode alias [0x13d, 0x13e] # global_addr 使用独立多字节 opcode，让全局地址物化在字节码中可区分
   opcode alias [0x80c] # global_addr 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x80d] # global_addr 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x80e] # global_addr 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # global_addr 的 opcode 和三个短操作数固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[dst] = trunc_width(reg[src], width) # native thunk 返回的全局地址 bit 复制到 VM x 寄存器
@@ -60,7 +58,6 @@ instr read_cycle(dst: vreg<i64>, width: imm<u7>) { # 读取 LLVM readcyclecounte
   opcode alias [0x1aa, 0x1ab] # read_cycle 使用独立多字节 opcode，避免和普通原生调用桥混用
   opcode alias [0x80f] # read_cycle 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x810] # read_cycle 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x811] # read_cycle 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # read_cycle 的 opcode、目标寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[dst] = read_counter(cycle) # runtime 调用 llvm.readcyclecounter 并取得 i64 计数值
@@ -72,7 +69,6 @@ instr read_steady(dst: vreg<i64>, width: imm<u7>) { # 读取 LLVM readsteadycoun
   opcode alias [0x1ac, 0x1ad] # read_steady 使用独立多字节 opcode，和 read_cycle 保持不同 handler 身份
   opcode alias [0x812] # read_steady 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x813] # read_steady 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x814] # read_steady 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # read_steady 的 opcode、目标寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[dst] = read_counter(steady) # runtime 调用 llvm.readsteadycounter 并取得 i64 计数值
@@ -84,7 +80,6 @@ instr read_vscale(dst: vreg<i64>, width: imm<u7>) { # 读取 LLVM vscale 目标�
   opcode alias [0x1bc, 0x1bd] # read_vscale 使用独立多字节 opcode，和计数器 intrinsic 保持不同 handler 身份
   opcode alias [0x815] # read_vscale 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x816] # read_vscale 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x817] # read_vscale 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # read_vscale 的 opcode、目标寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[dst] = read_vscale() # runtime 调用 llvm.vscale.i64 并按 width 截断到 LLVM 结果位宽
@@ -96,7 +91,6 @@ instr read_rounding(dst: vreg<i64>, width: imm<u7>) { # 读取 LLVM 当前浮点
   opcode alias [0x1be, 0x1bf] # read_rounding 使用独立多字节 opcode，避免和其它无参数 intrinsic 混淆
   opcode alias [0x818] # read_rounding 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x819] # read_rounding 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x81a] # read_rounding 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # read_rounding 的 opcode、目标寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[dst] = read_rounding() # runtime 调用 llvm.get.rounding 并取得 i32 rounding mode
@@ -108,7 +102,6 @@ instr read_flt_rounds(dst: vreg<i64>, width: imm<u7>) { # 读取 C/LLVM FLT_ROUN
   opcode alias [0x1d0, 0x1d1] # read_flt_rounds 使用独立 opcode，避免和 LLVM get.rounding 混淆
   opcode alias [0x81b] # read_flt_rounds 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x81c] # read_flt_rounds 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x81d] # read_flt_rounds 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # read_flt_rounds 的 opcode、目标寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[dst] = read_flt_rounds() # runtime 调用 llvm.flt.rounds 并取得 C FLT_ROUNDS 风格的 i32 结果
@@ -120,7 +113,6 @@ instr write_rounding(src: vreg<i64>, width: imm<u7>) { # 设置 LLVM 当前浮�
   opcode alias [0x1c2, 0x1c3] # write_rounding 使用独立 opcode，避免和只读 rounding 查询混淆
   opcode alias [0x81e] # write_rounding 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x81f] # write_rounding 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x820] # write_rounding 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # write_rounding 的 opcode、源寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     write_rounding(reg[src], width) # runtime 调用 llvm.set.rounding，当前只接受 i32 rounding mode
@@ -132,7 +124,6 @@ instr read_fpenv(dst: vreg<i64>, width: imm<u7>) { # 读取 LLVM 浮点环境状
   opcode alias [0x1c4, 0x1c5] # read_fpenv 使用独立 opcode，避免和 fpmode 查询混淆
   opcode alias [0x821] # read_fpenv 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x822] # read_fpenv 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x823] # read_fpenv 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # read_fpenv 的 opcode、目标寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[dst] = read_fpenv() # runtime 调用 llvm.get.fpenv.i32/i64 并按 width 写回
@@ -144,7 +135,6 @@ instr write_fpenv(src: vreg<i64>, width: imm<u7>) { # 写回 LLVM 浮点环境�
   opcode alias [0x1c6, 0x1c7] # write_fpenv 使用独立 opcode，和读取浮点环境分离
   opcode alias [0x824] # write_fpenv 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x825] # write_fpenv 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x826] # write_fpenv 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # write_fpenv 的 opcode、源寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     write_fpenv(reg[src], width) # runtime 调用 llvm.set.fpenv.i32/i64 恢复环境状态
@@ -156,7 +146,6 @@ instr reset_fpenv() { # 重置 LLVM 浮点环境状态
   opcode alias [0x1c8, 0x1c9] # reset_fpenv 没有操作数，使用独立 opcode 表示副作用
   opcode alias [0x827] # reset_fpenv 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x828] # reset_fpenv 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x829] # reset_fpenv 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 4 # reset_fpenv 没有操作数，使用最小 4 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reset_fpenv() # runtime 调用 llvm.reset.fpenv
@@ -168,7 +157,6 @@ instr read_fpmode(dst: vreg<i64>, width: imm<u7>) { # 读取 LLVM 浮点模式�
   opcode alias [0x1ca, 0x1cb] # read_fpmode 使用独立 opcode，避免和 fpenv 查询混淆
   opcode alias [0x82a] # read_fpmode 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x82b] # read_fpmode 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x82c] # read_fpmode 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # read_fpmode 的 opcode、目标寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[dst] = read_fpmode() # runtime 调用 llvm.get.fpmode.i32/i64 并按 width 写回
@@ -180,7 +168,6 @@ instr write_fpmode(src: vreg<i64>, width: imm<u7>) { # 写回 LLVM 浮点模式�
   opcode alias [0x1cc, 0x1cd] # write_fpmode 使用独立 opcode，和读取浮点模式分离
   opcode alias [0x82d] # write_fpmode 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x82e] # write_fpmode 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x82f] # write_fpmode 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # write_fpmode 的 opcode、源寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     write_fpmode(reg[src], width) # runtime 调用 llvm.set.fpmode.i32/i64 恢复模式状态
@@ -192,7 +179,6 @@ instr reset_fpmode() { # 重置 LLVM 浮点模式状态
   opcode alias [0x1ce, 0x1cf] # reset_fpmode 没有操作数，使用独立 opcode 表示副作用
   opcode alias [0x830] # reset_fpmode 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x831] # reset_fpmode 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x832] # reset_fpmode 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 4 # reset_fpmode 没有操作数，使用最小 4 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reset_fpmode() # runtime 调用 llvm.reset.fpmode
@@ -204,7 +190,6 @@ instr read_thread_pointer(dst: vreg<i64>, width: imm<u7>) { # 读取 LLVM thread
   opcode alias [0x1c0, 0x1c1] # read_thread_pointer 使用独立多字节 opcode，避免和栈/计数器查询混淆
   opcode alias [0x833] # read_thread_pointer 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x834] # read_thread_pointer 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x835] # read_thread_pointer 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 8 # read_thread_pointer 的 opcode、目标寄存器和位宽固定放入 8 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     reg[dst] = read_thread_pointer() # runtime 调用 llvm.thread.pointer.p0 并取得当前线程指针地址
@@ -216,7 +201,6 @@ instr sideeffect() { # LLVM sideeffect 处理器，用于保留优化器必须�
   opcode alias [0x1ae, 0x1af] # sideeffect 使用独立 opcode，避免退化成 fake_nop 后丢失语义身份
   opcode alias [0x836] # sideeffect 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
   opcode alias [0x837] # sideeffect 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
-  opcode alias [0x838] # sideeffect 的 simple 扩展操作码别名第 3 组，用于把默认配置包扩展到 1000 个 opcode
   decoded_width = 4 # sideeffect 没有操作数，使用最小 4 字节 decoded record
   semantic { # 处理语义由 AMICE 校验器静态识别
     side_effect() # runtime 调用 llvm.sideeffect intrinsic，保留可见副作用
@@ -1610,6 +1594,26 @@ instr atomic_rmw_fminimum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width:
   } # 结束语义块
 } # 结束 atomic_rmw_fminimum 指令
 
+instr atomic_rmw_fmaximumnum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width: imm<u7>, ordering: imm<u7>, sync_scope: imm<u7>) { # 标量浮点 atomicrmw fmaximumnum 处理器
+  opcode alias [0x14b, 0x14c] # atomic_rmw_fmaximumnum 使用独立多字节操作码，覆盖 IEEE maximumnum 原子语义
+  opcode alias [0x9c7] # atomic_rmw_fmaximumnum 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
+  opcode alias [0x9c8] # atomic_rmw_fmaximumnum 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = atomic_rmw(fmaximumnum, reg[ptr], reg[src], width, ordering, sync_scope) # 运行时生成带 syncscope 的 LLVM atomicrmw fmaximumnum 并返回内存旧值 bit，单边 NaN 时取另一操作数
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 atomic_rmw_fmaximumnum 指令
+
+instr atomic_rmw_fminimumnum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width: imm<u7>, ordering: imm<u7>, sync_scope: imm<u7>) { # 标量浮点 atomicrmw fminimumnum 处理器
+  opcode alias [0x14d, 0x14e] # atomic_rmw_fminimumnum 使用独立多字节操作码，覆盖 IEEE minimumnum 原子语义
+  opcode alias [0x9c9] # atomic_rmw_fminimumnum 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
+  opcode alias [0x9ca] # atomic_rmw_fminimumnum 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = atomic_rmw(fminimumnum, reg[ptr], reg[src], width, ordering, sync_scope) # 运行时生成带 syncscope 的 LLVM atomicrmw fminimumnum 并返回内存旧值 bit，单边 NaN 时取另一操作数
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 atomic_rmw_fminimumnum 指令
+
 instr volatile_atomic_rmw_xchg(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width: imm<u7>, ordering: imm<u7>, sync_scope: imm<u7>) { # 标量 volatile atomicrmw xchg 处理器
   opcode alias [0x180, 0x181] # volatile_atomic_rmw_xchg 使用独立 opcode，避免和普通 atomicrmw xchg 混用
   opcode alias [0x953] # volatile_atomic_rmw_xchg 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
@@ -1819,6 +1823,26 @@ instr volatile_atomic_rmw_fminimum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64
     pc = next # 执行继续到下一条字节码指令
   } # 结束语义块
 } # 结束 volatile_atomic_rmw_fminimum 指令
+
+instr volatile_atomic_rmw_fmaximumnum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width: imm<u7>, ordering: imm<u7>, sync_scope: imm<u7>) { # 标量 volatile 浮点 atomicrmw fmaximumnum 处理器
+  opcode alias [0x14f, 0x150] # volatile_atomic_rmw_fmaximumnum 使用独立 opcode，避免和普通 fmaximumnum atomicrmw 混用
+  opcode alias [0x9cb] # volatile_atomic_rmw_fmaximumnum 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
+  opcode alias [0x9cc] # volatile_atomic_rmw_fmaximumnum 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = volatile_atomic_rmw(fmaximumnum, reg[ptr], reg[src], width, ordering, sync_scope) # 运行时生成带 volatile 标记和 syncscope 的 LLVM 浮点 atomicrmw fmaximumnum，单边 NaN 时取另一操作数
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 volatile_atomic_rmw_fmaximumnum 指令
+
+instr volatile_atomic_rmw_fminimumnum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width: imm<u7>, ordering: imm<u7>, sync_scope: imm<u7>) { # 标量 volatile 浮点 atomicrmw fminimumnum 处理器
+  opcode alias [0x151, 0x152] # volatile_atomic_rmw_fminimumnum 使用独立 opcode，避免和普通 fminimumnum atomicrmw 混用
+  opcode alias [0x9cd] # volatile_atomic_rmw_fminimumnum 的 simple 扩展操作码别名第 1 组，用于把默认配置包扩展到 1000 个 opcode
+  opcode alias [0x9ce] # volatile_atomic_rmw_fminimumnum 的 simple 扩展操作码别名第 2 组，用于把默认配置包扩展到 1000 个 opcode
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = volatile_atomic_rmw(fminimumnum, reg[ptr], reg[src], width, ordering, sync_scope) # 运行时生成带 volatile 标记和 syncscope 的 LLVM 浮点 atomicrmw fminimumnum，单边 NaN 时取另一操作数
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 volatile_atomic_rmw_fminimumnum 指令
 
 instr cmpxchg(old: vreg<i64>, success: vreg<i1>, ptr: vreg<ptr>, cmp: vreg<i64>, new: vreg<i64>, width: imm<u7>, success_ordering: imm<u7>, failure_ordering: imm<u7>, sync_scope: imm<u7>) { # 标量 compare-exchange 处理器
   opcode alias [0xec, 0xed] # cmpxchg 使用独立操作码别名，两个 ordering 都由 bytecode operand 指定

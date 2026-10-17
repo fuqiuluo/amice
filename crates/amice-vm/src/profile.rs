@@ -4400,6 +4400,8 @@ fn parse_atomic_rmw_op(value: &str) -> Result<SemanticAtomicRmwOp, ProfileError>
         "fmin" => Ok(SemanticAtomicRmwOp::FMin),
         "fmaximum" => Ok(SemanticAtomicRmwOp::FMaximum),
         "fminimum" => Ok(SemanticAtomicRmwOp::FMinimum),
+        "fmaximumnum" => Ok(SemanticAtomicRmwOp::FMaximumNum),
+        "fminimumnum" => Ok(SemanticAtomicRmwOp::FMinimumNum),
         other => Err(ProfileError::Invalid(format!(
             "unsupported atomic_rmw operation {other}"
         ))),
@@ -5954,7 +5956,7 @@ fn atomic_rmw_template(statements: &[SemanticStmt], volatile: bool) -> Option<At
     })
 }
 
-fn atomic_rmw_ops() -> [(SemanticAtomicRmwOp, AtomicRmwOp); 21] {
+fn atomic_rmw_ops() -> [(SemanticAtomicRmwOp, AtomicRmwOp); 23] {
     [
         (SemanticAtomicRmwOp::Xchg, AtomicRmwOp::Xchg),
         (SemanticAtomicRmwOp::Add, AtomicRmwOp::Add),
@@ -5977,6 +5979,8 @@ fn atomic_rmw_ops() -> [(SemanticAtomicRmwOp, AtomicRmwOp); 21] {
         (SemanticAtomicRmwOp::FMin, AtomicRmwOp::FMin),
         (SemanticAtomicRmwOp::FMaximum, AtomicRmwOp::FMaximum),
         (SemanticAtomicRmwOp::FMinimum, AtomicRmwOp::FMinimum),
+        (SemanticAtomicRmwOp::FMaximumNum, AtomicRmwOp::FMaximumNum),
+        (SemanticAtomicRmwOp::FMinimumNum, AtomicRmwOp::FMinimumNum),
     ]
 }
 
@@ -7583,6 +7587,26 @@ mod tests {
             assert_eq!(instruction.effect.register_writes, ["dst"]);
             assert!(instruction.effect.memory_read);
             assert!(instruction.effect.memory_write);
+        }
+        for (semantic, name) in [
+            (AtomicRmwOp::FMaximumNum, "atomic_rmw_fmaximumnum"),
+            (AtomicRmwOp::FMinimumNum, "atomic_rmw_fminimumnum"),
+        ] {
+            let instruction = profile.isa.by_semantic(&HandlerSemantic::AtomicRmw(semantic)).unwrap();
+            assert_eq!(instruction.name, name);
+            assert!(instruction.opcodes().len() >= 2);
+            assert_eq!(instruction.effect.register_reads, ["ptr", "src"]);
+            assert_eq!(instruction.effect.register_writes, ["dst"]);
+            assert!(instruction.effect.memory_read);
+            assert!(instruction.effect.memory_write);
+            let volatile = profile
+                .isa
+                .by_semantic(&HandlerSemantic::VolatileAtomicRmw(semantic))
+                .unwrap();
+            assert_eq!(volatile.name, format!("volatile_{name}"));
+            assert!(volatile.opcodes().len() >= 2);
+            assert_eq!(volatile.effect.register_reads, ["ptr", "src"]);
+            assert_eq!(volatile.effect.register_writes, ["dst"]);
         }
         let volatile_atomic_add = profile
             .isa

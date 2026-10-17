@@ -2869,6 +2869,8 @@ fn atomic_rmw_tag(op: AtomicRmwOp) -> u8 {
         AtomicRmwOp::FMin => 18,
         AtomicRmwOp::FMaximum => 19,
         AtomicRmwOp::FMinimum => 20,
+        AtomicRmwOp::FMaximumNum => 21,
+        AtomicRmwOp::FMinimumNum => 22,
     }
 }
 

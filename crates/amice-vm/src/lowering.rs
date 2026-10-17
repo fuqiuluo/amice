@@ -1168,6 +1168,8 @@ impl VmInstruction {
                 AtomicRmwOp::FMin => "atomic_rmw_fmin",
                 AtomicRmwOp::FMaximum => "atomic_rmw_fmaximum",
                 AtomicRmwOp::FMinimum => "atomic_rmw_fminimum",
+                AtomicRmwOp::FMaximumNum => "atomic_rmw_fmaximumnum",
+                AtomicRmwOp::FMinimumNum => "atomic_rmw_fminimumnum",
             },
             Self::VolatileAtomicRmw { op, .. } => match op {
                 AtomicRmwOp::Xchg => "volatile_atomic_rmw_xchg",
@@ -1191,6 +1193,8 @@ impl VmInstruction {
                 AtomicRmwOp::FMin => "volatile_atomic_rmw_fmin",
                 AtomicRmwOp::FMaximum => "volatile_atomic_rmw_fmaximum",
                 AtomicRmwOp::FMinimum => "volatile_atomic_rmw_fminimum",
+                AtomicRmwOp::FMaximumNum => "volatile_atomic_rmw_fmaximumnum",
+                AtomicRmwOp::FMinimumNum => "volatile_atomic_rmw_fminimumnum",
             },
             Self::CmpXchg { .. } => "cmpxchg",
             Self::VolatileCmpXchg { .. } => "volatile_cmpxchg",

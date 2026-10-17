@@ -1167,6 +1167,22 @@ instr atomic_rmw_fminimum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width:
   } # 结束语义块
 } # 结束 atomic_rmw_fminimum 指令
 
+instr atomic_rmw_fmaximumnum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width: imm<u7>, ordering: imm<u7>, sync_scope: imm<u7>) { # 标量浮点 atomicrmw fmaximumnum 处理器
+  opcode alias [0x356] # atomic_rmw_fmaximumnum 从 br 高预算别名中挪用 1 个 ruoke opcode，保持总数 1000
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = atomic_rmw(fmaximumnum, reg[ptr], reg[src], width, ordering, sync_scope) # 运行时生成带 syncscope 的 LLVM atomicrmw fmaximumnum 并返回内存旧值 bit，单边 NaN 时取另一操作数
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 atomic_rmw_fmaximumnum 指令
+
+instr atomic_rmw_fminimumnum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width: imm<u7>, ordering: imm<u7>, sync_scope: imm<u7>) { # 标量浮点 atomicrmw fminimumnum 处理器
+  opcode alias [0x0bf] # atomic_rmw_fminimumnum 从 br 高预算别名中挪用 1 个 ruoke opcode，保持总数 1000
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = atomic_rmw(fminimumnum, reg[ptr], reg[src], width, ordering, sync_scope) # 运行时生成带 syncscope 的 LLVM atomicrmw fminimumnum 并返回内存旧值 bit，单边 NaN 时取另一操作数
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 atomic_rmw_fminimumnum 指令
+
 instr volatile_atomic_rmw_xchg(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width: imm<u7>, ordering: imm<u7>, sync_scope: imm<u7>) { # 标量 volatile atomicrmw xchg 处理器
   opcode alias [0x12d] # volatile_atomic_rmw_xchg 从 br_if 尾部别名预算挪用 1 个 ruoke opcode
   semantic { # 处理语义由 AMICE 校验器静态识别
@@ -1334,6 +1350,22 @@ instr volatile_atomic_rmw_fminimum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64
     pc = next # 执行继续到下一条字节码指令
   } # 结束语义块
 } # 结束 volatile_atomic_rmw_fminimum 指令
+
+instr volatile_atomic_rmw_fmaximumnum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width: imm<u7>, ordering: imm<u7>, sync_scope: imm<u7>) { # 标量 volatile 浮点 atomicrmw fmaximumnum 处理器
+  opcode alias [0x1f3] # volatile_atomic_rmw_fmaximumnum 从 vm_ret 高预算别名中挪用 1 个 ruoke opcode，保持总数 1000
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = volatile_atomic_rmw(fmaximumnum, reg[ptr], reg[src], width, ordering, sync_scope) # 运行时生成带 volatile 标记和 syncscope 的 LLVM 浮点 atomicrmw fmaximumnum，单边 NaN 时取另一操作数
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 volatile_atomic_rmw_fmaximumnum 指令
+
+instr volatile_atomic_rmw_fminimumnum(dst: vreg<i64>, ptr: vreg<ptr>, src: vreg<i64>, width: imm<u7>, ordering: imm<u7>, sync_scope: imm<u7>) { # 标量 volatile 浮点 atomicrmw fminimumnum 处理器
+  opcode alias [0x344] # volatile_atomic_rmw_fminimumnum 从 vm_ret 高预算别名中挪用 1 个 ruoke opcode，保持总数 1000
+  semantic { # 处理语义由 AMICE 校验器静态识别
+    reg[dst] = volatile_atomic_rmw(fminimumnum, reg[ptr], reg[src], width, ordering, sync_scope) # 运行时生成带 volatile 标记和 syncscope 的 LLVM 浮点 atomicrmw fminimumnum，单边 NaN 时取另一操作数
+    pc = next # 执行继续到下一条字节码指令
+  } # 结束语义块
+} # 结束 volatile_atomic_rmw_fminimumnum 指令
 
 instr cmpxchg(old: vreg<i64>, success: vreg<i1>, ptr: vreg<ptr>, cmp: vreg<i64>, new: vreg<i64>, width: imm<u7>, success_ordering: imm<u7>, failure_ordering: imm<u7>, sync_scope: imm<u7>) { # 标量 compare-exchange 处理器
   opcode alias [0x2b1] # cmpxchg 从 fake_nop 干扰预算中挪用 1 个 ruoke 别名
@@ -1600,7 +1632,7 @@ instr br(target: label) { # 无条件分支处理器
   opcode alias [0x2fe, 0x067, 0x1b8, 0x309, 0x072, 0x1c3, 0x314, 0x07d] # br 的 ruoke 操作码别名第 1 组
   opcode alias [0x1ce, 0x31f, 0x088, 0x1d9, 0x32a, 0x093, 0x1e4, 0x335] # br 的 ruoke 操作码别名第 2 组
   opcode alias [0x09e, 0x1ef, 0x340, 0x0a9, 0x1fa, 0x34b, 0x0b4, 0x205] # br 的 ruoke 操作码别名第 3 组
-  opcode alias [0x356, 0x0bf, 0x210, 0x361, 0x0ca] # br 的 ruoke 操作码别名第 4 组，0x21b 已挪给 read_flt_rounds，0x36c 已挪给 atomic_rmw_fminimum
+  opcode alias [0x210, 0x361, 0x0ca] # br 的 ruoke 操作码别名第 4 组，0x21b 已挪给 read_flt_rounds，0x36c 已挪给 atomic_rmw_fminimum，0x356/0x0bf 已挪给 atomic_rmw fmaximumnum/fminimumnum
   semantic { # 处理语义由 AMICE 校验器静态识别
     pc = target # 执行跳转到目标字节码标签
   } # 结束语义块
@@ -1629,7 +1661,7 @@ instr vm_call(target: label) { # VM 内部调用处理器
 instr vm_ret() { # VM 内部返回处理器
   opcode alias [0x06b, 0x1bc, 0x30d, 0x076, 0x1c7, 0x318, 0x081, 0x1d2] # vm_ret 的 ruoke 操作码别名第 1 组
   opcode alias [0x323, 0x08c, 0x1dd, 0x32e, 0x097, 0x1e8, 0x339, 0x0a2] # vm_ret 的 ruoke 操作码别名第 2 组
-  opcode alias [0x1f3, 0x344, 0x0ad, 0x1fe, 0x34f, 0x0b8, 0x209, 0x35a] # vm_ret 的 ruoke 操作码别名第 3 组，尾部 7 个别名已挪给 volatile atomicrmw
+  opcode alias [0x0ad, 0x1fe, 0x34f, 0x0b8, 0x209, 0x35a] # vm_ret 的 ruoke 操作码别名第 3 组，尾部 7 个别名已挪给 volatile atomicrmw，0x1f3/0x344 已挪给 volatile atomic_rmw fmaximumnum/fminimumnum
   semantic { # 处理语义由 AMICE 校验器静态识别
     pc = reg[lr] # 从 lr 恢复调用点之后的字节码 PC
   } # 结束语义块

@@ -19136,12 +19136,12 @@ fn map_atomic_rmw_op(op: AtomicRMWBinOp) -> anyhow::Result<AtomicRmwOp> {
         AtomicRMWBinOp::FMaximum => Ok(AtomicRmwOp::FMaximum),
         #[cfg(any(feature = "llvm21-1", feature = "llvm22-1", feature = "llvm23-1"))]
         AtomicRMWBinOp::FMinimum => Ok(AtomicRmwOp::FMinimum),
-        // LLVM 23 adds the fmaximumnum/fminimumnum atomicrmw flavours; the VM
-        // runtime has no handler for them yet, so reject them explicitly.
+        // LLVM 23 adds the fmaximumnum/fminimumnum atomicrmw flavours, where a
+        // single NaN operand yields the other operand instead of propagating.
         #[cfg(feature = "llvm23-1")]
-        AtomicRMWBinOp::FMaximumNum | AtomicRMWBinOp::FMinimumNum => {
-            bail!("atomicrmw operation {op:?} is not supported by the VM runtime")
-        },
+        AtomicRMWBinOp::FMaximumNum => Ok(AtomicRmwOp::FMaximumNum),
+        #[cfg(feature = "llvm23-1")]
+        AtomicRMWBinOp::FMinimumNum => Ok(AtomicRmwOp::FMinimumNum),
         #[cfg(any(
             feature = "llvm19-1",
             feature = "llvm20-1",

@@ -3991,6 +3991,8 @@ rule llvm.atomic.rmw.scalar { # 将自然对齐标量 atomicrmw 降低为对应 
     emit atomic_rmw_fmin dst=%vr, ptr=%vp, src=%vv, width=memory_width(%ptr), ordering=memory_ordering(%ptr), sync_scope=sync_scope(%ptr) # 浮点最小值路径发射携带 syncscope 的 atomic_rmw_fmin 指令
     emit atomic_rmw_fmaximum dst=%vr, ptr=%vp, src=%vv, width=memory_width(%ptr), ordering=memory_ordering(%ptr), sync_scope=sync_scope(%ptr) # IEEE maximum 路径发射携带 syncscope 的 atomic_rmw_fmaximum 指令
     emit atomic_rmw_fminimum dst=%vr, ptr=%vp, src=%vv, width=memory_width(%ptr), ordering=memory_ordering(%ptr), sync_scope=sync_scope(%ptr) # IEEE minimum 路径发射携带 syncscope 的 atomic_rmw_fminimum 指令
+    emit atomic_rmw_fmaximumnum dst=%vr, ptr=%vp, src=%vv, width=memory_width(%ptr), ordering=memory_ordering(%ptr), sync_scope=sync_scope(%ptr) # IEEE maximumnum 路径发射携带 syncscope 的 atomic_rmw_fmaximumnum 指令，单边 NaN 时取另一操作数
+    emit atomic_rmw_fminimumnum dst=%vr, ptr=%vp, src=%vv, width=memory_width(%ptr), ordering=memory_ordering(%ptr), sync_scope=sync_scope(%ptr) # IEEE minimumnum 路径发射携带 syncscope 的 atomic_rmw_fminimumnum 指令，单边 NaN 时取另一操作数
     bind %r = %vr # 记录 LLVM atomicrmw 返回旧值到 VM 寄存器的绑定
   } # 结束 atomicrmw lowering 动作
 } # 结束 atomicrmw 规则
@@ -4022,6 +4024,8 @@ rule llvm.atomic.volatile.rmw.scalar { # 将自然对齐标量 volatile atomicrm
     emit volatile_atomic_rmw_fmin dst=%vr, ptr=%vp, src=%vv, width=memory_width(%ptr), ordering=memory_ordering(%ptr), sync_scope=sync_scope(%ptr) # 浮点最小值路径发射携带 syncscope 的 volatile_atomic_rmw_fmin 指令
     emit volatile_atomic_rmw_fmaximum dst=%vr, ptr=%vp, src=%vv, width=memory_width(%ptr), ordering=memory_ordering(%ptr), sync_scope=sync_scope(%ptr) # IEEE maximum 路径发射携带 syncscope 的 volatile_atomic_rmw_fmaximum 指令
     emit volatile_atomic_rmw_fminimum dst=%vr, ptr=%vp, src=%vv, width=memory_width(%ptr), ordering=memory_ordering(%ptr), sync_scope=sync_scope(%ptr) # IEEE minimum 路径发射携带 syncscope 的 volatile_atomic_rmw_fminimum 指令
+    emit volatile_atomic_rmw_fmaximumnum dst=%vr, ptr=%vp, src=%vv, width=memory_width(%ptr), ordering=memory_ordering(%ptr), sync_scope=sync_scope(%ptr) # IEEE maximumnum 路径发射携带 syncscope 的 volatile_atomic_rmw_fmaximumnum 指令，单边 NaN 时取另一操作数
+    emit volatile_atomic_rmw_fminimumnum dst=%vr, ptr=%vp, src=%vv, width=memory_width(%ptr), ordering=memory_ordering(%ptr), sync_scope=sync_scope(%ptr) # IEEE minimumnum 路径发射携带 syncscope 的 volatile_atomic_rmw_fminimumnum 指令，单边 NaN 时取另一操作数
     bind %r = %vr # 记录 LLVM volatile atomicrmw 返回旧值到 VM 寄存器的绑定
   } # 结束 volatile atomicrmw lowering 动作
 } # 结束 volatile atomicrmw 规则
