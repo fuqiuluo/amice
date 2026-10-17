@@ -184,7 +184,6 @@ ObfuscationConfig {
     string_decrypt_timing: Option<String>, // "lazy" | "global"
     string_stack_alloc: Option<bool>,
     string_inline_decrypt_fn: Option<bool>,
-    string_max_encryption_count: Option<u32>,
 
     // 间接分支
     indirect_branch: Option<bool>,

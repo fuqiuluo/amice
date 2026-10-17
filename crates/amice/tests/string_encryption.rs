@@ -145,28 +145,6 @@ fn test_const_strings_lazy_xor_stack() {
 }
 
 #[test]
-fn test_const_strings_lazy_xor_stack_multi() {
-    ensure_plugin_built();
-
-    let mut config = string_config_lazy_xor_stack();
-    config.string_max_encryption_count = Some(2);
-
-    let result = CppCompileBuilder::new(
-        fixture_path("string_encryption", "const_strings.c", Language::C),
-        "const_strings_lazy_xor_stack_multi",
-    )
-    .config(config)
-    .compile();
-
-    result.assert_success();
-    let run = result.run();
-    run.assert_success();
-
-    let lines = run.stdout_lines();
-    check_const_strings_output(&lines);
-}
-
-#[test]
 fn test_const_strings_global_xor() {
     ensure_plugin_built();
 

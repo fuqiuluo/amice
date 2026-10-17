@@ -15,7 +15,6 @@ fn test_rust_string_encryption_basic() {
     config.string_encryption = Some(true);
     config.string_only_llvm_string = Some(false);
     config.string_algorithm = Some("xor".to_string());
-    config.string_null_terminated = Some(false); // Rust strings are not null-terminated
 
     let result = RustCompileBuilder::new(&project_dir, "string_encryption_test")
         .config(config)
@@ -50,7 +49,6 @@ fn test_rust_string_encryption_simd() {
     config.string_encryption = Some(true);
     config.string_only_llvm_string = Some(false);
     config.string_algorithm = Some("simd_xor".to_string());
-    config.string_null_terminated = Some(false); // Rust strings are not null-terminated
 
     let result = RustCompileBuilder::new(&project_dir, "string_encryption_test")
         .config(config)
@@ -96,7 +94,6 @@ fn test_rust_string_encryption_vs_baseline() {
     config.string_encryption = Some(true);
     config.string_only_llvm_string = Some(false);
     config.string_algorithm = Some("xor".to_string());
-    config.string_null_terminated = Some(false); // Rust strings are not null-terminated
 
     let obfuscated_result = RustCompileBuilder::new(&project_dir, "string_encryption_test")
         .config(config)

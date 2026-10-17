@@ -57,7 +57,6 @@ Source code: `crates/amice/src/aotu/string_encryption`
 | AMICE_STRING_INLINE_DECRYPT_FN           | Inline decrypt function:<br/>- `true` — inline<br/>- `false` — don't inline                                                                                                                                                                           | false   |
 | AMICE_STRING_ONLY_DOT_STRING             | Only process strings in `.str` section:<br/>- `true` — only encrypt `.str` strings<br/>- `false` — may encrypt char[] global variables in llvm::Module, possibly causing crashes                                                                      | true    |
 | AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC | Allow stack allocation in non-entry blocks (stack decryption mode):<br/>- `true` — allow (many LLVM optimization passes assume all alloca are in entry block)<br/>- `false` — recommended                                                             | false   |
-| AMICE_STRING_MAX_ENCRYPTION_COUNT        | Encryption count for non-global decryption; clamped to 1–100000                                                                 | 1       |
 
 > **Note for Rust**: 
 > ```bash

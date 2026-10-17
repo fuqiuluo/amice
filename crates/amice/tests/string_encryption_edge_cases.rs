@@ -144,7 +144,6 @@ fn test_rust_promoted_static_slices() {
     config.string_encryption = Some(true);
     config.string_only_llvm_string = Some(false);
     config.string_algorithm = Some("xor".to_string());
-    config.string_null_terminated = Some(false); // promoted slices are not null-terminated
 
     let result = common::RustCompileBuilder::new(&project_dir, "string_encryption_promoted_test")
         .config(config)

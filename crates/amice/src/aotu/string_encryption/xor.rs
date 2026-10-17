@@ -60,7 +60,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>) -> anyho
         })
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            let name_ok = !cfg.only_dot_str || global.get_name().to_str().is_ok_and(|s| s.contains(".str"));
+            let name_ok = !cfg.only_dot_str || global.get_name().to_str().is_ok_and(|s| s.starts_with(".str"));
             let section_ok = global
                 .get_section()
                 .is_none_or(|section| section.to_str() != Ok("llvm.metadata"));

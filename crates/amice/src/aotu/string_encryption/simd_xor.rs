@@ -54,7 +54,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
         .get_globals()
         .filter(|global| !matches!(global.get_linkage(), Linkage::External))
         .filter(|global| {
-            (!cfg.only_dot_str || global.get_name().to_str().is_ok_and(|s| s.contains(".str")))
+            (!cfg.only_dot_str || global.get_name().to_str().is_ok_and(|s| s.starts_with(".str")))
                 && global
                     .get_section()
                     .is_none_or(|section| section.to_str() != Ok("llvm.metadata"))

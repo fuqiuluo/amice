@@ -333,8 +333,6 @@ pub struct ObfuscationConfig {
     pub string_decrypt_timing: Option<String>,
     pub string_stack_alloc: Option<bool>,
     pub string_inline_decrypt_fn: Option<bool>,
-    pub string_max_encryption_count: Option<u32>,
-    pub string_null_terminated: Option<bool>,
 
     // Indirect branch
     pub indirect_branch: Option<bool>,
@@ -462,12 +460,6 @@ impl ObfuscationConfig {
         set_env_str!(cmd, "AMICE_STRING_DECRYPT_TIMING", self.string_decrypt_timing);
         set_env_bool!(cmd, "AMICE_STRING_STACK_ALLOC", self.string_stack_alloc);
         set_env_bool!(cmd, "AMICE_STRING_INLINE_DECRYPT_FN", self.string_inline_decrypt_fn);
-        set_env_num!(
-            cmd,
-            "AMICE_STRING_MAX_ENCRYPTION_COUNT",
-            self.string_max_encryption_count
-        );
-        set_env_bool!(cmd, "AMICE_STRING_NULL_TERMINATED", self.string_null_terminated);
 
         // Indirect branch
         set_env_bool!(cmd, "AMICE_INDIRECT_BRANCH", self.indirect_branch);

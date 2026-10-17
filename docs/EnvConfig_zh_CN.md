@@ -57,7 +57,6 @@
 | AMICE_STRING_INLINE_DECRYPT_FN           | 控制是否内联解密函数：<br/>• `true` ——内联解密函数；<br/>• `false` —— 不内联解密函数。                                                                   | false |
 | AMICE_STRING_ONLY_DOT_STRING             | 控制是否仅处理 `.str` 段中的字符串：<br/>• `true` ——只加密`.str`字符串；<br/>• `false` —— 可能加密了llvm::Module内的类型为char[]全局变量，导致崩溃。                    | true  |
 | AMICE_STRING_ALLOW_NON_ENTRY_STACK_ALLOC | 控制是否允许在栈解密模式下，在非基本块分配栈：<br/>• `true` ——允许，许多LLVM优化pass假设所有 alloca 都在入口块；<br/>• `false` —— 推荐                                   | false |
-| AMICE_STRING_MAX_ENCRYPTION_COUNT | 非 global 解密模式的加密次数，限制到 1–100000                                                                              | 1     |
 
 > **Rust 注意**
 > ```bash
