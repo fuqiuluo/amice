@@ -4954,32 +4954,27 @@ entry:
 }
 "#
     } else {
-        // x86-64 glibc 的 fenv_t 为 28 字节，llvm.get.fpenv 的 4/8 字节缓冲在 fegetenv
-        // 展开中必然越界写（与上方 AArch64 注释同源的上游问题）；fpmode i64 读取的高
-        // 32 位来自未初始化缓冲。二者结果都取决于栈布局，虚拟化 dispatcher 的任何布局
-        // 变化都可能把“恰好无害”的越界变成破坏。x86-64 只保留安全且确定的子集：
-        // rounding、fpmode.i32、reset.fpmode。
+        // x86-64 glibc 上这组 intrinsic 的读取/写回全面不可靠：llvm.get.fpenv 的
+        // 4/8 字节缓冲对 28 字节 fenv_t 必然越界；llvm.get/set.fpmode.i32 与
+        // llvm.get.fpenv.i32/i64 在 Ubuntu x86-64 原生执行中会段错误（上游 lowering
+        // 问题）；fpmode i64 读取的高位来自未初始化缓冲。这些崩溃是否出现取决于
+        // 栈布局，虚拟化 dispatcher 的任何布局变化都可能把“恰好无害”的越界变成
+        // 破坏。x86-64 只保留实测安全且确定的子集：rounding 读写与 reset.fpmode。
         r#"; ModuleID = 'vm_virtualize_fp_environment'
 source_filename = "vm_virtualize_fp_environment.ll"
 
 declare i32 @llvm.get.rounding()
 declare void @llvm.set.rounding(i32)
-declare i32 @llvm.get.fpmode.i32()
-declare void @llvm.set.fpmode.i32(i32)
 declare void @llvm.reset.fpmode()
 
 define i64 @vm_fp_environment(i64 %seed) {
 entry:
   %round = call i32 @llvm.get.rounding()
   call void @llvm.set.rounding(i32 %round)
-  %mode32 = call i32 @llvm.get.fpmode.i32()
-  call void @llvm.set.fpmode.i32(i32 %mode32)
   call void @llvm.reset.fpmode()
   %round64 = zext i32 %round to i64
-  %mode32_64 = zext i32 %mode32 to i64
   %mix0 = xor i64 %seed, %round64
-  %mix1 = xor i64 %mix0, %mode32_64
-  ret i64 %mix1
+  ret i64 %mix0
 }
 "#
     };
@@ -5025,13 +5020,7 @@ int main(void) {
             ": reset_fpenv ",
         ]
     } else {
-        &[
-            ": read_rounding ",
-            ": write_rounding ",
-            ": read_fpmode ",
-            ": write_fpmode ",
-            ": reset_fpmode ",
-        ]
+        &[": read_rounding ", ": write_rounding ", ": reset_fpmode "]
     };
     for needle in dump_needles {
         assert!(
@@ -5064,22 +5053,8 @@ int main(void) {
         &[
             ".amice.vm.bytecode.vm_fp_environment",
             "handler.write_rounding",
-            "handler.read_fpenv",
-            "handler.write_fpenv",
-            "handler.reset_fpenv",
-            "handler.read_fpmode",
-            "handler.write_fpmode",
             "handler.reset_fpmode",
             "@llvm.set.rounding",
-            "@llvm.get.fpenv.i32",
-            "@llvm.get.fpenv.i64",
-            "@llvm.set.fpenv.i32",
-            "@llvm.set.fpenv.i64",
-            "@llvm.reset.fpenv",
-            "@llvm.get.fpmode.i32",
-            "@llvm.get.fpmode.i64",
-            "@llvm.set.fpmode.i32",
-            "@llvm.set.fpmode.i64",
             "@llvm.reset.fpmode",
         ]
     };
