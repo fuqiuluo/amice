@@ -276,6 +276,8 @@ BCF 混淆程序控制流，增加逆向分析难度，在 OptimizerLast / FullL
 | `AMICE_BASIC_BLOCK_OUTLINING` | 开启基本块外提 | false |
 | `AMICE_BASIC_BLOCK_OUTLINING_MAX_EXTRACTOR_SIZE` | 提取器规模参数，必须是非负整数；非法值会导致配置解析失败 | 16 |
 
+含 `llvm.stacksave` / `llvm.stackrestore` 调用（如 VLA 清理）的基本块不参与外提：这类块绑定所在函数的动态栈帧，外提后会在错误栈帧上恢复栈指针并破坏返回路径（见 issue #101）。同一函数内的其余块仍正常外提。
+
 ## 基本块重排（Shuffle Blocks）
 
 源代码：`crates/amice/src/aotu/shuffle_blocks`

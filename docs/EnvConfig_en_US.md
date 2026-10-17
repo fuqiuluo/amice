@@ -276,6 +276,8 @@ Source code: `crates/amice/src/aotu/basic_block_outlining`
 | `AMICE_BASIC_BLOCK_OUTLINING` | Enable basic block outlining | false |
 | `AMICE_BASIC_BLOCK_OUTLINING_MAX_EXTRACTOR_SIZE` | Extractor size parameter; must be a nonnegative integer; invalid input fails configuration parsing | 16 |
 
+Blocks containing `llvm.stacksave` / `llvm.stackrestore` calls (e.g. VLA cleanup) are excluded from outlining: such blocks are tied to the dynamic stack frame of the enclosing function, and outlining them would restore the stack pointer inside the wrong frame and break the return path (see issue #101). Other blocks in the same function are still outlined.
+
 ## Shuffle Blocks
 
 Source code: `crates/amice/src/aotu/shuffle_blocks`

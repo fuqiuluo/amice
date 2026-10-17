@@ -2,12 +2,13 @@ use crate::config::BasicBlockOutliningConfig;
 use crate::config::Config;
 use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag};
 use amice_llvm::code_extractor::CodeExtractor;
-use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
+use amice_llvm::inkwell2::{FunctionExt, InstructionExt, VerifyResult};
 use amice_macro::amice;
 use amice_plugin::PreservedAnalyses;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
+use amice_plugin::inkwell::basic_block::BasicBlock;
 use amice_plugin::inkwell::module::Module;
-use amice_plugin::inkwell::values::FunctionValue;
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use log::Level;
 
 #[amice(
@@ -77,6 +78,7 @@ fn do_outline<'a>(
         .map(|bb| *bb)
         .map(|bb| (bb.get_instructions().count(), bb))
         .filter(|bb| bb.0 > 4)
+        .filter(|bb| !calls_stack_frame_intrinsic(bb.1))
         .filter(|bb| {
             let tmp_bbs = vec![bb.1];
             let Some(ce) = CodeExtractor::new(&tmp_bbs) else {
@@ -124,4 +126,20 @@ fn do_outline<'a>(
     }
 
     Ok(())
+}
+
+/// `llvm.stacksave`/`llvm.stackrestore` 读写的是"当前函数"的动态栈帧；CodeExtractor
+/// 的 eligibility 不排除这类调用，块一旦被外提，stackrestore 会在新函数的帧上把 SP
+/// 恢复成调用者的栈指针，破坏外提函数的返回路径（issue #101 的 VLA 运行时崩溃）。
+/// 含此类调用的块必须留在原函数内。
+fn calls_stack_frame_intrinsic(bb: BasicBlock<'_>) -> bool {
+    bb.get_instructions().any(|inst| {
+        if inst.get_opcode() != InstructionOpcode::Call {
+            return false;
+        }
+        inst.into_call_inst().resolve_called_function().is_some_and(|callee| {
+            let name = callee.get_name().to_bytes();
+            name.starts_with(b"llvm.stacksave") || name.starts_with(b"llvm.stackrestore")
+        })
+    })
 }
