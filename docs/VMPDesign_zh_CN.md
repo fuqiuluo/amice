@@ -89,7 +89,7 @@ control_state {                         # 定义 VM runtime 控制状态
 
 当前实现如果尚未提供 `q0..q64` 的宽值 lowering，profile 必须用 `q.lowering = disabled` 显式声明该限制；verifier 必须在这种模式下拒绝任何依赖 `q` 寄存器的 ABI、lowering rule 或 handler 语义，避免把宽寄存器组伪装成完整可用能力。
 
-translator 的 `x` 寄存器分配不能退化成“1 个 LLVM SSA 永久占 1 个 VM 寄存器”。函数参数、返回槽、native-call ABI 槽、phi 结果以及跨 basic block 使用的值会被保守固定；只在同一 basic block 内使用的标量 SSA 临时值必须在最后一次使用后释放，后续 lowering 可以复用该 `x` 寄存器。直接 `struct`、固定数组和 fixed vector 的 `x`-slot 聚合绑定按叶子字段或 lane 应用同一规则。若某个函数的同时活跃固定值、ABI 槽和当前指令临时 scratch 合计仍超过 `x0..x31`，pass 必须安全跳过该函数并输出 debug 日志。
+translator 的 `x` 寄存器分配不能退化成“1 个 LLVM SSA 永久占 1 个 VM 寄存器”。函数参数、返回槽、phi 结果以及跨 basic block 使用的值会被保守固定；只在同一 basic block 内使用的标量 SSA 临时值必须在最后一次使用后释放，后续 lowering 可以复用该 `x` 寄存器。直接 `struct`、固定数组和 fixed vector 的 `x`-slot 聚合绑定按叶子字段或 lane 应用同一规则。分配失败时，translator 会把 block-local 标量值按 8 字节槽溢出到入口处分配的 VM 帧并在使用点回载，native-call 的参数编组与 clobber 保存同样经帧槽中转，把单条指令内的瞬时寄存器峰值降到常数。不含 native call 的函数不预留 native-call ABI 槽。若溢出后仍无法满足预算（例如跨 block 固定值本身超出 `x0..x31`、可分配的溢出槽耗尽），pass 必须安全跳过该函数并输出 debug 日志。
 
 ## 总体架构
 
