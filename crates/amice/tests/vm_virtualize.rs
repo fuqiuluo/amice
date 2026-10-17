@@ -4954,45 +4954,32 @@ entry:
 }
 "#
     } else {
+        // x86-64 glibc 的 fenv_t 为 28 字节，llvm.get.fpenv 的 4/8 字节缓冲在 fegetenv
+        // 展开中必然越界写（与上方 AArch64 注释同源的上游问题）；fpmode i64 读取的高
+        // 32 位来自未初始化缓冲。二者结果都取决于栈布局，虚拟化 dispatcher 的任何布局
+        // 变化都可能把“恰好无害”的越界变成破坏。x86-64 只保留安全且确定的子集：
+        // rounding、fpmode.i32、reset.fpmode。
         r#"; ModuleID = 'vm_virtualize_fp_environment'
 source_filename = "vm_virtualize_fp_environment.ll"
 
 declare i32 @llvm.get.rounding()
 declare void @llvm.set.rounding(i32)
-declare i32 @llvm.get.fpenv.i32()
-declare i64 @llvm.get.fpenv.i64()
-declare void @llvm.set.fpenv.i32(i32)
-declare void @llvm.set.fpenv.i64(i64)
-declare void @llvm.reset.fpenv()
 declare i32 @llvm.get.fpmode.i32()
-declare i64 @llvm.get.fpmode.i64()
 declare void @llvm.set.fpmode.i32(i32)
-declare void @llvm.set.fpmode.i64(i64)
 declare void @llvm.reset.fpmode()
 
 define i64 @vm_fp_environment(i64 %seed) {
 entry:
   %round = call i32 @llvm.get.rounding()
   call void @llvm.set.rounding(i32 %round)
-  %env32 = call i32 @llvm.get.fpenv.i32()
-  %env64 = call i64 @llvm.get.fpenv.i64()
-  call void @llvm.set.fpenv.i32(i32 %env32)
-  call void @llvm.set.fpenv.i64(i64 %env64)
-  call void @llvm.reset.fpenv()
   %mode32 = call i32 @llvm.get.fpmode.i32()
-  %mode64 = call i64 @llvm.get.fpmode.i64()
   call void @llvm.set.fpmode.i32(i32 %mode32)
-  call void @llvm.set.fpmode.i64(i64 %mode64)
   call void @llvm.reset.fpmode()
   %round64 = zext i32 %round to i64
-  %env32_64 = zext i32 %env32 to i64
   %mode32_64 = zext i32 %mode32 to i64
   %mix0 = xor i64 %seed, %round64
-  %mix1 = xor i64 %mix0, %env32_64
-  %mix2 = xor i64 %mix1, %env64
-  %mix3 = xor i64 %mix2, %mode32_64
-  %mix4 = xor i64 %mix3, %mode64
-  ret i64 %mix4
+  %mix1 = xor i64 %mix0, %mode32_64
+  ret i64 %mix1
 }
 "#
     };
@@ -5041,9 +5028,6 @@ int main(void) {
         &[
             ": read_rounding ",
             ": write_rounding ",
-            ": read_fpenv ",
-            ": write_fpenv ",
-            ": reset_fpenv ",
             ": read_fpmode ",
             ": write_fpmode ",
             ": reset_fpmode ",
