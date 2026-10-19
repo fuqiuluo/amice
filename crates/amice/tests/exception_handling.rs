@@ -135,6 +135,48 @@ fn test_cpp_exception_with_function_wrapper() {
 }
 
 #[test]
+fn test_cpp_exception_with_alias_access() {
+    ensure_plugin_built();
+
+    // AliasAccess skips functions containing exception handling: the catchpad
+    // catch-object storage must stay an alloca because the runtime writes it
+    // via the fixed frame offset in the EH tables (issue #102).
+    let result = CppCompileBuilder::new(
+        fixture_path("exception_handling", "cpp_exception_alias_access.cpp", Language::Cpp),
+        "cpp_exception_alias_access",
+    )
+    .config(ObfuscationConfig {
+        alias_access: Some(true),
+        ..ObfuscationConfig::disabled()
+    })
+    .compile();
+
+    result.assert_success();
+    let run = result.run();
+    run.assert_success();
+}
+
+#[test]
+fn test_cpp_exception_with_alias_access_optimized() {
+    ensure_plugin_built();
+
+    let result = CppCompileBuilder::new(
+        fixture_path("exception_handling", "cpp_exception_alias_access.cpp", Language::Cpp),
+        "cpp_exception_alias_access_o2",
+    )
+    .config(ObfuscationConfig {
+        alias_access: Some(true),
+        ..ObfuscationConfig::disabled()
+    })
+    .optimization("O2")
+    .compile();
+
+    result.assert_success();
+    let run = result.run();
+    run.assert_success();
+}
+
+#[test]
 fn test_cpp_exception_combined() {
     ensure_plugin_built();
 
