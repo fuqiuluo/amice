@@ -6,7 +6,7 @@ use crate::pass_registry::{AmiceFunctionPass, AmicePass, AmicePassFlag, AmicePas
 use amice_llvm::inkwell2::{FunctionExt, VerifyResult};
 use amice_macro::amice;
 use amice_plugin::inkwell::module::Module;
-use amice_plugin::inkwell::values::FunctionValue;
+use amice_plugin::inkwell::values::{FunctionValue, InstructionOpcode};
 use amice_plugin::{LlvmModulePass, ModuleAnalysisManager, PreservedAnalyses};
 
 #[amice(
@@ -35,6 +35,18 @@ impl AmicePass for AliasAccess {
             }
 
             if function.is_undef_function() {
+                continue;
+            }
+
+            // 含异常处理构造的函数（invoke/catchpad/cleanuppad 等）不做别名改写：
+            // catchpad 的 catch 对象存储槽必须是 alloca，运行时按 .xdata 里的
+            // 固定帧偏移写入；指针链替换后 funclet 读到从未被写入的槽，首个
+            // 异常分发即 SIGSEGV（issue #102）
+            if function_has_exception_handling(function) {
+                debug!(
+                    "function {:?} has exception handling instructions, skipping",
+                    function.get_name()
+                );
                 continue;
             }
 
@@ -72,6 +84,30 @@ impl AmicePass for AliasAccess {
 
         Ok(PreservedAnalyses::None)
     }
+}
+
+/// 含异常处理构造的函数不参与别名改写（issue #102）
+fn function_has_exception_handling(function: FunctionValue<'_>) -> bool {
+    for bb in function.get_basic_blocks() {
+        for inst in bb.get_instructions() {
+            if matches!(
+                inst.get_opcode(),
+                InstructionOpcode::Invoke
+                    | InstructionOpcode::LandingPad
+                    | InstructionOpcode::Resume
+                    | InstructionOpcode::CatchSwitch
+                    | InstructionOpcode::CatchPad
+                    | InstructionOpcode::CatchRet
+                    | InstructionOpcode::CleanupPad
+                    | InstructionOpcode::CleanupRet
+                    | InstructionOpcode::CallBr
+            ) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 pub(crate) trait AliasAccessAlgo {
