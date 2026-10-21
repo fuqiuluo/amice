@@ -53,8 +53,7 @@ target-riscv = ["inkwell/target-riscv"]
 target-all = ["inkwell/target-all"]
 
 [dependencies]
-# See crates/amice-llvm/Cargo.toml: LLVM 23 support requires inkwell master.
-inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "c8234a0", default-features = false }
+inkwell = { version = "0.11", default-features = false }
 amice-plugin-macros = { workspace = true, optional = true }
 
 [build-dependencies]
