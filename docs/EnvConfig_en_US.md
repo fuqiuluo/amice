@@ -6,6 +6,14 @@ Variables are read by the compiler process loading the plugin. In Bash use `expo
 
 Global precedence is **environment > config file > defaults**. Passes supporting [Function Annotations](FunctionAnnotations_en_US.md) then apply those overrides. Environment booleans accept `true/false`, `1/0` and `on/off` case-insensitively; the annotation value `yes` is not a true environment value.
 
+## Global
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `AMICE_PANIC_POLICY` | Policy when a pass panics: `skip` — log a warning and skip that pass; the module keeps compiling without that obfuscation (fail-open). `abort` — abort the build immediately (fail-closed, for security-sensitive builds). The original panic details (location and backtrace hint) are always printed to stderr. | `skip` |
+
+Note: this policy only covers Rust panics inside a pass. LLVM verifier failures (e.g. broken module) still abort the build.
+
 ## Support Matrix
 
 | Pass | Environment Variable | C/C++ | Rust | ObjC | Description |

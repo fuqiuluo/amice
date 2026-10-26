@@ -6,6 +6,14 @@
 
 全局优先级为 **环境变量 > 配置文件 > 默认值**；支持函数注解的 Pass 会再应用 [函数注解](FunctionAnnotations_zh_CN.md)。环境布尔值接受 `true/false`、`1/0`、`on/off`（不区分大小写）；不要把注解支持的 `yes` 当作环境变量的 true。
 
+## 全局
+
+| 变量名 | 说明 | 默认值 |
+| --- | --- | --- |
+| `AMICE_PANIC_POLICY` | Pass 内部 panic 时的策略：`skip` —— 告警并跳过该 Pass，模块继续编译（混淆缺失，构建不中断，fail-open）；`abort` —— 立即中止构建（fail-closed，安全敏感构建适用）。panic 的原始信息（位置与 backtrace 提示）始终输出到 stderr 便于报障。 | `skip` |
+
+说明：该策略只影响 Pass 内部的 Rust panic；LLVM 自身的校验失败（如 Broken module）仍会中断构建。
+
 ## 支持矩阵
 
 | Pass | 环境变量开关 | C/C++ | Rust | ObjC | 说明 |

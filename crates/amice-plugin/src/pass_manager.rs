@@ -51,11 +51,11 @@ impl ModulePassManager {
         where
             T: LlvmModulePass,
         {
-            let pass = unsafe { Box::<T>::from_raw(pass.cast()) };
+            let mut pass = unsafe { Box::<T>::from_raw(pass.cast()) };
             let mut module = unsafe { Module::new(module.cast()) };
             let manager = unsafe { ModuleAnalysisManager::from_raw(manager, None) };
 
-            let preserve = pass.run_pass(&mut module, &manager);
+            let preserve = run_pass_with_policy(&mut *pass, &mut module, &manager);
 
             let _ = Box::into_raw(pass);
             std::mem::forget(module);
@@ -181,5 +181,109 @@ impl FunctionPassManager {
     ))]
     pub fn is_empty(&self) -> bool {
         unsafe { super::functionPassManagerIsEmpty(self.inner) }
+    }
+}
+
+/// Pass 内部的 panic 不能穿透 extern "C" 边界（UB，直接 SIGILL/abort）。
+/// 默认 fail-open：捕获 panic、告警并跳过该 Pass——对混淆器而言，构建
+/// 失败比缺失部分混淆更糟。AMICE_PANIC_POLICY=abort 可切换为 fail-closed。
+fn run_pass_with_policy<T: LlvmModulePass>(
+    pass: &mut T,
+    module: &mut Module<'_>,
+    manager: &ModuleAnalysisManager,
+) -> PreservedAnalyses {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pass.run_pass(module, manager))) {
+        Ok(preserve) => preserve,
+        Err(_) => {
+            eprintln!(
+        "[amice] ERROR: pass {:?} panicked; skipping this pass for the module (fail-open).                          set AMICE_PANIC_POLICY=abort to fail the build instead",
+        std::any::type_name::<T>()
+    );
+            let abort_policy = std::env::var("AMICE_PANIC_POLICY")
+                .map(|v| v.eq_ignore_ascii_case("abort"))
+                .unwrap_or(false);
+            if abort_policy {
+                std::process::abort();
+            }
+            // 部分变换后模块仍可能可用，但分析状态已不可信，强制重分析
+            PreservedAnalyses::None
+        },
+    }
+}
+
+#[cfg(test)]
+mod pass_policy_tests {
+    use super::*;
+    use inkwell::context::Context;
+    use std::ptr;
+
+    /// run_pass 必然 panic 的测试 Pass。manager 指针不会被它触碰。
+    struct PanickyPass;
+    impl LlvmModulePass for PanickyPass {
+        fn run_pass(&self, _module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+            panic!("boom");
+        }
+    }
+
+    struct AllPreservedPass;
+    impl LlvmModulePass for AllPreservedPass {
+        fn run_pass(&self, _module: &mut Module<'_>, _manager: &ModuleAnalysisManager) -> PreservedAnalyses {
+            PreservedAnalyses::All
+        }
+    }
+
+    /// manager 指针指向一个存活对象，避免悬垂；这些测试里的 dummy pass
+    /// 不会真正解引用它。
+    fn fake_manager() -> ModuleAnalysisManager {
+        let live: u64 = 0;
+        unsafe { ModuleAnalysisManager::from_raw(&live as *const u64 as *mut c_void, None) }
+    }
+
+    fn with_policy<F: FnOnce()>(policy: Option<&str>, f: F) {
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        match policy {
+            Some(v) => std::env::set_var("AMICE_PANIC_POLICY", v),
+            None => std::env::remove_var("AMICE_PANIC_POLICY"),
+        }
+        f();
+        match policy {
+            Some(v) => std::env::set_var("AMICE_PANIC_POLICY", v),
+            None => std::env::remove_var("AMICE_PANIC_POLICY"),
+        }
+        std::panic::set_hook(prev_hook);
+    }
+
+    #[test]
+    fn panicking_pass_falls_back_to_none_by_default() {
+        let context = Context::create();
+        let mut module = context.create_module("t");
+        let manager = fake_manager();
+        with_policy(None, || {
+            let preserve = run_pass_with_policy(&mut PanickyPass, &mut module, &manager);
+            assert!(matches!(preserve, PreservedAnalyses::None));
+        });
+    }
+
+    #[test]
+    fn panicking_pass_falls_back_with_explicit_skip() {
+        let context = Context::create();
+        let mut module = context.create_module("t");
+        let manager = fake_manager();
+        with_policy(Some("skip"), || {
+            let preserve = run_pass_with_policy(&mut PanickyPass, &mut module, &manager);
+            assert!(matches!(preserve, PreservedAnalyses::None));
+        });
+    }
+
+    #[test]
+    fn normal_pass_result_propagates_unchanged() {
+        let context = Context::create();
+        let mut module = context.create_module("t");
+        let manager = fake_manager();
+        with_policy(None, || {
+            let preserve = run_pass_with_policy(&mut AllPreservedPass, &mut module, &manager);
+            assert!(matches!(preserve, PreservedAnalyses::All));
+        });
     }
 }
