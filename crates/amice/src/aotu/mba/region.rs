@@ -5,7 +5,10 @@ use amice_plugin::inkwell::{
     builder::Builder,
     context::ContextRef,
     intrinsics::Intrinsic,
-    llvm_sys::core::LLVMAddCallSiteAttribute,
+    llvm_sys::core::{
+        LLVMAddCallSiteAttribute, LLVMCountParamTypes, LLVMGetCalledFunctionType, LLVMGetNumArgOperands,
+        LLVMIsFunctionVarArg,
+    },
     module::{Linkage, Module},
     values::{
         AsValueRef, BasicValue, FloatValue, FunctionValue, InstructionOpcode as Op, InstructionValue, IntValue,
@@ -91,12 +94,78 @@ fn safe_phi(inst: InstructionValue<'_>) -> bool {
     })
 }
 
+fn android_vararg_sources<'ctx>(
+    module: &Module<'ctx>,
+    function: FunctionValue<'ctx>,
+) -> HashSet<InstructionValue<'ctx>> {
+    let target = module.get_triple();
+    let triple = target.as_str().to_string_lossy();
+    if !(triple.starts_with("aarch64-") || triple.starts_with("x86_64-")) || !triple.contains("android") {
+        return HashSet::new();
+    }
+
+    let mut pending = Vec::new();
+    for inst in function
+        .get_basic_blocks()
+        .iter()
+        .flat_map(|block| block.get_instructions())
+    {
+        if !matches!(inst.get_opcode(), Op::Call | Op::Invoke | Op::CallBr) {
+            continue;
+        }
+        // SAFETY: These opcodes are CallBase instructions. Their function type
+        // and argument count remain valid while the original IR is scanned.
+        let (fixed, count) = unsafe {
+            let ty = LLVMGetCalledFunctionType(inst.as_value_ref());
+            if LLVMIsFunctionVarArg(ty) == 0 {
+                continue;
+            }
+            (LLVMCountParamTypes(ty), LLVMGetNumArgOperands(inst.as_value_ref()))
+        };
+        for index in fixed..count {
+            let Some(value) = inst.get_operand(index).and_then(|operand| operand.value()) else {
+                continue;
+            };
+            if value.is_int_value() && value.into_int_value().get_type().get_bit_width() <= 32 {
+                if let Some(source) = value.as_instruction_value() {
+                    pending.push(source);
+                }
+            }
+        }
+    }
+
+    let mut sources = HashSet::new();
+    while let Some(inst) = pending.pop() {
+        if !sources.insert(inst) {
+            continue;
+        }
+        for index in 0..inst.get_num_operands() {
+            let Some(value) = inst.get_operand(index).and_then(|operand| operand.value()) else {
+                continue;
+            };
+            if value.is_int_value() && value.into_int_value().get_type().get_bit_width() <= 32 {
+                if let Some(source) = value.as_instruction_value() {
+                    pending.push(source);
+                }
+            }
+        }
+    }
+    sources
+}
+
 pub(super) fn rewrite<'ctx>(
     module: &Module<'ctx>,
     function: FunctionValue<'ctx>,
     cfg: &MbaConfig,
 ) -> anyhow::Result<(bool, bool)> {
     let fp = cfg.float_regions && float_allowed(module, function);
+    // Bionic fcntl reads an int vararg as a pointer. AArch64/x86_64 leave the
+    // unused high bits unspecified, so a truncated i64 carrier can reach it.
+    let vararg_sources = if fp {
+        android_vararg_sources(module, function)
+    } else {
+        HashSet::new()
+    };
     // Reserve entry setup before choosing originals. No global is created
     // unless a real FP region survives planning.
     let mut budget = (cfg.max_added_instructions as u64).saturating_sub(if fp && cfg.opaque_guard { 12 } else { 0 });
@@ -119,16 +188,17 @@ pub(super) fn rewrite<'ctx>(
             if width > 128 {
                 continue;
             }
-            if !binary(op) && !(fp && width <= 32 && (op == Op::Select || (op == Op::Phi && safe_phi(inst)))) {
+            let float_candidate = fp && width <= 32 && !vararg_sources.contains(&inst);
+            if !binary(op) && !(float_candidate && (op == Op::Select || (op == Op::Phi && safe_phi(inst)))) {
                 continue;
             }
             // Includes both input encodings, canonicalization and output decode.
             let cost = if op == Op::Phi {
                 2 + 3 * PhiValue::try_from(inst).unwrap().count_incoming() as u64
-            } else if fp && width <= 32 && cfg.pre_expand && binary(op) {
+            } else if float_candidate && cfg.pre_expand && binary(op) {
                 // At most five carrier operations plus input/output conversion.
                 96
-            } else if fp && width <= 32 && binary(op) {
+            } else if float_candidate && binary(op) {
                 24
             } else {
                 20
@@ -145,7 +215,9 @@ pub(super) fn rewrite<'ctx>(
     let narrow: HashSet<_> = planned
         .iter()
         .copied()
-        .filter(|i| fp && IntValue::try_from(*i).unwrap().get_type().get_bit_width() <= 32)
+        .filter(|i| {
+            fp && !vararg_sources.contains(i) && IntValue::try_from(*i).unwrap().get_type().get_bit_width() <= 32
+        })
         .collect();
     let mut selected: HashSet<_> = narrow
         .iter()

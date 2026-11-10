@@ -27,6 +27,8 @@ unsigned sensitive(unsigned x, unsigned y);
 
 浮点区域覆盖 `i1` 到 `i32`，仅在模块 triple 为 x86_64 或 aarch64、函数允许硬件浮点时启用。`strictfp`、`noimplicitfloat`、`naked`、`use-soft-float=true` 及禁用基础浮点指令的 target features 会阻止该路径。未知 triple 使用整数路径。其他 scalar integer 位宽到 `i128` 使用整数路径；向量和更宽整数保持原样。
 
+Android 64 位目标上，流入可变参数整数实参的运算及其上游依赖使用整数路径；同一函数里无关的运算仍可使用浮点区域。这避免 Bionic `fcntl` 将整数变参按指针读取时观察到载体的非零高位。
+
 当前不会改写乘除法、移位或 intrinsics，也不单独隐藏任意常量；它们可以成为区域边界。浮点 FMA 乘法残差和延迟范围恢复尚未纳入此版本。
 
 旧的 auxiliary、rewrite depth、fixStack、optnone 配置及 `linearmba` 别名已移除。新的 `opaque_guard` 控制私有种子全局变量；不生成辅助栈变量，也不添加 optnone。已改写函数带有 `"amice.mba.done"="1"`，避免重复注册或重复优化流水线再次膨胀。

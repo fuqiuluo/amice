@@ -1,7 +1,9 @@
 //! Differential tests against separately compiled original LLVM IR.
 mod common;
 
-use common::{ObfuscationConfig, detect_llvm_config, ensure_plugin_built, output_dir, plugin_path};
+use common::{
+    Language, ObfuscationConfig, detect_llvm_config, ensure_plugin_built, fixture_path, output_dir, plugin_path,
+};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -488,6 +490,69 @@ define i32 @unsupported(i32 %x, i32 %y) { %a = mul i32 %x, %y
             .arg(&output)
             .arg("-o")
             .arg(dir.join(format!("feature-{n}.o"))));
+    }
+}
+
+#[test]
+fn issue_116_android_varargs_keep_integer_call_boundaries() {
+    let plugin = std::env::var_os("AMICE_TEST_PLUGIN_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            ensure_plugin_built();
+            plugin_path()
+        });
+    let dir = std::env::temp_dir().join(format!("amice-issue116-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = fixture_path("mba", "issue_116_fcntl.c", Language::C);
+
+    for triple in ["aarch64-linux-android24", "x86_64-linux-android24"] {
+        let input = dir.join(format!("{triple}.ll"));
+        let output = dir.join(format!("{triple}.mba.ll"));
+        run(Command::new(tool("clang"))
+            .arg(format!("--target={triple}"))
+            .args(["-O2", "-S", "-emit-llvm"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&input));
+
+        run(Command::new(tool("opt"))
+            .env_remove("AMICE_CONFIG_PATH")
+            .env("AMICE_MBA", "false")
+            .env("AMICE_MBA_FLOAT_REGIONS", "true")
+            .env("AMICE_MBA_PRE_EXPAND", "true")
+            .env("AMICE_MBA_OPAQUE_GUARD", "true")
+            .env("AMICE_MBA_MAX_INSTRUCTIONS", "128")
+            .env("AMICE_MBA_MAX_ADDED_INSTRUCTIONS", "2048")
+            .env("AMICE_PASS_ORDER", "Mba")
+            .arg(format!("--load-pass-plugin={}", plugin.display()))
+            .args(["-passes=default<O0>", "-verify-each", "-S"])
+            .arg(&input)
+            .arg("-o")
+            .arg(&output));
+
+        let ir = std::fs::read_to_string(&output).unwrap();
+        let function = ir
+            .split_once("\ndefine internal i32 @set_cloexec(")
+            .unwrap()
+            .1
+            .split_once("\n}")
+            .unwrap()
+            .0;
+        let call = function.lines().find(|line| line.contains("@fcntl(")).unwrap();
+        let arguments = call.split_once("@fcntl(").unwrap().1.split(')').next().unwrap();
+        let argument = arguments.rsplit(',').next().unwrap().split_whitespace().last().unwrap();
+        let definition = function
+            .lines()
+            .find(|line| line.trim_start().starts_with(&format!("{argument} =")))
+            .unwrap();
+        assert!(
+            !definition.contains("trunc i64"),
+            "{triple}: carrier reached fcntl:\n{function}"
+        );
+        assert!(
+            function.contains("@llvm.experimental.constrained.fsub.f64"),
+            "{triple}: independent arithmetic lost its floating-point region"
+        );
     }
 }
 
