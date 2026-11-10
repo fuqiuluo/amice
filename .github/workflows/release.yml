@@ -325,19 +325,16 @@ jobs:
           - ["21", "21-1", "211"]
           - ["22", "22-1", "221"]
           - ["23", "23-1", "231"]
+        exclude:
+          - os: macos-15-intel
+            llvm-version: ["22", "22-1", "221"]
+          - os: macos-15-intel
+            llvm-version: ["23", "23-1", "231"]
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag_name || github.ref }}
-
-      - name: Skip LLVM 22 and 23 on Intel macOS
-        if: ${{ matrix.os == 'macos-15-intel' && (matrix.llvm-version[0] == '22' || matrix.llvm-version[0] == '23') }}
-        run: |
-          echo "Homebrew no longer builds x86_64 bottles, and the llvm@22/llvm@23"
-          echo "formulas have no Intel macOS bottle left, so they cannot be installed here."
-          echo "These LLVM assets remain available for Linux x86_64 and ARM macOS."
-          exit 78
 
       - name: Cache Homebrew downloads
         uses: actions/cache@v4
