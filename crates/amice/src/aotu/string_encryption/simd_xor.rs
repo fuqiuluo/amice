@@ -8,18 +8,16 @@ use amice_llvm::const_array;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_plugin::inkwell;
+use amice_plugin::inkwell::AddressSpace;
 use amice_plugin::inkwell::AtomicOrdering;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
-use amice_plugin::inkwell::llvm_sys::comdat::LLVMSetComdat;
 use amice_plugin::inkwell::module::{Linkage, Module};
 use amice_plugin::inkwell::values::{
     AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
 };
-use amice_plugin::inkwell::{AddressSpace, GlobalVisibility};
 use anyhow::anyhow;
 use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
-use std::ptr::null_mut;
 
 #[derive(Default)]
 pub(super) struct SimdXorAlgo {
@@ -52,7 +50,10 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
 
     let string_global_values: Vec<EncryptedGlobalValue<'a>> = module
         .get_globals()
-        .filter(|global| !matches!(global.get_linkage(), Linkage::External))
+        // Keys and decrypt flags belong to one module
+        // Shared globals can be merged by the linker and then decrypted with another module's key
+        // Keep their linkage and contents unchanged so shared addresses also stay valid
+        .filter(|global| matches!(global.get_linkage(), Linkage::Internal | Linkage::Private))
         .filter(|global| {
             (!cfg.only_dot_str || global.get_name().to_str().is_ok_and(|s| s.starts_with(".str")))
                 && global
@@ -249,18 +250,6 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 }
                 let stru = stru.get_type().const_named_struct(values.as_slice());
                 global.set_initializer(&stru);
-
-                let current_linkage = global.get_linkage();
-                if matches!(
-                    current_linkage,
-                    Linkage::LinkOnceAny | Linkage::LinkOnceODR | Linkage::WeakAny | Linkage::WeakODR
-                ) {
-                    global.set_linkage(Linkage::Internal);
-                    // 清空 comdat 必须走 LLVM-C：inkwell 的 Comdat::new(null_mut())
-                    // 是 UB，直接 SIGILL（issue #99 复现链的一环）
-                    unsafe { LLVMSetComdat(global.as_value_ref(), std::ptr::null_mut()) };
-                    global.set_visibility(GlobalVisibility::Default);
-                }
             } else {
                 // C-like strings
                 let new_const = rebuild_const_string(ctx, elem_size, &encoded_str);
