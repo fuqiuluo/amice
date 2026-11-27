@@ -8,22 +8,27 @@ use amice_llvm::const_array;
 use amice_llvm::inkwell2::{BasicBlockExt, BuilderExt, LLVMValueRefExt, ModuleExt};
 use amice_llvm::ptr_type;
 use amice_plugin::inkwell;
+use amice_plugin::inkwell::AddressSpace;
 use amice_plugin::inkwell::AtomicOrdering;
 use amice_plugin::inkwell::attributes::{Attribute, AttributeLoc};
-use amice_plugin::inkwell::llvm_sys::comdat::LLVMSetComdat;
 use amice_plugin::inkwell::module::{Linkage, Module};
 use amice_plugin::inkwell::values::{
     AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode,
 };
-use amice_plugin::inkwell::{AddressSpace, GlobalVisibility};
 use anyhow::anyhow;
 use log::{Level, debug, error, log_enabled, warn};
 use rand::Rng;
-use std::ptr::null_mut;
 
 #[derive(Default)]
 pub(super) struct SimdXorAlgo {
     pub(super) key: [u8; 32],
+}
+
+struct SharedTemplateString<'a> {
+    source: GlobalValue<'a>,
+    target: GlobalValue<'a>,
+    fields: Vec<(u32, u32)>,
+    probe: (u32, u32),
 }
 
 impl StringEncryptionAlgo for SimdXorAlgo {
@@ -46,13 +51,13 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
     let is_lazy_mode = matches!(cfg.timing, DecryptTiming::Lazy);
     let is_global_mode = matches!(cfg.timing, DecryptTiming::Global);
 
-    let global_key = module.add_global(vector256, Some(AddressSpace::default()), "");
-    let array_values = key.map(|c| i8_ty.const_int(c as u64, false));
-    global_key.set_initializer(&const_array(i8_ty, &array_values));
-
     let string_global_values: Vec<EncryptedGlobalValue<'a>> = module
         .get_globals()
-        .filter(|global| !matches!(global.get_linkage(), Linkage::External))
+        // Keys and decrypt flags belong to one module
+        // Shared globals can be merged by the linker and then decrypted with another module's key
+        // Keep their linkage and contents unchanged so shared addresses also stay valid
+        // Shared template strings use a separate path below
+        .filter(|global| matches!(global.get_linkage(), Linkage::Internal | Linkage::Private))
         .filter(|global| {
             (!cfg.only_dot_str || global.get_name().to_str().is_ok_and(|s| s.starts_with(".str")))
                 && global
@@ -249,18 +254,6 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
                 }
                 let stru = stru.get_type().const_named_struct(values.as_slice());
                 global.set_initializer(&stru);
-
-                let current_linkage = global.get_linkage();
-                if matches!(
-                    current_linkage,
-                    Linkage::LinkOnceAny | Linkage::LinkOnceODR | Linkage::WeakAny | Linkage::WeakODR
-                ) {
-                    global.set_linkage(Linkage::Internal);
-                    // 清空 comdat 必须走 LLVM-C：inkwell 的 Comdat::new(null_mut())
-                    // 是 UB，直接 SIGILL（issue #99 复现链的一环）
-                    unsafe { LLVMSetComdat(global.as_value_ref(), std::ptr::null_mut()) };
-                    global.set_visibility(GlobalVisibility::Default);
-                }
             } else {
                 // C-like strings
                 let new_const = rebuild_const_string(ctx, elem_size, &encoded_str);
@@ -288,6 +281,19 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
         })
         .collect();
 
+    // Shared template objects keep their address and receive plaintext from private copies
+    let shared_strings = if cfg.only_dot_str {
+        Vec::new()
+    } else {
+        encrypt_shared_template_strings(module, key)
+    };
+
+    // Add the private key after collecting strings so it cannot encrypt itself
+    let global_key = module.add_global(vector256, Some(AddressSpace::default()), "");
+    global_key.set_linkage(Linkage::Private);
+    let array_values = key.map(|c| i8_ty.const_int(c as u64, false));
+    global_key.set_initializer(&const_array(i8_ty, &array_values));
+
     let decrypt_fn = add_decrypt_function(
         module,
         &format!("simd_xor_cipher_{}", rand::random::<u32>()),
@@ -295,6 +301,9 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
         cfg.inline_decrypt,
         cfg.stack_alloc,
     )?;
+
+    // Initialize shared objects before code from other translation units can read them
+    emit_shared_template_decryptor_ctor(module, &shared_strings, decrypt_fn, global_key)?;
 
     match cfg.timing {
         DecryptTiming::Lazy => {
@@ -334,6 +343,248 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
         x.free();
     }
 
+    Ok(())
+}
+
+fn encrypt_shared_template_strings<'a>(module: &mut Module<'a>, key: &[u8; 32]) -> Vec<SharedTemplateString<'a>> {
+    let ctx = module.get_context();
+    let globals: Vec<_> = module.get_globals().collect();
+    let mut strings = Vec::new();
+
+    for global in globals {
+        // Clang uses _ZTA for template parameter objects and _ZZ for function-local statics
+        let name = global.get_name().to_bytes();
+        if global.get_linkage() != Linkage::LinkOnceODR
+            || !global.is_constant()
+            || !(name.starts_with(b"_ZTA") || name.starts_with(b"_ZZ"))
+        {
+            continue;
+        }
+        // A module constructor cannot initialize storage for later threads
+        if global.is_thread_local() {
+            continue;
+        }
+        let Some(BasicValueEnum::StructValue(init)) = global.get_initializer() else {
+            continue;
+        };
+        let mut encrypted: Vec<_> = init.get_fields().collect();
+        let mut cleared = encrypted.clone();
+        let mut fields = Vec::new();
+        let mut probe = None;
+        let mut supported = true;
+        for (index, field) in init.get_fields().enumerate() {
+            let (arr, tail) = match field {
+                BasicValueEnum::ArrayValue(arr) if arr.is_null() => continue,
+                BasicValueEnum::ArrayValue(arr) => (arr, None),
+                BasicValueEnum::IntValue(_) => continue,
+                BasicValueEnum::StructValue(stru) => {
+                    let Some((text, zeros)) = split_template_string(stru) else {
+                        supported = false;
+                        break;
+                    };
+                    (text, Some(zeros))
+                },
+                _ => {
+                    supported = false;
+                    break;
+                },
+            };
+            let Some((mut bytes, elem_size)) = array_as_const_string_bytes(&arr) else {
+                supported = false;
+                break;
+            };
+            let split = bytes.len();
+            if let Some(tail) = tail {
+                bytes.resize(split + tail.get_type().len() as usize, 0);
+            }
+            if bytes.len() <= elem_size as usize || !bytes[bytes.len() - elem_size as usize..].iter().all(|&b| b == 0) {
+                supported = false;
+                break;
+            }
+            let Some(nonzero) = bytes.iter().position(|&b| b != 0) else {
+                continue;
+            };
+            probe.get_or_insert((index as u32, nonzero as u32));
+            fields.push((index as u32, bytes.len() as u32));
+            let ciphertext: Vec<_> = bytes.iter().enumerate().map(|(i, b)| b ^ key[i % key.len()]).collect();
+            if tail.is_some() {
+                let ty = field.into_struct_value().get_type();
+                encrypted[index] = ty
+                    .const_named_struct(&[
+                        ctx.const_string(&ciphertext[..split], false).into(),
+                        ctx.const_string(&ciphertext[split..], false).into(),
+                    ])
+                    .into();
+                cleared[index] = ty.const_zero().into();
+            } else {
+                encrypted[index] = rebuild_const_string(ctx, elem_size, &ciphertext).into();
+                cleared[index] = arr.get_type().const_zero().into();
+            }
+        }
+        if !supported {
+            continue;
+        }
+        let Some(probe) = probe else {
+            continue;
+        };
+
+        let source = module.add_global(
+            init.get_type(),
+            Some(global.as_pointer_value().get_type().get_address_space()),
+            ".amice.template_string",
+        );
+        source.set_linkage(Linkage::Private);
+        source.set_alignment(global.get_alignment());
+        source.set_constant(true);
+        source.set_initializer(&init.get_type().const_named_struct(&encrypted));
+
+        // Keep one shared output, but allow a plain translation unit to supply its initializer
+        // ODR linkage would require its plaintext and our cleared bytes to match
+        global.set_initializer(&init.get_type().const_named_struct(&cleared));
+        global.set_linkage(Linkage::LinkOnceAny);
+        global.set_constant(false);
+        strings.push(SharedTemplateString {
+            source,
+            target: global,
+            fields,
+            probe,
+        });
+    }
+    strings
+}
+
+fn split_template_string<'a>(
+    value: inkwell::values::StructValue<'a>,
+) -> Option<(inkwell::values::ArrayValue<'a>, inkwell::values::ArrayValue<'a>)> {
+    // Clang splits byte strings with long zero tails into packed pairs of arrays
+    if !value.get_type().is_packed() || value.count_fields() != 2 {
+        return None;
+    }
+    let BasicValueEnum::ArrayValue(text) = value.get_field_at_index(0)? else {
+        return None;
+    };
+    let BasicValueEnum::ArrayValue(zeros) = value.get_field_at_index(1)? else {
+        return None;
+    };
+    if !text.is_const_string()
+        || !zeros.is_null()
+        || zeros.get_type().is_empty()
+        || text.get_type().get_element_type() != zeros.get_type().get_element_type()
+    {
+        return None;
+    }
+    Some((text, zeros))
+}
+
+fn emit_shared_template_decryptor_ctor<'a>(
+    module: &mut Module<'a>,
+    strings: &[SharedTemplateString<'a>],
+    decrypt_fn: FunctionValue<'a>,
+    global_key: GlobalValue<'a>,
+) -> anyhow::Result<()> {
+    if strings.is_empty() {
+        return Ok(());
+    }
+    let ctx = module.get_context();
+    let i8_ty = ctx.i8_type();
+    let i32_ty = ctx.i32_type();
+    let stub = module.add_function(
+        "simd_xor_template_decrypt_stub",
+        ctx.void_type().fn_type(&[], false),
+        None,
+    );
+    stub.set_linkage(Linkage::Internal);
+    let builder = ctx.create_builder();
+    builder.position_at_end(ctx.append_basic_block(stub, "entry"));
+
+    for string in strings {
+        let flag_name = format!("__amice_template_ready.{}", string.target.get_name().to_string_lossy());
+        let flag = module.add_global(i32_ty, None, &flag_name);
+        flag.set_linkage(Linkage::LinkOnceODR);
+        flag.set_visibility(string.target.get_visibility());
+        flag.set_alignment(4);
+        flag.set_initializer(&i32_ty.const_zero());
+        if string.target.get_comdat().is_some() {
+            // A plain translation unit may supply the object without this flag
+            flag.set_comdat(module.get_or_insert_comdat(&flag_name));
+        }
+
+        let inspect = ctx.append_basic_block(stub, "inspect_template");
+        let decrypt = ctx.append_basic_block(stub, "decrypt_template");
+        let done = ctx.append_basic_block(stub, "mark_template_done");
+        let wait = ctx.append_basic_block(stub, "wait_for_template");
+        let next = ctx.append_basic_block(stub, "next_template");
+        let claim = builder.build_cmpxchg(
+            flag.as_pointer_value(),
+            i32_ty.const_zero(),
+            i32_ty.const_int(1, false),
+            AtomicOrdering::AcquireRelease,
+            AtomicOrdering::Acquire,
+        )?;
+        let won = builder
+            .build_extract_value(claim, 1, "claimed_template")?
+            .into_int_value();
+        builder.build_conditional_branch(won, inspect, wait)?;
+
+        builder.position_at_end(wait);
+        let state = builder.build_load2(i32_ty, flag.as_pointer_value(), "template_state")?;
+        state
+            .as_instruction_value()
+            .unwrap()
+            .set_atomic_ordering(AtomicOrdering::Acquire)?;
+        let ready = builder.build_int_compare(
+            inkwell::IntPredicate::EQ,
+            state.into_int_value(),
+            i32_ty.const_int(2, false),
+            "template_ready",
+        )?;
+        builder.build_conditional_branch(ready, next, wait)?;
+
+        builder.position_at_end(inspect);
+        let ty = string.target.get_value_type().into_struct_type();
+        let field = builder.build_struct_gep2(ty, string.target.as_pointer_value(), string.probe.0, "probe_field")?;
+        let ptr = builder.build_gep2(
+            i8_ty,
+            field,
+            &[i32_ty.const_int(string.probe.1 as u64, false)],
+            "probe_byte",
+        )?;
+        let byte = builder.build_load2(i8_ty, ptr, "template_byte")?;
+        byte.as_instruction_value().unwrap().set_volatile(true)?;
+        let cleared = builder.build_int_compare(
+            inkwell::IntPredicate::EQ,
+            byte.into_int_value(),
+            i8_ty.const_zero(),
+            "template_cleared",
+        )?;
+        // If the linker chose a plain definition, its storage may be read-only
+        builder.build_conditional_branch(cleared, decrypt, done)?;
+
+        builder.position_at_end(decrypt);
+        for &(index, len) in &string.fields {
+            let src = builder.build_struct_gep2(ty, string.source.as_pointer_value(), index, "template_source")?;
+            let dst = builder.build_struct_gep2(ty, string.target.as_pointer_value(), index, "template_target")?;
+            builder.build_call(
+                decrypt_fn,
+                &[
+                    src.into(),
+                    dst.into(),
+                    i32_ty.const_int(len as u64, false).into(),
+                    global_key.as_pointer_value().into(),
+                    ptr_type!(ctx, i32_type).const_null().into(),
+                ],
+                "",
+            )?;
+        }
+        builder.build_unconditional_branch(done)?;
+        builder.position_at_end(done);
+        let store = builder.build_store(flag.as_pointer_value(), i32_ty.const_int(2, false))?;
+        store.set_atomic_ordering(AtomicOrdering::Release)?;
+        builder.build_unconditional_branch(next)?;
+        builder.position_at_end(next);
+    }
+    builder.build_return(None)?;
+    module.append_to_global_ctors(stub, 0);
     Ok(())
 }
 
@@ -679,6 +930,8 @@ fn add_decrypt_function<'a>(
     let src_gep = builder.build_gep2(i8_ty, src_ptr, &[index], "src_gep")?;
     let src_load_inst = builder.build_load2(vector_256, src_gep, "src_vec")?;
     if let Some(load_inst) = src_load_inst.as_instruction_value() {
+        // Keep inlined decryption from folding private ciphertext back to plaintext
+        load_inst.set_volatile(true)?;
         load_inst
             .set_alignment(1)
             .map_err(|e| anyhow!("Failed to set alignment for load instruction: {}", e))?;
@@ -687,6 +940,7 @@ fn add_decrypt_function<'a>(
     let xored_vec = builder.build_xor(src_vec, key_vec, "xored_vec")?;
     let dst_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "dst_gep")?;
     let store_inst = builder.build_store(dst_gep, xored_vec)?;
+    store_inst.set_volatile(true)?;
     store_inst
         .set_alignment(1)
         .map_err(|e| anyhow!("Failed to set alignment for store instruction: {}", e))?;
@@ -722,12 +976,13 @@ fn add_decrypt_function<'a>(
 
     let src_gep = builder.build_gep2(i8_ty, src_ptr, &[index], "src_rest_gep")?;
     let ch = builder.build_load2(i8_ty, src_gep, "cur")?.into_int_value();
+    ch.as_instruction_value().unwrap().set_volatile(true)?;
     let key_index = builder.build_int_signed_rem(index, ctx.i32_type().const_int(32, false), "key_index")?;
     let key_gep = builder.build_gep2(i8_ty, key_ptr, &[key_index], "key_rest_gep")?;
     let key_ch = builder.build_load2(i8_ty, key_gep, "key_cur")?.into_int_value();
     let xored = builder.build_xor(ch, key_ch, "xored_rest")?;
     let dst_gep = builder.build_gep2(i8_ty, dst_ptr, &[index], "dst_rest_gep")?;
-    builder.build_store(dst_gep, xored)?;
+    builder.build_store(dst_gep, xored)?.set_volatile(true)?;
 
     let next_index = builder.build_int_add(index, ctx.i32_type().const_int(1, false), "next_index_rest")?;
     builder.build_store(idx, next_index)?;
