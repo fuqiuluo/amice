@@ -44,10 +44,6 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
     let is_lazy_mode = matches!(cfg.timing, DecryptTiming::Lazy);
     let is_global_mode = matches!(cfg.timing, DecryptTiming::Global);
 
-    let global_key = module.add_global(vector256, Some(AddressSpace::default()), "");
-    let array_values = key.map(|c| i8_ty.const_int(c as u64, false));
-    global_key.set_initializer(&const_array(i8_ty, &array_values));
-
     let string_global_values: Vec<EncryptedGlobalValue<'a>> = module
         .get_globals()
         // Keys and decrypt flags belong to one module
@@ -276,6 +272,12 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
             }
         })
         .collect();
+
+    // Add the private key after collecting strings so it cannot encrypt itself
+    let global_key = module.add_global(vector256, Some(AddressSpace::default()), "");
+    global_key.set_linkage(Linkage::Private);
+    let array_values = key.map(|c| i8_ty.const_int(c as u64, false));
+    global_key.set_initializer(&const_array(i8_ty, &array_values));
 
     let decrypt_fn = add_decrypt_function(
         module,
