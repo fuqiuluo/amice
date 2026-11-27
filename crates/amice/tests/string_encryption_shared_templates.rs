@@ -11,6 +11,7 @@ fn assert_template_text_absent(path: &Path) {
     for text in [
         b"AMICE_SHARED_TEMPLATE_MESSAGE {}".as_slice(),
         b"AMICE_NTTP_SOURCE_FILE".as_slice(),
+        b"AMICE_EXACT_TEMPLATE".as_slice(),
     ] {
         assert!(
             !bytes.windows(text.len()).any(|value| value == text),

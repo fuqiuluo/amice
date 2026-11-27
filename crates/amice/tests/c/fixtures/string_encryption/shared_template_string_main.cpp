@@ -21,7 +21,8 @@ static std::uint32_t hash(const volatile char* data, std::size_t size) {
 
 static bool valid(const volatile TemplateMessage* value) {
     return value->line == 44 && hash(value->text, sizeof(value->text)) == 0x4630230bu &&
-           hash(value->source, sizeof(value->source)) == 0x41e61b3au;
+           hash(value->source, sizeof(value->source)) == 0x41e61b3au &&
+           hash(value->exact, sizeof(value->exact)) == 0x3847bbbfu;
 }
 
 static bool valid_controls(const volatile unsigned char* value) {

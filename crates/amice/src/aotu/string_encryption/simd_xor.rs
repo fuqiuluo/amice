@@ -368,20 +368,31 @@ fn encrypt_shared_template_strings<'a>(module: &mut Module<'a>, key: &[u8; 32]) 
         let mut probe = None;
         let mut supported = true;
         for (index, field) in init.get_fields().enumerate() {
-            let arr = match field {
+            let (arr, tail) = match field {
                 BasicValueEnum::ArrayValue(arr) if arr.is_null() => continue,
-                BasicValueEnum::ArrayValue(arr) => arr,
+                BasicValueEnum::ArrayValue(arr) => (arr, None),
                 BasicValueEnum::IntValue(_) => continue,
+                BasicValueEnum::StructValue(stru) => {
+                    let Some((text, zeros)) = split_template_string(stru) else {
+                        supported = false;
+                        break;
+                    };
+                    (text, Some(zeros))
+                },
                 _ => {
                     supported = false;
                     break;
                 },
             };
-            let Some((bytes, elem_size)) = array_as_const_string_bytes(&arr) else {
+            let Some((mut bytes, elem_size)) = array_as_const_string_bytes(&arr) else {
                 supported = false;
                 break;
             };
-            if arr.get_type().len() <= 1 || !bytes[bytes.len() - elem_size as usize..].iter().all(|&b| b == 0) {
+            let split = bytes.len();
+            if let Some(tail) = tail {
+                bytes.resize(split + tail.get_type().len() as usize, 0);
+            }
+            if bytes.len() <= elem_size as usize || !bytes[bytes.len() - elem_size as usize..].iter().all(|&b| b == 0) {
                 supported = false;
                 break;
             }
@@ -391,8 +402,19 @@ fn encrypt_shared_template_strings<'a>(module: &mut Module<'a>, key: &[u8; 32]) 
             probe.get_or_insert((index as u32, nonzero as u32));
             fields.push((index as u32, bytes.len() as u32));
             let ciphertext: Vec<_> = bytes.iter().enumerate().map(|(i, b)| b ^ key[i % key.len()]).collect();
-            encrypted[index] = rebuild_const_string(ctx, elem_size, &ciphertext).into();
-            cleared[index] = arr.get_type().const_zero().into();
+            if tail.is_some() {
+                let ty = field.into_struct_value().get_type();
+                encrypted[index] = ty
+                    .const_named_struct(&[
+                        ctx.const_string(&ciphertext[..split], false).into(),
+                        ctx.const_string(&ciphertext[split..], false).into(),
+                    ])
+                    .into();
+                cleared[index] = ty.const_zero().into();
+            } else {
+                encrypted[index] = rebuild_const_string(ctx, elem_size, &ciphertext).into();
+                cleared[index] = arr.get_type().const_zero().into();
+            }
         }
         if !supported {
             continue;
@@ -424,6 +446,29 @@ fn encrypt_shared_template_strings<'a>(module: &mut Module<'a>, key: &[u8; 32]) 
         });
     }
     strings
+}
+
+fn split_template_string<'a>(
+    value: inkwell::values::StructValue<'a>,
+) -> Option<(inkwell::values::ArrayValue<'a>, inkwell::values::ArrayValue<'a>)> {
+    // Clang splits byte strings with long zero tails into packed pairs of arrays
+    if !value.get_type().is_packed() || value.count_fields() != 2 {
+        return None;
+    }
+    let BasicValueEnum::ArrayValue(text) = value.get_field_at_index(0)? else {
+        return None;
+    };
+    let BasicValueEnum::ArrayValue(zeros) = value.get_field_at_index(1)? else {
+        return None;
+    };
+    if !text.is_const_string()
+        || !zeros.is_null()
+        || zeros.get_type().is_empty()
+        || text.get_type().get_element_type() != zeros.get_type().get_element_type()
+    {
+        return None;
+    }
+    Some((text, zeros))
 }
 
 fn emit_shared_template_decryptor_ctor<'a>(
