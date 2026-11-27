@@ -1,4 +1,4 @@
-// These fixtures exercise Clang's Itanium template parameter objects
+// These fixtures exercise Clang's Itanium template objects and function-local statics
 #![cfg(not(target_env = "msvc"))]
 
 mod common;
@@ -12,6 +12,7 @@ fn assert_template_text_absent(path: &Path) {
         b"AMICE_SHARED_TEMPLATE_MESSAGE {}".as_slice(),
         b"AMICE_NTTP_SOURCE_FILE".as_slice(),
         b"AMICE_EXACT_TEMPLATE".as_slice(),
+        b"_ZN3art7Runtime9instance_E".as_slice(),
     ] {
         assert!(
             !bytes.windows(text.len()).any(|value| value == text),
@@ -38,11 +39,13 @@ fn check_shared_templates(timing: &str, stack_alloc: bool, optimization: &str, p
     for reader in ["read_a", "read_b"] {
         let result = CppCompileBuilder::new(&source, &format!("{name}_{reader}"))
             .config(config.clone())
-            .std("c++20")
+            .std("c++23")
             .optimization(optimization)
             .arg("-c")
             .arg(&format!("-DREADER_NAME={reader}"))
             .arg(&format!("-DCONTROLS_NAME={reader}_controls"))
+            .arg(&format!("-DSYMBOL_NAME={reader}_symbol"))
+            .arg(&format!("-DLOCAL_CONTROLS_NAME={reader}_local_controls"))
             .compile();
         result.assert_success();
         assert_template_text_absent(&result.binary_path);
@@ -51,11 +54,13 @@ fn check_shared_templates(timing: &str, stack_alloc: bool, optimization: &str, p
     if plain_reader {
         let result = CppCompileBuilder::new(&source, &format!("{name}_plain"))
             .without_plugin()
-            .std("c++20")
+            .std("c++23")
             .optimization(optimization)
             .arg("-c")
             .arg("-DREADER_NAME=read_plain")
             .arg("-DCONTROLS_NAME=read_plain_controls")
+            .arg("-DSYMBOL_NAME=read_plain_symbol")
+            .arg("-DLOCAL_CONTROLS_NAME=read_plain_local_controls")
             .compile();
         result.assert_success();
         objects.push(result.binary_path);
@@ -70,7 +75,7 @@ fn check_shared_templates(timing: &str, stack_alloc: bool, optimization: &str, p
             &format!("{name}_{reverse}"),
         )
         .without_plugin()
-        .std("c++20")
+        .std("c++23")
         .optimization(optimization);
         if plain_reader {
             link = link.arg("-DWITH_PLAIN_READER");

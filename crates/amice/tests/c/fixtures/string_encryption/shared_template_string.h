@@ -1,6 +1,9 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 struct TemplateMessage {
     char text[64];
@@ -20,4 +23,20 @@ struct TemplateControls {
         0xff, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
         0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
     };
+};
+
+template <std::size_t N, char... Cs>
+struct FixedString {
+    static constexpr auto data = [] consteval {
+        static constexpr auto kString = std::array{Cs...};
+        return std::string_view{kString.data(), N};
+    }();
+
+    static consteval std::uint32_t gnu_hash() {
+        std::uint32_t value = 5381;
+        for (auto ch : data) {
+            value = value * 33 + static_cast<unsigned char>(ch);
+        }
+        return value;
+    }
 };

@@ -56,7 +56,7 @@ fn do_handle<'a>(cfg: &StringEncryptionConfig, module: &mut Module<'a>, key: &[u
         // Keys and decrypt flags belong to one module
         // Shared globals can be merged by the linker and then decrypted with another module's key
         // Keep their linkage and contents unchanged so shared addresses also stay valid
-        // Template parameter strings use a separate path below
+        // Shared template strings use a separate path below
         .filter(|global| matches!(global.get_linkage(), Linkage::Internal | Linkage::Private))
         .filter(|global| {
             (!cfg.only_dot_str || global.get_name().to_str().is_ok_and(|s| s.starts_with(".str")))
@@ -352,11 +352,16 @@ fn encrypt_shared_template_strings<'a>(module: &mut Module<'a>, key: &[u8; 32]) 
     let mut strings = Vec::new();
 
     for global in globals {
-        // Clang uses _ZTA for Itanium C++ template parameter objects
+        // Clang uses _ZTA for template parameter objects and _ZZ for function-local statics
+        let name = global.get_name().to_bytes();
         if global.get_linkage() != Linkage::LinkOnceODR
             || !global.is_constant()
-            || !global.get_name().to_bytes().starts_with(b"_ZTA")
+            || !(name.starts_with(b"_ZTA") || name.starts_with(b"_ZZ"))
         {
+            continue;
+        }
+        // A module constructor cannot initialize storage for later threads
+        if global.is_thread_local() {
             continue;
         }
         let Some(BasicValueEnum::StructValue(init)) = global.get_initializer() else {
